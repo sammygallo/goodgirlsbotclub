@@ -5,6 +5,8 @@ import { useChatStore } from './chatStore';
 import { useSettingsStore } from './settingsStore';
 import { useWorldInfoStore } from './worldInfoStore';
 import { useThemeStore } from './themeStore';
+import { useDisplayPreferencesStore } from './displayPreferencesStore';
+import { useSpeechPreferencesStore } from './speechPreferencesStore';
 import { useExtensionStore } from './extensionStore';
 import { useSummarizeStore } from './summarizeStore';
 import { useAutoMemoryStore } from './autoMemoryStore';
@@ -75,6 +77,8 @@ export const useAuthStore = create<AuthState>((set) => ({
           isLoading: false,
         });
         useThemeStore.getState().fetchTheme();
+        useDisplayPreferencesStore.getState().fetchPrefs();
+        useSpeechPreferencesStore.getState().fetchPrefs();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
       }
@@ -158,6 +162,8 @@ export const useAuthStore = create<AuthState>((set) => ({
         isLoading: false,
       });
       useThemeStore.getState().fetchTheme();
+      useDisplayPreferencesStore.getState().fetchPrefs();
+      useSpeechPreferencesStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
