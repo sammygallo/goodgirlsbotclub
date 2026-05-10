@@ -64,7 +64,6 @@ import {
   getChatFontSize,
   getChatMaxWidth,
   getVnMode,
-  setVnMode,
   getVnBgForCharacter,
   setVnBgForCharacter,
   clearVnBgForCharacter,
@@ -72,13 +71,15 @@ import {
   setVnBgGlobal,
   clearVnBgGlobal,
   getCostume,
-  setCostume,
-  clearCostume,
 } from '../../hooks/displayPreferences';
+import { useDisplayPreferencesStore } from '../../stores/displayPreferencesStore';
 import { fireSandboxLifecycleEvent } from '../../extensions/sandbox/sandboxEventBus';
 
 export function ChatView() {
   const routerNavigate = useNavigate();
+  const storeSetVnMode = useDisplayPreferencesStore(s => s.setVnMode);
+  const storeSetCostume = useDisplayPreferencesStore(s => s.setCostume);
+  const storeClearCostume = useDisplayPreferencesStore(s => s.clearCostume);
   const { selectedCharacter, isGroupChatMode, groupChatCharacters, exitGroupChat, characters: allCharacters } = useCharacterStore();
   const {
     messages,
@@ -747,7 +748,7 @@ export function ChatView() {
       // just chose. Without this, the upload would silently store the image
       // but render nothing because the bg <img> is gated on isVnMode.
       if (!getVnMode()) {
-        setVnMode(true);
+        storeSetVnMode(true);
         setIsVnModeState(true);
       }
     };
@@ -770,10 +771,10 @@ export function ChatView() {
   const handleSetCostume = useCallback((name: string) => {
     if (!selectedCharacter) return;
     if (name.trim()) {
-      setCostume(selectedCharacter.avatar, name.trim());
+      storeSetCostume(selectedCharacter.avatar, name.trim());
       setActiveCostumeState(name.trim());
     } else {
-      clearCostume(selectedCharacter.avatar);
+      storeClearCostume(selectedCharacter.avatar);
       setActiveCostumeState(null);
     }
   }, [selectedCharacter]);

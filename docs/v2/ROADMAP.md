@@ -147,6 +147,118 @@ subscriptions
 
 **Why `character_instances` is the load-bearing table:** per-user memory, affinity score (gates "character sends you a friend request"), and privacy all live here. `characters` is the published/imported asset; `character_instances` is what *you* experience. This split is what lets a future public feed and present-day private chat coexist without a schema rewrite.
 
+### Deferred local-storage items — schema additions for Phase 1
+
+These are currently stored in browser `localStorage` and synced via the v1 settings blob as a stopgap. Full server-side storage requires the tables below; all are Phase 1 deliverables unless marked otherwise.
+
+```sql
+-- World Info / Lore books (replaces sillytavern_worldinfo_* localStorage keys)
+lorebooks
+  id, user_id, name, description,
+  auto_extracted (bool),           -- auto-built from character card
+  owner_character_avatar,          -- which character owns it, if any
+  created_at, updated_at
+
+lorebook_entries
+  id, lorebook_id,
+  keys (text[]),                   -- trigger keywords
+  content (text),
+  enabled (bool),
+  case_sensitive (bool), whole_word (bool),
+  priority (int),
+  position ('before_char' | 'after_char' | 'depth'), depth (int),
+  role ('system' | 'user' | 'assistant'),
+  -- cooldown / sticky / delay state (v1: sillytavern_wi_timers_v1)
+  cooldown_turns (int), sticky_turns (int), delay_turns (int),
+  created_at
+
+lorebook_chat_links           -- chat-scoped active book overrides
+  id, user_id, chat_id, lorebook_id
+  UNIQUE(user_id, chat_id, lorebook_id)
+
+-- Personas (replaces sillytavern_personas_v2 localStorage key)
+-- `personas` table is already in the schema sketch above with avatar_url.
+-- Add to existing `personas` table:
+--   description_position ('before_char' | 'after_char' | 'depth')
+--   description_depth (int)
+--   description_role ('system' | 'user' | 'assistant')
+--   linked_lorebook_ids (int[])   -- FK to lorebooks
+
+persona_locks                 -- per-character / per-chat persona overrides
+  id, user_id,
+  lock_type ('character' | 'chat'),
+  target_key (text),               -- avatar filename or chat_id
+  persona_id (int, FK personas)
+
+-- Chat history RAG embeddings (replaces stm:chat-history-rag localStorage key)
+-- pgvector extension required; included in Phase 1 stack decision.
+message_embeddings
+  id, message_id (FK messages), embedding (vector(1536))
+  INDEX USING ivfflat (embedding vector_cosine_ops)
+-- Note: ~6 KB per message in localStorage → <200 bytes stored in pgvector.
+-- Significant localStorage relief for power users.
+
+-- Data Bank documents (replaces stm:data-bank localStorage key)
+data_bank_documents
+  id, user_id,
+  name (text),
+  scope ('global' | 'character'),
+  character_avatar (text),         -- null when scope = global
+  content (text),
+  is_embedded (bool),
+  created_at
+
+data_bank_chunks
+  id, document_id (FK data_bank_documents),
+  chunk_text (text),
+  embedding (vector(1536))
+  INDEX USING ivfflat (embedding vector_cosine_ops)
+
+-- Image generation gallery (replaces sillytavern_imagegen_gallery localStorage key)
+-- Images move to R2; table holds metadata only.
+image_gen_gallery
+  id, user_id,
+  r2_key (text),                   -- Cloudflare R2 object key
+  prompt (text),
+  backend (text),
+  model (text),
+  width (int), height (int),
+  created_at
+-- Note: base64 data URLs currently bloat localStorage by MB; R2 fixes that.
+
+-- Regex scripts (replaces sillytavern_regex_scripts localStorage key)
+regex_scripts
+  id, user_id,
+  name (text),
+  find_pattern (text),
+  replace_with (text),
+  match_case (bool), is_regex (bool), is_enabled (bool),
+  sort_order (int),
+  created_at
+
+-- VN backgrounds per character (replaces stm:vn-bg-* localStorage keys)
+-- Images move to R2; reference stored on character_instances.
+-- Add to character_instances:
+--   vn_bg_r2_key (text)           -- per-user VN background for this character
+-- Global VN background: add to users table or a user_settings jsonb column.
+
+-- Author notes per chat (replaces sillytavern_author_notes localStorage key)
+-- Add to chats table:
+--   author_note_content (text)
+--   author_note_depth (int)
+--   author_note_role ('system' | 'user' | 'assistant')
+
+-- Chat variables (replaces stm:chat-vars localStorage key)
+-- Add to chats table:
+--   variables (jsonb)             -- {[varName]: value}
+```
+
+**Migration path from v1 localStorage:**
+- On first v2 login, the client reads each localStorage key and POSTs to a `/api/v2/migrate/local-storage` endpoint that populates the tables above in a single transaction.
+- Embeddings are re-computed server-side (client-side vectors from OpenAI JS SDK are discarded).
+- Base64 image galleries and VN backgrounds are uploaded to R2 during migration, then the localStorage keys are cleared.
+- The migration runs once and is idempotent (guarded by a `migrations` flag on the user record).
+
 ---
 
 ## Phasing

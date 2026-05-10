@@ -27,16 +27,17 @@ registerCommand({
       return '';
     }
 
-    const { setCostume, clearCostume, getCostume } = await import('../../../hooks/displayPreferences');
+    const { getCostume } = await import('../../../hooks/displayPreferences');
+    const { useDisplayPreferencesStore } = await import('../../../stores/displayPreferencesStore');
     const folderName = getUnnamedArgs(args).trim();
 
     if (folderName) {
-      setCostume(character.avatar, folderName);
+      useDisplayPreferencesStore.getState().setCostume(character.avatar, folderName);
       ctx.showToast(`Costume set to "${folderName}"`, 'success');
       return folderName;
     } else {
       const current = getCostume(character.avatar);
-      clearCostume(character.avatar);
+      useDisplayPreferencesStore.getState().clearCostume(character.avatar);
       if (current) ctx.showToast('Costume reset to default', 'success');
       return '';
     }

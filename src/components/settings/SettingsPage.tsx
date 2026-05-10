@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { ArrowLeft, BookOpen, ChevronRight, Database, Edit3, FileText, Image, Languages, Loader2, MessageSquare, Mic, Palette, Plus, Replace, Shield, Sliders, Sparkles, Trash2, UserPlus, Users, Volume2, Zap } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -7,38 +7,10 @@ import { useAuthStore } from '../../stores/authStore';
 import { hasPermission } from '../../utils/permissions';
 // PROVIDERS moved to AISettingsPage
 import { Button } from '../ui';
-import {
-  SPEECH_LANGUAGES,
-  getSpeechLanguage,
-  setSpeechLanguage,
-  getTtsVoiceUri,
-  setTtsVoiceUri,
-  getTtsRate,
-  setTtsRate,
-  getTtsPitch,
-  setTtsPitch,
-  getTtsAutoRead,
-  setTtsAutoRead,
-} from '../../hooks/speechLanguage';
-import {
-  getChatLayoutMode,
-  setChatLayoutMode,
-  getAvatarShape,
-  setAvatarShape,
-  getChatFontSize,
-  setChatFontSize,
-  getChatMaxWidth,
-  setChatMaxWidth,
-  getVnMode,
-  setVnMode,
-  getStandardizeMessageFormatting,
-  setStandardizeMessageFormatting,
-  getEnterToSendMode,
-  setEnterToSendMode,
-  type ChatLayoutMode,
-  type AvatarShape,
-  type EnterToSendMode,
-} from '../../hooks/displayPreferences';
+import { SPEECH_LANGUAGES } from '../../hooks/speechLanguage';
+import { type ChatLayoutMode, type AvatarShape, type EnterToSendMode } from '../../hooks/displayPreferences';
+import { useDisplayPreferencesStore } from '../../stores/displayPreferencesStore';
+import { useSpeechPreferencesStore } from '../../stores/speechPreferencesStore';
 import {
   THEME_PRESETS,
   PRESET_SWATCHES,
@@ -64,7 +36,6 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
     clearMessages,
   } = useSettingsStore();
 
-  const [speechLang, setSpeechLangState] = useState<string>(() => getSpeechLanguage());
   const { isSupported: isSpeechSupported } = useSpeechRecognition();
 
   // Phase 7.4 + 6.1: Theme preferences (server-synced via themeStore)
@@ -77,22 +48,34 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
   // Derived: built-in preset name for seeding the theme editor's base colors.
   const themePresetVal = (activePreset.startsWith('custom:') ? 'cyberpunk' : activePreset) as ThemePreset;
 
-  // Phase 7.3: Chat display preferences
-  const [layoutMode, setLayoutModeState] = useState<ChatLayoutMode>(() => getChatLayoutMode());
-  const [avatarShapePref, setAvatarShapeState] = useState<AvatarShape>(() => getAvatarShape());
-  const [fontSizePref, setFontSizeState] = useState<number>(() => getChatFontSize());
-  const [chatWidthPref, setChatWidthState] = useState<number>(() => getChatMaxWidth());
-  // Phase 6.4: VN mode
-  const [vnModeOn, setVnModeState] = useState<boolean>(() => getVnMode());
-  const [standardizeFmt, setStandardizeFmtState] = useState<boolean>(() => getStandardizeMessageFormatting());
-  const [enterToSendMode, setEnterToSendModeState] = useState<EnterToSendMode>(() => getEnterToSendMode());
+  // Display preferences (server-synced)
+  const layoutMode = useDisplayPreferencesStore(s => s.chatLayoutMode);
+  const avatarShapePref = useDisplayPreferencesStore(s => s.avatarShape);
+  const fontSizePref = useDisplayPreferencesStore(s => s.chatFontSize);
+  const chatWidthPref = useDisplayPreferencesStore(s => s.chatMaxWidth);
+  const vnModeOn = useDisplayPreferencesStore(s => s.vnMode);
+  const standardizeFmt = useDisplayPreferencesStore(s => s.standardizeMessageFormatting);
+  const enterToSendMode = useDisplayPreferencesStore(s => s.enterToSendMode);
+  const storeSetLayoutMode = useDisplayPreferencesStore(s => s.setChatLayoutMode);
+  const storeSetAvatarShape = useDisplayPreferencesStore(s => s.setAvatarShape);
+  const storeSetFontSize = useDisplayPreferencesStore(s => s.setChatFontSize);
+  const storeSetChatWidth = useDisplayPreferencesStore(s => s.setChatMaxWidth);
+  const storeSetVnMode = useDisplayPreferencesStore(s => s.setVnMode);
+  const storeSetStandardize = useDisplayPreferencesStore(s => s.setStandardizeMessageFormatting);
+  const storeSetEnterToSend = useDisplayPreferencesStore(s => s.setEnterToSendMode);
 
-  // Phase 6.3: TTS settings state
+  // Speech & TTS preferences (server-synced)
   const { isSupported: isTtsSupported, voices: ttsVoices } = useSpeechSynthesis();
-  const [ttsVoiceUri, setTtsVoiceUriState] = useState<string>(() => getTtsVoiceUri());
-  const [ttsRate, setTtsRateState] = useState<number>(() => getTtsRate());
-  const [ttsPitch, setTtsPitchState] = useState<number>(() => getTtsPitch());
-  const [ttsAutoReadOn, setTtsAutoReadState] = useState<boolean>(() => getTtsAutoRead());
+  const speechLang = useSpeechPreferencesStore(s => s.speechLang);
+  const ttsVoiceUri = useSpeechPreferencesStore(s => s.ttsVoiceUri);
+  const ttsRate = useSpeechPreferencesStore(s => s.ttsRate);
+  const ttsPitch = useSpeechPreferencesStore(s => s.ttsPitch);
+  const ttsAutoReadOn = useSpeechPreferencesStore(s => s.ttsAutoRead);
+  const storeSetSpeechLang = useSpeechPreferencesStore(s => s.setSpeechLang);
+  const storeSetTtsVoice = useSpeechPreferencesStore(s => s.setTtsVoiceUri);
+  const storeSetTtsRate = useSpeechPreferencesStore(s => s.setTtsRate);
+  const storeSetTtsPitch = useSpeechPreferencesStore(s => s.setTtsPitch);
+  const storeSetTtsAutoRead = useSpeechPreferencesStore(s => s.setTtsAutoRead);
 
   // Phase 7.2: Translation settings
   const translateProvider = useTranslateStore((s) => s.provider);
@@ -556,7 +539,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 ] as const).map((opt) => (
                   <button
                     key={opt.value}
-                    onClick={() => { setLayoutModeState(opt.value); setChatLayoutMode(opt.value); }}
+                    onClick={() => storeSetLayoutMode(opt.value)}
                     className={`p-2.5 rounded-lg text-center transition-all ${
                       layoutMode === opt.value
                         ? 'bg-[var(--color-primary)] text-white'
@@ -585,7 +568,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 ] as const).map((opt) => (
                   <button
                     key={opt.value}
-                    onClick={() => { setAvatarShapeState(opt.value); setAvatarShape(opt.value); }}
+                    onClick={() => storeSetAvatarShape(opt.value)}
                     className={`flex items-center justify-center gap-2 p-2.5 rounded-lg transition-all ${
                       avatarShapePref === opt.value
                         ? 'bg-[var(--color-primary)] text-white'
@@ -610,11 +593,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 max={20}
                 step={1}
                 value={fontSizePref}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setFontSizeState(v);
-                  setChatFontSize(v);
-                }}
+                onChange={(e) => storeSetFontSize(Number(e.target.value))}
                 className="w-full accent-[var(--color-primary)] mb-1"
               />
               <p className="text-[var(--color-text-secondary)] mb-4" style={{ fontSize: `${fontSizePref}px` }}>
@@ -634,11 +613,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 max={100}
                 step={5}
                 value={chatWidthPref}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setChatWidthState(v);
-                  setChatMaxWidth(v);
-                }}
+                onChange={(e) => storeSetChatWidth(Number(e.target.value))}
                 className="w-full accent-[var(--color-primary)]"
               />
 
@@ -653,11 +628,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 <button
                   role="switch"
                   aria-checked={standardizeFmt}
-                  onClick={() => {
-                    const next = !standardizeFmt;
-                    setStandardizeFmtState(next);
-                    setStandardizeMessageFormatting(next);
-                  }}
+                  onClick={() => storeSetStandardize(!standardizeFmt)}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
                     standardizeFmt ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-bg-tertiary)]'
                   }`}
@@ -678,11 +649,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 </p>
                 <select
                   value={enterToSendMode}
-                  onChange={(e) => {
-                    const next = e.target.value as EnterToSendMode;
-                    setEnterToSendModeState(next);
-                    setEnterToSendMode(next);
-                  }}
+                  onChange={(e) => storeSetEnterToSend(e.target.value as EnterToSendMode)}
                   className="w-full bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] text-xs rounded px-2 py-1.5 border border-[var(--color-border)]"
                 >
                   <option value="auto">Auto (device-aware)</option>
@@ -702,11 +669,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 <button
                   role="switch"
                   aria-checked={vnModeOn}
-                  onClick={() => {
-                    const next = !vnModeOn;
-                    setVnModeState(next);
-                    setVnMode(next);
-                  }}
+                  onClick={() => storeSetVnMode(!vnModeOn)}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
                     vnModeOn ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-bg-tertiary)]'
                   }`}
@@ -734,11 +697,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 </p>
                 <select
                   value={speechLang}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setSpeechLangState(next);
-                    setSpeechLanguage(next);
-                  }}
+                  onChange={(e) => storeSetSpeechLang(e.target.value)}
                   className="w-full bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
                 >
                   {SPEECH_LANGUAGES.some((l) => l.code === speechLang) ? null : (
@@ -772,11 +731,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                 </label>
                 <select
                   value={ttsVoiceUri}
-                  onChange={(e) => {
-                    const uri = e.target.value;
-                    setTtsVoiceUriState(uri);
-                    setTtsVoiceUri(uri);
-                  }}
+                  onChange={(e) => storeSetTtsVoice(e.target.value)}
                   className="w-full bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] mb-4"
                 >
                   <option value="">System default</option>
@@ -797,11 +752,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                   max="2.0"
                   step="0.1"
                   value={ttsRate}
-                  onChange={(e) => {
-                    const val = parseFloat(e.target.value);
-                    setTtsRateState(val);
-                    setTtsRate(val);
-                  }}
+                  onChange={(e) => storeSetTtsRate(parseFloat(e.target.value))}
                   className="w-full mb-4 accent-[var(--color-primary)]"
                 />
 
@@ -815,11 +766,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                   max="2.0"
                   step="0.1"
                   value={ttsPitch}
-                  onChange={(e) => {
-                    const val = parseFloat(e.target.value);
-                    setTtsPitchState(val);
-                    setTtsPitch(val);
-                  }}
+                  onChange={(e) => storeSetTtsPitch(parseFloat(e.target.value))}
                   className="w-full mb-4 accent-[var(--color-primary)]"
                 />
 
@@ -835,11 +782,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                     type="button"
                     role="switch"
                     aria-checked={ttsAutoReadOn}
-                    onClick={() => {
-                      const next = !ttsAutoReadOn;
-                      setTtsAutoReadState(next);
-                      setTtsAutoRead(next);
-                    }}
+                    onClick={() => storeSetTtsAutoRead(!ttsAutoReadOn)}
                     className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors ${
                       ttsAutoReadOn ? 'bg-[var(--color-primary)]' : 'bg-zinc-600'
                     }`}
