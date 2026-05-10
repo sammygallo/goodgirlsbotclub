@@ -8,7 +8,7 @@ import { hasPermission } from '../../utils/permissions';
 // PROVIDERS moved to AISettingsPage
 import { Button } from '../ui';
 import { SPEECH_LANGUAGES } from '../../hooks/speechLanguage';
-import { type ChatLayoutMode, type AvatarShape, type EnterToSendMode } from '../../hooks/displayPreferences';
+import { type EnterToSendMode } from '../../hooks/displayPreferences';
 import { useDisplayPreferencesStore } from '../../stores/displayPreferencesStore';
 import { useSpeechPreferencesStore } from '../../stores/speechPreferencesStore';
 import {
