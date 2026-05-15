@@ -18,7 +18,7 @@ export interface SamplerParams {
 
 export const DEFAULT_SAMPLER: SamplerParams = {
   temperature: 0.9,
-  maxTokens: 1024,
+  maxTokens: 2048,
   topP: 1.0,
   topK: 0,
   minP: 0.0,
@@ -85,7 +85,7 @@ export interface ContextConfig {
 
 export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   maxTokens: 8192,
-  responseReserve: 1024,
+  responseReserve: 2048,
   tokenAware: true,
   messageCount: 20,
 };

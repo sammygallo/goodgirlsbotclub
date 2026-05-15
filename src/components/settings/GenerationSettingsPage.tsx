@@ -10,6 +10,13 @@ import { PromptOrderEditor } from './PromptOrderEditor';
 
 type TabId = 'samplers' | 'prompts' | 'order' | 'context' | 'instruct';
 
+const RESPONSE_LENGTH_PRESETS = [
+  { label: 'Short', tokens: 400 },
+  { label: 'Balanced', tokens: 1024 },
+  { label: 'Long', tokens: 2048 },
+  { label: 'Extended', tokens: 4096 },
+] as const;
+
 const TABS: { id: TabId; label: string }[] = [
   { id: 'samplers', label: 'Samplers' },
   { id: 'prompts', label: 'Prompts' },
@@ -203,16 +210,42 @@ export function GenerationSettingsPage(_props?: { params?: Record<string, string
                 helpTip="Controls creativity and randomness. 0.1 = very predictable, robotic. 0.7 = natural and varied. 1.0+ = highly creative but may drift or hallucinate. For roleplay, 0.75–0.9 is a sweet spot. For task-focused assistants, try 0.3–0.6."
               />
 
-              <SliderField
-                label="Max Response Tokens"
-                value={sampler.maxTokens}
-                min={64}
-                max={8192}
-                step={64}
-                onChange={(v) => setSampler({ maxTokens: v })}
-                hint="Maximum tokens in the AI response"
-                helpTip="Caps how long each AI reply can be. ~100 tokens ≈ a short paragraph. ~500 = 2–3 paragraphs. ~1500+ = long, elaborate responses. This doesn't affect how much context the AI reads — only how much it writes back."
-              />
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <span className="text-sm font-medium text-[var(--color-text-secondary)]">
+                    Response Length
+                  </span>
+                  <HelpTip tip="Controls how long each AI reply can be. Values that are too low cut responses mid-sentence, forcing 'Continue' clicks — each one re-sends the full context and multiplies your token cost. Match this to the natural length of your character's replies." />
+                </div>
+                <div className="grid grid-cols-4 gap-2 mb-3">
+                  {RESPONSE_LENGTH_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      onClick={() => setSampler({ maxTokens: preset.tokens })}
+                      className={`flex flex-col items-center py-2 px-1 rounded-lg text-xs font-medium transition-all ${
+                        sampler.maxTokens === preset.tokens
+                          ? 'bg-[var(--color-primary)] text-white'
+                          : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+                      }`}
+                    >
+                      <span>{preset.label}</span>
+                      <span className={`text-[10px] mt-0.5 ${sampler.maxTokens === preset.tokens ? 'text-white/70' : 'text-[var(--color-text-secondary)]'}`}>
+                        {preset.tokens.toLocaleString()}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <SliderField
+                  label="Max Response Tokens"
+                  value={sampler.maxTokens}
+                  min={64}
+                  max={8192}
+                  step={64}
+                  onChange={(v) => setSampler({ maxTokens: v })}
+                  hint="Fewer 'Continue' clicks = lower total cost. Each click re-sends the full context."
+                  helpTip="Caps how long each AI reply can be. ~400 = 1–2 paragraphs. ~1024 = 3–4 paragraphs. ~2048 = 6–8 paragraphs. ~4096 = a full scene. This doesn't affect how much context the AI reads — only how much it writes back."
+                />
+              </div>
 
               <SliderField
                 label="Top P"
