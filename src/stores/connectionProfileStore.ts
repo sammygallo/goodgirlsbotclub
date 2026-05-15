@@ -11,6 +11,7 @@
 
 import { create } from 'zustand';
 import type { SamplerParams } from './generationStore';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 
 export interface ConnectionProfile {
   id: string;
@@ -26,6 +27,9 @@ export interface ConnectionProfile {
 interface ConnectionProfileState {
   profiles: ConnectionProfile[];
   activeProfileId: string | null;
+
+  /** Fetch from server after login and apply. No-op if no server data yet. */
+  fetchPrefs: () => Promise<void>;
 
   // Actions
   saveProfile: (
@@ -43,6 +47,17 @@ interface ConnectionProfileState {
 }
 
 const STORAGE_KEY = 'stm:connection-profiles';
+const SERVER_KEY = 'stm_connection_profiles';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+function markLocalDirty(): void {
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+}
+
+function syncToServer(profiles: ConnectionProfile[], activeProfileId: string | null): void {
+  markLocalDirty();
+  patchServerKey(SERVER_KEY, { profiles, activeProfileId }, LOCAL_TS_KEY).catch(() => {});
+}
 
 interface PersistedShape {
   profiles: ConnectionProfile[];
@@ -82,6 +97,7 @@ export const useConnectionProfileStore = create<ConnectionProfileState>((set, ge
     const profiles = [...get().profiles, profile];
     save({ profiles, activeProfileId: profile.id });
     set({ profiles, activeProfileId: profile.id });
+    syncToServer(profiles, profile.id);
   },
 
   deleteProfile: (id) => {
@@ -89,6 +105,7 @@ export const useConnectionProfileStore = create<ConnectionProfileState>((set, ge
     const activeProfileId = get().activeProfileId === id ? null : get().activeProfileId;
     save({ profiles, activeProfileId });
     set({ profiles, activeProfileId });
+    syncToServer(profiles, activeProfileId);
   },
 
   renameProfile: (id, name) => {
@@ -97,6 +114,7 @@ export const useConnectionProfileStore = create<ConnectionProfileState>((set, ge
     );
     save({ profiles, activeProfileId: get().activeProfileId });
     set({ profiles });
+    syncToServer(profiles, get().activeProfileId);
   },
 
   getProfile: (id) => get().profiles.find((p) => p.id === id) ?? null,
@@ -104,5 +122,29 @@ export const useConnectionProfileStore = create<ConnectionProfileState>((set, ge
   setActiveProfileId: (id) => {
     save({ profiles: get().profiles, activeProfileId: id });
     set({ activeProfileId: id });
+    syncToServer(get().profiles, id);
+  },
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as Record<string, unknown> | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      if (localTs > serverTs) {
+        syncToServer(get().profiles, get().activeProfileId);
+        return;
+      }
+
+      if (!stored) return;
+
+      const profiles = (stored.profiles as ConnectionProfile[] | undefined) ?? [];
+      const activeProfileId = (stored.activeProfileId as string | null) ?? null;
+
+      save({ profiles, activeProfileId });
+      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      set({ profiles, activeProfileId });
+    } catch { /* non-fatal */ }
   },
 }));

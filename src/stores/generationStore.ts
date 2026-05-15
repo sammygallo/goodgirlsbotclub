@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { getDefaultContextSize } from '../utils/tokenizer';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 
 // Sampler parameters supported across providers. Not every provider uses
 // every field; unused params are ignored by the backend.
@@ -253,9 +254,18 @@ interface GenerationState {
   resetPromptOrder: () => void;
 
   setLastTokenEstimate: (n: number) => void;
+
+  /** Fetch from server after login and apply. No-op if no server data yet. */
+  fetchPrefs: () => Promise<void>;
 }
 
 const STORAGE_KEY = 'sillytavern_generation_settings_v1';
+const SERVER_KEY = 'stm_generation';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+function markLocalDirty(): void {
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+}
 
 interface PersistedShape {
   sampler: SamplerParams;
@@ -288,7 +298,7 @@ function saveToStorage(state: PersistedShape) {
 }
 
 function persist(state: GenerationState) {
-  saveToStorage({
+  const shape: PersistedShape = {
     sampler: state.sampler,
     presets: state.presets,
     activePresetId: state.activePresetId,
@@ -298,7 +308,10 @@ function persist(state: GenerationState) {
     context: state.context,
     instruct: state.instruct,
     promptOrder: state.promptOrder,
-  });
+  };
+  saveToStorage(shape);
+  markLocalDirty();
+  patchServerKey(SERVER_KEY, shape as unknown as Record<string, unknown>, LOCAL_TS_KEY).catch(() => {});
 }
 
 function generatePresetId(): string {
@@ -613,5 +626,59 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
 
   setLastTokenEstimate: (n) => {
     set({ lastTokenEstimate: n });
+  },
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as (PersistedShape & { _ts?: number }) | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      if (localTs > serverTs) {
+        // Local has unconfirmed mutations — re-upload them.
+        const s = get();
+        patchServerKey(SERVER_KEY, {
+          sampler: s.sampler,
+          presets: s.presets,
+          activePresetId: s.activePresetId,
+          defaultPresetId: s.defaultPresetId,
+          linkedPresetByAvatar: s.linkedPresetByAvatar,
+          prompt: s.prompt,
+          context: s.context,
+          instruct: s.instruct,
+          promptOrder: s.promptOrder,
+        }, LOCAL_TS_KEY).catch(() => {});
+        return;
+      }
+
+      if (!stored) return; // No server data yet — keep defaults.
+
+      // Apply server values to localStorage and store.
+      const merged: PersistedShape = {
+        sampler: { ...DEFAULT_SAMPLER, ...(stored.sampler ?? {}) },
+        presets: Array.isArray(stored.presets) ? stored.presets : [],
+        activePresetId: stored.activePresetId ?? null,
+        defaultPresetId: stored.defaultPresetId ?? null,
+        linkedPresetByAvatar: (stored.linkedPresetByAvatar as Record<string, string>) ?? {},
+        prompt: { ...DEFAULT_PROMPT_CONFIG, ...(stored.prompt ?? {}) },
+        context: { ...DEFAULT_CONTEXT_CONFIG, ...(stored.context ?? {}) },
+        instruct: { ...DEFAULT_INSTRUCT_CONFIG, ...(stored.instruct ?? {}) },
+        promptOrder: mergePromptOrder(stored.promptOrder),
+      };
+      saveToStorage(merged);
+      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      set({
+        sampler: merged.sampler,
+        presets: merged.presets,
+        activePresetId: merged.activePresetId,
+        defaultPresetId: merged.defaultPresetId,
+        linkedPresetByAvatar: merged.linkedPresetByAvatar,
+        prompt: merged.prompt,
+        context: merged.context,
+        instruct: merged.instruct,
+        promptOrder: merged.promptOrder,
+      });
+    } catch { /* non-fatal — localStorage values remain active */ }
   },
 }));

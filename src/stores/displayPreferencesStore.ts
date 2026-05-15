@@ -22,6 +22,7 @@
 
 import { create } from 'zustand';
 import { settingsApi } from '../api/client';
+import { getSettingsBlob } from '../utils/serverSettings';
 import {
   type ChatLayoutMode,
   type AvatarShape,
@@ -96,14 +97,6 @@ function getInitialCostumes(): Record<string, string> {
     }
   } catch { /* ignore */ }
   return costumes;
-}
-
-async function getSettingsBlob(): Promise<Record<string, unknown>> {
-  const response = await settingsApi.getSettings();
-  if (typeof response.settings === 'string') {
-    try { return JSON.parse(response.settings); } catch { return {}; }
-  }
-  return (response.settings as Record<string, unknown>) || {};
 }
 
 /**

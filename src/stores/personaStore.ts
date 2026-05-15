@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 
 // Where the persona description is injected in the prompt
 export type PersonaDescriptionPosition =
@@ -86,6 +87,31 @@ function generatePersonaId(): string {
   return `persona_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+const SERVER_KEY = 'stm_personas';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+function markLocalDirty(): void {
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+}
+
+// avatarDataUrl is a base64 blob — excluded from server sync (device-local).
+type PersonaForServer = Omit<Persona, 'avatarDataUrl'>;
+
+function stripAvatar(p: Persona): PersonaForServer {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { avatarDataUrl: _, ...rest } = p;
+  return rest;
+}
+
+function syncToServer(personas: Persona[], activePersonaId: string | null, locks: PersonaLocks): void {
+  markLocalDirty();
+  patchServerKey(SERVER_KEY, {
+    personas: personas.map(stripAvatar),
+    activePersonaId,
+    locks,
+  }, LOCAL_TS_KEY).catch(() => {});
+}
+
 interface PersonaState {
   personas: Persona[];
   activePersonaId: string | null;
@@ -117,6 +143,9 @@ interface PersonaState {
   getChatLock: (chatFileName: string) => string | null;
 
   clearError: () => void;
+
+  /** Fetch from server after login and apply. No-op if no server data yet. */
+  fetchPrefs: () => Promise<void>;
 }
 
 export const usePersonaStore = create<PersonaState>((set, get) => {
@@ -180,17 +209,19 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
       savePersonas(updatedPersonas);
       set({ personas: updatedPersonas });
 
-      // If this is the first persona, make it active
+      let activeId = get().activePersonaId;
       if (personas.length === 0 || persona.isDefault) {
         saveActivePersonaId(persona.id);
         set({ activePersonaId: persona.id });
+        activeId = persona.id;
       }
+      syncToServer(updatedPersonas, activeId, get().locks);
 
       return persona;
     },
 
     updatePersona: (id, data) => {
-      const { personas, activePersonaId } = get();
+      const { personas } = get();
       const exists = personas.some((p) => p.id === id);
       if (!exists) {
         set({ error: 'Persona not found' });
@@ -210,11 +241,7 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
 
       savePersonas(updatedPersonas);
       set({ personas: updatedPersonas });
-
-      // If active persona was deleted or is no longer valid, choose a new active
-      if (activePersonaId === id && data.isDefault === false) {
-        // If we unset the default, keep active the same
-      }
+      syncToServer(updatedPersonas, get().activePersonaId, get().locks);
     },
 
     deletePersona: (id) => {
@@ -235,42 +262,35 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
 
       let newActiveId = activePersonaId;
       if (activePersonaId === id) {
-        // Fall back to default or first remaining persona
         const defaultPersona = updatedPersonas.find((p) => p.isDefault);
         newActiveId = defaultPersona?.id || updatedPersonas[0]?.id || null;
         saveActivePersonaId(newActiveId);
       }
 
-      set({
-        personas: updatedPersonas,
-        locks: cleanedLocks,
-        activePersonaId: newActiveId,
-      });
+      set({ personas: updatedPersonas, locks: cleanedLocks, activePersonaId: newActiveId });
+      syncToServer(updatedPersonas, newActiveId, cleanedLocks);
     },
 
     setActivePersona: (id) => {
       saveActivePersonaId(id);
       set({ activePersonaId: id });
+      syncToServer(get().personas, id, get().locks);
     },
 
     setDefaultPersona: (id) => {
       const { personas } = get();
-      const updatedPersonas = personas.map((p) => ({
-        ...p,
-        isDefault: p.id === id,
-      }));
+      const updatedPersonas = personas.map((p) => ({ ...p, isDefault: p.id === id }));
       savePersonas(updatedPersonas);
       set({ personas: updatedPersonas });
+      syncToServer(updatedPersonas, get().activePersonaId, get().locks);
     },
 
     lockPersonaToCharacter: (personaId, characterAvatar) => {
       const { locks } = get();
-      const updated: PersonaLocks = {
-        ...locks,
-        byCharacter: { ...locks.byCharacter, [characterAvatar]: personaId },
-      };
+      const updated: PersonaLocks = { ...locks, byCharacter: { ...locks.byCharacter, [characterAvatar]: personaId } };
       saveLocks(updated);
       set({ locks: updated });
+      syncToServer(get().personas, get().activePersonaId, updated);
     },
 
     unlockCharacter: (characterAvatar) => {
@@ -280,16 +300,15 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
       const updated: PersonaLocks = { ...locks, byCharacter: newByCharacter };
       saveLocks(updated);
       set({ locks: updated });
+      syncToServer(get().personas, get().activePersonaId, updated);
     },
 
     lockPersonaToChat: (personaId, chatFileName) => {
       const { locks } = get();
-      const updated: PersonaLocks = {
-        ...locks,
-        byChat: { ...locks.byChat, [chatFileName]: personaId },
-      };
+      const updated: PersonaLocks = { ...locks, byChat: { ...locks.byChat, [chatFileName]: personaId } };
       saveLocks(updated);
       set({ locks: updated });
+      syncToServer(get().personas, get().activePersonaId, updated);
     },
 
     unlockChat: (chatFileName) => {
@@ -299,6 +318,7 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
       const updated: PersonaLocks = { ...locks, byChat: newByChat };
       saveLocks(updated);
       set({ locks: updated });
+      syncToServer(get().personas, get().activePersonaId, updated);
     },
 
     getCharacterLock: (characterAvatar) => {
@@ -310,5 +330,42 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
     },
 
     clearError: () => set({ error: null }),
+
+    fetchPrefs: async () => {
+      try {
+        const settings = await getSettingsBlob();
+        const stored = settings[SERVER_KEY] as Record<string, unknown> | undefined;
+        const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+        const serverTs = Number(stored?._ts || 0);
+
+        if (localTs > serverTs) {
+          const { personas, activePersonaId, locks } = get();
+          syncToServer(personas, activePersonaId, locks);
+          return;
+        }
+
+        if (!stored) return;
+
+        const serverPersonas = (stored.personas as PersonaForServer[] | undefined) ?? [];
+        const serverActiveId = (stored.activePersonaId as string | null) ?? null;
+        const serverLocks = (stored.locks as PersonaLocks | undefined) ?? { byCharacter: {}, byChat: {} };
+
+        // Restore local avatarDataUrls for matching persona IDs.
+        const localAvatars: Record<string, string> = {};
+        for (const p of get().personas) {
+          if (p.avatarDataUrl) localAvatars[p.id] = p.avatarDataUrl;
+        }
+        const restoredPersonas: Persona[] = serverPersonas.map((p) => ({
+          ...p,
+          ...(localAvatars[p.id] ? { avatarDataUrl: localAvatars[p.id] } : {}),
+        }));
+
+        savePersonas(restoredPersonas);
+        saveActivePersonaId(serverActiveId);
+        saveLocks(serverLocks);
+        try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+        set({ personas: restoredPersonas, activePersonaId: serverActiveId, locks: serverLocks });
+      } catch { /* non-fatal */ }
+    },
   };
 });
