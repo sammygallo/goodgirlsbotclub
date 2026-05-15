@@ -21,6 +21,7 @@
 
 import { create } from 'zustand';
 import { settingsApi } from '../api/client';
+import { getSettingsBlob } from '../utils/serverSettings';
 import {
   getSpeechLanguage,
   setSpeechLanguage as lsSetSpeechLang,
@@ -64,14 +65,6 @@ const LOCAL_TS_KEY = 'stm:speech-local-ts';
 
 function markLocalDirty(): void {
   try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
-}
-
-async function getSettingsBlob(): Promise<Record<string, unknown>> {
-  const response = await settingsApi.getSettings();
-  if (typeof response.settings === 'string') {
-    try { return JSON.parse(response.settings); } catch { return {}; }
-  }
-  return (response.settings as Record<string, unknown>) || {};
 }
 
 /**

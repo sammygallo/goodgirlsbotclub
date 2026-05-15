@@ -7,6 +7,10 @@ import { useWorldInfoStore } from './worldInfoStore';
 import { useThemeStore } from './themeStore';
 import { useDisplayPreferencesStore } from './displayPreferencesStore';
 import { useSpeechPreferencesStore } from './speechPreferencesStore';
+import { useGenerationStore } from './generationStore';
+import { usePersonaStore } from './personaStore';
+import { useConnectionProfileStore } from './connectionProfileStore';
+import { useChatHistoryRagStore } from './chatHistoryRagStore';
 import { useExtensionStore } from './extensionStore';
 import { useSummarizeStore } from './summarizeStore';
 import { useAutoMemoryStore } from './autoMemoryStore';
@@ -79,6 +83,10 @@ export const useAuthStore = create<AuthState>((set) => ({
         useThemeStore.getState().fetchTheme();
         useDisplayPreferencesStore.getState().fetchPrefs();
         useSpeechPreferencesStore.getState().fetchPrefs();
+        useGenerationStore.getState().fetchPrefs();
+        usePersonaStore.getState().fetchPrefs();
+        useConnectionProfileStore.getState().fetchPrefs();
+        useChatHistoryRagStore.getState().fetchPrefs();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
       }
@@ -164,6 +172,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       useThemeStore.getState().fetchTheme();
       useDisplayPreferencesStore.getState().fetchPrefs();
       useSpeechPreferencesStore.getState().fetchPrefs();
+      useGenerationStore.getState().fetchPrefs();
+      usePersonaStore.getState().fetchPrefs();
+      useConnectionProfileStore.getState().fetchPrefs();
+      useChatHistoryRagStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
