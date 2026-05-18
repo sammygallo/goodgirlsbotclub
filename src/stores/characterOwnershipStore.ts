@@ -134,7 +134,9 @@ export const useCharacterOwnershipStore = create<CharacterOwnershipState>((set, 
   canDeleteCharacter: (avatar, userHandle, userRole) => {
     if (userRole === 'owner') return true;
     const entry = get().ownershipMap[avatar];
-    if (!entry) return false;
+    // No metadata entry → personal character never pushed to global; the
+    // requesting user is its only possible owner, so allow deletion.
+    if (!entry) return true;
     return entry.ownerHandle === userHandle;
   },
 }));
