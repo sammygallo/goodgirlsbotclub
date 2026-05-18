@@ -884,15 +884,23 @@ function applyTokenBudget(
   profile: TokenizerProfile
 ): MatchedEntry[] {
   if (budget <= 0) return matches;
+  // Constant entries are always injected — never pruned by the budget.
+  const constantMatches = matches.filter((m) => m.entry.constant);
+  const budgetable = matches.filter((m) => !m.entry.constant);
+  const constantCost = constantMatches.reduce(
+    (s, m) => s + estimateTokens(m.entry.content, profile),
+    0
+  );
+  const remaining = Math.max(0, budget - constantCost);
   // High priority first (lower `order`), drop lowest priority when over budget.
-  const sorted = [...matches].sort((a, b) => a.entry.order - b.entry.order);
+  const sorted = [...budgetable].sort((a, b) => a.entry.order - b.entry.order);
   const costs = sorted.map((m) => estimateTokens(m.entry.content, profile));
   let total = costs.reduce((s, c) => s + c, 0);
-  while (total > budget && sorted.length > 0) {
+  while (total > remaining && sorted.length > 0) {
     sorted.pop();
     total -= costs.pop() || 0;
   }
-  return sorted;
+  return [...constantMatches, ...sorted];
 }
 
 /**
