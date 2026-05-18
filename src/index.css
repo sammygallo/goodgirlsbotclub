@@ -275,6 +275,10 @@ body {
   color: var(--color-text-dialogue);
   font-weight: 500;
 }
+.markdown-content .md-segment .dialogue em,
+.markdown-content .md-segment .dialogue i {
+  color: inherit;
+}
 
 /* --- Roleplay action / thought — themeable color hooks (AI side) --- */
 .markdown-content .rp-action {
