@@ -3,9 +3,14 @@
  * A "branch" (checkpoint) is a named snapshot of the conversation up to a
  * specific message. Branches are stored in localStorage keyed by chat file.
  * Loading a branch replaces the in-memory message array without touching disk.
+ *
+ * A3.1b: branches now sync across devices via /sync/section/stm_branches.
+ * localStorage stays as a synchronous cache for instant cold loads; the
+ * server is the source of truth once fetchPrefs runs.
  */
 import { create } from 'zustand';
 import type { ChatMessage } from './chatStore';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 
 export interface Branch {
   id: string;
@@ -21,6 +26,8 @@ export interface Branch {
 }
 
 const BRANCHES_KEY = 'sillytavern_branches';
+const SERVER_KEY = 'stm_branches';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 
 function loadAllFromStorage(): Record<string, Branch[]> {
   try {
@@ -34,8 +41,38 @@ function loadAllFromStorage(): Record<string, Branch[]> {
   }
 }
 
-function saveAllToStorage(data: Record<string, Branch[]>) {
-  localStorage.setItem(BRANCHES_KEY, JSON.stringify(data));
+function writeLocalStorageOnly(data: Record<string, Branch[]>): void {
+  try {
+    localStorage.setItem(BRANCHES_KEY, JSON.stringify(data));
+  } catch {
+    // ignore quota
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-device sync (debounced, post-fetchPrefs only)
+// ---------------------------------------------------------------------------
+
+let _persistEnabled = false;
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersist(data: Record<string, Branch[]>): void {
+  if (!_persistEnabled) return;
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    patchServerKey(
+      SERVER_KEY,
+      { all: data } as unknown as Record<string, unknown>,
+      LOCAL_TS_KEY,
+    ).catch(() => {});
+  }, 300);
+}
+
+function saveAllToStorage(data: Record<string, Branch[]>): void {
+  writeLocalStorageOnly(data);
+  schedulePersist(data);
 }
 
 interface BranchState {
@@ -56,6 +93,13 @@ interface BranchState {
   deleteBranch(id: string, chatFile: string): void;
   renameBranch(id: string, chatFile: string, name: string): void;
   setActiveBranch(id: string | null): void;
+
+  /**
+   * Pull /sync/section/stm_branches and reconcile with localStorage.
+   * First call per user with no server record seeds the server with whatever
+   * is currently in localStorage so pre-A3 checkpoints survive the cutover.
+   */
+  fetchPrefs(): Promise<void>;
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
@@ -108,5 +152,55 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   setActiveBranch(id) {
     set({ activeBranchId: id });
+  },
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as
+        | { all?: Record<string, Branch[]>; _ts?: number }
+        | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      if (!stored || !stored.all) {
+        // First-ever sync for this user — seed the server with localStorage.
+        _persistEnabled = true;
+        const local = loadAllFromStorage();
+        if (Object.keys(local).length > 0) {
+          patchServerKey(
+            SERVER_KEY,
+            { all: local } as unknown as Record<string, unknown>,
+            LOCAL_TS_KEY,
+          ).catch(() => {});
+        }
+        return;
+      }
+
+      if (localTs > serverTs) {
+        // Local has unconfirmed mutations — push them.
+        _persistEnabled = true;
+        patchServerKey(
+          SERVER_KEY,
+          { all: loadAllFromStorage() } as unknown as Record<string, unknown>,
+          LOCAL_TS_KEY,
+        ).catch(() => {});
+        return;
+      }
+
+      // Server has newer (or equal) state — apply and cache.
+      _persistEnabled = false;
+      writeLocalStorageOnly(stored.all);
+      // We don't know which chat is currently open, so any visible branches
+      // will refresh next time loadBranchesForChat is called by the chat view.
+      // Clear the in-memory list so stale entries aren't shown.
+      set({ branches: [], activeBranchId: null });
+      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      _persistEnabled = true;
+    } catch {
+      // Network failure — keep local state. Future mutations will mark
+      // LOCAL_TS_KEY dirty, so a later fetchPrefs detects the local-newer case.
+      _persistEnabled = true;
+    }
   },
 }));
