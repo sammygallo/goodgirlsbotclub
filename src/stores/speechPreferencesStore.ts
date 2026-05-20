@@ -20,8 +20,7 @@
  */
 
 import { create } from 'zustand';
-import { settingsApi } from '../api/client';
-import { getSettingsBlob } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
 import {
   getSpeechLanguage,
   setSpeechLanguage as lsSetSpeechLang,
@@ -68,18 +67,15 @@ function markLocalDirty(): void {
 }
 
 /**
- * Read-modify-write the stm_speech section of the settings blob.
- * Embeds _ts in the patch and, only on success, advances LOCAL_TS_KEY
- * to match — so a network failure leaves LOCAL_TS_KEY > server._ts.
+ * PUT the merged stm_speech section. patchServerKey advances LOCAL_TS_KEY
+ * only on success, so a network failure leaves it ahead and the next
+ * fetchPrefs re-uploads.
  */
 async function patchServer(patch: Record<string, unknown>): Promise<void> {
-  const ts = Date.now();
   const settings = await getSettingsBlob();
   const speech = (settings.stm_speech as Record<string, unknown>) || {};
-  Object.assign(speech, patch, { _ts: ts });
-  settings.stm_speech = speech;
-  await settingsApi.saveSettings(settings); // throws on failure — LOCAL_TS_KEY not updated
-  try { localStorage.setItem(LOCAL_TS_KEY, String(ts)); } catch { /* ignore */ }
+  Object.assign(speech, patch);
+  await patchServerKey('stm_speech', speech, LOCAL_TS_KEY);
 }
 
 // ---------------------------------------------------------------------------
