@@ -41,7 +41,7 @@ interface AuthState {
   checkAuth: () => Promise<void>;
   fetchUsers: () => Promise<void>;
   checkRegistration: () => Promise<void>;
-  register: (handle: string, name: string, password?: string) => Promise<boolean>;
+  register: (handle: string, name: string, password?: string, inviteToken?: string) => Promise<boolean>;
   login: (handle: string, password?: string) => Promise<boolean>;
   logout: () => Promise<void>;
   updateCurrentUser: (updates: { name?: string; avatar?: string }) => void;
@@ -113,24 +113,43 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  register: async (handle: string, name: string, password?: string) => {
+  register: async (handle: string, name: string, password?: string, inviteToken?: string) => {
     set({ isLoading: true, error: null });
     try {
-      const result = await api.register(handle, name, password);
-      // After successful registration, log the user in
-      const loginResult = await api.login(result.handle, password);
-      useWorldInfoStore.getState().initForUser(loginResult.handle);
-      useExtensionStore.getState().initForUser(loginResult.handle);
-      useSummarizeStore.getState().initForUser(loginResult.handle);
-      useAutoMemoryStore.getState().initForUser(loginResult.handle);
-      useTranslateStore.getState().initForUser(loginResult.handle);
-      useQuickReplyStore.getState().initForUser(loginResult.handle);
-      useExpressionsStore.getState().initForUser(loginResult.handle);
+      const result = await api.register(handle, name, password, inviteToken);
+      // ggbc-backend's /auth/register sets the session cookie on success,
+      // so we can immediately fetch the full user (via the ST proxy, so we
+      // get permissions/avatar/groupId in the same shape login uses).
+      const user = await api.getCurrentUser();
+      const h = user?.handle ?? result.handle;
+      useWorldInfoStore.getState().initForUser(h);
+      useExtensionStore.getState().initForUser(h);
+      useSummarizeStore.getState().initForUser(h);
+      useAutoMemoryStore.getState().initForUser(h);
+      useTranslateStore.getState().initForUser(h);
+      useQuickReplyStore.getState().initForUser(h);
+      useExpressionsStore.getState().initForUser(h);
       set({
         isAuthenticated: true,
-        currentUser: { handle: loginResult.handle, name, role: 'end_user' },
+        currentUser: user
+          ? {
+              handle: user.handle,
+              name: user.name,
+              role: user.role,
+              avatar: user.avatar,
+              groupId: user.groupId,
+              permissions: user.permissions,
+            }
+          : { handle: h, name, role: 'end_user' },
         isLoading: false,
       });
+      useThemeStore.getState().fetchTheme();
+      useDisplayPreferencesStore.getState().fetchPrefs();
+      useSpeechPreferencesStore.getState().fetchPrefs();
+      useGenerationStore.getState().fetchPrefs();
+      usePersonaStore.getState().fetchPrefs();
+      useConnectionProfileStore.getState().fetchPrefs();
+      useChatHistoryRagStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({

@@ -1,19 +1,57 @@
-// API Client for SillyTavern backend
+// API Client. Auth + invitations talk to ggbc-backend; characters/chats/
+// generation go to /api/* which ggbc-backend transparently proxies to
+// SillyTavern with a per-user ST session it manages internally.
 
 let csrfToken: string | null = null;
 
 export async function getCsrfToken(): Promise<string> {
-  if (csrfToken) return csrfToken;
+  if (csrfToken !== null) return csrfToken;
 
-  const response = await fetch('/csrf-token');
-  const data = await response.json();
-  csrfToken = data.token;
-  return csrfToken!;
+  // ggbc-backend doesn't use CSRF tokens — same-origin httpOnly cookies plus
+  // SameSite=Lax are enough. The proxy strips any X-CSRF-Token header from
+  // incoming requests and injects its own when forwarding to ST.
+  //
+  // We still attempt the fetch for compatibility with deployments where the
+  // edge router serves /csrf-token, but a 404 is fine: we fall back to an
+  // empty token, which both ggbc-backend and the proxy ignore.
+  try {
+    const response = await fetch('/csrf-token', { credentials: 'include' });
+    if (response.ok) {
+      const data = (await response.json()) as { token?: string };
+      csrfToken = data.token ?? '';
+    } else {
+      csrfToken = '';
+    }
+  } catch {
+    csrfToken = '';
+  }
+  return csrfToken;
 }
 
 /** Call after logout so the next request fetches a fresh token from the new session. */
 export function clearCsrfToken(): void {
   csrfToken = null;
+}
+
+// ggbc-backend speaks roles (owner/admin/contributor/end_user); SillyTavern
+// speaks permission group ids (e.g. owner-default). The frontend was built
+// around the ST shape, so we translate at the boundary.
+const ROLE_TO_GROUP: Record<import('../types').UserRole, string> = {
+  owner: 'owner-default',
+  admin: 'admin-default',
+  contributor: 'contributor-default',
+  end_user: 'end-user-default',
+};
+
+export function roleToGroupId(role: import('../types').UserRole): string {
+  return ROLE_TO_GROUP[role];
+}
+
+export function groupIdToRole(groupId: string): import('../types').UserRole {
+  if (groupId.startsWith('owner')) return 'owner';
+  if (groupId.startsWith('admin')) return 'admin';
+  if (groupId.startsWith('contributor')) return 'contributor';
+  return 'end_user';
 }
 
 export async function apiRequest<T>(
@@ -236,14 +274,19 @@ export const api = {
   },
 
   async login(handle: string, password?: string): Promise<{ handle: string }> {
-    return apiRequest('/api/users/login', {
+    // ggbc-backend's /auth/login returns the full user object; we only need
+    // the handle here — callers fetch the full user via /api/users/me (which
+    // ggbc-backend proxies to ST so the rich shape with permissions/avatar
+    // is preserved).
+    const user = await apiRequest<{ handle: string }>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ handle, password }),
+      body: JSON.stringify({ handle, password: password ?? '' }),
     });
+    return { handle: user.handle };
   },
 
   async logout(): Promise<void> {
-    await apiRequest('/api/users/logout', { method: 'POST' });
+    await apiRequest('/auth/logout', { method: 'POST' });
   },
 
   async getCurrentUser(): Promise<{
@@ -254,6 +297,8 @@ export const api = {
     groupId?: string;
     permissions?: import('../types').Permission[];
   } | null> {
+    // Routed through ggbc-backend's /api proxy to SillyTavern, so the full
+    // ST shape (name, avatar, groupId, permissions) flows through unchanged.
     try {
       const user = await apiRequest<{
         handle: string;
@@ -264,8 +309,6 @@ export const api = {
         groupId?: string;
         permissions?: string[];
       }>('/api/users/me');
-      // Derive role: backend may return role directly (Phase 1 backend),
-      // or fall back to admin boolean for older servers.
       const role = (user.role as import('../types').UserRole) ||
         (user.admin ? 'admin' : 'end_user');
       return {
@@ -282,77 +325,63 @@ export const api = {
   },
 
   async changeName(handle: string, name: string): Promise<void> {
+    // Still hits ST via proxy — display name lives on the ST user record.
     await apiRequest('/api/users/change-name', {
       method: 'POST',
       body: JSON.stringify({ handle, name }),
     });
   },
 
-  async changePassword(handle: string, oldPassword: string, newPassword: string): Promise<void> {
-    await apiRequest('/api/users/change-password', {
+  async changePassword(_handle: string, oldPassword: string, newPassword: string): Promise<void> {
+    // ggbc-backend's /auth/password operates on the current session — the
+    // handle param is kept for backward compatibility with callers but is
+    // ignored. Only self-service password change is supported here; admin
+    // resets will go via a separate admin endpoint later.
+    await apiRequest('/auth/password', {
       method: 'POST',
-      body: JSON.stringify({ handle, oldPassword, newPassword }),
+      body: JSON.stringify({
+        current_password: oldPassword,
+        new_password: newPassword,
+      }),
     });
   },
 
   async changeAvatar(handle: string, avatar: string): Promise<void> {
+    // Avatar still lives on the ST user record; ggbc-backend hasn't taken
+    // it over yet. Routed through the proxy.
     await apiRequest('/api/users/change-avatar', {
       method: 'POST',
       body: JSON.stringify({ handle, avatar }),
     });
   },
 
-  async register(handle: string, name: string, password?: string): Promise<{ handle: string }> {
-    // Registration requires admin. For first-time setup, we need to:
-    // 1. Login as default-user (auto-created, no password, is admin)
-    // 2. Create the new user as owner (first real user gets full ownership)
-    // 3. Return success
-
-    // First, try to login as default-user to get admin access
-    try {
-      await apiRequest('/api/users/login', {
-        method: 'POST',
-        body: JSON.stringify({ handle: 'default-user', password: '' }),
-      });
-    } catch {
-      // If default-user login fails, we can't bootstrap
-      throw new Error('Cannot register: Please login as an admin user first');
-    }
-
-    // Now create the new user (we're logged in as default-user/admin)
-    // First registrant gets the Owner group; the backend also accepts the
-    // legacy { admin, role } shape during the transition window, but we send
-    // the new shape to avoid the deprecation warning.
-    const result = await apiRequest<{ handle: string }>('/api/users/create', {
+  async register(
+    handle: string,
+    name: string,
+    password?: string,
+    inviteToken?: string,
+  ): Promise<{ handle: string }> {
+    // Single-call replacement for the old three-step ST bootstrap flow.
+    // ggbc-backend handles invite consumption + ST mirror provisioning
+    // atomically and sets our session cookie on success.
+    const user = await apiRequest<{ handle: string }>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ handle, name, password, groupId: 'owner-default' }),
+      body: JSON.stringify({
+        handle,
+        password: password ?? '',
+        display_name: name,
+        invite_token: inviteToken,
+      }),
     });
-
-    // Logout default-user
-    try {
-      await apiRequest('/api/users/logout', { method: 'POST' });
-    } catch {
-      // Ignore logout errors
-    }
-
-    return result;
+    return { handle: user.handle };
   },
 
   async checkCanRegister(): Promise<{ canRegister: boolean; requiresAdmin: boolean }> {
-    try {
-      // Check if there are existing users
-      const users = await this.getUsers();
-      // Only the default-user exists (auto-created) = allow registration as first "real" user
-      const onlyDefaultUser = users.length === 1 && users[0].handle === 'default-user';
-      const noUsers = users.length === 0;
-      return {
-        canRegister: noUsers || onlyDefaultUser,
-        requiresAdmin: !noUsers && !onlyDefaultUser
-      };
-    } catch {
-      // If we can't fetch users, assume registration requires admin
-      return { canRegister: false, requiresAdmin: true };
-    }
+    // A1.3 removes the legacy "is default-user the only account?" probe.
+    // ggbc-backend will surface a /auth/can-register endpoint in a follow-up;
+    // for now we always advertise registration as available and let the
+    // server return a clear error if invite-required is enforced.
+    return { canRegister: true, requiresAdmin: false };
   },
 
   // Character endpoints
@@ -915,30 +944,71 @@ export interface Invitation {
   status: 'pending' | 'accepted' | 'revoked';
 }
 
+/** ggbc-backend response shape for a single invitation. */
+interface BackendInvitation {
+  id: string;
+  token: string;
+  role: import('../types').UserRole;
+  created_at: string;
+  expires_at: string | null;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  created_by_id: string;
+}
+
+function mapInvitation(invite: BackendInvitation): Invitation {
+  let status: Invitation['status'] = 'pending';
+  if (invite.revoked_at) status = 'revoked';
+  else if (invite.accepted_at) status = 'accepted';
+  return {
+    id: invite.id,
+    token: invite.token,
+    groupId: roleToGroupId(invite.role),
+    role: invite.role,
+    label: '',
+    createdBy: invite.created_by_id,
+    createdAt: new Date(invite.created_at).getTime(),
+    expiresAt: invite.expires_at ? new Date(invite.expires_at).getTime() : null,
+    usedBy: null,
+    usedAt: invite.accepted_at ? new Date(invite.accepted_at).getTime() : null,
+    status,
+  };
+}
+
 export const invitationsApi = {
-  async create(groupId: string, label?: string, expiresIn?: number): Promise<Invitation> {
-    return apiRequest('/api/invitations/create', {
+  async create(groupId: string, _label?: string, expiresIn?: number): Promise<Invitation> {
+    // Frontend has historically taken expiresIn in hours; ggbc-backend takes
+    // expires_in_days. Round up so callers asking for "1 hour" still get an
+    // invite valid for at least a day.
+    const expiresInDays = expiresIn ? Math.max(1, Math.ceil(expiresIn / 24)) : undefined;
+    const invite = await apiRequest<BackendInvitation>('/invitations', {
       method: 'POST',
-      body: JSON.stringify({ groupId, label: label ?? '', expiresIn }),
+      body: JSON.stringify({
+        role: groupIdToRole(groupId),
+        expires_in_days: expiresInDays,
+      }),
     });
+    return mapInvitation(invite);
   },
 
   async list(): Promise<Invitation[]> {
-    return apiRequest('/api/invitations/list', { method: 'POST' });
+    const invites = await apiRequest<BackendInvitation[]>('/invitations');
+    return invites.map(mapInvitation);
   },
 
   async revoke(id: string): Promise<Invitation> {
-    return apiRequest('/api/invitations/revoke', {
-      method: 'POST',
-      body: JSON.stringify({ id }),
-    });
+    await apiRequest(`/invitations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    // ggbc-backend returns 204 — fetch the updated row from the list.
+    const invites = await this.list();
+    const revoked = invites.find((i) => i.id === id);
+    if (!revoked) throw new Error('invitation disappeared after revoke');
+    return revoked;
   },
 
   async delete(id: string): Promise<void> {
-    return apiRequest('/api/invitations/delete', {
-      method: 'POST',
-      body: JSON.stringify({ id }),
-    });
+    // ggbc-backend doesn't expose hard-delete; revoked invites stay in the
+    // table for audit. Treat as a no-op for the UI.
+    void id;
   },
 
   async validate(token: string): Promise<{
@@ -949,14 +1019,23 @@ export const invitationsApi = {
     label?: string;
     error?: string;
   }> {
-    return apiRequest(`/api/invitations/validate/${encodeURIComponent(token)}`);
+    const result = await apiRequest<{
+      valid: boolean;
+      role: import('../types').UserRole | null;
+      expires_at: string | null;
+    }>(`/invitations/validate/${encodeURIComponent(token)}`);
+    if (!result.valid || !result.role) return { valid: false };
+    return {
+      valid: true,
+      role: result.role,
+      groupId: roleToGroupId(result.role),
+      groupName: result.role,
+    };
   },
 
   async accept(token: string, handle: string, name: string, password?: string): Promise<{ handle: string }> {
-    return apiRequest('/api/invitations/accept', {
-      method: 'POST',
-      body: JSON.stringify({ token, handle, name, password }),
-    });
+    // ggbc-backend rolls invitation acceptance into /auth/register.
+    return api.register(handle, name, password, token);
   },
 };
 

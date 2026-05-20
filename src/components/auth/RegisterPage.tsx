@@ -40,8 +40,8 @@ export function RegisterPage() {
       return false;
     }
 
-    if (!/^[a-zA-Z0-9_-]+$/.test(handle)) {
-      setLocalError('Username can only contain letters, numbers, underscores, and hyphens');
+    if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(handle)) {
+      setLocalError('Username can only contain lowercase letters, numbers, and hyphens (no leading or trailing dash)');
       return false;
     }
 
