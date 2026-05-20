@@ -33,12 +33,33 @@ After a fresh installation, no real users exist yet. The app uses a temporary bo
 
 ---
 
-## Development
+## Local development (full stack)
+
+Runs the production-style backend in Docker plus Vite dev for the frontend with HMR. Requires Docker Desktop.
 
 ```bash
-npm install
+cp .env.example .env       # one-time
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+npm install                # one-time
 npm run dev
 ```
+
+- Frontend with HMR: http://localhost:3000
+- ggbc-backend API: http://localhost:8001 (Vite proxies /auth /sync /invitations /health /api etc. to this)
+- Postgres: localhost:5432 (`psql -h 127.0.0.1 -U ggbc`)
+- SillyTavern: http://localhost:8000 (internal — Vite never hits it directly)
+
+The dev overlay (`docker-compose.dev.yml`) flips `COOKIE_SECURE` off so cookies work over HTTP localhost and enables self-registration so you can create test users without an invite. First-boot bootstrap creates the owner from `OWNER_HANDLE`/`OWNER_PASSWORD` in `.env`.
+
+### Backend changes
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build ggbc-backend
+```
+
+### Frontend-only
+
+If you don't need the backend stack (e.g. styling tweaks), `npm run dev` alone works — fetches will 404 but the UI renders. `GGBC_BACKEND=http://...` overrides the proxy target if you want to point at a remote backend.
 
 ## Build
 
