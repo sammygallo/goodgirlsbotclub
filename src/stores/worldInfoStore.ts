@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { estimateTokens, type TokenizerProfile } from '../utils/tokenizer';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 import type {
   CharacterBookV2,
   CharacterBookEntryV2,
@@ -1114,6 +1115,32 @@ interface WorldInfoState {
   // to clear in-memory state so one user's books don't bleed into another's.
   initForUser: (handle: string) => void;
   resetUser: () => void;
+
+  /**
+   * Pull this user's lorebook state from ggbc-backend's /sync/section/{name}.
+   *
+   * Migration on first call: if the server has no record yet, push the
+   * current localStorage state up as the initial sync (so users who built
+   * up lorebooks pre-A3 don't lose them). After this returns, autosave is
+   * enabled — any subsequent mutation debounces a PUT back to the server.
+   */
+  fetchPrefs: () => Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-device sync (A3.1a — lorebooks)
+// ---------------------------------------------------------------------------
+
+const SERVER_KEY = 'stm_worldinfo';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+interface PersistedShape {
+  books: WorldInfoBook[];
+  activeBookIds: string[];
+  chatLinkedBookIds: Record<string, string[]>;
+  scanDepth: number;
+  maxRecursionSteps: number;
+  tokenBudget: number;
 }
 
 export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
@@ -1433,6 +1460,9 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
 
   initForUser: (handle) => {
     _currentHandle = handle;
+    // Hydrate from localStorage first so the UI has something to show before
+    // fetchPrefs returns. fetchPrefs will overlay the server state if newer.
+    _persistEnabled = false;
     set({
       books: loadBooks(handle),
       activeBookIds: loadActiveBooks(handle),
@@ -1445,6 +1475,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
   },
 
   resetUser: () => {
+    _persistEnabled = false;
     _currentHandle = null;
     set({
       books: [],
@@ -1456,4 +1487,115 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       error: null,
     });
   },
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as
+        | (PersistedShape & { _ts?: number })
+        | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      if (!stored) {
+        // First-ever sync for this user — seed the server with the
+        // localStorage state we just loaded in initForUser.
+        _persistEnabled = true;
+        const s = get();
+        const hasAnything =
+          s.books.length > 0 ||
+          s.activeBookIds.length > 0 ||
+          Object.keys(s.chatLinkedBookIds).length > 0;
+        if (hasAnything) {
+          patchServerKey(
+            SERVER_KEY,
+            snapshotForServer(s) as unknown as Record<string, unknown>,
+            LOCAL_TS_KEY,
+          ).catch(() => {});
+        }
+        return;
+      }
+
+      if (localTs > serverTs) {
+        // Local has unconfirmed mutations — push them and keep local state.
+        _persistEnabled = true;
+        patchServerKey(
+          SERVER_KEY,
+          snapshotForServer(get()) as unknown as Record<string, unknown>,
+          LOCAL_TS_KEY,
+        ).catch(() => {});
+        return;
+      }
+
+      // Server has newer (or equal) state — apply it.
+      _persistEnabled = false;
+      const handle = _currentHandle;
+      const books = Array.isArray(stored.books) ? stored.books : [];
+      const activeBookIds = Array.isArray(stored.activeBookIds)
+        ? stored.activeBookIds
+        : [];
+      const chatLinkedBookIds =
+        stored.chatLinkedBookIds && typeof stored.chatLinkedBookIds === 'object'
+          ? stored.chatLinkedBookIds
+          : {};
+      set({
+        books,
+        activeBookIds,
+        chatLinkedBookIds,
+        scanDepth: stored.scanDepth ?? DEFAULT_SCAN_DEPTH,
+        maxRecursionSteps: stored.maxRecursionSteps ?? DEFAULT_MAX_RECURSION,
+        tokenBudget: stored.tokenBudget ?? DEFAULT_TOKEN_BUDGET,
+      });
+      // Cache to localStorage so the next cold load is instant.
+      if (handle) {
+        try {
+          localStorage.setItem(scopedKey(BOOKS_KEY, handle), JSON.stringify(books));
+          localStorage.setItem(scopedKey(ACTIVE_BOOKS_KEY, handle), JSON.stringify(activeBookIds));
+          localStorage.setItem(scopedKey(CHAT_LINKED_BOOKS_KEY, handle), JSON.stringify(chatLinkedBookIds));
+          localStorage.setItem(scopedKey(SCAN_DEPTH_KEY, handle), String(stored.scanDepth ?? DEFAULT_SCAN_DEPTH));
+          localStorage.setItem(scopedKey(MAX_RECURSION_KEY, handle), String(stored.maxRecursionSteps ?? DEFAULT_MAX_RECURSION));
+          localStorage.setItem(scopedKey(TOKEN_BUDGET_KEY, handle), String(stored.tokenBudget ?? DEFAULT_TOKEN_BUDGET));
+        } catch { /* ignore */ }
+      }
+      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      _persistEnabled = true;
+    } catch {
+      // Network failure — keep local state. Next mutation marks LOCAL_TS_KEY
+      // dirty, so a future fetchPrefs will detect the local-newer case.
+      _persistEnabled = true;
+    }
+  },
 }));
+
+// ---------------------------------------------------------------------------
+// Subscribe-based autosave (debounced) — set up after the store exists so
+// useWorldInfoStore is in scope.
+// ---------------------------------------------------------------------------
+
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+let _persistEnabled = false;
+
+function snapshotForServer(s: WorldInfoState): PersistedShape {
+  return {
+    books: s.books,
+    activeBookIds: s.activeBookIds,
+    chatLinkedBookIds: s.chatLinkedBookIds,
+    scanDepth: s.scanDepth,
+    maxRecursionSteps: s.maxRecursionSteps,
+    tokenBudget: s.tokenBudget,
+  };
+}
+
+useWorldInfoStore.subscribe((state) => {
+  if (!_persistEnabled) return;
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    patchServerKey(
+      SERVER_KEY,
+      snapshotForServer(state) as unknown as Record<string, unknown>,
+      LOCAL_TS_KEY,
+    ).catch(() => {});
+  }, 300);
+});

@@ -87,6 +87,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         usePersonaStore.getState().fetchPrefs();
         useConnectionProfileStore.getState().fetchPrefs();
         useChatHistoryRagStore.getState().fetchPrefs();
+      useWorldInfoStore.getState().fetchPrefs();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
       }
@@ -150,6 +151,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       usePersonaStore.getState().fetchPrefs();
       useConnectionProfileStore.getState().fetchPrefs();
       useChatHistoryRagStore.getState().fetchPrefs();
+      useWorldInfoStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
@@ -195,6 +197,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       usePersonaStore.getState().fetchPrefs();
       useConnectionProfileStore.getState().fetchPrefs();
       useChatHistoryRagStore.getState().fetchPrefs();
+      useWorldInfoStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
