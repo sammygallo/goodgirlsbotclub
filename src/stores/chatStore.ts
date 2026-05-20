@@ -6,6 +6,7 @@ import {
   type GenerationOptions,
   type GenerationImage,
 } from '../api/client';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 import { useSettingsStore } from './settingsStore';
 import { usePersonaStore } from './personaStore';
 import {
@@ -143,6 +144,47 @@ export interface AuthorNote {
 
 const AUTHOR_NOTES_KEY = 'sillytavern_author_notes';
 
+// ---------------------------------------------------------------------------
+// A3.1b2: cross-device sync for chat metadata
+//
+// One section, three sub-fields. The save helpers below (saveAuthorNotes…,
+// saveChatVariables…, saveGroupChats…) each touch their own localStorage key
+// AND update _latestSnapshot before scheduling a debounced PUT — so every
+// existing mutation in the store gets sync for free without per-callsite
+// changes.
+// ---------------------------------------------------------------------------
+
+const SERVER_KEY = 'stm_chat_state';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+interface ChatStateSnapshot {
+  authorNotes: Record<string, AuthorNote>;
+  groupChats: GroupChatInfo[];
+  chatVariables: Record<string, Record<string, string>>;
+}
+
+let _persistEnabled = false;
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+const _latestSnapshot: ChatStateSnapshot = {
+  authorNotes: {},
+  groupChats: [],
+  chatVariables: {},
+};
+
+function schedulePersist(): void {
+  if (!_persistEnabled) return;
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    patchServerKey(
+      SERVER_KEY,
+      { ..._latestSnapshot } as unknown as Record<string, unknown>,
+      LOCAL_TS_KEY,
+    ).catch(() => {});
+  }, 300);
+}
+
 function loadAuthorNotesFromStorage(): Record<string, AuthorNote> {
   try {
     const stored = localStorage.getItem(AUTHOR_NOTES_KEY);
@@ -157,6 +199,8 @@ function loadAuthorNotesFromStorage(): Record<string, AuthorNote> {
 
 function saveAuthorNotesToStorage(notes: Record<string, AuthorNote>) {
   localStorage.setItem(AUTHOR_NOTES_KEY, JSON.stringify(notes));
+  _latestSnapshot.authorNotes = notes;
+  schedulePersist();
 }
 
 /**
@@ -184,6 +228,8 @@ function saveChatVariablesToStorage(vars: Record<string, Record<string, string>>
   } catch {
     // ignore quota
   }
+  _latestSnapshot.chatVariables = vars;
+  schedulePersist();
 }
 
 const GROUP_CHATS_KEY = 'sillytavern_group_chats';
@@ -264,6 +310,8 @@ function loadGroupChatsFromStorage(): GroupChatInfo[] {
 
 function saveGroupChatsToStorage(groupChats: GroupChatInfo[]) {
   localStorage.setItem(GROUP_CHATS_KEY, JSON.stringify(groupChats));
+  _latestSnapshot.groupChats = groupChats;
+  schedulePersist();
 }
 
 /** Parse the per-character "talkativeness" extension, clamped to [0, 1].
@@ -469,6 +517,14 @@ interface ChatState {
     characterAvatar: string,
     character: CharacterInfo
   ) => Promise<void>;
+
+  /**
+   * A3.1b2 — pull author notes, group chats, and per-chat variables from
+   * /sync/section/stm_chat_state and reconcile with localStorage. On first
+   * call per user with no server record, seeds the server with whatever is
+   * already in localStorage so pre-A3 state survives the cutover.
+   */
+  fetchPrefs: () => Promise<void>;
 }
 
 let messageIdCounter = 0;
@@ -2960,4 +3016,81 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearChat: () => set({ messages: [], chatFiles: [], currentChatFile: null }),
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as
+        | (ChatStateSnapshot & { _ts?: number })
+        | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      if (!stored) {
+        // First sync — seed the server with whatever is in localStorage.
+        _persistEnabled = true;
+        const s = get();
+        const hasAnything =
+          Object.keys(s.authorNotes).length > 0 ||
+          s.groupChats.length > 0 ||
+          Object.keys(s.chatVariables).length > 0;
+        _latestSnapshot.authorNotes = s.authorNotes;
+        _latestSnapshot.groupChats = s.groupChats;
+        _latestSnapshot.chatVariables = s.chatVariables;
+        if (hasAnything) {
+          patchServerKey(
+            SERVER_KEY,
+            { ..._latestSnapshot } as unknown as Record<string, unknown>,
+            LOCAL_TS_KEY,
+          ).catch(() => {});
+        }
+        return;
+      }
+
+      if (localTs > serverTs) {
+        // Local has unconfirmed mutations — push them.
+        _persistEnabled = true;
+        const s = get();
+        _latestSnapshot.authorNotes = s.authorNotes;
+        _latestSnapshot.groupChats = s.groupChats;
+        _latestSnapshot.chatVariables = s.chatVariables;
+        patchServerKey(
+          SERVER_KEY,
+          { ..._latestSnapshot } as unknown as Record<string, unknown>,
+          LOCAL_TS_KEY,
+        ).catch(() => {});
+        return;
+      }
+
+      // Server has newer (or equal) state — apply.
+      _persistEnabled = false;
+      const authorNotes =
+        stored.authorNotes && typeof stored.authorNotes === 'object'
+          ? stored.authorNotes
+          : {};
+      const groupChats = Array.isArray(stored.groupChats)
+        ? stored.groupChats.map(migrateGroupChat)
+        : [];
+      const chatVariables =
+        stored.chatVariables && typeof stored.chatVariables === 'object'
+          ? stored.chatVariables
+          : {};
+      // Cache to localStorage so the next cold load is instant.
+      try {
+        localStorage.setItem(AUTHOR_NOTES_KEY, JSON.stringify(authorNotes));
+        localStorage.setItem(GROUP_CHATS_KEY, JSON.stringify(groupChats));
+        localStorage.setItem(CHAT_VARIABLES_KEY, JSON.stringify(chatVariables));
+        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+      } catch { /* ignore */ }
+      _latestSnapshot.authorNotes = authorNotes;
+      _latestSnapshot.groupChats = groupChats;
+      _latestSnapshot.chatVariables = chatVariables;
+      set({ authorNotes, groupChats, chatVariables });
+      _persistEnabled = true;
+    } catch {
+      // Network failure — keep local. Future mutations will mark LOCAL_TS_KEY
+      // dirty and the next fetchPrefs will detect the local-newer case.
+      _persistEnabled = true;
+    }
+  },
 }));
