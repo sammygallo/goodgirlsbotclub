@@ -11,6 +11,55 @@ services:
       - "${PORT:-80}:80"
     restart: unless-stopped
 
+  postgres:
+    # All four backing services share frontend's network namespace so they
+    # reach each other on 127.0.0.1 — postgres is on :5432, ST on :8000,
+    # ggbc-backend on :8001. This is the same pattern that already lets
+    # nginx talk to ST directly on localhost; ggbc-backend slots in alongside.
+    image: postgres:16-alpine
+    network_mode: "service:frontend"
+    environment:
+      - POSTGRES_USER=ggbc
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ggbc}
+      - POSTGRES_DB=ggbc
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ggbc -d ggbc"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  ggbc-backend:
+    # Built and published by sammygallo/ggbc-backend's .github/workflows/
+    # docker-publish.yml. Same pattern as the frontend — droplet pulls,
+    # never builds.
+    image: ghcr.io/sammygallo/ggbc-backend:latest
+    network_mode: "service:frontend"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://ggbc:${POSTGRES_PASSWORD:-ggbc}@127.0.0.1:5432/ggbc
+      - ST_BASE_URL=http://127.0.0.1:8000
+      # ggbc-backend uses the owner account as its ST service identity —
+      # one credential set, configured via .env on the droplet.
+      - ST_SERVICE_HANDLE=${OWNER_HANDLE:-}
+      - ST_SERVICE_PASSWORD=${OWNER_PASSWORD:-}
+      - OWNER_HANDLE=${OWNER_HANDLE:-}
+      - OWNER_PASSWORD=${OWNER_PASSWORD:-}
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
+      - COOKIE_SAMESITE=lax
+      - ALLOW_SELF_REGISTRATION=${ALLOW_SELF_REGISTRATION:-false}
+      - ENVIRONMENT=production
+    # Run pending migrations, then start uvicorn. Migrations are idempotent
+    # so this is safe on every container start.
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 127.0.0.1 --port 8001"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sillytavern:
+        condition: service_started
+    restart: unless-stopped
+
   sillytavern:
     image: ghcr.io/sammygallo/sillytavern:feat-role-based-permissions
     entrypoint: ["/bin/sh", "/st-init.sh"]
@@ -47,3 +96,4 @@ services:
 volumes:
   st-config:
   st-data:
+  pgdata:
