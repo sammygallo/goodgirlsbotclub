@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 
 /** Phase 8.2: Regex Scripts — find/replace patterns applied to AI output,
  *  user input, or both. Scripts can be display-only (render transform only)
@@ -27,6 +28,25 @@ export interface RegexScript {
 export type RegexScope = 'ai_output' | 'user_input' | 'both';
 
 const STORAGE_KEY = 'sillytavern_regex_scripts';
+const SERVER_KEY = 'stm_regex_scripts';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+let _persistEnabled = false;
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersist(scripts: RegexScript[]): void {
+  if (!_persistEnabled) return;
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    patchServerKey(
+      SERVER_KEY,
+      { scripts } as unknown as Record<string, unknown>,
+      LOCAL_TS_KEY,
+    ).catch(() => {});
+  }, 300);
+}
 
 function generateId(): string {
   return `rs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -50,6 +70,7 @@ function saveToStorage(scripts: RegexScript[]) {
   } catch {
     console.error('[RegexScripts] Failed to save to localStorage');
   }
+  schedulePersist(scripts);
 }
 
 interface RegexScriptState {
@@ -63,6 +84,9 @@ interface RegexScriptState {
 
   importScripts: (json: string) => number;
   exportScripts: () => string;
+
+  /** A3.1c — pull /sync/section/stm_regex_scripts and reconcile. */
+  fetchPrefs: () => Promise<void>;
 }
 
 export const useRegexScriptStore = create<RegexScriptState>((set, get) => ({
@@ -190,5 +214,50 @@ export const useRegexScriptStore = create<RegexScriptState>((set, get) => ({
   exportScripts: () => {
     const { scripts } = get();
     return JSON.stringify({ scripts }, null, 2);
+  },
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as
+        | { scripts?: RegexScript[]; _ts?: number }
+        | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      if (!stored) {
+        _persistEnabled = true;
+        const scripts = get().scripts;
+        if (scripts.length > 0) {
+          patchServerKey(
+            SERVER_KEY,
+            { scripts } as unknown as Record<string, unknown>,
+            LOCAL_TS_KEY,
+          ).catch(() => {});
+        }
+        return;
+      }
+
+      if (localTs > serverTs) {
+        _persistEnabled = true;
+        patchServerKey(
+          SERVER_KEY,
+          { scripts: get().scripts } as unknown as Record<string, unknown>,
+          LOCAL_TS_KEY,
+        ).catch(() => {});
+        return;
+      }
+
+      _persistEnabled = false;
+      const scripts = Array.isArray(stored.scripts) ? stored.scripts : [];
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(scripts));
+        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+      } catch { /* ignore */ }
+      set({ scripts });
+      _persistEnabled = true;
+    } catch {
+      _persistEnabled = true;
+    }
   },
 }));
