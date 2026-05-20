@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { imageGenApi, type ImageGenBackend } from '../api/imageGenApi';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 
 // ---------------------------------------------------------------------------
 // Gallery entry — persisted alongside config
@@ -19,6 +20,25 @@ export interface GalleryEntry {
 
 const STORAGE_KEY = 'sillytavern_imagegen_config';
 const GALLERY_KEY = 'sillytavern_imagegen_gallery';
+const SERVER_KEY = 'stm_imagegen_config';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+let _persistEnabled = false;
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersist(config: ImageGenConfig): void {
+  if (!_persistEnabled) return;
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    patchServerKey(
+      SERVER_KEY,
+      config as unknown as Record<string, unknown>,
+      LOCAL_TS_KEY,
+    ).catch(() => {});
+  }, 300);
+}
 
 interface ImageGenConfig {
   backend: ImageGenBackend;
@@ -64,6 +84,7 @@ function loadConfig(): ImageGenConfig {
 
 function saveConfig(config: ImageGenConfig) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  schedulePersist(config);
 }
 
 function loadGallery(): GalleryEntry[] {
@@ -122,6 +143,13 @@ interface ImageGenState extends ImageGenConfig {
   addToGallery: (entry: GalleryEntry) => void;
   removeFromGallery: (id: string) => void;
   clearGallery: () => void;
+
+  /**
+   * A3.1d — sync the image-gen config (backend choice, model, dims, etc.).
+   * The gallery's base64 data URLs are too large for JSONB rows and defer
+   * to A3.2's blob storage.
+   */
+  fetchPrefs: () => Promise<void>;
 }
 
 export const useImageGenStore = create<ImageGenState>((set, get) => ({
@@ -241,5 +269,65 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
   clearGallery: () => {
     saveGallery([]);
     set({ gallery: [] });
+  },
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as
+        | (ImageGenConfig & { _ts?: number })
+        | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      const currentConfig = (): ImageGenConfig => {
+        const s = get();
+        return {
+          backend: s.backend,
+          sdUrl: s.sdUrl,
+          sdAuth: s.sdAuth,
+          pollinationsModel: s.pollinationsModel,
+          hordeModel: s.hordeModel,
+          hordeApiKey: s.hordeApiKey,
+          dalleModel: s.dalleModel,
+          dalleQuality: s.dalleQuality,
+          width: s.width,
+          height: s.height,
+          steps: s.steps,
+          cfgScale: s.cfgScale,
+        };
+      };
+
+      if (!stored) {
+        _persistEnabled = true;
+        patchServerKey(
+          SERVER_KEY,
+          currentConfig() as unknown as Record<string, unknown>,
+          LOCAL_TS_KEY,
+        ).catch(() => {});
+        return;
+      }
+
+      if (localTs > serverTs) {
+        _persistEnabled = true;
+        patchServerKey(
+          SERVER_KEY,
+          currentConfig() as unknown as Record<string, unknown>,
+          LOCAL_TS_KEY,
+        ).catch(() => {});
+        return;
+      }
+
+      _persistEnabled = false;
+      const merged: ImageGenConfig = { ...DEFAULT_CONFIG, ...stored };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+      } catch { /* ignore */ }
+      set(merged);
+      _persistEnabled = true;
+    } catch {
+      _persistEnabled = true;
+    }
   },
 }));

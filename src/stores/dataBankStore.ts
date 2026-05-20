@@ -18,6 +18,7 @@
 import { create } from 'zustand';
 import { chunkText } from '../utils/chunker';
 import { getEmbedding, findTopK } from '../utils/embeddings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,6 +89,9 @@ interface DataBankState {
     characterAvatar?: string,
     topK?: number
   ) => Promise<Array<{ text: string; docName: string }>>;
+
+  /** A3.1d — pull /sync/section/stm_data_bank and reconcile. */
+  fetchPrefs: () => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,11 +99,30 @@ interface DataBankState {
 // ---------------------------------------------------------------------------
 
 const STORAGE_KEY = 'stm:data-bank';
+const SERVER_KEY = 'stm_data_bank';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 
 const EMBED_KEY_STORAGE = 'stm:data-bank-embed-key';
 
 interface PersistedShape {
   documents: DataBankDocument[];
+}
+
+let _persistEnabled = false;
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersist(documents: DataBankDocument[]): void {
+  if (!_persistEnabled) return;
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    patchServerKey(
+      SERVER_KEY,
+      { documents } as unknown as Record<string, unknown>,
+      LOCAL_TS_KEY,
+    ).catch(() => {});
+  }, 500);
 }
 
 function loadFromStorage(): DataBankDocument[] {
@@ -117,6 +140,7 @@ function saveToStorage(documents: DataBankDocument[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ documents } satisfies PersistedShape));
   } catch { /* ignore */ }
+  schedulePersist(documents);
 }
 
 function loadEmbedKey(): string {
@@ -235,6 +259,53 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
     } catch {
       // Fail silently so generation still proceeds without RAG
       return [];
+    }
+  },
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as
+        | { documents?: DataBankDocument[]; _ts?: number }
+        | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      if (!stored) {
+        _persistEnabled = true;
+        const documents = get().documents;
+        if (documents.length > 0) {
+          patchServerKey(
+            SERVER_KEY,
+            { documents } as unknown as Record<string, unknown>,
+            LOCAL_TS_KEY,
+          ).catch(() => {});
+        }
+        return;
+      }
+
+      if (localTs > serverTs) {
+        _persistEnabled = true;
+        patchServerKey(
+          SERVER_KEY,
+          { documents: get().documents } as unknown as Record<string, unknown>,
+          LOCAL_TS_KEY,
+        ).catch(() => {});
+        return;
+      }
+
+      _persistEnabled = false;
+      const documents = Array.isArray(stored.documents) ? stored.documents : [];
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ documents }));
+        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+      } catch { /* ignore */ }
+      // Imported documents have no embeddings yet — caller will re-embed when
+      // RAG is next used. Same as the in-memory shape after a fresh load.
+      set({ documents, embeddingIds: new Set() });
+      _persistEnabled = true;
+    } catch {
+      _persistEnabled = true;
     }
   },
 }));
