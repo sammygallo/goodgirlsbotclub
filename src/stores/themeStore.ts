@@ -10,7 +10,7 @@
  */
 
 import { create } from 'zustand';
-import { settingsApi } from '../api/client';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 import {
   type ThemeMode,
   type ActivePreset,
@@ -43,13 +43,8 @@ interface ThemeState {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function getSettingsBlob(): Promise<Record<string, unknown>> {
-  const response = await settingsApi.getSettings();
-  if (typeof response.settings === 'string') {
-    try { return JSON.parse(response.settings); } catch { return {}; }
-  }
-  return (response.settings as Record<string, unknown>) || {};
-}
+const SERVER_KEY = 'stm_theme';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 
 async function patchServerTheme(patch: {
   mode?: ThemeMode;
@@ -57,12 +52,11 @@ async function patchServerTheme(patch: {
   customThemes?: CustomTheme[];
 }): Promise<void> {
   const settings = await getSettingsBlob();
-  const theme = (settings.stm_theme as Record<string, unknown>) || {};
+  const theme = (settings[SERVER_KEY] as Record<string, unknown>) || {};
   if (patch.mode !== undefined) theme.mode = patch.mode;
   if (patch.activePreset !== undefined) theme.activePreset = patch.activePreset;
   if (patch.customThemes !== undefined) theme.customThemes = patch.customThemes;
-  settings.stm_theme = theme;
-  await settingsApi.saveSettings(settings);
+  await patchServerKey(SERVER_KEY, theme, LOCAL_TS_KEY);
 }
 
 // ---------------------------------------------------------------------------

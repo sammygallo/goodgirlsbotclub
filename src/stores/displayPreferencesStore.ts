@@ -21,8 +21,7 @@
  */
 
 import { create } from 'zustand';
-import { settingsApi } from '../api/client';
-import { getSettingsBlob } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
 import {
   type ChatLayoutMode,
   type AvatarShape,
@@ -100,18 +99,15 @@ function getInitialCostumes(): Record<string, string> {
 }
 
 /**
- * Read-modify-write the stm_display section of the settings blob.
- * Embeds _ts in the patch and, only on success, advances LOCAL_TS_KEY
- * to match — so a network failure leaves LOCAL_TS_KEY > server._ts.
+ * PUT the merged stm_display section. patchServerKey advances LOCAL_TS_KEY
+ * only on a successful 2xx, so a network failure leaves LOCAL_TS_KEY ahead
+ * of the server's server_ts and the next fetchPrefs re-uploads.
  */
 async function patchServer(patch: Record<string, unknown>): Promise<void> {
-  const ts = Date.now();
   const settings = await getSettingsBlob();
   const display = (settings.stm_display as Record<string, unknown>) || {};
-  Object.assign(display, patch, { _ts: ts });
-  settings.stm_display = display;
-  await settingsApi.saveSettings(settings); // throws on failure — LOCAL_TS_KEY not updated
-  try { localStorage.setItem(LOCAL_TS_KEY, String(ts)); } catch { /* ignore */ }
+  Object.assign(display, patch);
+  await patchServerKey('stm_display', display, LOCAL_TS_KEY);
 }
 
 // ---------------------------------------------------------------------------
