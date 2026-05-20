@@ -2,9 +2,21 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Backend URL can be overridden via ST_BACKEND for local dev when the
-// default port is already in use (e.g. running two worktrees in parallel).
-const BACKEND = process.env.ST_BACKEND || 'http://localhost:8000'
+// Vite dev proxies everything that isn't a static asset to ggbc-backend,
+// which serves /auth/* /sync/* /invitations/* /health itself and forwards
+// /api/* /thumbnail /characters /scripts /csrf-token to SillyTavern with
+// the per-user ST session it manages. Override the target via the
+// GGBC_BACKEND env var if you're running two worktrees in parallel.
+//
+// Use 127.0.0.1 (not localhost) — node 18+ resolves localhost to IPv6 ::1
+// first, and Docker publishes 127.0.0.1:8001 IPv4-only, so the localhost
+// form silently fails before the proxy gets a chance to send anything.
+const BACKEND = process.env.GGBC_BACKEND || 'http://127.0.0.1:8001'
+
+const proxyTarget = {
+  target: BACKEND,
+  changeOrigin: true,
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -12,40 +24,16 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api': {
-        target: BACKEND,
-        changeOrigin: true,
-        headers: process.env.ST_BASIC_AUTH
-          ? { Authorization: `Basic ${Buffer.from(process.env.ST_BASIC_AUTH).toString('base64')}` }
-          : {},
-      },
-      '/csrf-token': {
-        target: BACKEND,
-        changeOrigin: true,
-        headers: process.env.ST_BASIC_AUTH
-          ? { Authorization: `Basic ${Buffer.from(process.env.ST_BASIC_AUTH).toString('base64')}` }
-          : {},
-      },
-      '/thumbnail': {
-        target: BACKEND,
-        changeOrigin: true,
-        headers: process.env.ST_BASIC_AUTH
-          ? { Authorization: `Basic ${Buffer.from(process.env.ST_BASIC_AUTH).toString('base64')}` }
-          : {},
-      },
-      '/characters': {
-        target: BACKEND,
-        changeOrigin: true,
-        headers: process.env.ST_BASIC_AUTH
-          ? { Authorization: `Basic ${Buffer.from(process.env.ST_BASIC_AUTH).toString('base64')}` }
-          : {},
-      },
+      '/auth': proxyTarget,
+      '/sync': proxyTarget,
+      '/invitations': proxyTarget,
+      '/health': proxyTarget,
+      '/api': proxyTarget,
+      '/csrf-token': proxyTarget,
+      '/thumbnail': proxyTarget,
+      '/characters': proxyTarget,
       '/scripts': {
-        target: BACKEND,
-        changeOrigin: true,
-        headers: process.env.ST_BASIC_AUTH
-          ? { Authorization: `Basic ${Buffer.from(process.env.ST_BASIC_AUTH).toString('base64')}` }
-          : {},
+        ...proxyTarget,
         // Specific upstream-compat shim modules served from public/ must NOT
         // be proxied — they shadow upstream files of the same name so
         // ES-module-based extensions can `import { ... } from '../../../...'`

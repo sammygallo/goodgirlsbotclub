@@ -11,7 +11,11 @@
 set -e
 
 SENTINEL="/config/.owner-seeded"
-ST="http://localhost:${ST_PORT:-8000}"
+# Use 127.0.0.1 (not localhost) — busybox wget resolves `localhost` to
+# IPv6 ::1 first, and ST listens on IPv4 only, so the localhost form
+# fails with "connection refused" on environments whose /etc/hosts
+# resolves localhost to both ::1 and 127.0.0.1 (Docker Desktop on Mac).
+ST="http://127.0.0.1:${ST_PORT:-8000}"
 
 # Skip if already seeded or env vars not set
 if [ -f "$SENTINEL" ]; then
