@@ -50,6 +50,18 @@ services:
       - COOKIE_SAMESITE=lax
       - ALLOW_SELF_REGISTRATION=${ALLOW_SELF_REGISTRATION:-false}
       - ENVIRONMENT=production
+      # B3a — Fernet master key for at-rest encryption of API secrets.
+      # MUST be set in .env on the droplet (generate with `python -c
+      # "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
+      # If unset, ggbc-backend falls back to a public dev key — anyone
+      # with the source can decrypt the DB.
+      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-}
+    volumes:
+      # Read-only access to ST's data directory so the one-shot
+      # migrate_st_secrets script can scoop up existing per-user
+      # secrets.json files. Safe to keep mounted long-term — the
+      # backend never writes here.
+      - st-data:/st-data:ro
     # Run pending migrations, then start uvicorn. Migrations are idempotent
     # so this is safe on every container start.
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 127.0.0.1 --port 8001"]
