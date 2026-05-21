@@ -107,33 +107,127 @@ export async function apiRequestText(
   return response.text();
 }
 
-/**
- * Append character-create/edit fields to a multipart FormData body.
- *
- * Arrays are appended as repeated same-key entries (which Express parses
- * back into an array), NOT as a JSON-stringified blob — the backend's
- * getAlternateGreetings() treats a string as a single-element array, so
- * stringifying would collapse N alternates into one giant JSON string.
- */
-function appendCharacterFields(
-  formData: FormData,
-  data: object
-): void {
-  Object.entries(data as Record<string, unknown>).forEach(([key, value]) => {
-    if (value === undefined || value === null) return;
-    if (Array.isArray(value)) {
-      // Skip entirely when empty — form-data can't express an empty array
-      // and the backend treats a missing field as [].
-      if (value.length === 0) return;
-      for (const item of value) {
-        formData.append(key, typeof item === 'string' ? item : JSON.stringify(item));
-      }
-    } else if (typeof value === 'number' || typeof value === 'boolean') {
-      formData.append(key, String(value));
-    } else {
-      formData.append(key, String(value));
-    }
+// ---------------------------------------------------------------------------
+// B1: character ↔ DB translation helpers
+//
+// Wire shape returned by ggbc-backend's GET /characters is:
+//   { id, avatar, name, data: {...v2/v3 card...}, chat, fav, tags, server_ts,
+//     create_date, last_modified }
+//
+// The frontend's CharacterInfo flattens many fields up to top-level and keeps
+// `data` as a nested mirror; characterStore + lots of components read either
+// shape. These helpers translate between the two so the cutover doesn't
+// require touching every callsite.
+// ---------------------------------------------------------------------------
+
+interface ServerCharacter {
+  id: string;
+  avatar: string;
+  name: string;
+  data: Record<string, unknown>;
+  chat: string | null;
+  fav: boolean;
+  tags: string[];
+  server_ts: number;
+  create_date: string;
+  last_modified: string;
+}
+
+function toCharacterInfo(row: ServerCharacter): CharacterInfo {
+  const data = (row.data ?? {}) as Record<string, unknown>;
+  const created = Date.parse(row.create_date) || 0;
+  const modified = Date.parse(row.last_modified) || 0;
+  return {
+    name: row.name,
+    avatar: row.avatar,
+    description: (data.description as string | undefined),
+    personality: (data.personality as string | undefined),
+    first_mes: (data.first_mes as string | undefined),
+    scenario: (data.scenario as string | undefined),
+    mes_example: (data.mes_example as string | undefined),
+    create_date: row.create_date,
+    date_added: created,
+    date_last_chat: modified,
+    fav: row.fav,
+    tags: row.tags,
+    alternate_greetings: data.alternate_greetings as string[] | undefined,
+    system_prompt: data.system_prompt as string | undefined,
+    post_history_instructions: data.post_history_instructions as string | undefined,
+    character_version: data.character_version as string | undefined,
+    creator_notes: data.creator_notes as string | undefined,
+    creator: data.creator as string | undefined,
+    data: data as CharacterInfo['data'],
+  };
+}
+
+function splitTags(tags: string | string[] | undefined): string[] {
+  if (Array.isArray(tags)) return tags.filter((t) => typeof t === 'string' && t.length > 0);
+  if (!tags) return [];
+  return tags.split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+function sanitizeAvatarName(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9._ ()-]/g, '_').trim();
+  return cleaned || 'Unnamed';
+}
+
+/** Build the v2 spec `data` object from the legacy CharacterCreateData shape. */
+function buildCardData(input: CharacterCreateData & { avatar_url?: string }): {
+  data: Record<string, unknown>;
+  tags: string[];
+} {
+  const tags = splitTags(input.tags);
+  const data: Record<string, unknown> = {
+    name: input.ch_name,
+    description: input.description ?? '',
+    personality: input.personality ?? '',
+    first_mes: input.first_mes ?? '',
+    scenario: input.scenario ?? '',
+    mes_example: input.mes_example ?? '',
+    creator_notes: input.creator_notes ?? '',
+    creator: input.creator ?? '',
+    tags,
+  };
+  if (input.alternate_greetings) data.alternate_greetings = input.alternate_greetings;
+  if (input.system_prompt !== undefined) data.system_prompt = input.system_prompt;
+  if (input.post_history_instructions !== undefined) {
+    data.post_history_instructions = input.post_history_instructions;
+  }
+  if (input.character_version !== undefined) data.character_version = input.character_version;
+
+  const extensions: Record<string, unknown> = {};
+  if (
+    input.depth_prompt_prompt !== undefined ||
+    input.depth_prompt_depth !== undefined ||
+    input.depth_prompt_role !== undefined
+  ) {
+    extensions.depth_prompt = {
+      prompt: input.depth_prompt_prompt ?? '',
+      depth: input.depth_prompt_depth ?? 4,
+      role: input.depth_prompt_role ?? 'system',
+    };
+  }
+  if (input.talkativeness !== undefined) extensions.talkativeness = input.talkativeness;
+  if (Object.keys(extensions).length > 0) data.extensions = extensions;
+
+  return { data, tags };
+}
+
+async function putAvatarBlob(avatar: string, file: File): Promise<void> {
+  // /blobs is a per-user bytea store; raw body with Content-Type. The blob
+  // key for character art is `character/{avatar}` (the namespace
+  // `character/` groups them alongside `persona-avatar/`, `vn-bg/`).
+  const body = await file.arrayBuffer();
+  const resp = await fetch(`/blobs/character/${encodeURIComponent(avatar)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': file.type || 'image/png' },
+    body,
   });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(text || `Failed to upload avatar (HTTP ${resp.status})`);
+  }
 }
 
 export interface UserInfo {
@@ -384,178 +478,125 @@ export const api = {
     return { canRegister: true, requiresAdmin: false };
   },
 
-  // Character endpoints
+  // ---------------------------------------------------------------------
+  // Character endpoints — B1: ggbc-backend's /characters (Postgres-backed).
+  // PNG art lives in user_blobs under `character/{avatar}` and is uploaded
+  // separately by `putAvatarBlob`. The first call after login lazy-imports
+  // anything the user had in ST so existing accounts seamlessly carry over.
+  // ---------------------------------------------------------------------
   async getCharacters(): Promise<CharacterInfo[]> {
-    // Returns array of character objects directly
-    const response = await apiRequest<CharacterInfo[]>('/api/characters/all', {
-      method: 'POST',
-    });
-    return response || [];
+    const rows = await apiRequest<ServerCharacter[]>('/characters');
+    let list = Array.isArray(rows) ? rows.map(toCharacterInfo) : [];
+    if (list.length === 0) {
+      // Lazy migration. Server-side it's a no-op once any character row
+      // exists for the user, so subsequent calls are cheap. Failure just
+      // returns [] — newly registered users may not have an ST account.
+      try {
+        const imported = await apiRequest<ServerCharacter[]>(
+          '/characters/import-from-st',
+          { method: 'POST' },
+        );
+        if (Array.isArray(imported) && imported.length > 0) {
+          list = imported.map(toCharacterInfo);
+        }
+      } catch {
+        // ignore; surface empty list
+      }
+    }
+    return list;
   },
 
   async getCharacter(avatarUrl: string): Promise<CharacterInfo> {
-    return apiRequest('/api/characters/get', {
-      method: 'POST',
-      body: JSON.stringify({ avatar_url: avatarUrl }),
-    });
+    const row = await apiRequest<ServerCharacter>(
+      `/characters/${encodeURIComponent(avatarUrl)}`,
+    );
+    return toCharacterInfo(row);
   },
 
   async createCharacter(data: CharacterCreateData, avatarFile?: File): Promise<string> {
-    // Returns avatar filename like "CharacterName.png" as plain text
-    const token = await getCsrfToken();
-
-    let response: Response;
-
+    const { data: card, tags } = buildCardData(data);
+    const avatar = sanitizeAvatarName(data.ch_name) + '.png';
+    const payload = {
+      avatar,
+      name: data.ch_name,
+      data: card,
+      tags,
+      fav: !!data.fav,
+    };
+    const created = await apiRequest<ServerCharacter>('/characters', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
     if (avatarFile) {
-      // Use multipart form data when uploading an image
-      const formData = new FormData();
-      formData.append('avatar', avatarFile);
-      appendCharacterFields(formData, data);
-
-      response = await fetch('/api/characters/create', {
-        method: 'POST',
-        headers: {
-          'X-CSRF-Token': token,
-        },
-        credentials: 'include',
-        body: formData,
-      });
-    } else {
-      // JSON body when no image
-      response = await fetch('/api/characters/create', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': token,
-        },
-        credentials: 'include',
-        body: JSON.stringify(data),
-      });
+      // PUT the art under the canonical key. Done after the row exists so
+      // a server failure to create doesn't leave an orphan blob.
+      await putAvatarBlob(created.avatar, avatarFile);
     }
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to create character' }));
-      throw new Error(error.error || error.message || `HTTP ${response.status}`);
-    }
-
-    // Backend returns plain text (avatar filename), not JSON
-    return response.text();
+    return created.avatar;
   },
 
-  async deleteCharacter(avatarUrl: string, deleteChats: boolean = true): Promise<void> {
-    // Server responds with a plain-text body (e.g. "OK"), not JSON.
-    // Use apiRequestText so a non-JSON success body isn't treated as a failure.
-    await apiRequestText('/api/characters/delete', {
-      method: 'POST',
-      body: JSON.stringify({ avatar_url: avatarUrl, delete_chats: deleteChats }),
+  async deleteCharacter(avatarUrl: string, _deleteChats: boolean = true): Promise<void> {
+    // Chat deletion is handled in B2 (chats → DB). For B1, DELETE removes
+    // the row + avatar blob; orphaned chats in ST are no longer reachable
+    // from the UI but remain on disk until B3 sunsets ST entirely.
+    void _deleteChats;
+    const resp = await fetch(`/characters/${encodeURIComponent(avatarUrl)}`, {
+      method: 'DELETE',
+      credentials: 'include',
     });
+    if (!resp.ok && resp.status !== 204) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
   },
 
   async editCharacter(data: CharacterEditData, avatarFile?: File): Promise<void> {
-    // Backend returns plain text "OK", not JSON
-    const token = await getCsrfToken();
-
-    let response: Response;
-
+    const { data: card, tags } = buildCardData(data);
+    const payload = {
+      name: data.ch_name,
+      data: card,
+      chat: data.chat ?? null,
+      tags,
+      fav: !!data.fav,
+    };
+    await apiRequest<ServerCharacter>(
+      `/characters/${encodeURIComponent(data.avatar_url)}`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+    );
     if (avatarFile) {
-      // Use multipart form data when uploading an image
-      const formData = new FormData();
-      formData.append('avatar', avatarFile);
-      appendCharacterFields(formData, data);
-
-      response = await fetch('/api/characters/edit', {
-        method: 'POST',
-        headers: {
-          'X-CSRF-Token': token,
-        },
-        credentials: 'include',
-        body: formData,
-      });
-    } else {
-      response = await fetch('/api/characters/edit', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': token,
-        },
-        credentials: 'include',
-        body: JSON.stringify(data),
-      });
-    }
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText || `HTTP ${response.status}`);
+      await putAvatarBlob(data.avatar_url, avatarFile);
     }
   },
 
   // Duplicate a character (server-side)
   async duplicateCharacter(avatarUrl: string): Promise<string> {
-    const token = await getCsrfToken();
-    const response = await fetch('/api/characters/duplicate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': token,
-      },
-      credentials: 'include',
-      body: JSON.stringify({ avatar_url: avatarUrl }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Failed to duplicate');
-      throw new Error(errorText || `HTTP ${response.status}`);
-    }
-
-    // Backend returns JSON { path: 'newavatar.png' } or plain text
-    const text = await response.text();
-    try {
-      const data = JSON.parse(text);
-      return data.path || data.file_name || text;
-    } catch {
-      return text;
-    }
+    const created = await apiRequest<ServerCharacter>(
+      `/characters/${encodeURIComponent(avatarUrl)}/duplicate`,
+      { method: 'POST' },
+    );
+    return created.avatar;
   },
 
   // --- Global character sharing ---
-
-  /**
-   * Fetches the character ownership/visibility map from the server.
-   * Returns {} on older backends that don't yet expose the endpoint, so
-   * callers can treat every character as personal/unowned.
-   */
+  //
+  // B1 — characters moved out of ST's filesystem into ggbc-backend's `characters`
+  // table, so the ST-backed ownership/visibility map is no longer authoritative
+  // (it still reflects whichever character lived in `_global/characters/` at
+  // import time, but the DB rows are per-user now). Cross-user sharing comes
+  // back as its own feature post-B3, when chats are in the DB too and we can
+  // model ownership properly. Until then, every character is personal-only.
   async getCharacterMetadata(): Promise<CharacterMetadataMap> {
-    try {
-      const response = await apiRequest<CharacterMetadataMap>('/api/characters/metadata', {
-        method: 'POST',
-      });
-      return response || {};
-    } catch {
-      return {};
-    }
+    return {};
   },
 
-  /**
-   * Moves a character between global and personal scope. OWNER-only on the
-   * server. On success, the caller should refetch characters + metadata —
-   * the file has physically moved directories.
-   */
   async setCharacterVisibility(avatarUrl: string, visibility: CharacterVisibility): Promise<void> {
-    await apiRequest('/api/characters/set-visibility', {
-      method: 'POST',
-      body: JSON.stringify({ avatar_url: avatarUrl, visibility }),
-    });
+    void avatarUrl; void visibility;
+    throw new Error('Character sharing is paused while we migrate characters to the new database.');
   },
 
-  /**
-   * Transfers ownership of a global character to another user. The current
-   * owner must be the requester; metadata-only update on the server.
-   */
   async transferCharacterOwnership(avatarUrl: string, newOwnerHandle: string): Promise<void> {
-    await apiRequest('/api/characters/transfer-ownership', {
-      method: 'POST',
-      body: JSON.stringify({ avatar_url: avatarUrl, new_owner_handle: newOwnerHandle }),
-    });
+    void avatarUrl; void newOwnerHandle;
+    throw new Error('Character ownership transfer is paused while we migrate characters to the new database.');
   },
 
   /**

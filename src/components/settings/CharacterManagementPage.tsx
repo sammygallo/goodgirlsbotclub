@@ -345,7 +345,7 @@ function CharacterRow({
   const canSetGlobal = hasPermission(currentUser, 'character:set_global');
 
   const creator = character.creator || character.data?.creator || null;
-  const thumbnailUrl = `/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`;
+  const thumbnailUrl = `/blobs/character/${encodeURIComponent(avatar)}`;
   const [showExportMenu, setShowExportMenu] = useState(false);
 
   return (

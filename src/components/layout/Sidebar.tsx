@@ -163,8 +163,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     }
   };
 
-  // Thumbnail URL for small avatars in list (96x144)
-  const getThumbnailUrl = (avatar: string) => `/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`;
+  // Thumbnail URL for small avatars in list. ST's /thumbnail is gone in B1;
+  // browsers down-scale the full PNG client-side.
+  const getThumbnailUrl = (avatar: string) => `/blobs/character/${encodeURIComponent(avatar)}`;
 
   // Full-size image URL for portrait view (with expression support)
   const getFullImageUrl = useCallback(

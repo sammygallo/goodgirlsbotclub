@@ -6,10 +6,8 @@ import {
   parseCharacterFromJSON,
   parseLorebookFromJSON,
   cardToCharacterInfo,
-  embedCharacterInPNG,
   exportCharacterAsJSON,
   downloadFile,
-  fetchImageAsBlob,
   type CharacterBookV2,
   type CharacterCardV2,
   type CharacterExportData,
@@ -643,21 +641,21 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   exportCharacterAsPNG: async (character: CharacterInfo) => {
     set({ isExporting: true, error: null });
     try {
-      // Fetch the character's avatar image
-      const avatarUrl = `/characters/${encodeURIComponent(character.avatar)}`;
-      const imageBlob = await fetchImageAsBlob(avatarUrl);
-
-      // Include the character's embedded lorebook when exporting
-      const embedded = useWorldInfoStore.getState().getCharacterBook(character.avatar);
-      const characterBook = embedded ? bookToCharacterBookV2(embedded) : undefined;
-
-      // Embed character data in the PNG
-      const pngBlob = await embedCharacterInPNG(imageBlob, character, characterBook);
-
-      // Download the file
+      // B1 — server-side export. ggbc-backend re-embeds the card JSON
+      // (including the v2 `chara` chunk for max compatibility) into the
+      // stored PNG and streams it back. The character-embedded lorebook
+      // lives inside `data.character_book`, so it travels with the card
+      // without a separate write here.
+      const resp = await fetch(
+        `/characters/${encodeURIComponent(character.avatar)}/export.png`,
+        { credentials: 'include' },
+      );
+      if (!resp.ok) {
+        throw new Error(`Export failed (HTTP ${resp.status})`);
+      }
+      const pngBlob = await resp.blob();
       const filename = `${character.name.replace(/[^a-zA-Z0-9]/g, '_')}.png`;
       downloadFile(pngBlob, filename);
-
       set({ isExporting: false });
     } catch (error) {
       set({
