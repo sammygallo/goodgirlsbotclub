@@ -63,7 +63,7 @@ export function Header({ onMenuClick }: HeaderProps) {
     await fetchCharacters();
   };
 
-  const getAvatarUrl = (avatar: string) => `/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`;
+  const getAvatarUrl = (avatar: string) => `/blobs/character/${encodeURIComponent(avatar)}`;
 
   return (
     <header className="sticky top-0 z-20 flex-shrink-0 h-14 bg-[var(--color-bg-secondary)] border-b border-[var(--color-border)] flex items-center px-4 gap-3 safe-top">

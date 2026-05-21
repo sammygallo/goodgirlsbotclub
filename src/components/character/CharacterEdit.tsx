@@ -125,7 +125,7 @@ export function CharacterEdit({
   // Phase 4.3: extra linked lorebooks (staged, committed on Save)
   const [linkedBookIds, setLinkedBookIdsLocal] = useState<string[]>([]);
 
-  const getAvatarUrl = (avatar: string) => `/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`;
+  const getAvatarUrl = (avatar: string) => `/blobs/character/${encodeURIComponent(avatar)}`;
 
   // Populate form when character changes or modal opens
   useEffect(() => {
@@ -799,7 +799,7 @@ export function CharacterEdit({
       <LivePortraitSetup
         avatar={character.avatar}
         characterName={character.name}
-        imageUrl={`/characters/${encodeURIComponent(character.avatar)}`}
+        imageUrl={`/blobs/character/${encodeURIComponent(character.avatar)}`}
         isOpen={showLivePortraitSetup}
         onClose={() => setShowLivePortraitSetup(false)}
       />

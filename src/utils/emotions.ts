@@ -170,8 +170,11 @@ export function stripEmotionTag(content: string): string {
  * Get the default avatar URL (used for neutral or fallback)
  */
 export function getDefaultAvatarUrl(characterAvatar: string): string {
-  // Use the characters endpoint which serves the avatar file directly
-  return `/characters/${encodeURIComponent(characterAvatar)}`;
+  // B1 — character art moved into ggbc-backend's user_blobs, served as
+  // raw PNG bytes at /blobs/character/{avatar}. Expression sub-images
+  // (/characters/Name/emotion.png) are still proxied to ST because
+  // expression packs remain on ST's filesystem until a later phase.
+  return `/blobs/character/${encodeURIComponent(characterAvatar)}`;
 }
 
 /**
@@ -204,7 +207,9 @@ export function getExpressionThumbnailUrl(
   emotion: Emotion | null
 ): string {
   if (!emotion || emotion === 'neutral') {
-    return `/thumbnail?type=avatar&file=${encodeURIComponent(characterAvatar)}`;
+    // ST's /thumbnail is gone — characters live in user_blobs now. The
+    // browser handles the down-scaling for chat-message thumbnails.
+    return `/blobs/character/${encodeURIComponent(characterAvatar)}`;
   }
 
   // For expressions, we use the full-size path since thumbnails may not exist

@@ -123,11 +123,13 @@ export const useCharacterOwnershipStore = create<CharacterOwnershipState>((set, 
   canEditCharacter: (avatar, userHandle, userRole) => {
     if (userRole === 'owner') return true;
     const entry = get().ownershipMap[avatar];
-    // No entry → character is unowned personal. Only the app owner can claim
-    // it; regular users cannot edit it through this path. The main character
-    // list still gates edits via the character endpoints, which are the
-    // authoritative check.
-    if (!entry) return false;
+    // B1 — every character row is owned by the user who has it in their
+    // list (the DB FK enforces this), so an empty metadata entry means
+    // the requesting user IS the owner. Previously this returned false
+    // and relied on the server check, but with the new /characters API
+    // the row simply wouldn't be visible to a non-owner in the first
+    // place; mirror that in the UI so the edit button isn't hidden.
+    if (!entry) return true;
     return entry.ownerHandle === userHandle;
   },
 

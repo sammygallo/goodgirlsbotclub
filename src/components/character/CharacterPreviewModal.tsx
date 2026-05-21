@@ -42,7 +42,7 @@ export function CharacterPreviewModal({
     character.creator_notes?.trim() || character.data?.creator_notes?.trim() || '';
   const tags = character.tags ?? character.data?.tags ?? [];
 
-  const fullAvatarUrl = `/characters/${encodeURIComponent(character.avatar)}`;
+  const fullAvatarUrl = `/blobs/character/${encodeURIComponent(character.avatar)}`;
 
   const handleStartChat = () => {
     onStartChat(character.avatar);
