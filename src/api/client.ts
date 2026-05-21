@@ -610,26 +610,47 @@ export const api = {
     return Array.isArray(result) ? result : [];
   },
 
-  // Chat endpoints - use avatar filename directly for consistency
-  async getChats(avatarUrl: string): Promise<{ file_name: string; file_size: number; last_mes: string }[]> {
-    const result = await apiRequest('/api/characters/chats', {
-      method: 'POST',
-      body: JSON.stringify({ avatar_url: avatarUrl }),
-    });
-    // Backend returns { error: true } if no chats, otherwise returns array
-    return Array.isArray(result) ? result : [];
+  // -----------------------------------------------------------------
+  // Chat endpoints — B2: ggbc-backend's /chats (Postgres-backed).
+  // ST-style POST-with-body shape preserved so the store wiring above
+  // didn't need to change. First call per user lazy-imports from ST.
+  // -----------------------------------------------------------------
+  async getChats(avatarUrl: string): Promise<{ file_name: string; message_count: number; last_mes: string }[]> {
+    const list = await apiRequest<{ file_name: string; message_count: number; last_mes: string }[]>(
+      '/chats/list',
+      { method: 'POST', body: JSON.stringify({ character_avatar: avatarUrl }) },
+    );
+    let rows = Array.isArray(list) ? list : [];
+    if (rows.length === 0) {
+      // Lazy migration. Server-side it's a no-op once any chat row
+      // exists for the user; subsequent calls return the count cheaply.
+      try {
+        await apiRequest('/chats/import-from-st', { method: 'POST' });
+      } catch {
+        // ignore — surface empty list
+      }
+      const after = await apiRequest<{ file_name: string; message_count: number; last_mes: string }[]>(
+        '/chats/list',
+        { method: 'POST', body: JSON.stringify({ character_avatar: avatarUrl }) },
+      );
+      rows = Array.isArray(after) ? after : [];
+    }
+    return rows;
   },
 
   async getChatMessages(avatarUrl: string, fileName: string): Promise<ChatMessage[]> {
-    const response = await apiRequest<ChatMessage[]>('/api/chats/get', {
+    const response = await apiRequest<{ messages: ChatMessage[] }>('/chats/get', {
       method: 'POST',
       body: JSON.stringify({
+        character_avatar: avatarUrl,
         file_name: fileName,
-        avatar_url: avatarUrl,
       }),
     });
-    // Backend returns array directly, skip first element (header)
-    return Array.isArray(response) ? response.slice(1) : [];
+    // Skip the header element to match the legacy ST behavior — header
+    // is { user_name, character_name, create_date, ... } and isn't a
+    // displayed message.
+    const messages = response?.messages;
+    return Array.isArray(messages) ? messages.slice(1) : [];
   },
 
   // Generate message with full context
@@ -753,44 +774,30 @@ export const api = {
     return response.body;
   },
 
-  // Save chat to backend
+  // Save chat to backend (upsert — creates row on first call, replaces
+  // messages on subsequent calls).
   async saveChat(
     avatarUrl: string,
     fileName: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     chatData: any[]
   ): Promise<void> {
-    // First, call get to ensure the chat directory exists (backend creates it if not)
-    await apiRequest('/api/chats/get', {
+    await apiRequest('/chats/save', {
       method: 'POST',
       body: JSON.stringify({
-        file_name: '__ensure_dir__',
-        avatar_url: avatarUrl,
-      }),
-    }).catch(() => {
-      // Ignore errors - we just want to ensure directory exists
-    });
-
-    // Now save the chat
-    const result = await apiRequest<{ result?: string; message?: string; error?: string }>('/api/chats/save', {
-      method: 'POST',
-      body: JSON.stringify({
-        avatar_url: avatarUrl,
+        character_avatar: avatarUrl,
         file_name: fileName,
-        chat: chatData,
-        force: true, // Bypass integrity check
+        messages: chatData,
       }),
     });
-
-    console.log('[API] Save result:', result);
-
-    // Check if save actually succeeded
-    if (result && typeof result === 'object' && ('message' in result || 'error' in result)) {
-      throw new Error(result.message || result.error || 'Save failed');
-    }
   },
 
-  // Create a new chat file name (without .jsonl extension - backend adds it)
+  /**
+   * Generate a chat file name. Client-side: the backend creates the row
+   * lazily on the first save, so a "create" round-trip would be wasted.
+   * Format matches ST's convention so existing chats round-trip cleanly
+   * when displayed in the UI.
+   */
   async createChat(characterName: string): Promise<string> {
     const timestamp = Date.now();
     const fileName = `${characterName} - ${new Date(timestamp).toISOString().split('T')[0]}@${timestamp}`;
@@ -798,52 +805,82 @@ export const api = {
   },
 
   async deleteChat(avatarUrl: string, fileName: string): Promise<void> {
-    await apiRequest('/api/chats/delete', {
+    // Always-204 from the backend; treat any thrown error as a real
+    // failure rather than silently swallowing.
+    await fetch('/chats/delete', {
       method: 'POST',
-      body: JSON.stringify({ avatar_url: avatarUrl, chatfile: fileName }),
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        character_avatar: avatarUrl,
+        file_name: fileName,
+      }),
+    }).then(async (r) => {
+      if (!r.ok && r.status !== 204) {
+        throw new Error(await r.text().catch(() => `HTTP ${r.status}`));
+      }
     });
   },
 
   async renameChat(avatarUrl: string, originalFile: string, renamedFile: string): Promise<string> {
-    // Upstream /api/chats/rename does not auto-append the extension the way
-    // /delete does, so it fails with "Source file not available" when the
-    // client passes the bare basename (which is what we list everywhere
-    // else). Append .jsonl client-side until the server is patched.
-    const withExt = (name: string): string =>
-      /\.jsonl$/i.test(name) ? name : `${name}.jsonl`;
-    const result = await apiRequest<{ ok: boolean; sanitizedFileName: string }>('/api/chats/rename', {
+    const result = await apiRequest<{ file_name: string }>('/chats/rename', {
       method: 'POST',
       body: JSON.stringify({
-        avatar_url: avatarUrl,
-        original_file: withExt(originalFile),
-        renamed_file: withExt(renamedFile),
+        character_avatar: avatarUrl,
+        original_file: originalFile,
+        renamed_file: renamedFile,
       }),
     });
-    return result.sanitizedFileName;
+    return result.file_name;
   },
 
+  /**
+   * Import a chat from a JSONL or JSON file uploaded by the user. Parsed
+   * client-side and persisted via /chats/save — no separate server
+   * import endpoint needed now that storage is just a row write.
+   */
   async importChat(
     avatarUrl: string,
     characterName: string,
     file: File,
     userName = 'User'
   ): Promise<string[]> {
-    const formData = new FormData();
-    formData.append('avatar_url', avatarUrl);
-    formData.append('character_name', characterName);
-    formData.append('user_name', userName);
-    formData.append('file_type', file.name.endsWith('.json') ? 'json' : 'jsonl');
-    formData.append('file', file);
-
-    const response = await fetch('/api/chats/import', {
+    const text = await file.text();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let messages: any[];
+    if (file.name.toLowerCase().endsWith('.json')) {
+      const parsed = JSON.parse(text);
+      messages = Array.isArray(parsed) ? parsed : (parsed?.messages ?? []);
+    } else {
+      // .jsonl — one JSON object per line.
+      messages = text
+        .split(/\r?\n/)
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line));
+    }
+    if (!Array.isArray(messages) || messages.length === 0) {
+      throw new Error('Import failed: invalid format');
+    }
+    // Ensure a header is present so list/preview helpers behave the same
+    // as natively-saved chats.
+    if (!messages[0]?.user_name && !messages[0]?.character_name) {
+      messages.unshift({
+        user_name: userName,
+        character_name: characterName,
+        create_date: new Date().toISOString(),
+      });
+    }
+    const ts = Date.now();
+    const fileName = `${characterName} - imported@${ts}`;
+    await apiRequest('/chats/save', {
       method: 'POST',
-      credentials: 'include',
-      body: formData,
+      body: JSON.stringify({
+        character_avatar: avatarUrl,
+        file_name: fileName,
+        messages,
+      }),
     });
-    if (!response.ok) throw new Error('Import failed');
-    const data = await response.json();
-    if (data.error) throw new Error('Import failed: invalid format');
-    return data.fileNames ?? [];
+    return [fileName];
   },
 };
 

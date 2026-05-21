@@ -33,6 +33,7 @@ export default defineConfig({
       '/csrf-token': proxyTarget,
       '/thumbnail': proxyTarget,
       '/characters': proxyTarget,
+      '/chats': proxyTarget,
       '/scripts': {
         ...proxyTarget,
         // Specific upstream-compat shim modules served from public/ must NOT

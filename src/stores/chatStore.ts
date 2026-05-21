@@ -72,7 +72,10 @@ export interface ChatMessage {
 
 interface ChatFile {
   fileName: string;
-  fileSize: number;
+  /** Real (non-header) message count. Replaces the legacy `fileSize`
+   *  field that was just the JSONL byte count from ST and never
+   *  actually rendered. */
+  messageCount: number;
   lastMessage: string;
 }
 
@@ -2067,8 +2070,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const chats = await api.getChats(avatarUrl);
       const chatFiles: ChatFile[] = chats.map((chat) => ({
-        fileName: chat.file_name?.replace(/\.jsonl$/, '') || chat.file_name,
-        fileSize: chat.file_size,
+        fileName: chat.file_name,
+        messageCount: chat.message_count,
         lastMessage: chat.last_mes,
       }));
       set({ chatFiles, isLoading: false });
@@ -2486,9 +2489,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // ---- Delete Chat File ----
   deleteChat: async (avatarUrl: string, fileName: string) => {
     try {
-      // Save an empty chat to effectively delete it
-      await api.saveChat(avatarUrl, fileName, []);
-      // Refresh chat list
+      // B2 — real DELETE now that chats live in Postgres. The legacy
+      // ST path overwrote with an empty array because /api/chats/delete
+      // was finicky; the DB-backed delete removes the row cleanly.
+      await api.deleteChat(avatarUrl, fileName);
       const { fetchChatFiles } = get();
       await fetchChatFiles(avatarUrl);
     } catch (error) {
