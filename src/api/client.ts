@@ -725,6 +725,21 @@ export const api = {
       body.chat_completion_source = provider || 'openai';
       endpoint = '/api/backends/chat-completions/generate';
     }
+    // B3a — ggbc-backend's generation proxy is stateless wrt. settings
+    // (unlike ST, which looked up custom_url server-side). For
+    // chat_completion_source=custom we have to thread the URL through
+    // the request body so the proxy knows where to forward.
+    if ((body.chat_completion_source || provider) === 'custom') {
+      try {
+        // Lazy import keeps a circular dependency from forming between
+        // api/client.ts and stores/settingsStore.ts at module load.
+        const { useSettingsStore } = await import('../stores/settingsStore');
+        const customUrl = useSettingsStore.getState().customUrl;
+        if (customUrl) body.custom_url = customUrl;
+      } catch {
+        // Best effort; the backend will surface a clear 400 if missing.
+      }
+    }
 
     if (generationOptions) {
       if (generationOptions.topP !== undefined) body.top_p = generationOptions.topP;
