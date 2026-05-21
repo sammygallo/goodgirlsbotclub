@@ -94,6 +94,69 @@ export function setVnMode(on: boolean): void {
 }
 
 // ---- VN Background Image --------------------------------------------
+//
+// A3.2 — backgrounds live in /blobs/vn-bg/{key} for cross-device sync.
+// localStorage stays as a synchronous cache for instant first paint;
+// uploadVnBg fires write-through on every set/clear.
+
+function uploadVnBgBlob(key: string, dataUrl: string | undefined): void {
+  if (!dataUrl) {
+    fetch(`/blobs/vn-bg/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    }).catch(() => {});
+    return;
+  }
+  const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+  if (!match) return;
+  const contentType = match[1];
+  let bytes: Uint8Array;
+  try {
+    const binary = atob(match[2]);
+    bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  } catch {
+    return;
+  }
+  fetch(`/blobs/vn-bg/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': contentType },
+    body: new Blob([bytes as BlobPart], { type: contentType }),
+  }).catch(() => {});
+}
+
+/**
+ * Fetch a VN background from /blobs/vn-bg/{key}, cache to localStorage, and
+ * return the data URL. Called lazily by the chat view when the cached
+ * localStorage entry is missing (e.g. first visit on a new device).
+ */
+export async function fetchVnBgBlob(key: string): Promise<string | null> {
+  try {
+    const resp = await fetch(`/blobs/vn-bg/${encodeURIComponent(key)}`, {
+      credentials: 'include',
+    });
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    const dataUrl: string | null = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+    if (dataUrl) {
+      try {
+        localStorage.setItem(
+          key === 'global' ? 'stm:vn-bg-global' : `stm:vn-bg-${key}`,
+          dataUrl,
+        );
+      } catch { /* ignore */ }
+    }
+    return dataUrl;
+  } catch {
+    return null;
+  }
+}
 
 export function getVnBgForCharacter(avatar: string): string | null {
   try { return localStorage.getItem(`stm:vn-bg-${avatar}`); } catch { return null; }
@@ -101,10 +164,12 @@ export function getVnBgForCharacter(avatar: string): string | null {
 
 export function setVnBgForCharacter(avatar: string, dataUrl: string): void {
   try { localStorage.setItem(`stm:vn-bg-${avatar}`, dataUrl); } catch { /* ignore */ }
+  uploadVnBgBlob(avatar, dataUrl);
 }
 
 export function clearVnBgForCharacter(avatar: string): void {
   try { localStorage.removeItem(`stm:vn-bg-${avatar}`); } catch { /* ignore */ }
+  uploadVnBgBlob(avatar, undefined);
 }
 
 export function getVnBgGlobal(): string | null {
@@ -113,10 +178,12 @@ export function getVnBgGlobal(): string | null {
 
 export function setVnBgGlobal(dataUrl: string): void {
   try { localStorage.setItem('stm:vn-bg-global', dataUrl); } catch { /* ignore */ }
+  uploadVnBgBlob('global', dataUrl);
 }
 
 export function clearVnBgGlobal(): void {
   try { localStorage.removeItem('stm:vn-bg-global'); } catch { /* ignore */ }
+  uploadVnBgBlob('global', undefined);
 }
 
 // ---- Standardize Message Formatting ---------------------------------

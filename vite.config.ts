@@ -26,6 +26,7 @@ export default defineConfig({
     proxy: {
       '/auth': proxyTarget,
       '/sync': proxyTarget,
+      '/blobs': proxyTarget,
       '/invitations': proxyTarget,
       '/health': proxyTarget,
       '/api': proxyTarget,
