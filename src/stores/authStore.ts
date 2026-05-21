@@ -7,6 +7,8 @@ import { useWorldInfoStore } from './worldInfoStore';
 import { useBranchStore } from './branchStore';
 import { useRegexScriptStore } from './regexScriptStore';
 import { usePromptTemplateStore } from './promptTemplateStore';
+import { useImageGenStore } from './imageGenStore';
+import { useDataBankStore } from './dataBankStore';
 import { useThemeStore } from './themeStore';
 import { useDisplayPreferencesStore } from './displayPreferencesStore';
 import { useSpeechPreferencesStore } from './speechPreferencesStore';
@@ -95,6 +97,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       useChatStore.getState().fetchPrefs();
       useRegexScriptStore.getState().fetchPrefs();
       usePromptTemplateStore.getState().fetchPrefs();
+      useImageGenStore.getState().fetchPrefs();
+      useDataBankStore.getState().fetchPrefs();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
       }
@@ -163,6 +167,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       useChatStore.getState().fetchPrefs();
       useRegexScriptStore.getState().fetchPrefs();
       usePromptTemplateStore.getState().fetchPrefs();
+      useImageGenStore.getState().fetchPrefs();
+      useDataBankStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
@@ -213,6 +219,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       useChatStore.getState().fetchPrefs();
       useRegexScriptStore.getState().fetchPrefs();
       usePromptTemplateStore.getState().fetchPrefs();
+      useImageGenStore.getState().fetchPrefs();
+      useDataBankStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
