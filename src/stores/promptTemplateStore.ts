@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
 import {
   useGenerationStore,
   DEFAULT_PROMPT_CONFIG,
@@ -69,9 +70,31 @@ interface PromptTemplateState {
   importTemplates: (json: string) => { imported: number; errors: number };
   exportTemplates: () => string;
   exportTemplate: (id: string) => string | null;
+
+  /** A3.1c — pull /sync/section/stm_prompt_templates and reconcile. */
+  fetchPrefs: () => Promise<void>;
 }
 
 const STORAGE_KEY = 'stm:prompt-templates';
+const SERVER_KEY = 'stm_prompt_templates';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+let _persistEnabled = false;
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePersist(state: PersistedShape): void {
+  if (!_persistEnabled) return;
+  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null;
+    patchServerKey(
+      SERVER_KEY,
+      state as unknown as Record<string, unknown>,
+      LOCAL_TS_KEY,
+    ).catch(() => {});
+  }, 300);
+}
 
 interface PersistedShape {
   templates: PromptTemplate[];
@@ -113,14 +136,16 @@ function loadFromStorage(): PersistedShape {
  * drop fields they didn't pass.
  */
 function saveToStorage(state: PersistedShape) {
+  let merged: PersistedShape = state;
   try {
     const existingRaw = localStorage.getItem(STORAGE_KEY);
     const existing: Partial<PersistedShape> = existingRaw ? JSON.parse(existingRaw) : {};
-    const merged: PersistedShape = { ...existing, ...state };
+    merged = { ...existing, ...state };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
   } catch {
     // ignore quota / parse errors
   }
+  schedulePersist(merged);
 }
 
 function generateId(): string {
@@ -379,5 +404,74 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
     const t = templates.find((x) => x.id === id);
     if (!t) return null;
     return JSON.stringify({ version: 1, templates: [t] }, null, 2);
+  },
+
+  fetchPrefs: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const stored = settings[SERVER_KEY] as
+        | (PersistedShape & { _ts?: number })
+        | undefined;
+      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
+      const serverTs = Number(stored?._ts || 0);
+
+      if (!stored) {
+        _persistEnabled = true;
+        const s = get();
+        const snapshot: PersistedShape = {
+          templates: s.templates,
+          activeTemplateId: s.activeTemplateId,
+          linkedTemplateByAvatar: s.linkedTemplateByAvatar,
+          mainPromptSnapshot: s.mainPromptSnapshot,
+        };
+        if (s.templates.length > 0 || Object.keys(s.linkedTemplateByAvatar).length > 0) {
+          patchServerKey(
+            SERVER_KEY,
+            snapshot as unknown as Record<string, unknown>,
+            LOCAL_TS_KEY,
+          ).catch(() => {});
+        }
+        return;
+      }
+
+      if (localTs > serverTs) {
+        _persistEnabled = true;
+        const s = get();
+        const snapshot: PersistedShape = {
+          templates: s.templates,
+          activeTemplateId: s.activeTemplateId,
+          linkedTemplateByAvatar: s.linkedTemplateByAvatar,
+          mainPromptSnapshot: s.mainPromptSnapshot,
+        };
+        patchServerKey(
+          SERVER_KEY,
+          snapshot as unknown as Record<string, unknown>,
+          LOCAL_TS_KEY,
+        ).catch(() => {});
+        return;
+      }
+
+      _persistEnabled = false;
+      const templates = Array.isArray(stored.templates) ? stored.templates : [];
+      const activeTemplateId =
+        typeof stored.activeTemplateId === 'string' ? stored.activeTemplateId : null;
+      const linkedTemplateByAvatar =
+        stored.linkedTemplateByAvatar && typeof stored.linkedTemplateByAvatar === 'object'
+          ? stored.linkedTemplateByAvatar
+          : {};
+      const mainPromptSnapshot =
+        typeof stored.mainPromptSnapshot === 'string' ? stored.mainPromptSnapshot : null;
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ templates, activeTemplateId, linkedTemplateByAvatar, mainPromptSnapshot }),
+        );
+        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+      } catch { /* ignore */ }
+      set({ templates, activeTemplateId, linkedTemplateByAvatar, mainPromptSnapshot });
+      _persistEnabled = true;
+    } catch {
+      _persistEnabled = true;
+    }
   },
 }));
