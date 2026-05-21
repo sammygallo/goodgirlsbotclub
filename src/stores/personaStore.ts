@@ -94,7 +94,9 @@ function markLocalDirty(): void {
   try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
 }
 
-// avatarDataUrl is a base64 blob — excluded from server sync (device-local).
+// avatarDataUrl is a base64 blob — too large for the JSONB sync section. We
+// strip it from the per-section sync and shuttle the bytes through the
+// dedicated /blobs API instead (A3.2).
 type PersonaForServer = Omit<Persona, 'avatarDataUrl'>;
 
 function stripAvatar(p: Persona): PersonaForServer {
@@ -110,6 +112,62 @@ function syncToServer(personas: Persona[], activePersonaId: string | null, locks
     activePersonaId,
     locks,
   }, LOCAL_TS_KEY).catch(() => {});
+}
+
+/**
+ * Upload a persona's avatar bytes to /blobs/persona-avatar/{id}. Fire-and-
+ * forget — failures are logged but never block the user; the data URL is
+ * already in local state and localStorage at this point.
+ */
+function uploadAvatarBlob(personaId: string, avatarDataUrl: string | undefined): void {
+  if (!avatarDataUrl) {
+    // Drop the server-side blob if the user cleared their avatar locally.
+    fetch(`/blobs/persona-avatar/${encodeURIComponent(personaId)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    }).catch(() => {});
+    return;
+  }
+  const match = /^data:([^;]+);base64,(.+)$/.exec(avatarDataUrl);
+  if (!match) return;
+  const contentType = match[1];
+  let bytes: Uint8Array;
+  try {
+    const binary = atob(match[2]);
+    bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  } catch {
+    return;
+  }
+  fetch(`/blobs/persona-avatar/${encodeURIComponent(personaId)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': contentType },
+    body: new Blob([bytes as BlobPart], { type: contentType }),
+  }).catch(() => {});
+}
+
+/**
+ * Fetch a persona's avatar from /blobs/persona-avatar/{id} and convert to a
+ * data URL. Returns null if the blob doesn't exist or the request fails.
+ */
+async function fetchAvatarBlob(personaId: string): Promise<string | null> {
+  try {
+    const resp = await fetch(
+      `/blobs/persona-avatar/${encodeURIComponent(personaId)}`,
+      { credentials: 'include' },
+    );
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
 }
 
 interface PersonaState {
@@ -216,14 +274,15 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
         activeId = persona.id;
       }
       syncToServer(updatedPersonas, activeId, get().locks);
+      uploadAvatarBlob(persona.id, persona.avatarDataUrl);
 
       return persona;
     },
 
     updatePersona: (id, data) => {
       const { personas } = get();
-      const exists = personas.some((p) => p.id === id);
-      if (!exists) {
+      const previous = personas.find((p) => p.id === id);
+      if (!previous) {
         set({ error: 'Persona not found' });
         return;
       }
@@ -242,12 +301,19 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
       savePersonas(updatedPersonas);
       set({ personas: updatedPersonas });
       syncToServer(updatedPersonas, get().activePersonaId, get().locks);
+
+      // Push the avatar to /blobs only when it actually changed — keeps the
+      // dev console quiet for unrelated edits (rename, description tweaks).
+      if ('avatarDataUrl' in data && data.avatarDataUrl !== previous.avatarDataUrl) {
+        uploadAvatarBlob(id, data.avatarDataUrl);
+      }
     },
 
     deletePersona: (id) => {
       const { personas, activePersonaId, locks } = get();
       const updatedPersonas = personas.filter((p) => p.id !== id);
       savePersonas(updatedPersonas);
+      uploadAvatarBlob(id, undefined); // also DELETE the blob on the server
 
       // Remove any locks that point to this persona
       const cleanedLocks: PersonaLocks = {
@@ -350,7 +416,9 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
         const serverActiveId = (stored.activePersonaId as string | null) ?? null;
         const serverLocks = (stored.locks as PersonaLocks | undefined) ?? { byCharacter: {}, byChat: {} };
 
-        // Restore local avatarDataUrls for matching persona IDs.
+        // Re-attach avatarDataUrls. Local cache wins for personas the user
+        // has already loaded on this device; for others (e.g. just signed in
+        // on a new device) fetch from /blobs/persona-avatar/{id}.
         const localAvatars: Record<string, string> = {};
         for (const p of get().personas) {
           if (p.avatarDataUrl) localAvatars[p.id] = p.avatarDataUrl;
@@ -365,6 +433,25 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
         saveLocks(serverLocks);
         try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
         set({ personas: restoredPersonas, activePersonaId: serverActiveId, locks: serverLocks });
+
+        // Fire off /blobs fetches for the personas missing a local avatar.
+        // These resolve asynchronously and patch into store state as they
+        // complete — no UI blocking, no loading spinner.
+        const missingAvatarIds = restoredPersonas
+          .filter((p) => !p.avatarDataUrl)
+          .map((p) => p.id);
+        for (const id of missingAvatarIds) {
+          fetchAvatarBlob(id)
+            .then((dataUrl) => {
+              if (!dataUrl) return;
+              const next = get().personas.map((p) =>
+                p.id === id ? { ...p, avatarDataUrl: dataUrl } : p
+              );
+              savePersonas(next);
+              set({ personas: next });
+            })
+            .catch(() => {});
+        }
       } catch { /* non-fatal */ }
     },
   };
