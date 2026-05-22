@@ -27,14 +27,26 @@ const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes total — leaves headroom 
  * server-side). Lets clients auto-populate their local store on character
  * load so users see Live Portrait everywhere — not just on the device
  * that ran generation.
+ *
+ * B3c-assets — clips moved into user_blobs under
+ * `live-portrait/{avatar}/{emotion}.mp4`. We list the user's blobs and
+ * filter by the per-character prefix instead of hitting ST's
+ * `/api/live-portrait/list/{name}` route.
  */
-export async function fetchExistingClips(characterName: string): Promise<EmotionClips> {
-  const r = await fetch(`/api/live-portrait/list/${encodeURIComponent(characterName)}`, {
-    credentials: 'include',
-  });
+export async function fetchExistingClips(characterAvatar: string): Promise<EmotionClips> {
+  const r = await fetch('/blobs', { credentials: 'include' });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const data = await r.json();
-  return data.clips ?? {};
+  const rows: Array<{ key: string }> = await r.json();
+  const prefix = `live-portrait/${characterAvatar}/`;
+  const clips: EmotionClips = {};
+  for (const row of rows) {
+    if (!row.key.startsWith(prefix)) continue;
+    const filename = row.key.slice(prefix.length);
+    const emotion = filename.replace(/\.[^/.]+$/, '');
+    if (!emotion) continue;
+    clips[emotion] = `/blobs/${encodeURI(row.key)}`;
+  }
+  return clips;
 }
 
 /**
