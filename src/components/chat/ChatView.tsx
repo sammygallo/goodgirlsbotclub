@@ -295,9 +295,10 @@ export function ChatView() {
   useEffect(() => {
     if (!selectedCharacter || !livePortraitEnabled) return;
     if (livePortraitClips && Object.keys(livePortraitClips).length > 0) return;
-    const characterName = selectedCharacter.avatar.replace(/\.png$/i, '');
     let cancelled = false;
-    fetchExistingClips(characterName)
+    // B3c-assets — clips are now stored in user_blobs keyed by the
+    // character's avatar (filename incl. .png), not the name slug.
+    fetchExistingClips(selectedCharacter.avatar)
       .then((clips) => {
         if (cancelled) return;
         if (Object.keys(clips).length > 0) {
