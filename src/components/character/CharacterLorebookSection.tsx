@@ -28,10 +28,12 @@ export function CharacterLorebookSection({
   const books = useWorldInfoStore((s) => s.books);
   const createCharacterBook = useWorldInfoStore((s) => s.createCharacterBook);
   const deleteCharacterBook = useWorldInfoStore((s) => s.deleteCharacterBook);
+  const deleteBook = useWorldInfoStore((s) => s.deleteBook);
   const importBookJson = useWorldInfoStore((s) => s.importBookJson);
   const [editingEmbedded, setEditingEmbedded] = useState(false);
   const [editingLinkedBookId, setEditingLinkedBookId] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirmDeleteBookId, setConfirmDeleteBookId] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -272,11 +274,48 @@ export function CharacterLorebookSection({
                     <Edit2 size={12} />
                     Edit
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteBookId(book.id)}
+                    className="shrink-0 p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-red-400 hover:bg-red-500/10"
+                    aria-label={`Delete ${book.name}`}
+                    title="Permanently delete lorebook"
+                  >
+                    <Trash2 size={12} />
+                  </button>
                 </li>
               );
             })}
           </ul>
         )}
+        {confirmDeleteBookId && (() => {
+          const book = candidateBooks.find((b) => b.id === confirmDeleteBookId);
+          return book ? (
+            <div className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 p-2 text-xs text-[var(--color-text-primary)]">
+              <p>Permanently delete &ldquo;{book.name}&rdquo; and all its entries? This cannot be undone.</p>
+              <div className="mt-2 flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteBookId(null)}
+                  className="px-2 py-1 rounded border border-[var(--color-border)] hover:bg-[var(--color-bg-secondary)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    deleteBook(confirmDeleteBookId);
+                    onLinkedBookIdsChange(linkedBookIds.filter((id) => id !== confirmDeleteBookId));
+                    setConfirmDeleteBookId(null);
+                  }}
+                  className="px-2 py-1 rounded bg-red-500/80 text-white hover:bg-red-500"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ) : null;
+        })()}
         <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
           Linked books are auto-activated (in addition to globally-active
           books) whenever this character is the scan target.
