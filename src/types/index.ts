@@ -2,7 +2,7 @@
 /** @deprecated Use `permissions` array + `groupId` instead. Kept for backward compat during transition. */
 export type UserRole = 'owner' | 'admin' | 'contributor' | 'end_user';
 
-/** A permission string matching the backend vocabulary in `SillyTavern/src/permissions.js`. */
+/** A permission string matching the backend vocabulary in `ggbc-backend/app/security/permissions.py`. */
 export type Permission = string;
 
 export interface PermissionGroup {

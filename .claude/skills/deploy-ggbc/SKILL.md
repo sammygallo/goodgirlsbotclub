@@ -14,7 +14,7 @@ Both the frontend and backend images are built in GitHub Actions and pulled from
 | Repo | Local path | Remote | Merge target | Image tag | CI workflow |
 |------|-----------|--------|-------------|-----------|-------------|
 | goodgirlsbotclub (frontend) | `/Users/sammy/Documents/GitHub/goodgirlsbotclub` | `sammygallo/goodgirlsbotclub` | `main` | `ghcr.io/sammygallo/goodgirlsbotclub:latest` | `.github/workflows/docker-publish.yml` |
-| SillyTavern (backend) | `/Users/sammy/Documents/GitHub/SillyTavern` | `sammygallo/SillyTavern` | `feat/role-based-permissions` | `ghcr.io/sammygallo/sillytavern:feat-role-based-permissions` | `.github/workflows/docker-publish.yml` |
+| ggbc-backend (FastAPI/Postgres) | `/Users/sammy/Documents/GitHub/ggbc-backend` | `sammygallo/ggbc-backend` | `main` | `ghcr.io/sammygallo/ggbc-backend:latest` | `.github/workflows/docker-publish.yml` |
 | ggbc-intake-bot | `/Users/sammy/Documents/GitHub/ggbc-intake-bot` | `sammygallo/ggbc-intake-bot` | `main` | _(no image — builds on droplet)_ | _(none — no CI)_ |
 
 ## Droplet
@@ -45,18 +45,27 @@ services:
 
 The `!override` tag is critical — without it, compose *merges* the ports lists and tries to bind both 80 and 8080, causing a port-in-use error.
 
-### 2. `seed-owner` is a one-shot init container — it's NOT always running
+### 2. Stack is three containers — frontend / ggbc-backend / postgres
 
-There are THREE containers, not two:
+Post-B3c-final (2026-05-26): SillyTavern and `seed-owner` are gone from production. A successful `docker ps` shows:
+
 - `goodgirlsbotclub-frontend-1` — always running (nginx + Vite build)
-- `goodgirlsbotclub-sillytavern-1` — always running (ST backend)
-- `goodgirlsbotclub-seed-owner-1` — **runs once at startup to seed the owner user, then exits**
+- `goodgirlsbotclub-ggbc-backend-1` — always running (FastAPI; runs `alembic upgrade head` on every start, then uvicorn)
+- `goodgirlsbotclub-postgres-1` — always running, healthy
 
-A successful `docker ps` check will show only the first two as currently "Up" after some time — that is correct. The seed-owner has `restart: "no"` so it doesn't come back. Don't report it as "missing" — check `docker ps -a` if you need to verify it ran at all.
+If you see lingering `goodgirlsbotclub-sillytavern-1` or `goodgirlsbotclub-seed-owner-1`, run `docker compose up -d --remove-orphans` to clean them up. The `st-config` / `st-data` volumes may still exist as historical backups — leave them alone.
 
 ### 3. Building the frontend on the droplet is the OLD way and must never happen again
 
 The droplet is a 1 vCPU / 1 GB box. Running `vite build` on it takes 12+ minutes and thrashes the memory budget. The skill's deploy command must **never** use `docker compose up --build`. It must always be `docker compose pull && docker compose up -d`. The image is built in GitHub Actions and pulled from GHCR.
+
+### 4. Backend migrations run automatically on startup
+
+The `ggbc-backend` container's CMD is `alembic upgrade head && uvicorn …`, so every deploy applies any pending alembic migrations idempotently. You don't need to run them by hand. If a migration fails the container won't reach uvicorn and the deploy will be visibly broken; check `docker compose logs ggbc-backend` immediately.
+
+### 5. The `SECRET_ENCRYPTION_KEY` env var is critical and lives in `.env`
+
+API secrets (Replicate keys, OpenAI keys, etc.) are Fernet-encrypted in Postgres using `SECRET_ENCRYPTION_KEY` from `/opt/goodgirlsbotclub/.env`. **Never** regenerate or change this key without re-encrypting the existing rows — every secret in the DB becomes unrecoverable. If you find the var unset on the droplet, the backend falls back to a publicly-known dev key (visible in source), which would mean every API key in the DB is decryptable by anyone reading the repo.
 
 ## Arguments
 
@@ -78,11 +87,11 @@ If invoked with no args and nothing to deploy anywhere, interpret it as "sync th
 
 ### 0. Always start with a fetch
 
-Before ANY branch inspection, merge, or PR operation, fetch both repos. Stale `origin/main` state has caused failed deploys in the past.
+Before ANY branch inspection, merge, or PR operation, fetch all three repos. Stale `origin/main` state has caused failed deploys in the past.
 
 ```bash
 cd /Users/sammy/Documents/GitHub/goodgirlsbotclub && git fetch origin
-cd /Users/sammy/Documents/GitHub/SillyTavern && git fetch origin
+cd /Users/sammy/Documents/GitHub/ggbc-backend && git fetch origin
 cd /Users/sammy/Documents/GitHub/ggbc-intake-bot && git fetch origin
 ```
 
@@ -91,15 +100,15 @@ cd /Users/sammy/Documents/GitHub/ggbc-intake-bot && git fetch origin
 If branch args were provided, use them. Otherwise, detect:
 
 ```bash
-# Frontend: check for commits ahead of main on the current branch
+# Frontend
 cd /Users/sammy/Documents/GitHub/goodgirlsbotclub
 git log --oneline origin/main..HEAD  # if on a feature branch
 
-# Backend: check for commits ahead of feat/role-based-permissions
-cd /Users/sammy/Documents/GitHub/SillyTavern
-git log --oneline origin/feat/role-based-permissions..HEAD
+# Backend (also main; ggbc-backend follows the standard PR-against-main flow)
+cd /Users/sammy/Documents/GitHub/ggbc-backend
+git log --oneline origin/main..HEAD
 
-# Intake bot: check for unpushed commits on main
+# Intake bot
 cd /Users/sammy/Documents/GitHub/ggbc-intake-bot
 git fetch origin && git log --oneline origin/main..HEAD
 ```
@@ -117,7 +126,25 @@ npm run build  # runs tsc -b && vite build — matches the Dockerfile
 
 If `npm run build` is green, the Docker CI build will be green. This is a two-minute local check that saves a ~3-minute round-trip of push → CI fail → fix → push → CI again. **Incurred on 2026-04-15 during the AI settings catalog deploy — two TS errors slipped past `tsc --noEmit` and failed in CI.**
 
-The backend repo doesn't have the equivalent split; its build is the standard SillyTavern tree.
+#### Backend: pytest + ruff locally before pushing
+
+CI runs `ruff check . && pytest`. Same check locally:
+
+```bash
+cd /Users/sammy/Documents/GitHub/ggbc-backend
+# Spin up an ephemeral postgres on :5433 (avoids colliding with the dev stack on :5432)
+docker run --rm -d --name ggbc-test-pg \
+  -e POSTGRES_USER=ggbc -e POSTGRES_PASSWORD=ggbc -e POSTGRES_DB=ggbc \
+  -p 127.0.0.1:5433:5432 postgres:16-alpine && sleep 3
+
+docker run --rm -v "$PWD:/app" -w /app --network host \
+  -e DATABASE_URL=postgresql+asyncpg://ggbc:ggbc@127.0.0.1:5433/ggbc \
+  python:3.12-slim sh -c "pip install -q -e '.[dev]' && ruff check . && pytest"
+
+docker stop ggbc-test-pg
+```
+
+Faster alternative if you already have a local stack running: point at the dev postgres on :5432 instead. Either way, green pytest + green ruff locally → green CI.
 
 ### 2. Merge — preferred path: `gh pr merge`
 
@@ -125,13 +152,13 @@ For any branch that has an open PR, just merge it:
 
 ```bash
 # Frontend
-gh pr merge <pr-number> --repo sammygallo/goodgirlsbotclub --merge --admin
+gh pr merge <pr-number> --repo sammygallo/goodgirlsbotclub --squash --delete-branch
 
 # Backend
-gh pr merge <pr-number> --repo sammygallo/SillyTavern --merge --admin
+gh pr merge <pr-number> --repo sammygallo/ggbc-backend --squash --delete-branch
 ```
 
-No local checkout required, no worktree hunting, and GitHub handles any fast-forward edge cases. The `--admin` flag bypasses any branch protection that might block direct merges.
+No local checkout required, no worktree hunting, and GitHub handles any fast-forward edge cases. Use `--admin` instead of `--squash` if branch protection blocks the squash (rare).
 
 If there's no PR yet, open one first:
 
@@ -139,21 +166,12 @@ If there's no PR yet, open one first:
 cd /Users/sammy/Documents/GitHub/goodgirlsbotclub
 git push origin <branch-name>
 gh pr create --base main --head <branch-name> --title "..." --body "..."
-gh pr merge <new-pr-number> --repo sammygallo/goodgirlsbotclub --merge --admin
+gh pr merge <new-pr-number> --repo sammygallo/goodgirlsbotclub --squash --delete-branch
 ```
 
-#### Fallback: local merge
+#### Worktree pitfall
 
-Only use this if `gh pr merge` isn't available or the branch has no PR and you can't create one:
-
-```bash
-cd /Users/sammy/Documents/GitHub/goodgirlsbotclub
-git push origin <branch-name>
-# Find where main is checked out (may be a worktree) — git branch -v
-git checkout main
-git merge <branch-name> --no-edit
-git push origin main
-```
+The frontend repo sometimes has secondary worktrees under `.claude/worktrees/<slug>/`. Branch checkout in a worktree fails with `'main' is already used by worktree at …`. Either work in the primary worktree (`/Users/sammy/Documents/GitHub/goodgirlsbotclub`) or use `git fetch && git push` without trying to checkout. **Incurred on 2026-05-26 during B3c-final** — bash session cwd drifted into the wrong worktree mid-deploy and silently dropped edits via failed `git checkout main` → fallback compound commands.
 
 ### 3. Wait for CI
 
@@ -167,13 +185,13 @@ FE_RUN=$(gh run list --repo sammygallo/goodgirlsbotclub --workflow docker-publis
 gh run watch $FE_RUN --repo sammygallo/goodgirlsbotclub --exit-status
 
 # Backend
-BE_RUN=$(gh run list --repo sammygallo/SillyTavern --workflow docker-publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')
-gh run watch $BE_RUN --repo sammygallo/SillyTavern --exit-status
+BE_RUN=$(gh run list --repo sammygallo/ggbc-backend --workflow docker-publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run watch $BE_RUN --repo sammygallo/ggbc-backend --exit-status
 ```
 
 Typical durations:
-- **Frontend CI:** ~1.5-3 minutes (Vite build on GitHub runner with GHA cache)
-- **Backend CI:** ~5-8 minutes (full SillyTavern Docker build)
+- **Frontend CI:** ~1.5–3 minutes (Vite build on GitHub runner with GHA cache)
+- **Backend CI:** ~3–5 minutes (pytest + ruff + multi-arch Docker image build)
 
 Use `run_in_background: true` on the Bash call if you want to keep working in parallel — you'll get a task-notification when it completes.
 
@@ -212,6 +230,8 @@ Pull-only deploy:
 
 Should complete in under a minute. **Never add `--build`.** Building on the droplet is explicitly prohibited (see Environment gotcha #3).
 
+The backend runs `alembic upgrade head` automatically on each start, so any new schema migrations apply themselves as part of the recreate.
+
 ### 4.5. Deploy intake bot (only when intake is in scope)
 
 Skip this entire step if the intake bot wasn't detected in step 1 and wasn't explicitly requested.
@@ -247,14 +267,14 @@ ssh root@159.89.180.146 "docker ps --format '{{.Names}}\t{{.Status}}'"
 
 Expected output after a successful deploy:
 - `goodgirlsbotclub-frontend-1` — **Up** (running)
-- `goodgirlsbotclub-sillytavern-1` — **Up** (running)
-- `goodgirlsbotclub-seed-owner-1` — may or may not appear (it exits after seeding — see Environment gotcha #2)
+- `goodgirlsbotclub-ggbc-backend-1` — **Up** (running)
+- `goodgirlsbotclub-postgres-1` — **Up** (healthy)
 
-For a deeper check, smoke-test the proxy endpoint:
+For a deeper check, smoke-test:
 ```bash
-ssh root@159.89.180.146 "curl -sI http://127.0.0.1:8080 | head -3"
+ssh root@159.89.180.146 "curl -sI http://127.0.0.1:8080 | head -3 && curl -s https://www.goodgirlsbotclub.com/health"
 ```
-Should return `HTTP/1.1 200 OK`.
+Should return `HTTP/1.1 200 OK` and `{"status":"ok"}`.
 
 If the intake bot was deployed, verify pm2:
 ```bash
@@ -320,21 +340,21 @@ gh run view <run-id> --repo <repo> --log-failed
 ```
 Report the error and wait for the user to fix it.
 
-**Recovery path when CI fails AFTER the merge** (the commits are on `main`/`feat/role-based-permissions`, but the image didn't publish):
+**Recovery path when CI fails AFTER the merge** (the commits are on `main`, but the image didn't publish):
 
 1. The existing feature branch is still valid — don't branch off main again.
 2. Commit the fix directly on the feature branch, push:
    ```bash
    git add <fixed files> && git commit -m "fix: ..." && git push origin <feature-branch>
    ```
-3. Open a NEW PR from the same branch to the same target. GitHub compares the feature branch to main, so the new PR contains only the fix commits (the previously merged ones are already on main and won't appear).
+3. Open a NEW PR from the same branch to `main`. GitHub compares the feature branch to main, so the new PR contains only the fix commits (the previously merged ones are already on main and won't appear).
    ```bash
    gh pr create --repo sammygallo/goodgirlsbotclub --base main --head <feature-branch> --title "fix(...): ..." --body "Follow-up to #<prev-pr>"
-   gh pr merge <new-pr-number> --repo sammygallo/goodgirlsbotclub --merge --admin
+   gh pr merge <new-pr-number> --repo sammygallo/goodgirlsbotclub --squash --delete-branch
    ```
 4. Wait for CI again (step 3 of the main workflow), then deploy.
 
-Do **not** try to `git revert` the original merge — that leaves history noisy for no benefit. A forward-fix PR is cleaner, and since CI didn't publish the broken image, nothing was ever live. **Pattern used on 2026-04-15:** PR #80 merged, CI failed, PR #81 from the same `claude/gifted-driscoll` branch shipped the fix in ~3 minutes.
+Do **not** try to `git revert` the original merge — that leaves history noisy for no benefit. A forward-fix PR is cleaner, and since CI didn't publish the broken image, nothing was ever live. **Pattern used on 2026-04-15:** PR #80 merged, CI failed, PR #81 from the same `claude/gifted-driscoll` branch shipped the fix in ~3 minutes. **Used again 2026-05-22** for the Anthropic top_p hotfix.
 
 ### `docker compose pull` reports "manifest unknown"
 CI hasn't finished or it failed. Re-check:
@@ -359,7 +379,10 @@ If the diff is the `ports:` line (`127.0.0.1:8080:80`), the droplet's override f
 ```bash
 ssh root@159.89.180.146 "cd /opt/goodgirlsbotclub && docker compose logs --tail 50 <service-name>"
 ```
-Services are `frontend`, `sillytavern`, `seed-owner`. Report the logs to the user.
+Services are `frontend`, `ggbc-backend`, `postgres`. Report the logs to the user.
+
+### Alembic migration failure
+If the backend container won't start because `alembic upgrade head` errored, the deploy is broken until the migration is fixed. Pull the failing migration's downgrade path manually or fix-forward — never edit a migration that's already run on prod.
 
 ### Previous deploy was interrupted mid-build (legacy state)
 If you SSH in and see a zombie `docker build` or `vite` process, the droplet is in the "old-way" state:
@@ -367,33 +390,3 @@ If you SSH in and see a zombie `docker build` or `vite` process, the droplet is 
 ssh root@159.89.180.146 "ps aux | grep -E 'docker build|vite|tsc|npm' | grep -v grep"
 ```
 Kill any zombies (`kill -9 <pid>`), then retry the deploy. The droplet should never be building — always pulling.
-
-### Intake bot: `npm ci` fails with `better-sqlite3` native rebuild error
-Usually a Node version mismatch or missing build toolchain. Check:
-```bash
-ssh root@159.89.180.146 "node -v && which python3 && which make"
-```
-Node must be 20+. If the rebuild failed mid-install, a retry usually succeeds. If it persists, fall back to `npm rebuild better-sqlite3 --build-from-source`.
-
-### Intake bot: pm2 app not starting
-```bash
-ssh root@159.89.180.146 "pm2 logs ggbc-intake-bot --lines 60 --nostream"
-```
-Common causes: missing `.env` (Discord token, Anthropic key, GitHub PAT), bad sqlite path, wrong working directory. `.env` at `/opt/ggbc-intake-bot/.env` is **not** in git — never overwrite it during deploy.
-
-### Intake bot: `ggbc-intake-recluster` shows repeated restart attempts
-That app must have `autorestart: false` in `ecosystem.config.cjs`. If it's thrashing, the config is wrong or the script is failing at import. Check logs; fix the underlying error; `pm2 delete ggbc-intake-recluster && pm2 start ecosystem.config.cjs --update-env`.
-
-### Droplet is low on disk / RAM
-2 GB swap is in place, but disk can fill up with stale images:
-```bash
-ssh root@159.89.180.146 "df -h / && docker image prune -af"
-```
-`docker image prune -af` reclaims space from untagged / orphaned images. Safe to run routinely.
-
-## CI cost tip
-
-The docker-publish workflow triggers on every push to the default branch. For docs-only or `.gitignore`-only changes, that's wasted CI time. **Note:** putting `[skip ci]` in a PR's commit message does NOT work with `--merge` strategy — GitHub creates a new merge commit that doesn't inherit the tag. Options:
-
-1. Use `--squash` or `--rebase` for docs-only PRs (preserves commit message).
-2. Add `paths-ignore` to `.github/workflows/docker-publish.yml` to exclude `**.md`, `.gitignore`, `docs/**`, etc. Better long-term fix — do this next time the workflow is touched.

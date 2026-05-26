@@ -1,10 +1,10 @@
-# SillyTavern Mobile
+# Good Girls Bot Club
 
-A mobile-friendly React UI for SillyTavern, built with Vite + TypeScript + Tailwind CSS.
+A mobile-first AI character chat app. React + Vite + Tailwind frontend, FastAPI + Postgres backend, multi-provider LLM routing. Character cards follow the open v2/v3 PNG spec, so cards from the broader community ecosystem work as-is.
 
 ## First-Time Admin Setup
 
-After a fresh installation, no real users exist yet. The app uses a temporary bootstrap account (`default-user`) to allow the first person to register as the owner/admin — no manual credential setup required.
+After a fresh installation, no real users exist yet. The first person to register becomes the **owner** automatically — no manual credential setup required.
 
 ### Steps
 
@@ -14,11 +14,8 @@ After a fresh installation, no real users exist yet. The app uses a temporary bo
    - **Username** — at least 3 characters; letters, numbers, `_`, and `-` only.
    - **Display Name** — your visible name inside the app.
    - **Password** — optional, but recommended (minimum 4 characters if set).
-4. **Submit** — the app automatically:
-   - Logs in as the internal `default-user` bootstrap account (no password).
-   - Creates your account with the **owner** role and full admin privileges.
-   - Logs out the bootstrap account and logs you straight in.
-5. You are now signed in as the **owner/admin**. The "Create an account" link disappears for future visitors — further registrations require an admin invite.
+4. **Submit** — the app creates your account with the **owner** role and full admin privileges, then signs you in.
+5. The "Create an account" link disappears for future visitors — further registrations require an admin invite.
 
 > **Note:** If the "Create an account" link is not visible, a real user already exists. Log in with that account or ask the existing admin to invite you.
 
@@ -31,11 +28,13 @@ After a fresh installation, no real users exist yet. The app uses a temporary bo
 | `admin` | 2 | Administrative access |
 | `owner` | 3 | Full control (first registrant) |
 
+Roles are a deprecated shim over the permission-group system — see the Permission Groups page in admin for fine-grained control.
+
 ---
 
 ## Local development (full stack)
 
-Runs the production-style backend in Docker plus Vite dev for the frontend with HMR. Requires Docker Desktop.
+Runs the production-style backend in Docker plus Vite dev for the frontend with HMR. Requires Docker Desktop and a local checkout of [ggbc-backend](https://github.com/sammygallo/ggbc-backend) (defaults to `../ggbc-backend`; override with `GGBC_BACKEND_PATH`).
 
 ```bash
 cp .env.example .env       # one-time
@@ -45,9 +44,8 @@ npm run dev
 ```
 
 - Frontend with HMR: http://localhost:3000
-- ggbc-backend API: http://localhost:8001 (Vite proxies /auth /sync /invitations /health /api etc. to this)
+- ggbc-backend API: http://localhost:8001 (Vite proxies `/auth`, `/sync`, `/blobs`, `/invitations`, `/health`, `/api`, `/characters`, `/chats`, `/scripts` to this)
 - Postgres: localhost:5432 (`psql -h 127.0.0.1 -U ggbc`)
-- SillyTavern: http://localhost:8000 (internal — Vite never hits it directly)
 
 The dev overlay (`docker-compose.dev.yml`) flips `COOKIE_SECURE` off so cookies work over HTTP localhost and enables self-registration so you can create test users without an invite. First-boot bootstrap creates the owner from `OWNER_HANDLE`/`OWNER_PASSWORD` in `.env`.
 
@@ -66,3 +64,11 @@ If you don't need the backend stack (e.g. styling tweaks), `npm run dev` alone w
 ```bash
 npm run build
 ```
+
+## Architecture
+
+GGBC is a standalone full-stack app. Compatibility with the open character-card ecosystem (v2/v3 PNG spec, the STscript slash-command language, the extension SDK shape used by Live2d and friends) is preserved by design, but the runtime is entirely ours:
+
+- **Frontend** — React SPA, mobile-first chat UX, Zustand stores synced cross-device via the backend.
+- **Backend** ([sammygallo/ggbc-backend](https://github.com/sammygallo/ggbc-backend)) — FastAPI, owns auth, characters, chats, sync, blobs, secrets, multi-provider LLM generation (OpenAI-compatible, Anthropic, …), users, permissions, settings, live-portrait generation (Replicate), and extension serving.
+- **Storage** — Postgres for relational data + per-user encrypted secrets, `user_blobs` (bytea) for character art, expression sprites, live-portrait MP4s, and per-user extension files.

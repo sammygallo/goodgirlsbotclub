@@ -87,7 +87,8 @@ admin-only sections hidden.
 ## How do I import a character card?
 
 Sidebar → **Import** button at the bottom. Accepts PNG character cards
-(SillyTavern v2/v3 format), JSON exports, and Tavern AI cards.
+(v2/v3 spec — the open community format used across the character-chat
+ecosystem), JSON exports, and Tavern AI cards.
 
 Once imported, the character shows up in the sidebar list. Tap it to start a
 chat. To edit the card after import, tap the pencil icon in the header while
@@ -121,8 +122,9 @@ Each extension has its own toggle and settings. Some extensions add slots in
 the chat UI (e.g., the message-action menu, the chat-input toolbar) when
 enabled.
 
-Server-side extensions (third-party SillyTavern extensions installed on the
-backend) are listed at the bottom of the Extensions page.
+Server-side extensions (third-party extensions compatible with the
+community Extension SDK, like Live2d) are listed at the bottom of the
+Extensions page.
 
 ---
 
