@@ -23,9 +23,17 @@
 }
 
 /* Base styles */
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   @apply bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] antialiased;
   font-family: system-ui, -apple-system, sans-serif;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 /* Scrollbar styling */
