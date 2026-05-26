@@ -41,8 +41,8 @@ services:
       - COOKIE_SAMESITE=lax
       - ALLOW_SELF_REGISTRATION=true
       - ENVIRONMENT=development
-      - OWNER_HANDLE=
-      - OWNER_PASSWORD=
+      - OWNER_HANDLE=${OWNER_HANDLE}
+      - OWNER_PASSWORD=${OWNER_PASSWORD}
     command:
       - "sh"
       - "-c"

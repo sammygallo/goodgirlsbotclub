@@ -11,8 +11,8 @@ import { persist } from 'zustand/middleware';
  *
  * Each character's value is a map from emotion name (`idle`, `happy`,
  * `sad`, `angry`, `surprised`, `neutral`) to a server-relative URL like
- * `/characters/Mina Hope/live/idle.mp4`. The browser plays these via a
- * `<video>` tag in the chat avatar slot.
+ * `/blobs/live-portrait/Mina Hope.png/idle.mp4`. The browser plays these via
+ * a `<video>` tag in the chat avatar slot.
  */
 
 export type EmotionClips = Record<string, string>;
@@ -59,15 +59,23 @@ export const useLivePortraitStore = create<LivePortraitState>()(
     }),
     {
       name: 'live-portrait',
-      version: 2,
-      // Bumped from v1 (which stored anchors for the mesh-warp approach).
-      // Old anchor data is silently dropped — users will need to regenerate
-      // clips in the new UI.
+      version: 3,
+      // v1 → v2: dropped legacy mesh-warp anchor data.
+      // v2 → v3 (B3c-assets): the old URL shape was
+      //   /characters/{name}/live/{emotion}.mp4 — proxied to ST.
+      //   The new shape is /blobs/live-portrait/{avatar}/{emotion}.mp4
+      //   served natively by ggbc-backend. v2-persisted clipsByAvatar
+      //   entries still point at dead URLs and 404 in the browser,
+      //   so we drop them on migration. ChatView's fetchExistingClips
+      //   re-populates from /blobs on next character select.
       migrate: (persisted) => {
         if (!persisted || typeof persisted !== 'object') {
           return { clipsByAvatar: {}, enabled: true };
         }
-        return { clipsByAvatar: {}, enabled: (persisted as { enabled?: boolean }).enabled ?? true };
+        return {
+          clipsByAvatar: {},
+          enabled: (persisted as { enabled?: boolean }).enabled ?? true,
+        };
       },
     },
   ),
