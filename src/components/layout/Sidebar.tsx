@@ -53,6 +53,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const [showImportModal, setShowImportModal] = useState(false);
   const [showCharacterList, setShowCharacterList] = useState(false);
   const [failedExpressions, setFailedExpressions] = useState<Set<string>>(new Set());
+  const [descExpanded, setDescExpanded] = useState(false);
   const [isGroupSelectMode, setIsGroupSelectMode] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [previewCharacter, setPreviewCharacter] = useState<CharacterInfo | null>(null);
@@ -129,8 +130,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   useEffect(() => {
     if (selectedCharacter) {
       setShowCharacterList(false);
-      // Reset failed expressions for new character
       setFailedExpressions(new Set());
+      setDescExpanded(false);
     }
   }, [selectedCharacter]);
 
@@ -304,9 +305,21 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   </span>
                 )}
                 {firstSentence(selectedCharacter.creator_notes) && (
-                  <p className="text-sm text-[var(--color-text-secondary)] mt-2 line-clamp-3">
-                    {firstSentence(selectedCharacter.creator_notes)}
-                  </p>
+                  <div className="mt-2 text-left w-full">
+                    <p className={`text-sm text-[var(--color-text-secondary)] ${descExpanded ? '' : 'line-clamp-3'}`}>
+                      {descExpanded
+                        ? selectedCharacter.creator_notes
+                        : firstSentence(selectedCharacter.creator_notes)}
+                    </p>
+                    {(selectedCharacter.creator_notes?.length ?? 0) > 150 && (
+                      <button
+                        onClick={() => setDescExpanded(!descExpanded)}
+                        className="text-xs text-[var(--color-primary)] hover:underline mt-1"
+                      >
+                        {descExpanded ? 'Show less' : 'Show more'}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
