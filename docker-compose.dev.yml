@@ -2,38 +2,32 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 #
-# Pairs with `npm run dev` (vite at http://localhost:3000 proxying to the
-# backend stack on :8001 via vite.config.ts).
+# Pairs with `npm run dev` (vite at http://localhost:3000 proxying to
+# ggbc-backend on :8001 via vite.config.ts).
 #
 # What this overlay does:
-#   - Publishes ggbc-backend, postgres, and sillytavern to host loopback
-#     (they share frontend's network namespace, so we add the host port
-#     mappings to the frontend service).
+#   - Publishes ggbc-backend + postgres to host loopback (they share
+#     frontend's network namespace, so we add the host port mappings
+#     to the frontend service).
+#   - Builds ggbc-backend from a local checkout (prod uses GHCR).
 #   - Switches cookies to non-Secure so they work on HTTP localhost.
 #   - Allows self-registration so you can spin up users without an invite.
-#   - Binds uvicorn on 0.0.0.0 inside the namespace so the published port
-#     reaches it.
 #
 # Production unchanged — that's just `docker compose up -d` against
 # docker-compose.yml alone.
 
 services:
   frontend:
-    # Both frontend and sillytavern images are currently amd64-only on GHCR.
-    # Docker Desktop on Apple Silicon emulates amd64 via Rosetta — slower
-    # but functional. Multi-arch builds for those repos are a follow-up.
+    # Frontend image is currently amd64-only on GHCR. Docker Desktop on
+    # Apple Silicon emulates amd64 via Rosetta — slower but functional.
     platform: linux/amd64
-    # Replace (not merge) the ports list — port 80 is skipped in dev because
-    # vite serves the frontend on :3000 and port 80 is often in use on
-    # developer machines (nginx, etc.). Publishing the backing service
+    # Replace (not merge) the ports list — port 80 is skipped in dev
+    # because vite serves the frontend on :3000 and port 80 is often
+    # in use on developer machines. Publishing the backing service
     # ports here works because they share the frontend's network namespace.
     ports: !override
       - "127.0.0.1:8001:8001"
       - "127.0.0.1:5432:5432"
-      - "127.0.0.1:8000:8000"
-
-  sillytavern:
-    platform: linux/amd64
 
   ggbc-backend:
     # Build locally instead of pulling the GHCR image — the prod image is
@@ -47,24 +41,9 @@ services:
       - COOKIE_SAMESITE=lax
       - ALLOW_SELF_REGISTRATION=true
       - ENVIRONMENT=development
-      # In dev we don't run seed-owner (busybox wget can't preserve the ST
-      # session cookie that script requires). Instead, ggbc-backend uses
-      # ST's auto-created `default-user` (unprotected admin) as its service
-      # identity. Users self-register through the UI.
-      - ST_SERVICE_HANDLE=default-user
-      - ST_SERVICE_PASSWORD=
-      # Disable the ggbc owner bootstrap too — same reason. Sign up your
-      # first user via /register; ggbc-backend will provision the matching
-      # ST account through default-user.
       - OWNER_HANDLE=
       - OWNER_PASSWORD=
     command:
       - "sh"
       - "-c"
       - "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8001"
-
-  seed-owner:
-    # Disabled in dev — busybox wget in alpine can't preserve the ST session
-    # cookie that seed-owner.sh depends on. ggbc-backend uses ST's auto-
-    # created default-user as its service identity instead.
-    profiles: ["disabled-in-dev"]

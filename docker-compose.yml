@@ -12,10 +12,10 @@ services:
     restart: unless-stopped
 
   postgres:
-    # All four backing services share frontend's network namespace so they
-    # reach each other on 127.0.0.1 — postgres is on :5432, ST on :8000,
-    # ggbc-backend on :8001. This is the same pattern that already lets
-    # nginx talk to ST directly on localhost; ggbc-backend slots in alongside.
+    # postgres + ggbc-backend share frontend's network namespace so they
+    # reach each other on 127.0.0.1 — postgres is on :5432, ggbc-backend
+    # on :8001. nginx (running inside the frontend container) talks to
+    # ggbc-backend directly on localhost.
     image: postgres:16-alpine
     network_mode: "service:frontend"
     environment:
@@ -35,77 +35,33 @@ services:
     # Built and published by sammygallo/ggbc-backend's .github/workflows/
     # docker-publish.yml. Same pattern as the frontend — droplet pulls,
     # never builds.
+    #
+    # B3c-final — SillyTavern is gone. ggbc-backend owns auth, characters,
+    # chats, generation (multi-provider), secrets, settings, user admin,
+    # permissions, live-portrait generation, and extension serving.
     image: ghcr.io/sammygallo/ggbc-backend:latest
     network_mode: "service:frontend"
     environment:
       - DATABASE_URL=postgresql+asyncpg://ggbc:${POSTGRES_PASSWORD:-ggbc}@127.0.0.1:5432/ggbc
-      - ST_BASE_URL=http://127.0.0.1:8000
-      # ggbc-backend uses the owner account as its ST service identity —
-      # one credential set, configured via .env on the droplet.
-      - ST_SERVICE_HANDLE=${OWNER_HANDLE:-}
-      - ST_SERVICE_PASSWORD=${OWNER_PASSWORD:-}
       - OWNER_HANDLE=${OWNER_HANDLE:-}
       - OWNER_PASSWORD=${OWNER_PASSWORD:-}
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
       - COOKIE_SAMESITE=lax
       - ALLOW_SELF_REGISTRATION=${ALLOW_SELF_REGISTRATION:-false}
       - ENVIRONMENT=production
-      # B3a — Fernet master key for at-rest encryption of API secrets.
-      # MUST be set in .env on the droplet (generate with `python -c
-      # "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
+      # Fernet master key for at-rest encryption of API secrets. MUST be
+      # set in .env on the droplet (generate with `python -c "from
+      # cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
       # If unset, ggbc-backend falls back to a public dev key — anyone
       # with the source can decrypt the DB.
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-}
-    volumes:
-      # Read-only access to ST's data directory so the one-shot
-      # migrate_st_secrets script can scoop up existing per-user
-      # secrets.json files. Safe to keep mounted long-term — the
-      # backend never writes here.
-      - st-data:/st-data:ro
     # Run pending migrations, then start uvicorn. Migrations are idempotent
     # so this is safe on every container start.
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 127.0.0.1 --port 8001"]
     depends_on:
       postgres:
         condition: service_healthy
-      sillytavern:
-        condition: service_started
     restart: unless-stopped
-
-  sillytavern:
-    image: ghcr.io/sammygallo/sillytavern:feat-role-based-permissions
-    entrypoint: ["/bin/sh", "/st-init.sh"]
-    # Share frontend's network namespace: nginx connects to localhost:8000,
-    # so ST always sees 127.0.0.1 — permanently whitelisted, no tricks needed.
-    # Docker Compose infers the startup dependency automatically.
-    network_mode: "service:frontend"
-    environment:
-      - ST_PORT=8000
-    volumes:
-      - ./docker/st-init.sh:/st-init.sh:ro
-      - st-config:/home/node/app/config
-      - st-data:/home/node/app/data
-    restart: unless-stopped
-
-  seed-owner:
-    image: alpine:latest
-    # frontend's namespace = ST's namespace (ST uses service:frontend)
-    network_mode: "service:frontend"
-    volumes:
-      - ./docker/seed-owner.sh:/seed-owner.sh:ro
-      - st-config:/config
-    environment:
-      - OWNER_HANDLE=${OWNER_HANDLE:-}
-      - OWNER_PASSWORD=${OWNER_PASSWORD:-}
-      - OWNER_NAME=${OWNER_NAME:-}
-      - ST_PORT=8000
-    entrypoint: ["/bin/sh", "/seed-owner.sh"]
-    depends_on:
-      sillytavern:
-        condition: service_started
-    restart: "no"
 
 volumes:
-  st-config:
-  st-data:
   pgdata:

@@ -2,11 +2,11 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Vite dev proxies everything that isn't a static asset to ggbc-backend,
-// which serves /auth/* /sync/* /invitations/* /health itself and forwards
-// /api/* /thumbnail /characters /scripts /csrf-token to SillyTavern with
-// the per-user ST session it manages. Override the target via the
-// GGBC_BACKEND env var if you're running two worktrees in parallel.
+// Vite dev proxies everything that isn't a static asset to ggbc-backend.
+// B3c-final removed SillyTavern; ggbc-backend is the only upstream now and
+// owns every route below (auth, sync, blobs, invitations, characters,
+// chats, generation, secrets, users, permissions, settings, extensions,
+// assets, live-portrait).
 //
 // Use 127.0.0.1 (not localhost) — node 18+ resolves localhost to IPv6 ::1
 // first, and Docker publishes 127.0.0.1:8001 IPv4-only, so the localhost
@@ -30,8 +30,6 @@ export default defineConfig({
       '/invitations': proxyTarget,
       '/health': proxyTarget,
       '/api': proxyTarget,
-      '/csrf-token': proxyTarget,
-      '/thumbnail': proxyTarget,
       '/characters': proxyTarget,
       '/chats': proxyTarget,
       '/scripts': {
