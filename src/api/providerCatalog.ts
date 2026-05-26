@@ -83,6 +83,7 @@ export const NATIVE_PROVIDERS: readonly CatalogProvider[] = [
     nativeRouted: true,
     secretKey: 'api_key_claude',
     defaultModels: [
+      'claude-opus-4-7',
       'claude-opus-4-6',
       'claude-sonnet-4-6',
       'claude-opus-4-5',
@@ -184,6 +185,7 @@ export const NATIVE_PROVIDERS: readonly CatalogProvider[] = [
       'openai/gpt-4.1',
       'openai/o3',
       'openai/gpt-4o',
+      'anthropic/claude-opus-4-7',
       'anthropic/claude-opus-4-6',
       'anthropic/claude-sonnet-4-6',
       'google/gemini-2.5-pro',
@@ -314,6 +316,7 @@ export const NATIVE_PROVIDERS: readonly CatalogProvider[] = [
     defaultModels: [
       'gpt-4o',
       'chatgpt-4o-latest',
+      'claude-opus-4-7',
       'claude-opus-4-6',
       'claude-sonnet-4-6',
       'gemini-2.5-pro',
