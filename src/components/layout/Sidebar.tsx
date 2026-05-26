@@ -39,6 +39,12 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+function firstSentence(text?: string): string {
+  if (!text) return '';
+  const idx = text.search(/[.!?]/);
+  return (idx === -1 ? text : text.slice(0, idx + 1)).trim();
+}
+
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { currentUser } = useAuthStore();
   const userRole = currentUser?.role;
@@ -298,12 +304,14 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     {latestEmotion}
                   </span>
                 )}
-                {selectedCharacter.description && (
+                {firstSentence(selectedCharacter.creator_notes) && (
                   <div className="mt-2 text-left w-full">
                     <p className={`text-sm text-[var(--color-text-secondary)] ${descExpanded ? '' : 'line-clamp-3'}`}>
-                      {selectedCharacter.description}
+                      {descExpanded
+                        ? selectedCharacter.creator_notes
+                        : firstSentence(selectedCharacter.creator_notes)}
                     </p>
-                    {selectedCharacter.description.length > 150 && (
+                    {(selectedCharacter.creator_notes?.length ?? 0) > 150 && (
                       <button
                         onClick={() => setDescExpanded(!descExpanded)}
                         className="text-xs text-[var(--color-primary)] hover:underline mt-1"
@@ -566,9 +574,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                               <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
                                 {character.name}
                               </p>
-                              {character.description && (
+                              {firstSentence(character.creator_notes) && (
                                 <p className="text-xs text-[var(--color-text-secondary)] truncate">
-                                  {character.description}
+                                  {firstSentence(character.creator_notes)}
                                 </p>
                               )}
                               {(() => {
