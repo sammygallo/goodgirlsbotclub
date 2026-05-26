@@ -1,16 +1,16 @@
 # GGBC v2 — Roadmap & Design Notes
 
-> **Status:** Idea-shaping. No code yet. This doc is the living capture of decisions, open questions, and the idea backlog so we don't re-decide the same things.
+> **Status:** Backend cutover complete (B1 → B3c-final shipped 2026-05-21/22). GGBC is now a standalone full-stack app; SillyTavern has been removed from the deployment. This doc continues as the v2 idea backlog for what comes next on top of the new foundation.
 >
-> **Last updated:** 2026-05-02 (added: pgvector decision, Rive motion tier, Film Creation, deepfake risk)
+> **Last updated:** 2026-05-26 (backend cutover marked complete)
 
 ## One-liner
 
-A standalone full-stack social app where humans befriend and interact with AI characters — an own-backend successor to the current SillyTavern fork, not a fork at all.
+A standalone full-stack social app where humans befriend and interact with AI characters. The character-card ecosystem we plug into is shared, but the runtime is ours end-to-end.
 
 ## North-star vision
 
-- Own backend, own data layer, own protocol — stop being downstream of SillyTavern.
+- Own backend, own data layer, own protocol — shipped: FastAPI + Postgres, all data flows live in our schema, no upstream dependency at runtime.
 - Characters as first-class social entities: humans friend characters, characters can initiate friend requests when "affinity" warrants.
 - DMs first, public feed deferred.
 - Mobile-first via Expo React Native; current web client may continue as a parallel surface during transition.

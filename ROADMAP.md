@@ -1,21 +1,32 @@
-# SillyTavern Mobile - Feature Parity Roadmap
+# Good Girls Bot Club — Feature Roadmap (historical)
+
+> **Status: complete.** This document tracked the original feature build-out
+> against the desktop character-chat ecosystem GGBC was originally inspired
+> by. Phases 1–10 below are all shipped. The architectural follow-on —
+> moving the app to its own backend (Option A: sync layer, then Option B:
+> standalone full-stack) — is tracked separately under
+> [`docs/v2/ROADMAP.md`](docs/v2/ROADMAP.md) and is also complete.
 
 ## Current State Summary
 
-**goodgirlsbotclub** is a React/Vite/Zustand web app with:
-- Basic auth (login/register, multi-user)
-- Character CRUD + import/export (PNG Card V2, JSON)
+**Good Girls Bot Club** is a standalone full-stack character chat app:
+- Auth + invitations + permission groups
+- Character CRUD + import/export (character card v2/v3 PNG spec, JSON)
 - Single & group chat with streaming (SSE)
-- 6 AI providers (OpenAI, Claude, Gemini, Mistral, Groq, OpenRouter)
+- 6+ AI providers (OpenAI-compatible, Claude/Anthropic, Gemini, Mistral, Groq, OpenRouter, …)
 - Expression/sprite system with emotion parsing
-- Settings page for API key & provider management
-- Mobile-responsive dark theme
+- Live-portrait MP4 generation via Replicate
+- Extension SDK compatible with community-authored extensions (Live2d ships installed)
+- World Info / Lorebooks with recursive scanning, timed effects, character-embedded books
+- STscript slash-command engine
+- Data Bank / RAG with embeddings
+- Mobile-first dark theme
 
-**SillyTavern** (desktop) is a massively feature-rich Node.js SPA with 20+ API backends, World Info/Lorebooks, STscript scripting, 30+ extensions, full prompt engineering, regex scripts, Data Bank/RAG, and deep customization.
+The "vs. ST" framing in older sections below reflects the original design constraints — the v2 sections (which are how new features get planned now) drop it.
 
 ---
 
-## Gap Analysis & Roadmap
+## Gap Analysis & Roadmap (historical)
 
 Features are grouped into **phases** ordered by user impact and dependency. Each phase builds on the previous.
 
@@ -115,7 +126,7 @@ Features are grouped into **phases** ordered by user impact and dependency. Each
 - Keyword scanner (`scanMessagesForEntries`): joins the last N non-system messages into a haystack and matches entry keys (case-(in)sensitive). Constant entries bypass matching.
 - `buildConversationContext` in `chatStore.ts` groups matched entries by position and injects into the prompt: `before_char`, `after_char`, `before_an`, `after_an`, and `at_depth` (interleaved with history). Macros (`{{char}}` etc.) run on entry content.
 - UI at `/settings/worldinfo`: lorebook list with active toggle, rename, duplicate, delete, create, import, export; dedicated book editor with per-entry create/edit/enable/disable/delete.
-- JSON import/export uses SillyTavern's lorebook format (`{ entries: { uid: { key, content, position, order, ... } } }`) with position codes 0-4 mapped round-trip.
+- JSON import/export uses the community lorebook format (`{ entries: { uid: { key, content, position, order, ... } } }`) with position codes 0-4 mapped round-trip.
 
 ### 4.2 Advanced World Info ✅
 - Secondary keys (AND/ANY/ALL/NOT logic) with per-entry selective toggle.
