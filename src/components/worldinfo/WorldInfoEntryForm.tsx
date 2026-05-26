@@ -134,6 +134,9 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Stop propagation so the submit event doesn't bubble through the React portal
+    // tree to CharacterEdit's outer form, which would save + close the character editor.
+    e.stopPropagation();
     if (!content.trim()) return;
     if (!constant && parsedKeys.length === 0) return;
 
