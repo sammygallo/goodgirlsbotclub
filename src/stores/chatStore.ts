@@ -2380,10 +2380,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Build context including the current AI message
       const ragCtx = await resolveRagContext(messages, character.avatar || '', get().currentChatFile || undefined);
       const context = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
-      // Add a system instruction to continue
+      // Append the continue instruction as a user turn, not a system one.
+      // Gemini extracts system messages into its separate systemInstruction
+      // field, which would leave contents[] ending with an assistant ('model')
+      // role and trip its "conversation must end with a user message" 400.
+      // User-role works on every provider — Anthropic coerces non-user/assistant
+      // roles to user anyway, OpenAI is permissive.
       context.push({
-        role: 'system',
-        content: 'Continue your previous response naturally. Do not repeat what you already said. Pick up exactly where you left off.',
+        role: 'user',
+        content: '(Continue your previous response naturally. Do not repeat what you already said. Pick up exactly where you left off.)',
       });
 
       const { provider, model } = getProviderAndModel();
@@ -2454,10 +2459,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const ragCtx = await resolveRagContext(messages, character.avatar || '', get().currentChatFile || undefined);
       const context = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
-      // Replace the system prompt's last line to instruct impersonation
+      // User-role instruction so Gemini (which extracts system into a
+      // separate systemInstruction field) doesn't leave contents[] ending
+      // with an assistant turn and trip its 400. See continueMessage above
+      // for the full rationale.
       context.push({
-        role: 'system',
-        content: `Now write the next message as the user (You). Write from a first-person perspective as the user would. Do NOT include an emotion tag. Do NOT write as ${character.name}.`,
+        role: 'user',
+        content: `(Now write the next message as the user (You). Write from a first-person perspective as the user would. Do NOT include an emotion tag. Do NOT write as ${character.name}.)`,
       });
 
       const { provider, model } = getProviderAndModel();
