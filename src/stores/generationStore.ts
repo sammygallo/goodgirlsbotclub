@@ -424,47 +424,31 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     });
   },
 
+  // In-memory only. Both callers (ChatView's character-link auto-loader and
+  // restoreDefault below) run on every chat-open / unmount, so persisting
+  // here would silently overwrite the user's hand-tuned sampler with the
+  // linked preset's stored values on every session — the user's edits would
+  // never survive a logout/login.
   loadPresetTransient: (id) => {
     const { presets } = get();
     const preset = presets.find((p) => p.id === id);
     if (!preset) return;
-    set((state) => {
-      const next = {
-        ...state,
-        sampler: { ...preset.sampler },
-        activePresetId: preset.id,
-      };
-      persist(next);
-      return { sampler: next.sampler, activePresetId: preset.id };
-    });
+    set({ sampler: { ...preset.sampler }, activePresetId: preset.id });
   },
 
+  // Also in-memory only — see loadPresetTransient. ChatView calls this on
+  // unmount and on switch to an unlinked character; persisting would clobber
+  // server-stored edits with the default preset's snapshot.
   restoreDefault: () => {
     const { defaultPresetId, presets, activePresetId } = get();
     if (!defaultPresetId) {
-      // No default — just clear the transient marker if it points at a different
-      // preset than what the user last chose. Leave the sampler alone.
-      if (activePresetId !== null) {
-        set((state) => {
-          const next = { ...state, activePresetId: null };
-          persist(next);
-          return { activePresetId: null };
-        });
-      }
+      if (activePresetId !== null) set({ activePresetId: null });
       return;
     }
     if (activePresetId === defaultPresetId) return;
     const preset = presets.find((p) => p.id === defaultPresetId);
     if (!preset) return;
-    set((state) => {
-      const next = {
-        ...state,
-        sampler: { ...preset.sampler },
-        activePresetId: preset.id,
-      };
-      persist(next);
-      return { sampler: next.sampler, activePresetId: preset.id };
-    });
+    set({ sampler: { ...preset.sampler }, activePresetId: preset.id });
   },
 
   deletePreset: (id) => {
