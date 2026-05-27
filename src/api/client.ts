@@ -579,24 +579,29 @@ export const api = {
 
   // --- Global character sharing ---
   //
-  // B1 — characters moved out of ST's filesystem into ggbc-backend's `characters`
-  // table, so the ST-backed ownership/visibility map is no longer authoritative
-  // (it still reflects whichever character lived in `_global/characters/` at
-  // import time, but the DB rows are per-user now). Cross-user sharing comes
-  // back as its own feature post-B3, when chats are in the DB too and we can
-  // model ownership properly. Until then, every character is personal-only.
+  // Backed by ggbc-backend's `/characters/{metadata,set-visibility,transfer-ownership}`
+  // endpoints — visibility lives on the `characters` row, ownership is the row's
+  // user_id. `getCharacterMetadata` returns whatever the caller can see (their
+  // own + globals), in the legacy ST shape the ownership store consumes.
   async getCharacterMetadata(): Promise<CharacterMetadataMap> {
-    return {};
+    const result = await apiRequest<CharacterMetadataMap>('/characters/metadata', {
+      method: 'POST',
+    });
+    return result && typeof result === 'object' ? result : {};
   },
 
   async setCharacterVisibility(avatarUrl: string, visibility: CharacterVisibility): Promise<void> {
-    void avatarUrl; void visibility;
-    throw new Error('Character sharing is paused while we migrate characters to the new database.');
+    await apiRequest('/characters/set-visibility', {
+      method: 'POST',
+      body: JSON.stringify({ avatar_url: avatarUrl, visibility }),
+    });
   },
 
   async transferCharacterOwnership(avatarUrl: string, newOwnerHandle: string): Promise<void> {
-    void avatarUrl; void newOwnerHandle;
-    throw new Error('Character ownership transfer is paused while we migrate characters to the new database.');
+    await apiRequest('/characters/transfer-ownership', {
+      method: 'POST',
+      body: JSON.stringify({ avatar_url: avatarUrl, new_owner_handle: newOwnerHandle }),
+    });
   },
 
   /**
