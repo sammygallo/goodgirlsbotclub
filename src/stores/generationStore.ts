@@ -363,17 +363,39 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
 
   setSampler: (patch) => {
     set((state) => {
-      const next = { ...state, sampler: { ...state.sampler, ...patch } };
+      const nextSampler = { ...state.sampler, ...patch };
+      // If a preset is currently active (loaded via loadPreset or
+      // loadPresetTransient), mirror the edit into that preset's stored
+      // sampler too. Without this, the next character-switch fires
+      // loadPresetTransient again and snaps the in-memory sampler back to
+      // the preset's stale snapshot — silently undoing the user's edit.
+      const nextPresets = state.activePresetId
+        ? state.presets.map((p) =>
+            p.id === state.activePresetId
+              ? { ...p, sampler: { ...p.sampler, ...patch } }
+              : p,
+          )
+        : state.presets;
+      const next = { ...state, sampler: nextSampler, presets: nextPresets };
       persist(next);
-      return { sampler: next.sampler };
+      return { sampler: nextSampler, presets: nextPresets };
     });
   },
 
   resetSampler: () => {
     set((state) => {
-      const next = { ...state, sampler: { ...DEFAULT_SAMPLER } };
+      // Same active-preset mirroring rule — a reset is also an edit, so the
+      // preset definition should track it.
+      const nextPresets = state.activePresetId
+        ? state.presets.map((p) =>
+            p.id === state.activePresetId
+              ? { ...p, sampler: { ...DEFAULT_SAMPLER } }
+              : p,
+          )
+        : state.presets;
+      const next = { ...state, sampler: { ...DEFAULT_SAMPLER }, presets: nextPresets };
       persist(next);
-      return { sampler: next.sampler };
+      return { sampler: next.sampler, presets: nextPresets };
     });
   },
 
