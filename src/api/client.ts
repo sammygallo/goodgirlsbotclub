@@ -244,6 +244,10 @@ export interface CharacterMetadataEntry {
   ownerHandle: string;
   visibility: CharacterVisibility;
   claimedAt: number;
+  // Populated only when the caller is an admin/owner viewing a card that
+  // multiple users have a copy of. Lists the other users' handles so the
+  // UI can render an "also owned by X" hint without an extra request.
+  otherOwners?: string[];
 }
 
 export type CharacterMetadataMap = Record<string, CharacterMetadataEntry>;
@@ -271,6 +275,9 @@ export interface CharacterInfo {
   // backends, in which case callers treat as 'personal' / null).
   visibility?: CharacterVisibility;
   owner_handle?: string | null;
+  // Admin-only: handles of other users with a copy of this same-named card.
+  // Server only populates this for admin/owner callers; omitted otherwise.
+  other_owners?: string[];
   // Advanced Character Card V2 fields
   alternate_greetings?: string[];
   system_prompt?: string;
