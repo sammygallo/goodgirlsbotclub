@@ -169,6 +169,135 @@ function UserProviderKeyInput({
   );
 }
 
+// Self-contained per-provider API key entry. Owns its own input/visibility
+// state so it can be dropped anywhere (Active Provider, Fallback Provider)
+// without leaking state up to the parent.
+function ProviderApiKeyInput({
+  providerName,
+  secretKey,
+  configured,
+  isSaving,
+  onSave,
+  onDelete,
+}: {
+  providerName: string;
+  secretKey: string;
+  configured: boolean;
+  isSaving: boolean;
+  onSave: (key: string) => Promise<void> | void;
+  onDelete: () => void;
+}) {
+  const [value, setValue] = useState('');
+  const [show, setShow] = useState(false);
+  useEffect(() => { setValue(''); setShow(false); }, [secretKey]);
+  return (
+    <div className="mt-4 p-3 bg-[var(--color-bg-tertiary)] rounded-lg">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Key size={14} className="text-[var(--color-text-secondary)]" />
+          <span className="text-xs font-medium text-[var(--color-text-primary)]">{providerName} API Key</span>
+        </div>
+        {configured && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-green-400">Configured</span>
+            <Button variant="ghost" size="sm" onClick={onDelete} disabled={isSaving} className="p-1 text-red-400 hover:text-red-300">
+              <Trash2 size={14} />
+            </Button>
+          </div>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <div className="flex-1 relative">
+          <Input
+            type={show ? 'text' : 'password'}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={configured ? 'Enter new key to replace...' : 'Enter API key...'}
+            className="pr-10"
+          />
+          <button type="button" onClick={() => setShow((v) => !v)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
+            {show ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        </div>
+        <Button
+          onClick={async () => {
+            if (!value.trim()) return;
+            await onSave(value.trim());
+            setValue('');
+          }}
+          disabled={!value.trim() || isSaving}
+          className="shrink-0"
+        >
+          {isSaving ? <Loader2 size={16} className="animate-spin" /> : 'Save'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Model dropdown that prefers the live-fetched model catalog for a provider and
+// falls back to the static `provider.models` list when no live data is available.
+// Shared by the Active Provider and Fallback Provider sections so both pickers
+// surface the same options for the same provider.
+function ProviderModelSelect({
+  providerId,
+  value,
+  onChange,
+  disabled,
+  dynamicModels,
+  modelsLoadingFor,
+  modelsErrorFor,
+}: {
+  providerId: string;
+  value: string;
+  onChange: (model: string) => void;
+  disabled?: boolean;
+  dynamicModels: Record<string, string[] | null>;
+  modelsLoadingFor: Record<string, boolean>;
+  modelsErrorFor: Record<string, string>;
+}) {
+  const provider = PROVIDERS.find((p) => p.id === providerId);
+  if (!provider) return null;
+  const liveList = dynamicModels[providerId];
+  const useLive = !!(liveList && liveList.length > 0);
+  const baseList = useLive ? liveList! : (provider.models as readonly string[]);
+  const modelList = value && !baseList.includes(value) ? [value, ...baseList] : baseList;
+  const isLoading = !!modelsLoadingFor[providerId];
+  const errorMsg = modelsErrorFor[providerId];
+  const liveSource = providerId === 'openrouter'
+    ? 'openrouter.ai/api/v1/models'
+    : `${provider.name} /models`;
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-xs text-[var(--color-text-secondary)]">Model</label>
+        {isLoading && (
+          <span className="text-[10px] text-[var(--color-text-secondary)] flex items-center gap-1">
+            <Loader2 size={10} className="animate-spin" /> Loading models…
+          </span>
+        )}
+      </div>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="w-full bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+      >
+        {modelList.map((m) => <option key={m} value={m}>{m}</option>)}
+      </select>
+      {useLive && (
+        <p className="mt-1.5 text-xs text-[var(--color-text-secondary)]">
+          {liveList!.length} models from <code>{liveSource}</code>.
+        </p>
+      )}
+      {errorMsg && !useLive && (
+        <p className="mt-1.5 text-xs text-amber-400">{errorMsg}</p>
+      )}
+    </div>
+  );
+}
+
 export function AISettingsPage(_props?: { params?: Record<string, string> }) {
   const { goBack, pushPage } = useSettingsPanelStore();
   const {
@@ -191,11 +320,11 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
   const activateUserProvider = useCustomProviderStore((s) => s.activate);
   const setUserProviderApiKey = useCustomProviderStore((s) => s.setApiKey);
 
+  // Live Portrait still uses these keyed maps under its own pseudo-id ('replicate-live').
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [globalKeyInputs, setGlobalKeyInputs] = useState<Record<string, string>>({});
   const [showGlobalKey, setShowGlobalKey] = useState<Record<string, boolean>>({});
-  const [apiKeysOpen, setApiKeysOpen] = useState(false);
   const [globalKeysOpen, setGlobalKeysOpen] = useState(false);
 
   // Connection profiles
@@ -214,7 +343,7 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
 
   // Live model catalog per provider. `undefined` = not loaded; `null` = fetch failed/skipped.
   const [dynamicModels, setDynamicModels] = useState<Record<string, string[] | null>>(() => ({ ...modelsCache }));
-  const [modelsLoadingFor, setModelsLoadingFor] = useState<string | null>(null);
+  const [modelsLoadingFor, setModelsLoadingFor] = useState<Record<string, boolean>>({});
   const [modelsErrorFor, setModelsErrorFor] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -233,41 +362,36 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
   useEffect(() => { setCustomModelInput(activeModel); }, [activeModel]);
   useEffect(() => { setTestState({ kind: 'idle' }); setDiscoveredModels([]); }, [customUrlInput]);
 
-  // Lazily load the active provider's live model catalog when supported.
+  // Lazily load live model catalogs for any currently selected provider (active + fallback).
   // Re-runs when the user adds an API key for a key-gated provider.
   useEffect(() => {
-    if (!isDynamicProvider(activeProvider)) return;
-    if (dynamicModels[activeProvider] !== undefined) return;
-    const provider = PROVIDERS.find((p) => p.id === activeProvider);
-    const secret = provider ? secrets[provider.secretKey] : undefined;
-    const hasKey = Array.isArray(secret) && secret.length > 0;
-    // Backend `/status` requires a key; OpenRouter's public endpoint doesn't.
-    if (activeProvider !== 'openrouter' && !hasKey) return;
-
+    const targets = Array.from(new Set([activeProvider, fallbackProvider].filter((id): id is string => !!id && isDynamicProvider(id))));
     let cancelled = false;
-    const providerId = activeProvider;
-    setModelsLoadingFor(providerId);
-    setModelsErrorFor((prev) => { const { [providerId]: _, ...rest } = prev; return rest; });
-    loadProviderModels(providerId, hasKey).then((list) => {
-      if (cancelled) return;
-      if (list && list.length > 0) {
-        setDynamicModels((prev) => ({ ...prev, [providerId]: list }));
-      } else {
-        setDynamicModels((prev) => ({ ...prev, [providerId]: null }));
-        setModelsErrorFor((prev) => ({ ...prev, [providerId]: "Couldn't load this provider's model list — using defaults." }));
-      }
-    }).finally(() => {
-      if (!cancelled) setModelsLoadingFor((cur) => (cur === providerId ? null : cur));
-    });
-    return () => { cancelled = true; };
-  }, [activeProvider, secrets, dynamicModels]);
+    for (const providerId of targets) {
+      if (dynamicModels[providerId] !== undefined) continue;
+      const provider = PROVIDERS.find((p) => p.id === providerId);
+      const secret = provider ? secrets[provider.secretKey] : undefined;
+      const hasKey = Array.isArray(secret) && secret.length > 0;
+      // Backend `/status` requires a key; OpenRouter's public endpoint doesn't.
+      if (providerId !== 'openrouter' && !hasKey) continue;
 
-  const handleSaveApiKey = async (providerId: string) => {
-    const key = apiKeyInputs[providerId];
-    if (!key?.trim()) return;
-    await saveApiKey(providerId, key.trim());
-    setApiKeyInputs((prev) => ({ ...prev, [providerId]: '' }));
-  };
+      setModelsLoadingFor((prev) => ({ ...prev, [providerId]: true }));
+      setModelsErrorFor((prev) => { const { [providerId]: _, ...rest } = prev; return rest; });
+      loadProviderModels(providerId, hasKey).then((list) => {
+        if (cancelled) return;
+        if (list && list.length > 0) {
+          setDynamicModels((prev) => ({ ...prev, [providerId]: list }));
+        } else {
+          setDynamicModels((prev) => ({ ...prev, [providerId]: null }));
+          setModelsErrorFor((prev) => ({ ...prev, [providerId]: "Couldn't load this provider's model list — using defaults." }));
+        }
+      }).finally(() => {
+        if (cancelled) return;
+        setModelsLoadingFor((prev) => { const { [providerId]: _, ...rest } = prev; return rest; });
+      });
+    }
+    return () => { cancelled = true; };
+  }, [activeProvider, fallbackProvider, secrets, dynamicModels]);
 
   const handleSaveGlobalKey = async (providerId: string) => {
     const key = globalKeyInputs[providerId];
@@ -287,14 +411,6 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
   const hasApiKey = (secretKey: string): boolean => {
     const secretData = secrets[secretKey];
     return Array.isArray(secretData) && secretData.length > 0;
-  };
-
-  const getSecretInfo = (secretKey: string): SecretState | null => {
-    const secretData = secrets[secretKey];
-    if (Array.isArray(secretData) && secretData.length > 0) {
-      return secretData.find((s) => s.active) || secretData[0];
-    }
-    return null;
   };
 
   const currentProvider = PROVIDERS.find((p) => p.id === activeProvider);
@@ -388,9 +504,6 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
               );
             })}
           </div>
-          {activeProvider !== 'custom' && !hasApiKey(currentProvider?.secretKey || '') && (
-            <p className="mt-2 text-xs text-[var(--color-text-secondary)]">Configure an API key below to use this provider</p>
-          )}
           {activeProvider === 'custom' && !activeUserProviderId && !customUrl && (
             <p className="mt-2 text-xs text-[var(--color-text-secondary)]">Enter the endpoint URL below to use a local or custom model server</p>
           )}
@@ -416,6 +529,27 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
             <p className="mt-2 text-[10px] text-[var(--color-text-secondary)]">
               Add more providers from the catalog to expand this list.
             </p>
+          )}
+          {currentProvider && activeProvider !== 'custom' && (
+            <>
+              <ProviderApiKeyInput
+                providerName={currentProvider.name}
+                secretKey={currentProvider.secretKey}
+                configured={hasApiKey(currentProvider.secretKey)}
+                isSaving={isSaving}
+                onSave={(key) => saveApiKey(currentProvider.id, key)}
+                onDelete={() => deleteApiKey(currentProvider.secretKey)}
+              />
+              <ProviderModelSelect
+                providerId={activeProvider}
+                value={activeModel}
+                onChange={setActiveModel}
+                disabled={isSaving}
+                dynamicModels={dynamicModels}
+                modelsLoadingFor={modelsLoadingFor}
+                modelsErrorFor={modelsErrorFor}
+              />
+            </>
           )}
         </section>
 
@@ -464,27 +598,25 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
           {fallbackProvider && (() => {
             const fbProvider = PROVIDERS.find((p) => p.id === fallbackProvider);
             if (!fbProvider) return null;
-            const modelList = fbProvider.models;
             return (
-              <div className="mt-3">
-                <label className="block text-xs text-[var(--color-text-secondary)] mb-1.5">Fallback model</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {modelList.map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => setFallbackModel(m)}
-                      className={`px-2.5 py-1 rounded-full text-xs border transition-colors
-                        ${fallbackModel === m
-                          ? 'bg-[var(--color-primary)]/15 border-[var(--color-primary)]/40 text-[var(--color-primary)]'
-                          : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-secondary)]/40'
-                        }`}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <>
+                <ProviderApiKeyInput
+                  providerName={fbProvider.name}
+                  secretKey={fbProvider.secretKey}
+                  configured={hasApiKey(fbProvider.secretKey)}
+                  isSaving={isSaving}
+                  onSave={(key) => saveApiKey(fbProvider.id, key)}
+                  onDelete={() => deleteApiKey(fbProvider.secretKey)}
+                />
+                <ProviderModelSelect
+                  providerId={fallbackProvider}
+                  value={fallbackModel}
+                  onChange={setFallbackModel}
+                  dynamicModels={dynamicModels}
+                  modelsLoadingFor={modelsLoadingFor}
+                  modelsErrorFor={modelsErrorFor}
+                />
+              </>
             );
           })()}
         </section>
@@ -575,43 +707,6 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
           </section>
         )}
 
-        {/* Model Selection (non-custom) */}
-        {currentProvider && activeProvider !== 'custom' && (() => {
-          const liveList = dynamicModels[activeProvider];
-          const useLive = !!(liveList && liveList.length > 0);
-          const baseList = useLive ? liveList! : (currentProvider.models as readonly string[]);
-          const modelList = activeModel && !baseList.includes(activeModel) ? [activeModel, ...baseList] : baseList;
-          const isLoading = modelsLoadingFor === activeProvider;
-          const errorMsg = modelsErrorFor[activeProvider];
-          const liveSource = activeProvider === 'openrouter'
-            ? 'openrouter.ai/api/v1/models'
-            : `${currentProvider.name} /models`;
-          return (
-            <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Model</h2>
-                {isLoading && (
-                  <span className="text-xs text-[var(--color-text-secondary)] flex items-center gap-1">
-                    <Loader2 size={12} className="animate-spin" /> Loading models…
-                  </span>
-                )}
-              </div>
-              <select value={activeModel} onChange={(e) => setActiveModel(e.target.value)} disabled={isSaving}
-                className="w-full bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]">
-                {modelList.map((model) => <option key={model} value={model}>{model}</option>)}
-              </select>
-              {useLive && (
-                <p className="mt-1.5 text-xs text-[var(--color-text-secondary)]">
-                  {liveList!.length} models from <code>{liveSource}</code>.
-                </p>
-              )}
-              {errorMsg && !useLive && (
-                <p className="mt-1.5 text-xs text-amber-400">{errorMsg}</p>
-              )}
-            </section>
-          );
-        })()}
-
         {/* Connection Profiles */}
         <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
           <div className="flex items-center gap-2 mb-3">
@@ -657,58 +752,6 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
               Save
             </button>
           </div>
-        </section>
-
-        {/* API Keys */}
-        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
-          <button
-            type="button"
-            onClick={() => setApiKeysOpen((v) => !v)}
-            className="w-full flex items-center justify-between"
-          >
-            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">API Keys</h2>
-            <ChevronDown size={16} className={`text-[var(--color-text-secondary)] transition-transform ${apiKeysOpen ? 'rotate-180' : ''}`} />
-          </button>
-          {apiKeysOpen && <div className="space-y-4 mt-3">
-            {PROVIDERS.filter((p) => p.id !== 'custom').map((provider) => {
-              const secretInfo = getSecretInfo(provider.secretKey);
-              const configured = !!secretInfo;
-              const inputValue = apiKeyInputs[provider.id] || '';
-              const showKey = showApiKey[provider.id] || false;
-              return (
-                <div key={provider.id} className="p-3 bg-[var(--color-bg-tertiary)] rounded-lg">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <Key size={16} className="text-[var(--color-text-secondary)]" />
-                      <span className="text-sm font-medium text-[var(--color-text-primary)]">{provider.name}</span>
-                    </div>
-                    {configured && (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-green-400">Configured</span>
-                        <Button variant="ghost" size="sm" onClick={() => deleteApiKey(provider.secretKey)} disabled={isSaving} className="p-1 text-red-400 hover:text-red-300">
-                          <Trash2 size={14} />
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1 relative">
-                      <Input type={showKey ? 'text' : 'password'} value={inputValue}
-                        onChange={(e) => setApiKeyInputs((prev) => ({ ...prev, [provider.id]: e.target.value }))}
-                        placeholder={configured ? 'Enter new key to replace...' : 'Enter API key...'} className="pr-10" />
-                      <button type="button" onClick={() => setShowApiKey((prev) => ({ ...prev, [provider.id]: !prev[provider.id] }))}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
-                        {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                      </button>
-                    </div>
-                    <Button onClick={() => handleSaveApiKey(provider.id)} disabled={!inputValue.trim() || isSaving} className="shrink-0">
-                      {isSaving ? <Loader2 size={16} className="animate-spin" /> : 'Save'}
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>}
         </section>
 
         {/* Live Portrait (Replicate) */}
