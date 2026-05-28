@@ -24,6 +24,10 @@ import type { UserRole } from '../types';
 export interface OwnershipEntry {
   ownerHandle: string;
   visibility: 'global' | 'personal';
+  // Only populated when the caller is an admin/owner. Lists other users
+  // who have a copy of this same-named card; used to render an "also
+  // owned by X" hint in Character Management.
+  otherOwners?: string[];
 }
 
 export interface CharacterOwnershipState {
@@ -44,6 +48,7 @@ export interface CharacterOwnershipState {
   getOwner: (avatar: string) => string | null;
   getVisibility: (avatar: string) => 'global' | 'personal';
   isOwnedBy: (avatar: string, handle: string) => boolean;
+  getOtherOwners: (avatar: string) => string[];
 
   // Permission helpers
   canEditCharacter: (avatar: string, userHandle: string, userRole: UserRole | undefined) => boolean;
@@ -54,10 +59,14 @@ function toOwnershipMap(serverMap: CharacterMetadataMap): Record<string, Ownersh
   const result: Record<string, OwnershipEntry> = {};
   for (const [avatar, entry] of Object.entries(serverMap)) {
     if (!entry || typeof entry !== 'object') continue;
-    result[avatar] = {
+    const out: OwnershipEntry = {
       ownerHandle: entry.ownerHandle,
       visibility: entry.visibility === 'global' ? 'global' : 'personal',
     };
+    if (Array.isArray(entry.otherOwners) && entry.otherOwners.length > 0) {
+      out.otherOwners = entry.otherOwners;
+    }
+    result[avatar] = out;
   }
   return result;
 }
@@ -118,6 +127,10 @@ export const useCharacterOwnershipStore = create<CharacterOwnershipState>((set, 
 
   isOwnedBy: (avatar, handle) => {
     return get().ownershipMap[avatar]?.ownerHandle === handle;
+  },
+
+  getOtherOwners: (avatar) => {
+    return get().ownershipMap[avatar]?.otherOwners ?? [];
   },
 
   canEditCharacter: (avatar, userHandle, userRole) => {

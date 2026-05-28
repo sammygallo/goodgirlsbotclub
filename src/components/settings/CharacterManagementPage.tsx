@@ -336,6 +336,10 @@ function CharacterRow({
   const visibility = ownershipStore.getVisibility(avatar);
   const isOwned = ownershipStore.isOwnedBy(avatar, userHandle);
   const ownerHandle = ownershipStore.getOwner(avatar);
+  // Admin/owner only — server populates this for callers who can see
+  // every user's cards, so the row can surface that linz/vulpixxy also
+  // have their own copies of the same-named character.
+  const otherOwners = ownershipStore.getOtherOwners(avatar);
 
   const canEdit =
     hasPermission(currentUser, 'character:edit') ||
@@ -388,6 +392,9 @@ function CharacterRow({
           </div>
           <p className="text-xs text-[var(--color-text-secondary)] truncate mt-0.5">
             {creator ? `by ${creator}` : ownerHandle ? `owned by ${ownerHandle}` : 'No owner'}
+            {otherOwners.length > 0 && (
+              <span className="ml-1">· also owned by {otherOwners.join(', ')}</span>
+            )}
           </p>
         </div>
 
