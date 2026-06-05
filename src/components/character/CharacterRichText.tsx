@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import DOMPurify from 'dompurify';
+import { looksLikeHtml } from '../../utils/characterRichText';
 
 interface CharacterRichTextProps {
   /** The raw character field content. May contain HTML/CSS markup. */
@@ -52,14 +53,6 @@ const SANITIZE_CONFIG = {
   // Keep relative URLs intact; block the obvious dangerous schemes.
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|data:image\/(?:png|jpe?g|gif|webp|svg\+xml));|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };
-
-/** Heuristic: does `content` contain any HTML-looking markup? Anything that
- *  starts with `<letter` or `</letter` counts. We use this to keep plain-text
- *  blurbs rendering identically to before — only blurbs that opted into HTML
- *  go through the sanitiser. */
-function looksLikeHtml(content: string): boolean {
-  return /<\/?[a-zA-Z]/.test(content);
-}
 
 /**
  * Render a character-info field that may contain HTML/CSS markup. Plain text
