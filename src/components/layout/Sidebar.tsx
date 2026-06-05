@@ -26,6 +26,8 @@ import { Avatar, Button, Input } from '../ui';
 import { CharacterCreation } from '../character/CharacterCreation';
 import { CharacterImport } from '../character/CharacterImport';
 import { CharacterPreviewModal } from '../character/CharacterPreviewModal';
+import { CharacterRichText } from '../character/CharacterRichText';
+import { htmlToPlainText } from '../../utils/characterRichText';
 import type { CharacterInfo } from '../../api/client';
 import { useCharacterSprites } from '../../hooks/useCharacterSprites';
 import { getDefaultAvatarUrl, type Emotion } from '../../utils/emotions';
@@ -39,10 +41,14 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+// Condensed teaser for list rows / the collapsed portrait blurb. Strips any
+// HTML markup first so notes that opted into rich formatting show clean text
+// here instead of a half-open tag, then clips to the first sentence.
 function firstSentence(text?: string): string {
-  if (!text) return '';
-  const idx = text.search(/[.!?]/);
-  return (idx === -1 ? text : text.slice(0, idx + 1)).trim();
+  const plain = htmlToPlainText(text);
+  if (!plain) return '';
+  const idx = plain.search(/[.!?]/);
+  return (idx === -1 ? plain : plain.slice(0, idx + 1)).trim();
 }
 
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
@@ -306,12 +312,18 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 )}
                 {firstSentence(selectedCharacter.creator_notes) && (
                   <div className="mt-2 text-left w-full">
-                    <p className={`text-sm text-[var(--color-text-secondary)] ${descExpanded ? '' : 'line-clamp-3'}`}>
-                      {descExpanded
-                        ? selectedCharacter.creator_notes
-                        : firstSentence(selectedCharacter.creator_notes)}
-                    </p>
-                    {(selectedCharacter.creator_notes?.length ?? 0) > 150 && (
+                    {descExpanded ? (
+                      // Full notes: render any creator HTML/CSS (sanitised +
+                      // style-isolated inside .character-rich).
+                      <CharacterRichText
+                        content={selectedCharacter.creator_notes ?? ''}
+                      />
+                    ) : (
+                      <p className="text-sm text-[var(--color-text-secondary)] line-clamp-3">
+                        {firstSentence(selectedCharacter.creator_notes)}
+                      </p>
+                    )}
+                    {htmlToPlainText(selectedCharacter.creator_notes).length > 150 && (
                       <button
                         onClick={() => setDescExpanded(!descExpanded)}
                         className="text-xs text-[var(--color-primary)] hover:underline mt-1"
