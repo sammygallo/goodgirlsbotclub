@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { BookOpen, Edit2, Plus, Trash2, Upload } from 'lucide-react';
+import { BookOpen, Download, Edit2, Plus, Trash2, Upload } from 'lucide-react';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
 import { WorldInfoBookEditor } from '../worldinfo/WorldInfoBookEditor';
 
@@ -30,6 +30,7 @@ export function CharacterLorebookSection({
   const deleteCharacterBook = useWorldInfoStore((s) => s.deleteCharacterBook);
   const deleteBook = useWorldInfoStore((s) => s.deleteBook);
   const importBookJson = useWorldInfoStore((s) => s.importBookJson);
+  const exportBookJson = useWorldInfoStore((s) => s.exportBookJson);
   const [editingEmbedded, setEditingEmbedded] = useState(false);
   const [editingLinkedBookId, setEditingLinkedBookId] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -109,6 +110,23 @@ export function CharacterLorebookSection({
     }
   };
 
+  // Download the embedded book as a JSON file so it can be taken into
+  // external tools. Mirrors the export handler on the World Info page.
+  const handleExportEmbedded = () => {
+    if (!embeddedBook) return;
+    const json = exportBookJson(embeddedBook.id);
+    if (!json) return;
+    const safeName =
+      embeddedBook.name.replace(/[^a-z0-9_\-\s]/gi, '_').trim() || 'lorebook';
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safeName}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <section className="space-y-3">
       <div className="flex items-center gap-2">
@@ -147,6 +165,16 @@ export function CharacterLorebookSection({
                 for this character
               </p>
             </div>
+            <button
+              type="button"
+              onClick={handleExportEmbedded}
+              className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-secondary)] border border-[var(--color-border)]"
+              aria-label="Export embedded lorebook as JSON"
+              title="Download this lorebook as a JSON file"
+            >
+              <Download size={13} />
+              Export
+            </button>
             <button
               type="button"
               onClick={() => setEditingEmbedded(true)}
