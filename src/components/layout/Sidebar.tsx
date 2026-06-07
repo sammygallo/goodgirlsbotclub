@@ -693,7 +693,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                           </div>
                           <button
                             onClick={(e) => handleDeleteGroupChat(e, groupChat.fileName)}
-                            className="p-1.5 text-[var(--color-text-secondary)] hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                            className="p-1.5 text-[var(--color-text-secondary)] hover:text-red-400 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 transition-opacity"
                             title="Delete group chat"
                           >
                             <Trash2 size={14} />
