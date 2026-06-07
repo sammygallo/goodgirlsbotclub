@@ -78,9 +78,12 @@ function parseRPSegments(text: string): TextSegment[] {
     segments.push({ type: 'dialogue', content: safe });
   }
 
-  // --- Step 3: restore code placeholders in dialogue segments ---
+  // --- Step 3: restore code placeholders in ALL segment types ---
+  // Dialogue, action, and thought segments now all render through
+  // renderMarkdown, so sheltered code must be restored everywhere — otherwise
+  // inline/fenced code inside *actions* or {{thoughts}} leaks its internal
+  // \x00C{n}\x00 placeholder to the user.
   return segments.map((seg) => {
-    if (seg.type !== 'dialogue') return seg;
     let c = seg.content;
     for (const [k, v] of codePH) c = c.replaceAll(k, v);
     return { ...seg, content: c };
