@@ -14,7 +14,7 @@ import { useEffect, useRef } from 'react';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import {
   BookOpen, FileText, GitFork, Library, MessageSquare, FolderOpen,
-  Trash2, Flag, Users, RefreshCw, ArrowRight, User, Image, ImageOff,
+  Trash2, Flag, Users, RefreshCw, ArrowRight, User, Image, ImageOff, BookPlus,
 } from 'lucide-react';
 import { BottomSheet } from '../ui/BottomSheet';
 
@@ -44,6 +44,7 @@ interface ChatOptionsMenuProps {
   onSaveCheckpoint?: () => void;
   onDeleteMessages: () => void;
   onConvertToGroup?: () => void;
+  onGenerateLorebook?: () => void;
   onRegenerate?: () => void;
   onContinue?: () => void;
   onImpersonate?: () => void;
@@ -105,6 +106,7 @@ function MenuBody({
   onSaveCheckpoint,
   onDeleteMessages,
   onConvertToGroup,
+  onGenerateLorebook,
   onRegenerate,
   onContinue,
   onImpersonate,
@@ -127,6 +129,7 @@ function MenuBody({
   onSaveCheckpoint?: () => void;
   onDeleteMessages: () => void;
   onConvertToGroup?: () => void;
+  onGenerateLorebook?: () => void;
   onRegenerate?: () => void;
   onContinue?: () => void;
   onImpersonate?: () => void;
@@ -175,6 +178,9 @@ function MenuBody({
         )}
         {!isGroupChat && onConvertToGroup && (
           <ActionRow icon={Users} label="Convert to group" onClick={wrap(onConvertToGroup)} />
+        )}
+        {onGenerateLorebook && (
+          <ActionRow icon={BookPlus} label="Create lorebook from chat" onClick={wrap(onGenerateLorebook)} />
         )}
         {onSetBackground && (
           <ActionRow
@@ -290,6 +296,7 @@ export function ChatOptionsMenu({
   onSaveCheckpoint,
   onDeleteMessages,
   onConvertToGroup,
+  onGenerateLorebook,
   onRegenerate,
   onContinue,
   onImpersonate,
@@ -347,6 +354,7 @@ export function ChatOptionsMenu({
       onSaveCheckpoint={onSaveCheckpoint}
       onDeleteMessages={onDeleteMessages}
       onConvertToGroup={onConvertToGroup}
+      onGenerateLorebook={onGenerateLorebook}
       onRegenerate={onRegenerate}
       onContinue={onContinue}
       onImpersonate={onImpersonate}
