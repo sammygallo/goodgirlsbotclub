@@ -13,6 +13,7 @@ import { ChatOptionsMenu } from './ChatOptionsMenu';
 import { BottomSheet } from '../ui/BottomSheet';
 import { ChatHistoryPanel } from './ChatHistoryPanel';
 import { ChatLorebookModal } from './ChatLorebookModal';
+import { GenerateLorebookModal } from '../worldinfo/GenerateLorebookModal';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
 import { GroupChatControls } from './GroupChatControls';
 import { AuthorNote } from './AuthorNote';
@@ -216,6 +217,7 @@ export function ChatView() {
   // Phase 9.1: in-chat message search
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isConvertToGroupOpen, setIsConvertToGroupOpen] = useState(false);
+  const [isGenLorebookOpen, setIsGenLorebookOpen] = useState(false);
   const [convertGroupSelected, setConvertGroupSelected] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
@@ -367,6 +369,12 @@ export function ChatView() {
 
   const hasAiMessage = useMemo(
     () => messages.some((m) => !m.isUser && !m.isSystem),
+    [messages]
+  );
+
+  // Enough back-and-forth to make lorebook extraction worthwhile.
+  const nonSystemMessageCount = useMemo(
+    () => messages.filter((m) => !m.isSystem).length,
     [messages]
   );
 
@@ -1756,6 +1764,7 @@ export function ChatView() {
           onSaveCheckpoint={currentChatFile && lastAiMessageId ? () => handleCheckpoint(lastAiMessageId) : undefined}
           onDeleteMessages={() => startNewChat(selectedCharacter)}
           onConvertToGroup={!isGroupChatMode && selectedCharacter ? () => { setConvertGroupSelected([]); setIsConvertToGroupOpen(true); } : undefined}
+          onGenerateLorebook={nonSystemMessageCount >= 6 ? () => setIsGenLorebookOpen(true) : undefined}
           onRegenerate={hasAiMessage && !isGroupChatMode ? handleRegenerate : undefined}
           onContinue={hasAiMessage && !isGroupChatMode ? handleContinue : undefined}
           onImpersonate={!isGroupChatMode ? handleImpersonate : undefined}
@@ -1763,6 +1772,17 @@ export function ChatView() {
           onClearBackground={handleClearBg}
           hasBackground={!!vnBg}
           isGroupChat={isGroupChatMode}
+        />
+      )}
+
+      {/* Create lorebook from chat transcript */}
+      {selectedCharacter && (
+        <GenerateLorebookModal
+          isOpen={isGenLorebookOpen}
+          onClose={() => setIsGenLorebookOpen(false)}
+          messages={messages}
+          characterName={selectedCharacter.name}
+          defaultBookName={`${selectedCharacter.name} — Lore`}
         />
       )}
 

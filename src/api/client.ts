@@ -354,6 +354,26 @@ export interface GenerationOptions {
   stopStrings?: string[];
 }
 
+/**
+ * Some newer models reject the classic sampler params outright — the backend
+ * returns a 400 ("`temperature` is deprecated for this model") rather than
+ * ignoring them. For those we omit temperature/top_p/etc. and let the provider
+ * use its own defaults. Currently this covers Claude Opus/Sonnet/Haiku 4.7 and
+ * newer; extend the version check as other models surface the same constraint.
+ */
+export function modelRejectsSamplers(model?: string): boolean {
+  if (!model) return false;
+  const m = model.toLowerCase();
+  const claude = m.match(/claude-(?:opus|sonnet|haiku)-(\d+)-(\d+)/);
+  if (claude) {
+    const major = Number(claude[1]);
+    const minor = Number(claude[2]);
+    if (major > 4) return true;
+    if (major === 4 && minor >= 7) return true;
+  }
+  return false;
+}
+
 /** Phase 6.1 — image attachment sent with generateMessage. `base64` is
  *  the raw payload (NO `data:...;base64,` prefix); the API client folds
  *  these into OpenAI-style content parts before POST. */
@@ -713,13 +733,17 @@ export const api = {
     }
 
     // Build request body with optional sampler params.
-    // Unknown fields are ignored by most providers.
+    // Unknown fields are ignored by most providers — except newer models that
+    // 400 on samplers like `temperature`, which we omit entirely for them.
+    const omitSamplers = modelRejectsSamplers(model);
     const body: Record<string, unknown> = {
       stream: true,
       max_tokens: generationOptions?.maxTokens ?? 1024,
-      temperature: generationOptions?.temperature ?? 0.9,
       model: model || 'gpt-4o',
     };
+    if (!omitSamplers) {
+      body.temperature = generationOptions?.temperature ?? 0.9;
+    }
 
     // Phase 10.3: text completion mode sends a single prompt string
     // to a separate backend endpoint.
@@ -753,7 +777,8 @@ export const api = {
       }
     }
 
-    if (generationOptions) {
+    // Sampler params — skipped for models that reject them (see omitSamplers).
+    if (generationOptions && !omitSamplers) {
       if (generationOptions.topP !== undefined) body.top_p = generationOptions.topP;
       if (generationOptions.topK !== undefined && generationOptions.topK > 0) {
         body.top_k = generationOptions.topK;
@@ -770,9 +795,12 @@ export const api = {
       if (generationOptions.repetitionPenalty !== undefined && generationOptions.repetitionPenalty !== 1.0) {
         body.repetition_penalty = generationOptions.repetitionPenalty;
       }
-      if (generationOptions.stopStrings && generationOptions.stopStrings.length > 0) {
-        body.stop = generationOptions.stopStrings;
-      }
+    }
+
+    // Stop strings aren't samplers and are accepted even by models that reject
+    // temperature/top_p, so honor them regardless.
+    if (generationOptions?.stopStrings && generationOptions.stopStrings.length > 0) {
+      body.stop = generationOptions.stopStrings;
     }
 
     const response = await fetch(endpoint, {

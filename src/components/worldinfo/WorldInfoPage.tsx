@@ -8,14 +8,20 @@ import {
   Upload,
   Copy,
   BookOpen,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import {
   useWorldInfoStore,
   type WorldInfoBook,
 } from '../../stores/worldInfoStore';
-import { Button, Input, ConfirmDialog } from '../ui';
+import { Button, Input, ConfirmDialog, Modal } from '../ui';
 import { WorldInfoBookEditor } from './WorldInfoBookEditor';
+import { ChatPickerModal, type ChatSelection } from './ChatPickerModal';
+import { GenerateLorebookModal } from './GenerateLorebookModal';
+import { api } from '../../api/client';
+import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
 
 export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
   const { goBack } = useSettingsPanelStore();
@@ -46,6 +52,41 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
   const [confirmDelete, setConfirmDelete] = useState<WorldInfoBook | null>(null);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // "Generate from chat" flow: pick a chat → load its messages → review modal.
+  const [isChatPickerOpen, setIsChatPickerOpen] = useState(false);
+  const [genLoading, setGenLoading] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [pendingGen, setPendingGen] = useState<{
+    messages: TranscriptMsg[];
+    characterName: string;
+    defaultBookName: string;
+  } | null>(null);
+
+  const handleChatSelected = async (sel: ChatSelection) => {
+    setIsChatPickerOpen(false);
+    setGenError(null);
+    setGenLoading(true);
+    try {
+      const raw = await api.getChatMessages(sel.avatar, sel.fileName);
+      const messages: TranscriptMsg[] = raw.map((m) => ({
+        name: m.name,
+        isUser: m.is_user,
+        isSystem: m.is_system,
+        content: m.mes,
+      }));
+      setPendingGen({
+        messages,
+        characterName: sel.characterName,
+        defaultBookName: `${sel.characterName} — Lore`,
+      });
+    } catch (err) {
+      console.error('[WI] Failed to load chat for lorebook generation:', err);
+      setGenError('Could not load that chat. Please try again.');
+    } finally {
+      setGenLoading(false);
+    }
+  };
 
   // Character-embedded books are managed from the character editor; hide
   // them from the global lorebook list to avoid confusion.
@@ -144,6 +185,18 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
         {importNotice && (
           <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
             <p className="text-sm text-green-400">{importNotice}</p>
+          </div>
+        )}
+        {genError && (
+          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center justify-between">
+            <p className="text-sm text-red-400">{genError}</p>
+            <button
+              onClick={() => setGenError(null)}
+              className="text-red-400 hover:text-red-300"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
           </div>
         )}
 
@@ -247,15 +300,29 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
               onChange={handleFileSelected}
               className="hidden"
             />
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleImportClick}
-              className="text-xs"
-            >
-              <Upload size={14} className="mr-1" />
-              Import
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setGenError(null);
+                  setIsChatPickerOpen(true);
+                }}
+                className="text-xs"
+              >
+                <Sparkles size={14} className="mr-1" />
+                Generate from chat
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleImportClick}
+                className="text-xs"
+              >
+                <Upload size={14} className="mr-1" />
+                Import
+              </Button>
+            </div>
           </div>
 
           <div className="flex gap-2 mb-3">
@@ -432,6 +499,37 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
           message={`Delete "${confirmDelete.name}" and all its entries? This cannot be undone.`}
           confirmLabel="Delete"
           danger
+        />
+      )}
+
+      <ChatPickerModal
+        isOpen={isChatPickerOpen}
+        onClose={() => setIsChatPickerOpen(false)}
+        onSelect={handleChatSelected}
+      />
+
+      {genLoading && (
+        <Modal isOpen={genLoading} onClose={() => {}} title="Loading chat" size="sm">
+          <div className="flex items-center gap-2 py-2 text-sm text-[var(--color-text-secondary)]">
+            <Loader2 size={16} className="animate-spin" />
+            Loading chat messages…
+          </div>
+        </Modal>
+      )}
+
+      {pendingGen && (
+        <GenerateLorebookModal
+          isOpen={!!pendingGen}
+          onClose={() => setPendingGen(null)}
+          messages={pendingGen.messages}
+          characterName={pendingGen.characterName}
+          defaultBookName={pendingGen.defaultBookName}
+          onCreated={(book) => {
+            setImportNotice(
+              `Created "${book.name}" with ${book.entries.length} entr${book.entries.length === 1 ? 'y' : 'ies'}`
+            );
+            setTimeout(() => setImportNotice(null), 4000);
+          }}
         />
       )}
     </div>
