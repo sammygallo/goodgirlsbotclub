@@ -32,7 +32,7 @@ import type { CharacterInfo } from '../../api/client';
 import { useCharacterSprites } from '../../hooks/useCharacterSprites';
 import { getDefaultAvatarUrl, type Emotion } from '../../utils/emotions';
 import { LivePortraitVideo } from '../chat/LivePortraitVideo';
-import { useLivePortraitStore } from '../../stores/livePortraitStore';
+import { useLivePortraitDiscovery } from '../../hooks/useLivePortraitDiscovery';
 import { MotionModePicker } from '../character/MotionModePicker';
 import { useMotionModeStore, resolveMotionMode } from '../../stores/motionModeStore';
 
@@ -106,12 +106,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     return (characterMessages[characterMessages.length - 1] as { emotion?: Emotion | null }).emotion ?? null;
   }, [messages]);
 
-  const livePortraitEnabled = useLivePortraitStore((s) => s.enabled);
-  const livePortraitClips = useLivePortraitStore((s) =>
-    selectedCharacter ? s.getClips(selectedCharacter.avatar) : null,
-  );
-  const hasLivePortraitClips =
-    livePortraitEnabled && !!livePortraitClips && 'idle' in livePortraitClips;
+  const {
+    clips: livePortraitClips,
+    hasClips: hasLivePortraitClips,
+    loading: livePortraitLoading,
+  } = useLivePortraitDiscovery(selectedCharacter?.avatar);
   const hasExpressionSprites = availableEmotions.length > 0;
   const motionMode = useMotionModeStore((s) =>
     selectedCharacter ? s.modesByAvatar[selectedCharacter.avatar] ?? 'auto' : 'auto',
@@ -263,7 +262,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
 
             {/* Full Character Portrait */}
             <div className="flex-1 flex flex-col items-center justify-center p-4 overflow-hidden">
-              <div className="w-full max-w-[240px] aspect-[2/3] rounded-xl overflow-hidden shadow-lg border border-[var(--color-border)]">
+              <div className="relative w-full max-w-[240px] aspect-[2/3] rounded-xl overflow-hidden shadow-lg border border-[var(--color-border)]">
                 {hasLivePortrait ? (
                   <LivePortraitVideo
                     clips={livePortraitClips!}
@@ -288,6 +287,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                       }
                     }}
                   />
+                )}
+                {livePortraitLoading && !hasLivePortrait && (
+                  <div className="absolute bottom-2 right-2 rounded-full bg-black/40 p-1.5 backdrop-blur-sm">
+                    <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  </div>
                 )}
               </div>
 
