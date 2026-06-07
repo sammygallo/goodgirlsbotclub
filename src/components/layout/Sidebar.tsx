@@ -626,7 +626,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                                   haptic();
                                   setPreviewCharacter(character);
                                 }}
-                                className="p-2 rounded-lg text-[var(--color-text-secondary)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-primary)] transition-opacity"
+                                className="p-2 rounded-lg text-[var(--color-text-secondary)] opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 hover:text-[var(--color-primary)] transition-opacity"
                                 title={`Preview ${character.name}`}
                                 aria-label={`Preview ${character.name}`}
                               >
@@ -640,7 +640,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                                 className={`p-2 mr-2 rounded-lg transition-opacity ${
                                   isFav
                                     ? 'text-yellow-400 opacity-100'
-                                    : 'text-[var(--color-text-secondary)] opacity-0 group-hover:opacity-100 hover:text-yellow-400'
+                                    : 'text-[var(--color-text-secondary)] opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 hover:text-yellow-400'
                                 }`}
                                 title={isFav ? 'Unfavorite' : 'Favorite'}
                               >
