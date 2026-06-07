@@ -31,13 +31,12 @@ import { useSummarizeStore } from '../../stores/summarizeStore';
 import { useAutoMemoryStore } from '../../stores/autoMemoryStore';
 import { useCharacterSprites } from '../../hooks/useCharacterSprites';
 import { LivePortraitVideo } from './LivePortraitVideo';
-import { useLivePortraitStore } from '../../stores/livePortraitStore';
+import { useLivePortraitDiscovery } from '../../hooks/useLivePortraitDiscovery';
 import { useMotionModeStore, resolveMotionMode } from '../../stores/motionModeStore';
 import { MotionModePicker } from '../character/MotionModePicker';
 import { useGenerationStore } from '../../stores/generationStore';
 import { usePromptTemplateStore } from '../../stores/promptTemplateStore';
 import { usePortraitPositionStore } from '../../stores/portraitPositionStore';
-import { fetchExistingClips } from '../../api/livePortraitGen';
 import {
   getExpressionThumbnailUrl,
   getDefaultAvatarUrl,
@@ -270,12 +269,11 @@ export function ChatView() {
     [messages, failedExpressions, availableEmotions, getSpritePath, isGroupChatMode, selectedCharacter?.avatar]
   );
 
-  const livePortraitEnabled = useLivePortraitStore((s) => s.enabled);
-  const livePortraitClips = useLivePortraitStore((s) =>
-    selectedCharacter ? s.getClips(selectedCharacter.avatar) : null,
-  );
-  const hasLivePortraitClips =
-    livePortraitEnabled && !!livePortraitClips && 'idle' in livePortraitClips;
+  const {
+    clips: livePortraitClips,
+    hasClips: hasLivePortraitClips,
+    loading: livePortraitLoading,
+  } = useLivePortraitDiscovery(selectedCharacter?.avatar);
   const hasExpressionSprites = availableEmotions.length > 0;
   const motionMode = useMotionModeStore((s) =>
     selectedCharacter ? s.modesByAvatar[selectedCharacter.avatar] ?? 'auto' : 'auto',
@@ -288,30 +286,6 @@ export function ChatView() {
   const hasLivePortrait = resolvedMotionMode === 'liveportrait';
   const expressionsActive = resolvedMotionMode === 'expressions';
   const portraitEmotion = expressionsActive ? latestEmotion : null;
-
-  // Auto-discover server-side clips when a character is selected so users
-  // see Live Portrait on any device — not just the one that ran generation.
-  // Skips the fetch when the local store already has clips for this avatar.
-  useEffect(() => {
-    if (!selectedCharacter || !livePortraitEnabled) return;
-    if (livePortraitClips && Object.keys(livePortraitClips).length > 0) return;
-    let cancelled = false;
-    // B3c-assets — clips are now stored in user_blobs keyed by the
-    // character's avatar (filename incl. .png), not the name slug.
-    fetchExistingClips(selectedCharacter.avatar)
-      .then((clips) => {
-        if (cancelled) return;
-        if (Object.keys(clips).length > 0) {
-          useLivePortraitStore.getState().setClips(selectedCharacter.avatar, clips);
-        }
-      })
-      .catch(() => {
-        // No clips, no route, or auth issue — fall back to static avatar silently.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedCharacter?.avatar, livePortraitEnabled, livePortraitClips]);
 
   // Per-character draggable framing for the mobile portrait panel.
   // Stored as {x%, y%} object-position values, persisted via Zustand.
@@ -1156,6 +1130,11 @@ export function ChatView() {
                       }
                     }}
                   />
+                )}
+                {livePortraitLoading && !hasLivePortrait && (
+                  <div className="absolute top-2 right-2 rounded-full bg-black/40 p-1.5 backdrop-blur-sm">
+                    <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  </div>
                 )}
                 <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[var(--color-bg-primary)] to-transparent" />
                 <div className="absolute bottom-2 left-4 right-4 flex flex-col gap-2">
