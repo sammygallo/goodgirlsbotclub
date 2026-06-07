@@ -78,9 +78,12 @@ function parseRPSegments(text: string): TextSegment[] {
     segments.push({ type: 'dialogue', content: safe });
   }
 
-  // --- Step 3: restore code placeholders in dialogue segments ---
+  // --- Step 3: restore code placeholders in ALL segment types ---
+  // Dialogue, action, and thought segments now all render through
+  // renderMarkdown, so sheltered code must be restored everywhere — otherwise
+  // inline/fenced code inside *actions* or {{thoughts}} leaks its internal
+  // \x00C{n}\x00 placeholder to the user.
   return segments.map((seg) => {
-    if (seg.type !== 'dialogue') return seg;
     let c = seg.content;
     for (const [k, v] of codePH) c = c.replaceAll(k, v);
     return { ...seg, content: c };
@@ -276,25 +279,29 @@ export function MarkdownContent({ content, isUser, isStreaming }: MarkdownConten
               }
 
               if (segment.type === 'action') {
+                const { html: actionHtml } = renderMarkdown(segment.content, isStreaming && isLastSeg);
+                const actionCursorHtml = isStreaming && isLastSeg
+                  ? actionHtml + '<span class="streaming-cursor"></span>'
+                  : actionHtml;
                 return (
                   <span
                     key={segIdx}
                     className={`italic ${isUser ? 'text-white/70' : 'rp-action'}`}
-                  >
-                    {segment.content}
-                    {isStreaming && isLastSeg && <span className="streaming-cursor" />}
-                  </span>
+                    dangerouslySetInnerHTML={{ __html: actionCursorHtml }}
+                  />
                 );
               }
               if (segment.type === 'thought') {
+                const { html: thoughtHtml } = renderMarkdown(segment.content, isStreaming && isLastSeg);
+                const thoughtCursorHtml = isStreaming && isLastSeg
+                  ? thoughtHtml + '<span class="streaming-cursor"></span>'
+                  : thoughtHtml;
                 return (
                   <span
                     key={segIdx}
                     className={`italic ${isUser ? 'text-white/60' : 'rp-thought'}`}
-                  >
-                    {segment.content}
-                    {isStreaming && isLastSeg && <span className="streaming-cursor" />}
-                  </span>
+                    dangerouslySetInnerHTML={{ __html: thoughtCursorHtml }}
+                  />
                 );
               }
 
