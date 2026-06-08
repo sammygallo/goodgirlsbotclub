@@ -11,9 +11,11 @@ interface CharacterPreviewModalProps {
 }
 
 /**
- * Read-only preview of a character's details — surfaced before the user
- * commits to opening a chat. Lets users browse the description, scenario,
- * personality, first message and tags without entering the chat view first.
+ * Read-only preview of a character — surfaced before the user commits to
+ * opening a chat. Shows the avatar, tags, and the creator's notes (the
+ * author-written, user-facing blurb) only — deliberately NOT the prompt
+ * internals (description, personality, scenario, first message), which are
+ * model-facing and not meant as preview reading.
  *
  * Triggered from the character list (sidebar) by the per-row info button;
  * not used from any flow that already has the character loaded.
@@ -28,14 +30,6 @@ export function CharacterPreviewModal({
 
   // Prefer the canonical CharacterInfo fields, falling back to nested
   // `data.*` for V2 cards that only populated the spec-shape copy.
-  const description =
-    character.description?.trim() || character.data?.description?.trim() || '';
-  const personality =
-    character.personality?.trim() || character.data?.personality?.trim() || '';
-  const scenario =
-    character.scenario?.trim() || character.data?.scenario?.trim() || '';
-  const firstMessage =
-    character.first_mes?.trim() || character.data?.first_mes?.trim() || '';
   const creator =
     character.creator?.trim() || character.data?.creator?.trim() || '';
   const creatorNotes =
@@ -83,39 +77,17 @@ export function CharacterPreviewModal({
           </div>
         )}
 
-        {/* Description */}
-        {description && (
-          <PreviewSection label="Description" body={description} />
-        )}
-
-        {/* Personality */}
-        {personality && (
-          <PreviewSection label="Personality" body={personality} />
-        )}
-
-        {/* Scenario */}
-        {scenario && <PreviewSection label="Scenario" body={scenario} />}
-
-        {/* First message */}
-        {firstMessage && (
-          <PreviewSection label="First message" body={firstMessage} />
-        )}
-
-        {/* Creator notes */}
+        {/* Creator notes — the only detail surfaced here */}
         {creatorNotes && (
           <PreviewSection label="Creator notes" body={creatorNotes} />
         )}
 
-        {/* Empty-state — nothing meaningful to show */}
-        {!description &&
-          !personality &&
-          !scenario &&
-          !firstMessage &&
-          !creatorNotes && (
-            <p className="text-sm text-[var(--color-text-secondary)] italic text-center py-6">
-              This character doesn&apos;t have a description yet.
-            </p>
-          )}
+        {/* Empty-state — no creator notes to show */}
+        {!creatorNotes && (
+          <p className="text-sm text-[var(--color-text-secondary)] italic text-center py-6">
+            This character doesn&apos;t have any creator notes yet.
+          </p>
+        )}
 
         {/* Actions */}
         <div className="flex gap-3 pt-4 border-t border-[var(--color-border)]">
