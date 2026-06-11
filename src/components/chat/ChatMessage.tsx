@@ -32,6 +32,8 @@ interface ChatMessageProps {
   disabled?: boolean;
   /** Phase 6.1: attached image data URLs shown as a grid above content. */
   images?: string[];
+  /** Scene-video: generated MP4 URLs shown as inline players above content. */
+  videos?: string[];
   /** Phase 8.2: raw character avatar string for display-only regex scoping. */
   characterAvatar?: string;
   /** Phase 7.2: true while this message is actively being streamed. */
@@ -61,6 +63,8 @@ interface ChatMessageProps {
   onRegenerate?: () => void;
   /** Phase 8.6: create a checkpoint at this message. */
   onCheckpoint?: () => void;
+  /** Scene-video: render this message as a ~30s video via Replicate. */
+  onGenerateScene?: () => void;
   /** Increment this to programmatically trigger edit mode (e.g. up-arrow shortcut). */
   triggerEditNonce?: number;
 }
@@ -78,6 +82,7 @@ export function ChatMessage({
   timestamp,
   disabled,
   images,
+  videos,
   characterAvatar,
   swipes,
   swipeId,
@@ -95,6 +100,7 @@ export function ChatMessage({
   onDelete,
   onRegenerate,
   onCheckpoint,
+  onGenerateScene,
   triggerEditNonce,
 }: ChatMessageProps) {
   const isMobile = useIsMobile();
@@ -272,6 +278,7 @@ export function ChatMessage({
               { key: 'copy',   label: 'Copy',   onClick: handleCopy },
               ...(onCheckpoint ? [{ key: 'checkpoint', label: 'Checkpoint', onClick: onCheckpoint }] : []),
               ...(!isUser && onRegenerate ? [{ key: 'regen', label: 'Regenerate', onClick: onRegenerate }] : []),
+              ...(onGenerateScene ? [{ key: 'scene', label: 'Generate scene', onClick: onGenerateScene }] : []),
               ...messageActionExtras.map((e) => ({ key: `ext_${e.key}`, label: e.label, onClick: e.onClick })),
               { key: 'delete', label: 'Delete', onClick: () => onDelete?.(), danger: true },
             ].map((action) => {
@@ -300,6 +307,7 @@ export function ChatMessage({
           onRegenerate={onRegenerate}
           showRegenerate={!isUser && !!onRegenerate}
           onCheckpoint={onCheckpoint}
+          onGenerateScene={onGenerateScene}
           extras={messageActionExtras}
           anchorRight={layoutMode === 'bubbles' && isUser}
         />
@@ -374,6 +382,23 @@ export function ChatMessage({
             loading="lazy"
           />
         </a>
+      ))}
+    </div>
+  ) : null;
+
+  const videoBlock = !isEditing && videos && videos.length > 0 ? (
+    <div className={`flex flex-col gap-1 ${content.length > 0 ? 'mb-2' : ''}`}>
+      {videos.map((src, idx) => (
+        <video
+          key={idx}
+          src={src}
+          controls
+          loop
+          playsInline
+          preload="metadata"
+          className="w-full max-h-80 rounded-lg bg-black"
+          aria-label={`Scene video ${idx + 1}`}
+        />
       ))}
     </div>
   ) : null;
@@ -507,6 +532,7 @@ export function ChatMessage({
               onDoubleClick={!isEditing && onEdit ? handleStartEdit : undefined}
             >
               {imageGrid}
+              {videoBlock}
               {editingUI}
               {messageContent}
               {translationPanel}
@@ -555,6 +581,7 @@ export function ChatMessage({
           onDoubleClick={!isEditing && onEdit ? handleStartEdit : undefined}
         >
           {imageGrid}
+          {videoBlock}
           {isEditing ? (
             <div className="p-2 rounded-lg bg-[var(--color-bg-tertiary)]">
               {editingUI}
@@ -584,6 +611,7 @@ export function ChatMessage({
           {timeStr && <span className="text-xs text-zinc-500 ml-2">{timeStr}</span>}
 
           {imageGrid && <div className="mt-1">{imageGrid}</div>}
+          {videoBlock && <div className="mt-1">{videoBlock}</div>}
 
           {isEditing ? (
             <div className="mt-1 p-2 rounded-lg bg-[var(--color-bg-tertiary)]">

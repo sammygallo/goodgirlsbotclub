@@ -68,6 +68,11 @@ export interface ChatMessage {
    *  provider's multimodal content parts on the LAST user turn when calling
    *  generateMessage. Persisted into the JSONL record's `extra.images` field. */
   images?: string[];
+  /** Scene-video: generated MP4 URLs (served from /blobs/scene-video/...).
+   *  Rendered as inline <video> players above content in ChatMessage.tsx.
+   *  Persisted into the JSONL record's `extra.videos` field. Never sent to
+   *  the LLM. */
+  videos?: string[];
 }
 
 interface ChatFile {
@@ -516,6 +521,12 @@ interface ChatState {
   insertImageMessage: (
     dataUrl: string,
     prompt: string,
+    characterName: string,
+    characterAvatar: string,
+    character: CharacterInfo
+  ) => Promise<void>;
+  insertVideoMessage: (
+    videoUrl: string,
     characterName: string,
     characterAvatar: string,
     character: CharacterInfo
@@ -1607,12 +1618,15 @@ async function saveChatToBackend(
       ...(msg.characterAvatar ? { character_avatar: msg.characterAvatar } : {}),
       // Phase 6.1: persist image attachments into extra.images (array) and
       // extra.image (first element, SillyTavern-compat fallback for any
-      // code path that still reads the scalar form).
-      ...(msg.images && msg.images.length > 0
+      // code path that still reads the scalar form). Scene videos ride
+      // along in extra.videos.
+      ...((msg.images && msg.images.length > 0) || (msg.videos && msg.videos.length > 0)
         ? {
             extra: {
-              images: msg.images,
-              image: msg.images[0],
+              ...(msg.images && msg.images.length > 0
+                ? { images: msg.images, image: msg.images[0] }
+                : {}),
+              ...(msg.videos && msg.videos.length > 0 ? { videos: msg.videos } : {}),
             },
           }
         : {}),
@@ -1734,6 +1748,7 @@ function normalizeMessage(msg: {
   extra?: {
     images?: unknown;
     image?: unknown;
+    videos?: unknown;
     [key: string]: unknown;
   };
 }): ChatMessage {
@@ -1754,6 +1769,18 @@ function normalizeMessage(msg: {
     images = [msg.extra.image];
   }
 
+  // Recover scene videos — served blob URLs (/blobs/scene-video/...), not
+  // data URLs, so accept any non-empty string that looks like a URL/path.
+  let videos: string[] | undefined;
+  const rawVideos = msg.extra?.videos;
+  if (Array.isArray(rawVideos)) {
+    const arr = rawVideos.filter(
+      (x): x is string =>
+        typeof x === 'string' && (x.startsWith('/') || x.startsWith('data:') || x.startsWith('http'))
+    );
+    if (arr.length > 0) videos = arr;
+  }
+
   return {
     id: generateId(),
     name: msg.name,
@@ -1765,6 +1792,7 @@ function normalizeMessage(msg: {
     swipeId: msg.swipe_id ?? 0,
     characterAvatar: msg.character_avatar,
     images,
+    videos,
   };
 }
 
@@ -2556,6 +2584,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: Date.now(),
       characterAvatar,
       images: [dataUrl],
+    });
+    // Persist to backend (non-fatal if it fails)
+    await saveChatToBackend(get().messages, character, currentChatFile);
+  },
+
+  // ---- Insert Video Message (scene-video result inline) ----
+  insertVideoMessage: async (
+    videoUrl: string,
+    characterName: string,
+    characterAvatar: string,
+    character: CharacterInfo
+  ) => {
+    const { addMessage, currentChatFile } = get();
+    addMessage({
+      name: characterName,
+      isUser: false,
+      isSystem: false,
+      content: '',
+      timestamp: Date.now(),
+      characterAvatar,
+      videos: [videoUrl],
     });
     // Persist to backend (non-fatal if it fails)
     await saveChatToBackend(get().messages, character, currentChatFile);
