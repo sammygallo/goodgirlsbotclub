@@ -142,10 +142,10 @@ export function GenerateSceneModal({
           />
 
           <div className="p-3 rounded-lg bg-[var(--color-bg-tertiary)] text-xs text-[var(--color-text-secondary)] leading-relaxed">
-            Renders three 10-second segments (~30s total) with {characterName}
-            's portrait as the identity reference. Replicate bills per second
-            of video output (currently ≈$3 per scene) and the render takes a
-            few minutes — you can keep chatting while it runs.
+            Builds a scene keyframe from {characterName}'s portrait, then
+            animates it into a ~30s video via Replicate (currently ≈$0.35 per
+            scene). The render takes a few minutes — you can keep chatting
+            while it runs.
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
