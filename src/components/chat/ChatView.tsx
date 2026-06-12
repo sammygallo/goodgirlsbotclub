@@ -1,6 +1,6 @@
 import { useEffect, useRef, useMemo, useState, useCallback, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, ChevronDown, X, Check } from 'lucide-react';
+import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, ChevronDown, X, Check, Clapperboard } from 'lucide-react';
 import { showToastGlobal } from '../ui/Toast';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
@@ -42,8 +42,12 @@ import {
   getExpressionThumbnailUrl,
   getDefaultAvatarUrl,
   mapEmotionToAvailable,
+  stripEmotionTag,
   type Emotion,
 } from '../../utils/emotions';
+import { generateSceneVideo } from '../../api/sceneVideoGen';
+import { useAuthStore } from '../../stores/authStore';
+import { hasPermission } from '../../utils/permissions';
 import {
   compressImageFiles,
   ACCEPTED_IMAGE_MIMES,
@@ -103,6 +107,7 @@ export function ChatView() {
     impersonate,
     stopGeneration,
     insertImageMessage,
+    insertVideoMessage,
     currentChatFile,
     currentSpeakerName,
     setGroupTitle,
@@ -182,6 +187,9 @@ export function ChatView() {
   const [isDragOver, setIsDragOver] = useState(false);
   // Phase 7.1: image generation modal
   const [isImageGenOpen, setIsImageGenOpen] = useState(false);
+  // Scene-video: progress (0..1) of the in-flight generation job, or null
+  // when idle. One job at a time — generation takes minutes, not seconds.
+  const [sceneGenProgress, setSceneGenProgress] = useState<number | null>(null);
   const dragCounter = useRef(0);
 
   // Chat options menu + controlled panel states
@@ -396,6 +404,47 @@ export function ChatView() {
       model: activeModel,
     };
   }, [selectedCharacter, displayPersona, activeModel]);
+
+  // Scene-video: animate a chat block into a ~30s video. The backend chains
+  // Replicate wan-2.2 segments from the character avatar; the message text
+  // (macros resolved, emotion tag stripped) becomes the motion prompt. The
+  // result lands in chat as a new message with an inline player, like
+  // image-gen results. generation:video is owner-only by default — the
+  // backend enforces it too; this just hides the menu entry.
+  const currentUser = useAuthStore((s) => s.currentUser);
+  const canGenerateScene = hasPermission(currentUser, 'generation:video');
+  const handleGenerateScene = async (content: string) => {
+    if (!selectedCharacter) return;
+    if (sceneGenProgress !== null) {
+      showToastGlobal('A scene video is already generating', 'error');
+      return;
+    }
+    const prompt = stripEmotionTag(processMacros(content, displayMacroCtx)).trim();
+    if (!prompt) {
+      showToastGlobal('Nothing to render — the message is empty', 'error');
+      return;
+    }
+    setSceneGenProgress(0);
+    try {
+      const videoUrl = await generateSceneVideo(selectedCharacter.name, prompt, (s) => {
+        setSceneGenProgress(s.progress);
+      });
+      await insertVideoMessage(
+        videoUrl,
+        selectedCharacter.name,
+        selectedCharacter.avatar,
+        selectedCharacter
+      );
+      showToastGlobal('Scene video added to chat', 'success');
+    } catch (err) {
+      showToastGlobal(
+        err instanceof Error ? err.message : 'Scene generation failed',
+        'error'
+      );
+    } finally {
+      setSceneGenProgress(null);
+    }
+  };
 
   // Phase 9.1: IDs of messages matching the search query (excludes system messages)
   const searchMatchIds = useMemo(() => {
@@ -1512,6 +1561,7 @@ export function ChatView() {
                     timestamp={message.timestamp}
                     disabled={isSending}
                     images={message.images}
+                    videos={message.videos}
                     characterAvatar={message.isUser ? selectedCharacter?.avatar : (message.characterAvatar || selectedCharacter?.avatar)}
                     isStreaming={isLastAiMessage && isStreaming}
                     isLastMessage={isLastAiMessage}
@@ -1542,6 +1592,15 @@ export function ChatView() {
                       isLastAiMessage && !isGroupChatMode ? handleRegenerate : undefined
                     }
                     onCheckpoint={currentChatFile ? () => handleCheckpoint(message.id) : undefined}
+                    onGenerateScene={
+                      canGenerateScene &&
+                      isAiMessage &&
+                      !isGroupChatMode &&
+                      selectedCharacter &&
+                      message.content.trim().length > 0
+                        ? () => handleGenerateScene(message.content)
+                        : undefined
+                    }
                     triggerEditNonce={message.id === lastUserMessageId ? editLastNonce : undefined}
                   />
                 </div>
@@ -1635,6 +1694,16 @@ export function ChatView() {
           >
             <X size={16} />
           </button>
+        </div>
+      )}
+
+      {/* Scene-video: non-blocking progress while the backend renders segments */}
+      {sceneGenProgress !== null && (
+        <div className="mx-4 mb-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)]">
+          <Clapperboard size={14} className="text-[var(--color-primary)] animate-pulse flex-shrink-0" />
+          <span className="text-xs text-[var(--color-text-secondary)]">
+            Generating scene video… {Math.round(sceneGenProgress * 100)}% — takes a few minutes, you can keep chatting
+          </span>
         </div>
       )}
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Pencil, Copy, Trash2, RefreshCw, GitFork, Puzzle } from 'lucide-react';
+import { Pencil, Copy, Trash2, RefreshCw, GitFork, Puzzle, Clapperboard } from 'lucide-react';
 
 export interface MessageActionExtra {
   key: string;
@@ -18,6 +18,8 @@ interface MessageActionMenuProps {
   showRegenerate?: boolean;
   /** Phase 8.6: create a checkpoint at this message. */
   onCheckpoint?: () => void;
+  /** Scene-video: render the message as a ~30s video via Replicate. */
+  onGenerateScene?: () => void;
   /** Extension-contributed entries rendered before Delete. */
   extras?: MessageActionExtra[];
   anchorRight?: boolean;
@@ -32,6 +34,7 @@ export function MessageActionMenu({
   onRegenerate,
   showRegenerate,
   onCheckpoint,
+  onGenerateScene,
   extras,
   anchorRight,
 }: MessageActionMenuProps) {
@@ -69,6 +72,9 @@ export function MessageActionMenu({
       : []),
     ...(showRegenerate && onRegenerate
       ? [{ key: 'regen', icon: RefreshCw, label: 'Regenerate', onClick: onRegenerate }]
+      : []),
+    ...(onGenerateScene
+      ? [{ key: 'scene', icon: Clapperboard, label: 'Generate scene', onClick: onGenerateScene }]
       : []),
     ...(extras ?? []).map((e) => ({
       key: `ext_${e.key}`,

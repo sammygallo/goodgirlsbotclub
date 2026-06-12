@@ -21,6 +21,9 @@ export const PERMISSIONS = [
   'generation:use',
   'generation:image',
   'generation:audio',
+  // Owner-only by default (absent from LEGACY_PERM_MIN_LEVEL on purpose —
+  // unknown permissions resolve owner-only in legacy mode).
+  'generation:video',
 
   // Characters
   'character:view',
