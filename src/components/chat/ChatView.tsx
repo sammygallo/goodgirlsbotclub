@@ -46,6 +46,8 @@ import {
   type Emotion,
 } from '../../utils/emotions';
 import { generateSceneVideo } from '../../api/sceneVideoGen';
+import { useAuthStore } from '../../stores/authStore';
+import { hasPermission } from '../../utils/permissions';
 import {
   compressImageFiles,
   ACCEPTED_IMAGE_MIMES,
@@ -407,7 +409,10 @@ export function ChatView() {
   // Replicate wan-2.2 segments from the character avatar; the message text
   // (macros resolved, emotion tag stripped) becomes the motion prompt. The
   // result lands in chat as a new message with an inline player, like
-  // image-gen results.
+  // image-gen results. generation:video is owner-only by default — the
+  // backend enforces it too; this just hides the menu entry.
+  const currentUser = useAuthStore((s) => s.currentUser);
+  const canGenerateScene = hasPermission(currentUser, 'generation:video');
   const handleGenerateScene = async (content: string) => {
     if (!selectedCharacter) return;
     if (sceneGenProgress !== null) {
@@ -1588,6 +1593,7 @@ export function ChatView() {
                     }
                     onCheckpoint={currentChatFile ? () => handleCheckpoint(message.id) : undefined}
                     onGenerateScene={
+                      canGenerateScene &&
                       isAiMessage &&
                       !isGroupChatMode &&
                       selectedCharacter &&
