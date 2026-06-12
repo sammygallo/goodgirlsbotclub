@@ -14,6 +14,8 @@ import { BottomSheet } from '../ui/BottomSheet';
 import { ChatHistoryPanel } from './ChatHistoryPanel';
 import { ChatLorebookModal } from './ChatLorebookModal';
 import { GenerateLorebookModal } from '../worldinfo/GenerateLorebookModal';
+import { GenerateSceneModal } from './GenerateSceneModal';
+import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
 import { GroupChatControls } from './GroupChatControls';
 import { AuthorNote } from './AuthorNote';
@@ -405,25 +407,48 @@ export function ChatView() {
     };
   }, [selectedCharacter, displayPersona, activeModel]);
 
-  // Scene-video: animate a chat block into a ~30s video. The backend chains
-  // Replicate wan-2.2 segments from the character avatar; the message text
-  // (macros resolved, emotion tag stripped) becomes the motion prompt. The
-  // result lands in chat as a new message with an inline player, like
-  // image-gen results. generation:video is owner-only by default — the
-  // backend enforces it too; this just hides the menu entry.
+  // Scene-video: render the current chat moment as a ~30s video. Tapping
+  // "Generate scene" opens GenerateSceneModal, which distills the recent
+  // transcript into an editable scene prompt via the active text model;
+  // on confirm the backend renders wan-2.7-r2v segments with the character
+  // avatar as an identity reference (not the first frame). The result lands
+  // in chat as a new message with an inline player, like image-gen results.
+  // generation:video is owner-only by default — the backend enforces it
+  // too; this just hides the menu entry.
   const currentUser = useAuthStore((s) => s.currentUser);
   const canGenerateScene = hasPermission(currentUser, 'generation:video');
-  const handleGenerateScene = async (content: string) => {
+  const [sceneModal, setSceneModal] = useState<{
+    transcript: TranscriptMsg[];
+    fallbackPrompt: string;
+  } | null>(null);
+  const handleGenerateScene = (messageId: string, content: string) => {
     if (!selectedCharacter) return;
     if (sceneGenProgress !== null) {
       showToastGlobal('A scene video is already generating', 'error');
       return;
     }
-    const prompt = stripEmotionTag(processMacros(content, displayMacroCtx)).trim();
-    if (!prompt) {
+    const fallbackPrompt = stripEmotionTag(processMacros(content, displayMacroCtx)).trim();
+    if (!fallbackPrompt) {
       showToastGlobal('Nothing to render — the message is empty', 'error');
       return;
     }
+    // Summarize only the transcript up to the chosen message — later
+    // messages would leak a scene the user didn't pick.
+    const idx = messages.findIndex((m) => m.id === messageId);
+    const transcript = (idx >= 0 ? messages.slice(0, idx + 1) : messages)
+      .filter((m) => !m.isSystem)
+      .map((m) => ({
+        name: m.name,
+        isUser: m.isUser,
+        isSystem: m.isSystem,
+        content: stripEmotionTag(processMacros(m.content, displayMacroCtx)).trim(),
+      }))
+      .filter((m) => m.content.length > 0);
+    setSceneModal({ transcript, fallbackPrompt });
+  };
+
+  const startSceneRender = async (prompt: string) => {
+    if (!selectedCharacter) return;
     setSceneGenProgress(0);
     try {
       const videoUrl = await generateSceneVideo(selectedCharacter.name, prompt, (s) => {
@@ -1598,7 +1623,7 @@ export function ChatView() {
                       !isGroupChatMode &&
                       selectedCharacter &&
                       message.content.trim().length > 0
-                        ? () => handleGenerateScene(message.content)
+                        ? () => handleGenerateScene(message.id, message.content)
                         : undefined
                     }
                     triggerEditNonce={message.id === lastUserMessageId ? editLastNonce : undefined}
@@ -1852,6 +1877,22 @@ export function ChatView() {
           messages={messages}
           characterName={selectedCharacter.name}
           defaultBookName={`${selectedCharacter.name} — Lore`}
+        />
+      )}
+
+      {/* Scene-video: summarize transcript → editable prompt → paid render */}
+      {selectedCharacter && (
+        <GenerateSceneModal
+          isOpen={sceneModal !== null}
+          onClose={() => setSceneModal(null)}
+          messages={sceneModal?.transcript ?? []}
+          characterName={selectedCharacter.name}
+          characterDescription={displayMacroCtx.characterDescription}
+          fallbackPrompt={sceneModal?.fallbackPrompt ?? ''}
+          onGenerate={(p) => {
+            setSceneModal(null);
+            void startSceneRender(p);
+          }}
         />
       )}
 
