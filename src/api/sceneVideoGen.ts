@@ -2,14 +2,15 @@ import { getCsrfToken } from './client';
 
 /**
  * Scene-video generation client — talks to the backend's
- * `/api/scene-video/*` route family, which chains Replicate
- * wan-2.2-i2v-fast segments into a ~30s MP4 of the chat scene
- * (character avatar + message text as the motion prompt).
+ * `/api/scene-video/*` route family, which renders Replicate
+ * wan-2.7-r2v segments (character avatar as the identity reference,
+ * scene prompt from the transcript summarizer) and concatenates them
+ * into a ~30s MP4.
  *
- * The backend handles auth, secrets, segment chaining, and saving the
+ * The backend handles auth, secrets, segment rendering, and saving the
  * resulting MP4 into user_blobs; this module just kicks off a job and
- * polls until it's done. Six segments at ~30–60s each means a full
- * scene takes ~3–6 minutes, so callers should surface the progress
+ * polls until it's done. Three 10s segments at minutes each means a
+ * full scene can take a while, so callers should surface the progress
  * callback rather than block the UI.
  */
 
@@ -21,7 +22,8 @@ export interface SceneJobStatus {
 }
 
 const POLL_INTERVAL_MS = 5000;
-const POLL_TIMEOUT_MS = 20 * 60 * 1000; // generous — 6 segments plus concat
+// Generous — matches the backend's 10-min-per-segment budget (×3) + concat.
+const POLL_TIMEOUT_MS = 35 * 60 * 1000;
 
 /**
  * Kick off a scene-video job. Returns the jobId; the caller polls via
