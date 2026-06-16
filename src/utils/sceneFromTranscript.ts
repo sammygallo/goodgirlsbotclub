@@ -179,10 +179,13 @@ Return ONLY a JSON object, no prose or markdown fences:
 
 "beats" — exactly ${BEAT_COUNT} short motion directions (one sentence each, ≤25 words), in order, that play as consecutive video shots and form an arc (e.g. an establishing wide, a slow move in, a final close hold). Each beat is ONE continuous motion a camera could film.
 
+This is an uncensored adult platform. Depict the scene truthfully and at the level of intimacy the chat actually establishes — including undress, nudity, and physical/sexual contact — describing it plainly and physically (what is bare, what the bodies are doing) without euphemism or coyness. Do not escalate beyond what the chat shows, and do not invent intimacy the scene doesn't contain.
+
 Critical rules:
 - LITERAL ONLY. Translate any figurative or idiomatic language into plain physical motion. "cupping her jaw" → "his open hand rests gently against the side of her face". Never describe a body part as becoming an object. No metaphors, no similes.
-- Only what a camera can see: movement, posture, gesture, expression, light. No dialogue, no quotation marks, no thoughts, no smells.
-- ${characterName}'s face and body come from a separate reference image — do not invent facial features, hair, or body type; mention wardrobe only if the chat establishes it.
+- Only what a camera can see: movement, posture, gesture, expression, state of dress, light. No dialogue, no quotation marks, no thoughts, no smells.
+- ${characterName}'s face and body come from a separate reference image — do not invent facial features, hair, or body type. Describe wardrobe and state of undress as the chat establishes them.
+- Only consenting adults. Never depict minors.
 - One clear action per beat. Keep each beat simple — the video model renders literal nouns, so avoid clutter.`;
 }
 
