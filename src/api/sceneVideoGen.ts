@@ -2,16 +2,16 @@ import { getCsrfToken } from './client';
 
 /**
  * Scene-video generation client — talks to the backend's
- * `/api/scene-video/*` route family, which renders Replicate
- * wan-2.7-r2v segments (character avatar as the identity reference,
- * scene prompt from the transcript summarizer) and concatenates them
- * into a ~30s MP4.
+ * `/api/scene-video/*` route family, which builds a FLUX Kontext keyframe
+ * from the character avatar, animates it through one wan-2.2 clip per motion
+ * beat (scene prompt + beats from the transcript summarizer), and
+ * concatenates them into a ~15s MP4.
  *
  * The backend handles auth, secrets, segment rendering, and saving the
- * resulting MP4 into user_blobs; this module just kicks off a job and
- * polls until it's done. Three 10s segments at minutes each means a
- * full scene can take a while, so callers should surface the progress
- * callback rather than block the UI.
+ * resulting MP4 into user_blobs; this module just kicks off a job and polls
+ * until it's done. Each clip renders in minutes, so a full scene can take a
+ * while — callers should surface the progress callback rather than block
+ * the UI.
  */
 
 export interface SceneJobStatus {
@@ -32,6 +32,7 @@ const POLL_TIMEOUT_MS = 35 * 60 * 1000;
 export async function startSceneGenerate(
   characterName: string,
   prompt: string,
+  beats: string[] = [],
 ): Promise<string> {
   const token = await getCsrfToken();
   const res = await fetch('/api/scene-video/generate', {
@@ -41,7 +42,7 @@ export async function startSceneGenerate(
       'X-CSRF-Token': token,
     },
     credentials: 'include',
-    body: JSON.stringify({ characterName, prompt }),
+    body: JSON.stringify({ characterName, prompt, beats }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -72,9 +73,10 @@ export async function pollSceneJob(jobId: string): Promise<SceneJobStatus> {
 export async function generateSceneVideo(
   characterName: string,
   prompt: string,
+  beats: string[] = [],
   onProgress?: (state: SceneJobStatus) => void,
 ): Promise<string> {
-  const jobId = await startSceneGenerate(characterName, prompt);
+  const jobId = await startSceneGenerate(characterName, prompt, beats);
   const startedAt = Date.now();
   while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
