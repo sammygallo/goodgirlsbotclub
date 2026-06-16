@@ -407,7 +407,7 @@ export function ChatView() {
     };
   }, [selectedCharacter, displayPersona, activeModel]);
 
-  // Scene-video: render the current chat moment as a ~30s video. Tapping
+  // Scene-video: render the current chat moment as a ~15s video. Tapping
   // "Generate scene" opens GenerateSceneModal, which distills the recent
   // transcript into an editable scene prompt via the active text model;
   // on confirm the backend renders wan-2.7-r2v segments with the character
@@ -447,13 +447,18 @@ export function ChatView() {
     setSceneModal({ transcript, fallbackPrompt });
   };
 
-  const startSceneRender = async (prompt: string) => {
+  const startSceneRender = async (prompt: string, beats: string[]) => {
     if (!selectedCharacter) return;
     setSceneGenProgress(0);
     try {
-      const videoUrl = await generateSceneVideo(selectedCharacter.name, prompt, (s) => {
-        setSceneGenProgress(s.progress);
-      });
+      const videoUrl = await generateSceneVideo(
+        selectedCharacter.name,
+        prompt,
+        beats,
+        (s) => {
+          setSceneGenProgress(s.progress);
+        }
+      );
       await insertVideoMessage(
         videoUrl,
         selectedCharacter.name,
@@ -1889,9 +1894,9 @@ export function ChatView() {
           characterName={selectedCharacter.name}
           characterDescription={displayMacroCtx.characterDescription}
           fallbackPrompt={sceneModal?.fallbackPrompt ?? ''}
-          onGenerate={(p) => {
+          onGenerate={(p, b) => {
             setSceneModal(null);
-            void startSceneRender(p);
+            void startSceneRender(p, b);
           }}
         />
       )}
