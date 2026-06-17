@@ -68,7 +68,7 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
     setGenError(null);
     setGenLoading(true);
     try {
-      const raw = await api.getChatMessages(sel.avatar, sel.fileName);
+      const { messages: raw } = await api.getChatMessages(sel.avatar, sel.fileName);
       const messages: TranscriptMsg[] = raw.map((m) => ({
         name: m.name,
         isUser: m.is_user,

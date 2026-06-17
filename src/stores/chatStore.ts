@@ -3,6 +3,7 @@ import {
   api,
   apiRequest,
   getCsrfToken,
+  ChatConflictError,
   type CharacterInfo,
   type GenerationOptions,
   type GenerationImage,
@@ -1641,12 +1642,34 @@ if (typeof window !== 'undefined') {
   getCsrfToken().then((t) => { cachedCsrfToken = t; }).catch(() => {});
 }
 
+// Last server_ts observed per chat file (the backend's optimistic-concurrency
+// token). Sent back as base_ts on the next save so a stale/out-of-order write
+// can't clobber a newer message tail. Keyed by file name (unique per chat).
+const chatServerTsByFile = new Map<string, number>();
+
+export function getChatServerTs(fileName: string): number | undefined {
+  return chatServerTsByFile.get(fileName);
+}
+
+// Adopt authoritative server state after a conflict we can't safely overwrite
+// (the server is ahead of us). If it's the active chat, refresh the in-memory
+// messages so the user sees the newer tail instead of losing it.
+function reconcileServerState(fileName: string, serverMessages: unknown[]) {
+  const state = useChatStore.getState();
+  if (state.currentChatFile !== fileName) return;
+  const rest = Array.isArray(serverMessages) ? serverMessages.slice(1) : [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const normalized = rest.map((m) => normalizeMessage(m as any));
+  useChatStore.setState({ messages: normalized });
+}
+
 async function saveChatToBackend(
   messages: ChatMessage[],
   character: CharacterInfo,
   currentChatFile: string | null,
   isGroupChat?: boolean,
-  groupCharacters?: CharacterInfo[]
+  groupCharacters?: CharacterInfo[],
+  allowTruncate = false
 ) {
   if (!currentChatFile) return;
 
@@ -1663,14 +1686,51 @@ async function saveChatToBackend(
   lastSaveContext = { character, isGroupChat: !!isGroupChat, groupCharacters };
   getCsrfToken().then((t) => { cachedCsrfToken = t; }).catch(() => {});
 
+  // base_ts is the last server_ts we observed for this chat — the optimistic-
+  // concurrency token. Undefined for a chat we've never loaded/saved (first
+  // save → unconditional write).
+  let baseTs: number | null | undefined = chatServerTsByFile.get(fileName);
+  const truncateOk = allowTruncate;
+
   // A dropped save silently loses the user's last messages on reload, so
-  // retry a few times with backoff before surfacing the failure.
-  const MAX_ATTEMPTS = 3;
+  // retry a few times with backoff before surfacing the failure. Conflicts
+  // (409) are resolved separately and also consume an attempt.
+  const MAX_ATTEMPTS = 4;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      await api.saveChat(avatarUrl, fileName, chatData);
+      const { server_ts } = await api.saveChat(
+        avatarUrl,
+        fileName,
+        chatData,
+        baseTs ?? null,
+        truncateOk
+      );
+      chatServerTsByFile.set(fileName, server_ts);
       return;
     } catch (err) {
+      if (err instanceof ChatConflictError) {
+        const { current_ts, current_messages } = err.conflict;
+        // The server's token is now authoritative regardless of how we resolve.
+        chatServerTsByFile.set(fileName, current_ts);
+
+        // If our payload is at least as complete as the server's, our state is
+        // the newer/superset one (the common self-induced race: our own
+        // earlier save bumped the token mid-turn). Retry with the fresh token
+        // and keep our messages.
+        const serverLen = Array.isArray(current_messages) ? current_messages.length : 0;
+        if (chatData.length >= serverLen && attempt < MAX_ATTEMPTS) {
+          baseTs = current_ts;
+          continue;
+        }
+
+        // Otherwise the server is ahead of us (another tab/session appended
+        // messages). Don't clobber it — adopt the server state into memory so
+        // the newer tail is preserved rather than lost.
+        reconcileServerState(fileName, current_messages);
+        showToastGlobal('Chat was updated elsewhere — reloaded the latest messages', 'warning');
+        return;
+      }
+
       console.error(`[Chat] Save attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err);
       if (attempt < MAX_ATTEMPTS) {
         await new Promise((r) => setTimeout(r, 400 * attempt));
@@ -1683,6 +1743,28 @@ async function saveChatToBackend(
       });
       showToastGlobal('Failed to save chat — your last messages may not be saved', 'error');
     }
+  }
+}
+
+// Persist the active chat after an intentional truncation (message delete,
+// branch reset). These edit actions don't carry the character context, so we
+// resolve it from the stores here. allow_truncate tells the backend the
+// shrinking array is deliberate, not a stale-save race to be rejected.
+async function persistTruncatingEdit() {
+  const { currentChatFile, messages, getGroupChatByFile } = useChatStore.getState();
+  if (!currentChatFile) return;
+  const charState = useCharacterStore.getState();
+  const groupChat = getGroupChatByFile(currentChatFile);
+  if (groupChat) {
+    const chars = groupChat.characterAvatars
+      .map((av) => charState.characters.find((c) => c.avatar === av))
+      .filter((c): c is CharacterInfo => !!c);
+    if (chars.length === 0) return;
+    await saveChatToBackend(messages, chars[0], currentChatFile, true, chars, true);
+  } else {
+    const character = charState.selectedCharacter;
+    if (!character) return;
+    await saveChatToBackend(messages, character, currentChatFile, false, undefined, true);
   }
 }
 
@@ -1704,10 +1786,14 @@ function flushChatOnUnload() {
       lastSaveContext.isGroupChat,
       lastSaveContext.groupCharacters
     );
+    const baseTs = chatServerTsByFile.get(fileName);
     const body = JSON.stringify({
       character_avatar: avatarUrl,
       file_name: fileName,
       messages: chatData,
+      // Mid-stream the array only grows, so base_ts matches and no truncate is
+      // needed. Conflicts can't be handled during unload — best effort only.
+      ...(typeof baseTs === 'number' ? { base_ts: baseTs } : {}),
     });
     // keepalive lets us send the CSRF header (sendBeacon cannot set headers)
     // while still surviving the unload.
@@ -2199,8 +2285,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadChat: async (avatarUrl: string, fileName: string) => {
     set({ isLoading: true, error: null, currentChatFile: fileName });
     try {
-      const rawMessages = await api.getChatMessages(avatarUrl, fileName);
+      const { messages: rawMessages, server_ts } = await api.getChatMessages(avatarUrl, fileName);
       const messages = rawMessages.map(normalizeMessage);
+      // Record the concurrency token so the next save echoes it as base_ts.
+      chatServerTsByFile.set(fileName, server_ts);
       set({ messages, isLoading: false });
     } catch (error) {
       set({
@@ -2214,8 +2302,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoading: true, error: null, currentChatFile: groupChat.fileName });
     try {
       const avatarUrl = groupChat.characterAvatars[0];
-      const rawMessages = await api.getChatMessages(avatarUrl, groupChat.fileName);
+      const { messages: rawMessages, server_ts } = await api.getChatMessages(avatarUrl, groupChat.fileName);
       const messages = rawMessages.map(normalizeMessage);
+      chatServerTsByFile.set(groupChat.fileName, server_ts);
       set({ messages, isLoading: false });
     } catch (error) {
       set({
@@ -2357,6 +2446,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       messages: state.messages.filter((msg) => msg.id !== messageId),
     }));
+    // Intentional shrink — persist with allow_truncate so the backend's
+    // regression guard doesn't reject it as a stale save.
+    void persistTruncatingEdit();
   },
 
   // ---- Swipe Left (previous swipe) ----
@@ -2646,7 +2738,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const userName = getUserDisplayName();
       const parsed = await parseChatTranscript(file, { characterName, userName });
       const fileName = await api.createChat(characterName);
-      await api.saveChat(avatarUrl, fileName, toSaveChatPayload(parsed));
+      const { server_ts } = await api.saveChat(avatarUrl, fileName, toSaveChatPayload(parsed));
+      chatServerTsByFile.set(fileName, server_ts);
       const { fetchChatFiles } = get();
       await fetchChatFiles(avatarUrl);
     } catch (error) {
@@ -3136,13 +3229,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
 
         saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
-        await saveChatToBackend(get().messages, character, currentChatFile);
       }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         set({ error: error instanceof Error ? error.message : 'Failed to regenerate response' });
       }
     } finally {
+      // Fix #2 + truncation: edit-and-regenerate rewrites history (drops every
+      // message after the edited one), so the array can shrink below what's
+      // stored — flush in finally with allow_truncate so an aborted/errored
+      // regen still persists and the backend doesn't reject the smaller array.
+      await saveChatToBackend(
+        get().messages,
+        character,
+        get().currentChatFile,
+        false,
+        undefined,
+        true
+      );
       set({ isSending: false, isStreaming: false, abortController: null });
     }
   },
