@@ -33,6 +33,26 @@ export function clearCsrfToken(): void {
   csrfToken = null;
 }
 
+/** 409 body from POST /chats/save (mirrors the backend's ChatConflictDetail).
+ *  `error` is "conflict" (stale base_ts) or "message_count_regression"
+ *  (the save would shrink the stored array without allow_truncate). */
+export interface ChatConflict {
+  error: string;
+  current_ts: number;
+  current_messages: unknown[];
+}
+
+/** Thrown by api.saveChat on a 409 so callers can merge against the
+ *  authoritative server state instead of silently clobbering it. */
+export class ChatConflictError extends Error {
+  conflict: ChatConflict;
+  constructor(conflict: ChatConflict) {
+    super(`chat save conflict: ${conflict.error}`);
+    this.name = 'ChatConflictError';
+    this.conflict = conflict;
+  }
+}
+
 // ggbc-backend speaks roles (owner/admin/contributor/end_user); SillyTavern
 // speaks permission group ids (e.g. owner-default). The frontend was built
 // around the ST shape, so we translate at the boundary.
@@ -670,19 +690,29 @@ export const api = {
     return rows;
   },
 
-  async getChatMessages(avatarUrl: string, fileName: string): Promise<ChatMessage[]> {
-    const response = await apiRequest<{ messages: ChatMessage[] }>('/chats/get', {
-      method: 'POST',
-      body: JSON.stringify({
-        character_avatar: avatarUrl,
-        file_name: fileName,
-      }),
-    });
+  async getChatMessages(
+    avatarUrl: string,
+    fileName: string
+  ): Promise<{ messages: ChatMessage[]; server_ts: number }> {
+    const response = await apiRequest<{ messages: ChatMessage[]; server_ts: number }>(
+      '/chats/get',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          character_avatar: avatarUrl,
+          file_name: fileName,
+        }),
+      }
+    );
     // Skip the header element to match the legacy ST behavior — header
     // is { user_name, character_name, create_date, ... } and isn't a
-    // displayed message.
+    // displayed message. server_ts is the optimistic-concurrency token the
+    // caller must echo back as base_ts on the next save.
     const messages = response?.messages;
-    return Array.isArray(messages) ? messages.slice(1) : [];
+    return {
+      messages: Array.isArray(messages) ? messages.slice(1) : [],
+      server_ts: typeof response?.server_ts === 'number' ? response.server_ts : 0,
+    };
   },
 
   // Generate message with full context
@@ -831,20 +861,62 @@ export const api = {
 
   // Save chat to backend (upsert — creates row on first call, replaces
   // messages on subsequent calls).
+  //
+  // `baseTs` is the server_ts the client last observed (from getChatMessages
+  // or a prior saveChat). The backend rejects the write with 409 if it doesn't
+  // match the stored token (a stale/out-of-order save) so a newer message tail
+  // can't be clobbered. Pass null/undefined for an unconditional first save.
+  //
+  // `allowTruncate` must be set when the new array is intentionally shorter
+  // than the stored one (delete / edit-and-regenerate / branch reset);
+  // otherwise the backend treats a shrinking array as a stale-save race and
+  // rejects it.
+  //
+  // Returns the new server_ts on success; throws ChatConflictError on 409.
   async saveChat(
     avatarUrl: string,
     fileName: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    chatData: any[]
-  ): Promise<void> {
-    await apiRequest('/chats/save', {
+    chatData: any[],
+    baseTs?: number | null,
+    allowTruncate = false
+  ): Promise<{ server_ts: number }> {
+    const token = await getCsrfToken();
+    const response = await fetch('/chats/save', {
       method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': token,
+      },
       body: JSON.stringify({
         character_avatar: avatarUrl,
         file_name: fileName,
         messages: chatData,
+        ...(typeof baseTs === 'number' ? { base_ts: baseTs } : {}),
+        ...(allowTruncate ? { allow_truncate: true } : {}),
       }),
     });
+
+    if (response.status === 409) {
+      // FastAPI nests the model under `detail`.
+      const body = await response.json().catch(() => ({}));
+      const detail = (body?.detail ?? body) as Partial<ChatConflict>;
+      throw new ChatConflictError({
+        error: typeof detail?.error === 'string' ? detail.error : 'conflict',
+        current_ts: typeof detail?.current_ts === 'number' ? detail.current_ts : 0,
+        current_messages: Array.isArray(detail?.current_messages)
+          ? detail.current_messages
+          : [],
+      });
+    }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err?.error || err?.message || `HTTP ${response.status}`);
+    }
+
+    const out = (await response.json().catch(() => ({}))) as { server_ts?: number };
+    return { server_ts: typeof out.server_ts === 'number' ? out.server_ts : 0 };
   },
 
   /**
