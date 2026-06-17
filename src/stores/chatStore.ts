@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   api,
   apiRequest,
+  getCsrfToken,
   type CharacterInfo,
   type GenerationOptions,
   type GenerationImage,
@@ -1566,21 +1567,20 @@ async function runGenerateInterceptors(
 }
 
 // Helper: save chat to backend
-async function saveChatToBackend(
+// Build the SillyTavern-compatible save payload (header element followed by
+// the messages) for a chat. Shared by the normal save path and the
+// page-unload beacon flush so both produce byte-identical request bodies.
+function buildChatPayload(
   messages: ChatMessage[],
   character: CharacterInfo,
-  currentChatFile: string | null,
+  currentChatFile: string,
   isGroupChat?: boolean,
   groupCharacters?: CharacterInfo[]
-) {
-  if (!currentChatFile) return;
-
+): { avatarUrl: string; fileName: string; chatData: unknown[] } {
   // Phase 8.1: include author's note in chat header metadata
-  const authorNote = currentChatFile
-    ? useChatStore.getState().getAuthorNote(currentChatFile)
-    : null;
+  const authorNote = useChatStore.getState().getAuthorNote(currentChatFile);
 
-  const chatData = [
+  const chatData: unknown[] = [
     {
       user_name: getUserDisplayName(),
       character_name: isGroupChat && groupCharacters
@@ -1623,11 +1623,124 @@ async function saveChatToBackend(
     ? groupCharacters[0].avatar
     : character.avatar;
 
-  try {
-    await api.saveChat(avatarUrl, currentChatFile, chatData);
-  } catch (err) {
-    console.error('[Chat] Failed to save:', err);
+  return { avatarUrl, fileName: currentChatFile, chatData };
+}
+
+// Module-level snapshot of the most recent save context + a primed CSRF token
+// so the page-unload beacon (registered once below) can rebuild and flush the
+// live in-memory chat without access to React component scope.
+let lastSaveContext: {
+  character: CharacterInfo;
+  isGroupChat: boolean;
+  groupCharacters?: CharacterInfo[];
+} | null = null;
+let cachedCsrfToken = '';
+// Prime the CSRF token early so a mid-turn unload flush can set the header
+// without awaiting a round-trip while the page is tearing down.
+if (typeof window !== 'undefined') {
+  getCsrfToken().then((t) => { cachedCsrfToken = t; }).catch(() => {});
+}
+
+async function saveChatToBackend(
+  messages: ChatMessage[],
+  character: CharacterInfo,
+  currentChatFile: string | null,
+  isGroupChat?: boolean,
+  groupCharacters?: CharacterInfo[]
+) {
+  if (!currentChatFile) return;
+
+  const { avatarUrl, fileName, chatData } = buildChatPayload(
+    messages,
+    character,
+    currentChatFile,
+    isGroupChat,
+    groupCharacters
+  );
+
+  // Remember context (and keep the CSRF token warm) so the unload beacon can
+  // flush whatever is in memory if the tab closes mid-turn.
+  lastSaveContext = { character, isGroupChat: !!isGroupChat, groupCharacters };
+  getCsrfToken().then((t) => { cachedCsrfToken = t; }).catch(() => {});
+
+  // A dropped save silently loses the user's last messages on reload, so
+  // retry a few times with backoff before surfacing the failure.
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      await api.saveChat(avatarUrl, fileName, chatData);
+      return;
+    } catch (err) {
+      console.error(`[Chat] Save attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err);
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 400 * attempt));
+        continue;
+      }
+      // All retries exhausted — surface it so the user knows their last
+      // messages are at risk rather than dropping them silently.
+      useChatStore.setState({
+        error: 'Failed to save chat — your last messages may not be saved. Check your connection.',
+      });
+      showToastGlobal('Failed to save chat — your last messages may not be saved', 'error');
+    }
   }
+}
+
+// ---- Fix #4: flush an in-flight chat on tab close / navigation. ----
+// The normal save runs at turn boundaries; if the tab is closed mid-stream
+// those messages would never reach the backend. A keepalive POST (which
+// survives unload) flushes the current in-memory state. Guarded on isSending
+// so we only pay the cost during the risky mid-generation window.
+function flushChatOnUnload() {
+  if (typeof window === 'undefined') return;
+  const state = useChatStore.getState();
+  if (!state.isSending || !state.currentChatFile || !lastSaveContext) return;
+  if (state.messages.length === 0) return;
+  try {
+    const { avatarUrl, fileName, chatData } = buildChatPayload(
+      state.messages,
+      lastSaveContext.character,
+      state.currentChatFile,
+      lastSaveContext.isGroupChat,
+      lastSaveContext.groupCharacters
+    );
+    const body = JSON.stringify({
+      character_avatar: avatarUrl,
+      file_name: fileName,
+      messages: chatData,
+    });
+    // keepalive lets us send the CSRF header (sendBeacon cannot set headers)
+    // while still surviving the unload.
+    fetch('/chats/save', {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': cachedCsrfToken,
+      },
+      body,
+    }).catch(() => {
+      // Last resort if the keepalive fetch rejects: a header-less beacon.
+      try {
+        navigator.sendBeacon?.(
+          '/chats/save',
+          new Blob([body], { type: 'application/json' })
+        );
+      } catch {
+        /* give up — nothing more we can do during unload */
+      }
+    });
+  } catch {
+    /* never block unload */
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushChatOnUnload);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushChatOnUnload();
+  });
 }
 
 // Helper: create a message with swipe defaults
@@ -2348,12 +2461,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       // Save
       saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
-      await saveChatToBackend(get().messages, character, currentChatFile);
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         set({ error: error instanceof Error ? error.message : 'Failed to generate swipe' });
       }
     } finally {
+      // Fix #2: flush in finally so aborted/errored swipes still persist.
+      await saveChatToBackend(get().messages, character, get().currentChatFile);
       set({ isSending: false, isStreaming: false, abortController: null });
     }
   },
@@ -2439,13 +2553,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }),
       }));
 
-      const { currentChatFile } = get();
-      await saveChatToBackend(get().messages, character, currentChatFile);
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         set({ error: error instanceof Error ? error.message : 'Failed to continue message' });
       }
     } finally {
+      // Fix #2: flush in finally so an aborted/errored continuation still
+      // persists the tokens that did stream in.
+      await saveChatToBackend(get().messages, character, get().currentChatFile);
       set({ isSending: false, isStreaming: false, abortController: null });
     }
   },
@@ -2606,6 +2721,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       images: attachedImages,
     });
 
+    // Fix #1: persist the user's message immediately, before generation. If
+    // the turn is aborted or generation throws, the user's message still
+    // survives a reload instead of living only in memory until end-of-turn.
+    await saveChatToBackend(get().messages, character, get().currentChatFile);
+
     const abortController = new AbortController();
     set({ isSending: true, isStreaming: false, error: visionError, abortController });
 
@@ -2679,13 +2799,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
 
         saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
-        await saveChatToBackend(get().messages, character, currentChatFile);
       }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         set({ error: error instanceof Error ? error.message : 'Failed to send message' });
       }
     } finally {
+      // Fix #2: flush in finally so aborted/errored turns still persist
+      // whatever is in memory (partial AI reply + the user message).
+      await saveChatToBackend(get().messages, character, get().currentChatFile);
       set({ isSending: false, isStreaming: false, abortController: null });
     }
   },
@@ -2739,6 +2861,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ error: visionError });
     }
 
+    // Fix #1: persist the user's group message immediately, before any
+    // generation, so it survives a reload even if the turn is aborted.
+    if (currentChatFile && characters.length > 0) {
+      await saveChatToBackend(get().messages, characters[0], currentChatFile, true, characters);
+    }
+
     // Resolve strategy + mute from the persisted group chat record. Missing
     // record (very old group chats not reloaded) falls back to list order
     // with no mutes so the legacy behavior still ships.
@@ -2756,17 +2884,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Manual strategy: just post the user message and wait for force-talk.
     // Auto-mode is ignored when the strategy is manual — the user is in
-    // full control.
+    // full control. The user message was already persisted by Fix #1 above.
     if (strategy === 'manual') {
-      if (currentChatFile && characters.length > 0) {
-        await saveChatToBackend(
-          get().messages,
-          characters[0],
-          currentChatFile,
-          true,
-          characters
-        );
-      }
       return;
     }
 
@@ -2859,8 +2978,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (!get().isSending) break;
         queue = pickSpeakers();
       }
-
-      // Save group chat
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') {
+        set({ error: error instanceof Error ? error.message : 'Failed to send group message' });
+      }
+    } finally {
+      // Fix #2: flush in finally so aborted/errored group turns still persist
+      // whatever members did manage to reply.
       const { currentChatFile: finalChatFile } = get();
       if (finalChatFile && characters.length > 0) {
         await saveChatToBackend(
@@ -2871,11 +2995,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           characters
         );
       }
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
-        set({ error: error instanceof Error ? error.message : 'Failed to send group message' });
-      }
-    } finally {
       resetStreamingStateIfOwner(abortController, get, set);
     }
   },
@@ -2907,17 +3026,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set,
         imagesFromLastUserMessage(get().messages, provider, model)
       );
-
-      const { currentChatFile: finalChatFile } = get();
-      if (finalChatFile && characters.length > 0) {
-        await saveChatToBackend(
-          get().messages,
-          characters[0],
-          finalChatFile,
-          true,
-          characters
-        );
-      }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         set({
@@ -2928,6 +3036,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
       }
     } finally {
+      // Fix #2: flush in finally so an aborted/errored forced turn still
+      // persists any reply that streamed in.
+      const { currentChatFile: finalChatFile } = get();
+      if (finalChatFile && characters.length > 0) {
+        await saveChatToBackend(
+          get().messages,
+          characters[0],
+          finalChatFile,
+          true,
+          characters
+        );
+      }
       resetStreamingStateIfOwner(abortController, get, set);
     }
   },
