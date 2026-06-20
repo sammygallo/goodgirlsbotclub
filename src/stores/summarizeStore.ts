@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { api } from '../api/client';
 import { useSettingsStore } from './settingsStore';
+import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
 
 let _currentHandle: string | null = null;
 
@@ -19,6 +20,34 @@ const scopedLocalStorage = {
     localStorage.removeItem(key);
   },
 };
+
+// ---------------------------------------------------------------------------
+// Server sync (mirrors displayPreferencesStore)
+//
+// The summarization settings (auto toggle, frequency, injection depth/role,
+// compaction) follow the user across devices via the `stm_summarize` settings
+// section. The per-chat `summaries` cache is NOT synced — it's potentially
+// large per-chat data tied to local chat files.
+// ---------------------------------------------------------------------------
+
+const SERVER_KEY = 'stm_summarize';
+
+function localTsKey(): string {
+  return _currentHandle
+    ? `stm:summarize-local-ts_${_currentHandle}`
+    : 'stm:summarize-local-ts';
+}
+
+function markLocalDirty(): void {
+  try { localStorage.setItem(localTsKey(), String(Date.now())); } catch { /* ignore */ }
+}
+
+async function patchServer(patch: Record<string, unknown>): Promise<void> {
+  const settings = await getSettingsBlob();
+  const section = (settings[SERVER_KEY] as Record<string, unknown>) || {};
+  Object.assign(section, patch);
+  await patchServerKey(SERVER_KEY, section, localTsKey());
+}
 
 export interface ChatSummary {
   text: string;
@@ -56,6 +85,8 @@ interface SummarizeState {
   setInjectionDepth: (d: number) => void;
   setInjectionRole: (r: 'system' | 'user') => void;
   setCompactWhenSummarized: (on: boolean) => void;
+  /** Pull settings from the server after login and reconcile with local. */
+  fetchPrefs: () => Promise<void>;
   getSummary: (chatFile: string) => ChatSummary | null;
   clearSummary: (chatFile: string) => void;
   clearError: () => void;
@@ -124,12 +155,74 @@ export const useSummarizeStore = create<SummarizeState>()(
       isGenerating: false,
       error: null,
 
-      setAutoSummarize: (on) => set({ autoSummarize: on }),
-      setAutoTriggerEvery: (n) =>
-        set({ autoTriggerEvery: Math.max(5, Math.min(100, Math.round(n))) }),
-      setInjectionDepth: (d) => set({ injectionDepth: Math.max(0, Math.round(d)) }),
-      setInjectionRole: (r) => set({ injectionRole: r }),
-      setCompactWhenSummarized: (on) => set({ compactWhenSummarized: on }),
+      setAutoSummarize: (on) => {
+        set({ autoSummarize: on });
+        markLocalDirty();
+        patchServer({ autoSummarize: on }).catch(() => {});
+      },
+      setAutoTriggerEvery: (n) => {
+        const autoTriggerEvery = Math.max(5, Math.min(100, Math.round(n)));
+        set({ autoTriggerEvery });
+        markLocalDirty();
+        patchServer({ autoTriggerEvery }).catch(() => {});
+      },
+      setInjectionDepth: (d) => {
+        const injectionDepth = Math.max(0, Math.round(d));
+        set({ injectionDepth });
+        markLocalDirty();
+        patchServer({ injectionDepth }).catch(() => {});
+      },
+      setInjectionRole: (r) => {
+        set({ injectionRole: r });
+        markLocalDirty();
+        patchServer({ injectionRole: r }).catch(() => {});
+      },
+      setCompactWhenSummarized: (on) => {
+        set({ compactWhenSummarized: on });
+        markLocalDirty();
+        patchServer({ compactWhenSummarized: on }).catch(() => {});
+      },
+
+      fetchPrefs: async () => {
+        try {
+          const settings = await getSettingsBlob();
+          const section = settings[SERVER_KEY] as Record<string, unknown> | undefined;
+          const localTs = Number(localStorage.getItem(localTsKey()) || 0);
+          const serverTs = Number(section?._ts || 0);
+
+          if (localTs > serverTs) {
+            const s = get();
+            patchServer({
+              autoSummarize: s.autoSummarize,
+              autoTriggerEvery: s.autoTriggerEvery,
+              injectionDepth: s.injectionDepth,
+              injectionRole: s.injectionRole,
+              compactWhenSummarized: s.compactWhenSummarized,
+            }).catch(() => {});
+            return;
+          }
+
+          if (!section) return;
+
+          const cur = get();
+          const autoSummarize = typeof section.autoSummarize === 'boolean' ? section.autoSummarize : cur.autoSummarize;
+          const autoTriggerEvery = typeof section.autoTriggerEvery === 'number'
+            ? Math.max(5, Math.min(100, Math.round(section.autoTriggerEvery)))
+            : cur.autoTriggerEvery;
+          const injectionDepth = typeof section.injectionDepth === 'number'
+            ? Math.max(0, Math.round(section.injectionDepth))
+            : cur.injectionDepth;
+          const injectionRole = section.injectionRole === 'system' || section.injectionRole === 'user'
+            ? section.injectionRole
+            : cur.injectionRole;
+          const compactWhenSummarized = typeof section.compactWhenSummarized === 'boolean'
+            ? section.compactWhenSummarized
+            : cur.compactWhenSummarized;
+
+          try { localStorage.setItem(localTsKey(), String(serverTs)); } catch { /* ignore */ }
+          set({ autoSummarize, autoTriggerEvery, injectionDepth, injectionRole, compactWhenSummarized });
+        } catch { /* non-fatal — localStorage values remain active */ }
+      },
 
       getSummary: (chatFile) => get().summaries[chatFile] ?? null,
 

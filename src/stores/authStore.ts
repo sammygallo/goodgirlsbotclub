@@ -99,6 +99,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       usePromptTemplateStore.getState().fetchPrefs();
       useImageGenStore.getState().fetchPrefs();
       useDataBankStore.getState().fetchPrefs();
+      useExtensionStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchPrefs();
+      useAutoMemoryStore.getState().fetchPrefs();
+      useCharacterStore.getState().fetchLinkedBooks();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
       }
@@ -169,6 +173,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       usePromptTemplateStore.getState().fetchPrefs();
       useImageGenStore.getState().fetchPrefs();
       useDataBankStore.getState().fetchPrefs();
+      useExtensionStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchPrefs();
+      useAutoMemoryStore.getState().fetchPrefs();
+      useCharacterStore.getState().fetchLinkedBooks();
       return true;
     } catch (error) {
       set({
@@ -221,6 +229,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       usePromptTemplateStore.getState().fetchPrefs();
       useImageGenStore.getState().fetchPrefs();
       useDataBankStore.getState().fetchPrefs();
+      useExtensionStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchPrefs();
+      useAutoMemoryStore.getState().fetchPrefs();
+      useCharacterStore.getState().fetchLinkedBooks();
       return true;
     } catch (error) {
       set({
@@ -269,6 +281,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         error: null,
         successMessage: null,
       });
+      useCharacterStore.getState().resetLinkedBooks();
       useWorldInfoStore.getState().resetUser();
       useExtensionStore.getState().resetUser();
       useSummarizeStore.getState().resetUser();
