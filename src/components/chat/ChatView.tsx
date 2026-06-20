@@ -1882,6 +1882,7 @@ export function ChatView() {
           messages={messages}
           characterName={selectedCharacter.name}
           defaultBookName={`${selectedCharacter.name} — Lore`}
+          characterAvatar={selectedCharacter.avatar}
         />
       )}
 

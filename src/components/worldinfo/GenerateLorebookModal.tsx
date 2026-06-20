@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Loader2, Sparkles, Trash2, BookPlus } from 'lucide-react';
 import { Modal, Button, Input, TextArea, TagInput } from '../ui';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useCharacterStore } from '../../stores/characterStore';
 import {
   useWorldInfoStore,
   type WorldInfoBook,
@@ -31,6 +32,13 @@ interface GenerateLorebookModalProps {
   messages: TranscriptMsg[];
   characterName: string;
   defaultBookName: string;
+  /**
+   * Avatar of the character this chat belongs to. When provided, the new book
+   * is auto-linked to that character so it activates automatically in their
+   * chats — it stays its own standalone book (not merged into the character's
+   * embedded/auto-memory book). Per-user only; never shared with other users.
+   */
+  characterAvatar?: string;
   onCreated?: (book: WorldInfoBook) => void;
 }
 
@@ -47,6 +55,7 @@ export function GenerateLorebookModal({
   messages,
   characterName,
   defaultBookName,
+  characterAvatar,
   onCreated,
 }: GenerateLorebookModalProps) {
   const createBook = useWorldInfoStore((s) => s.createBook);
@@ -143,6 +152,16 @@ export function GenerateLorebookModal({
         comment: draft.category,
       });
     }
+    // Auto-link the new (standalone) book to the source character so it
+    // activates automatically in their chats, without merging it into the
+    // character's single embedded/auto-memory book.
+    if (characterAvatar) {
+      const cs = useCharacterStore.getState();
+      cs.setLinkedBookIds(characterAvatar, [
+        ...cs.getLinkedBookIds(characterAvatar),
+        book.id,
+      ]);
+    }
     // `book` is the snapshot from before entries were added — read the fresh
     // copy so callers see the populated entry list.
     const fresh =
@@ -171,6 +190,15 @@ export function GenerateLorebookModal({
               characters, places, items, factions, events, and lore into draft
               lorebook entries. You'll review and edit them before anything is
               saved.
+              {characterAvatar && (
+                <>
+                  {' '}The new book will be linked to{' '}
+                  <span className="text-[var(--color-text-primary)]">
+                    {characterName}
+                  </span>{' '}
+                  so it activates automatically in their chats.
+                </>
+              )}
             </div>
           </div>
 
