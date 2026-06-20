@@ -60,6 +60,7 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
   const [pendingGen, setPendingGen] = useState<{
     messages: TranscriptMsg[];
     characterName: string;
+    characterAvatar: string;
     defaultBookName: string;
   } | null>(null);
 
@@ -78,6 +79,7 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
       setPendingGen({
         messages,
         characterName: sel.characterName,
+        characterAvatar: sel.avatar,
         defaultBookName: `${sel.characterName} — Lore`,
       });
     } catch (err) {
@@ -523,6 +525,7 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
           onClose={() => setPendingGen(null)}
           messages={pendingGen.messages}
           characterName={pendingGen.characterName}
+          characterAvatar={pendingGen.characterAvatar}
           defaultBookName={pendingGen.defaultBookName}
           onCreated={(book) => {
             setImportNotice(
