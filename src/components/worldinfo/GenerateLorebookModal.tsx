@@ -31,6 +31,13 @@ interface GenerateLorebookModalProps {
   onClose: () => void;
   messages: TranscriptMsg[];
   characterName: string;
+  /**
+   * When provided, the generated entries are written into this character's
+   * embedded lorebook (created on first run, reused after) so they
+   * auto-activate in chat — mirroring the auto-memory feature. Without it,
+   * a standalone global lorebook is created instead.
+   */
+  characterAvatar?: string;
   defaultBookName: string;
   /**
    * Avatar of the character this chat belongs to. When provided, the new book
@@ -54,12 +61,23 @@ export function GenerateLorebookModal({
   onClose,
   messages,
   characterName,
+  characterAvatar,
   defaultBookName,
   characterAvatar,
   onCreated,
 }: GenerateLorebookModalProps) {
   const createBook = useWorldInfoStore((s) => s.createBook);
+  const createCharacterBook = useWorldInfoStore((s) => s.createCharacterBook);
   const createEntry = useWorldInfoStore((s) => s.createEntry);
+  // A character may already have an embedded book (from a prior run, an
+  // imported card, or auto-memory). If so, new entries are appended to it
+  // rather than starting a fresh one — there is one embedded book per
+  // character — so the name field doesn't apply.
+  const existingEmbedded = useWorldInfoStore((s) =>
+    characterAvatar
+      ? s.books.find((b) => b.ownerCharacterAvatar === characterAvatar) ?? null
+      : null
+  );
 
   const [phase, setPhase] = useState<Phase>('preflight');
   const [progress, setProgress] = useState({ done: 0, total: 0 });
@@ -144,7 +162,12 @@ export function GenerateLorebookModal({
 
   const handleCreate = () => {
     const name = bookName.trim() || defaultBookName;
-    const book = createBook(name);
+    // When launched for a character, write into its embedded lorebook so the
+    // entries auto-activate in chat (same model as auto-memory). Otherwise
+    // fall back to a standalone global book.
+    const book = characterAvatar
+      ? createCharacterBook(characterAvatar, name)
+      : createBook(name);
     for (const draft of enabledDrafts) {
       createEntry(book.id, {
         keys: draft.keys,
@@ -298,11 +321,30 @@ export function GenerateLorebookModal({
             </div>
           ) : (
             <>
-              <Input
-                label="Lorebook name"
-                value={bookName}
-                onChange={(e) => setBookName(e.target.value)}
-              />
+              {existingEmbedded ? (
+                <div className="p-2.5 rounded-lg bg-[var(--color-bg-tertiary)] text-xs text-[var(--color-text-secondary)]">
+                  These entries will be added to{' '}
+                  <span className="font-medium text-[var(--color-text-primary)]">
+                    {characterName}
+                  </span>
+                  's embedded lorebook ("{existingEmbedded.name}"), which
+                  auto-activates in chat.
+                </div>
+              ) : (
+                <>
+                  <Input
+                    label="Lorebook name"
+                    value={bookName}
+                    onChange={(e) => setBookName(e.target.value)}
+                  />
+                  {characterAvatar && (
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      Saved as {characterName}'s embedded lorebook — it
+                      auto-activates whenever you chat with them.
+                    </p>
+                  )}
+                </>
+              )}
 
               <div className="flex items-center justify-between text-xs text-[var(--color-text-secondary)]">
                 <span>
@@ -378,10 +420,15 @@ export function GenerateLorebookModal({
             </Button>
             <Button
               onClick={handleCreate}
-              disabled={enabledDrafts.length === 0 || !bookName.trim()}
+              disabled={
+                enabledDrafts.length === 0 ||
+                (!existingEmbedded && !bookName.trim())
+              }
             >
               <BookPlus size={16} className="mr-2" />
-              Create lorebook ({enabledDrafts.length})
+              {existingEmbedded
+                ? `Add to lorebook (${enabledDrafts.length})`
+                : `Create lorebook (${enabledDrafts.length})`}
             </Button>
           </div>
         </div>

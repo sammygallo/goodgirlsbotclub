@@ -1881,6 +1881,7 @@ export function ChatView() {
           onClose={() => setIsGenLorebookOpen(false)}
           messages={messages}
           characterName={selectedCharacter.name}
+          characterAvatar={selectedCharacter.avatar}
           defaultBookName={`${selectedCharacter.name} — Lore`}
           characterAvatar={selectedCharacter.avatar}
         />
