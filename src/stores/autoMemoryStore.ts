@@ -25,6 +25,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import { api } from '../api/client';
 import { useSettingsStore } from './settingsStore';
 import { useWorldInfoStore } from './worldInfoStore';
+import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
 import type { CharacterInfo } from '../api/client';
 
 let _currentHandle: string | null = null;
@@ -44,6 +45,34 @@ const scopedLocalStorage = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Server sync (mirrors displayPreferencesStore)
+//
+// The on/off toggle and trigger frequency follow the user across devices via
+// the `stm_auto_memory` settings section. `lastByChatFile` is intentionally
+// NOT synced — it's per-chat trigger gating, and at worst a second device
+// re-extracts one window (deduped against the book anyway).
+// ---------------------------------------------------------------------------
+
+const SERVER_KEY = 'stm_auto_memory';
+
+function localTsKey(): string {
+  return _currentHandle
+    ? `stm:auto-memory-local-ts_${_currentHandle}`
+    : 'stm:auto-memory-local-ts';
+}
+
+function markLocalDirty(): void {
+  try { localStorage.setItem(localTsKey(), String(Date.now())); } catch { /* ignore */ }
+}
+
+async function patchServer(patch: Record<string, unknown>): Promise<void> {
+  const settings = await getSettingsBlob();
+  const section = (settings[SERVER_KEY] as Record<string, unknown>) || {};
+  Object.assign(section, patch);
+  await patchServerKey(SERVER_KEY, section, localTsKey());
+}
+
 interface AutoMemoryState {
   // --- persisted settings ---
   enabled: boolean;
@@ -62,6 +91,8 @@ interface AutoMemoryState {
   // --- actions ---
   setEnabled: (on: boolean) => void;
   setTriggerEvery: (n: number) => void;
+  /** Pull settings from the server after login and reconcile with local. */
+  fetchPrefs: () => Promise<void>;
   shouldTrigger: (chatFile: string, currentNonSystemCount: number) => boolean;
   extractFacts: (
     chatFile: string,
@@ -165,9 +196,41 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
       isExtracting: false,
       error: null,
 
-      setEnabled: (on) => set({ enabled: on }),
-      setTriggerEvery: (n) =>
-        set({ triggerEvery: Math.max(10, Math.min(200, Math.round(n))) }),
+      setEnabled: (on) => {
+        set({ enabled: on });
+        markLocalDirty();
+        patchServer({ enabled: on }).catch(() => {});
+      },
+      setTriggerEvery: (n) => {
+        const triggerEvery = Math.max(10, Math.min(200, Math.round(n)));
+        set({ triggerEvery });
+        markLocalDirty();
+        patchServer({ triggerEvery }).catch(() => {});
+      },
+
+      fetchPrefs: async () => {
+        try {
+          const settings = await getSettingsBlob();
+          const section = settings[SERVER_KEY] as Record<string, unknown> | undefined;
+          const localTs = Number(localStorage.getItem(localTsKey()) || 0);
+          const serverTs = Number(section?._ts || 0);
+
+          if (localTs > serverTs) {
+            const s = get();
+            patchServer({ enabled: s.enabled, triggerEvery: s.triggerEvery }).catch(() => {});
+            return;
+          }
+
+          if (!section) return;
+
+          const enabled = typeof section.enabled === 'boolean' ? section.enabled : get().enabled;
+          const triggerEvery = typeof section.triggerEvery === 'number'
+            ? Math.max(10, Math.min(200, Math.round(section.triggerEvery)))
+            : get().triggerEvery;
+          try { localStorage.setItem(localTsKey(), String(serverTs)); } catch { /* ignore */ }
+          set({ enabled, triggerEvery });
+        } catch { /* non-fatal — localStorage values remain active */ }
+      },
 
       shouldTrigger: (chatFile, currentNonSystemCount) => {
         const { enabled, triggerEvery, lastByChatFile, isExtracting } = get();
