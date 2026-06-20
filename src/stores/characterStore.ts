@@ -18,9 +18,31 @@ import {
   bookToCharacterBookV2,
 } from './worldInfoStore';
 import { useCharacterOwnershipStore } from './characterOwnershipStore';
+import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
 
 const FAVORITES_KEY = 'sillytavern_character_favorites';
 const LINKED_BOOKS_KEY = 'sillytavern_character_linked_books_v1';
+
+// ---------------------------------------------------------------------------
+// Server sync for character→lorebook links (mirrors displayPreferencesStore).
+//
+// The map of avatar → [bookId] follows the user across devices via the
+// `stm_character_links` settings section. The book IDs it references live in
+// the already-synced `stm_worldinfo` section, so a linked book resolves on any
+// device. localStorage stays the instant-render cache; every mutation patches
+// the server in the background and stamps LINKED_BOOKS_LOCAL_TS_KEY so a failed
+// patch is re-uploaded by the next fetchLinkedBooks instead of being clobbered.
+// ---------------------------------------------------------------------------
+const LINKED_BOOKS_SERVER_KEY = 'stm_character_links';
+const LINKED_BOOKS_LOCAL_TS_KEY = 'stm:character-links-local-ts';
+
+function markLinkedBooksDirty(): void {
+  try { localStorage.setItem(LINKED_BOOKS_LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+}
+
+async function patchLinkedBooksServer(map: Record<string, string[]>): Promise<void> {
+  await patchServerKey(LINKED_BOOKS_SERVER_KEY, { links: map }, LINKED_BOOKS_LOCAL_TS_KEY);
+}
 
 function loadFavorites(): Set<string> {
   try {
@@ -123,6 +145,15 @@ interface CharacterState {
   ) => void;
   getLinkedBookIds: (avatar: string) => string[];
   setLinkedBookIds: (avatar: string, ids: string[]) => void;
+  /** Pull character→book links from the server after login and reconcile. */
+  fetchLinkedBooks: () => Promise<void>;
+  /**
+   * Clear character→book links from memory and localStorage on logout. The
+   * links live under a browser-global key, so without this the next user on
+   * the same browser could re-upload the previous user's links to their own
+   * account (localTs would be ahead of their server state).
+   */
+  resetLinkedBooks: () => void;
   /** Ids to merge with the globally-active ids during scan. */
   getActiveBookIdsForCharacter: (avatar: string) => string[];
   // Organization actions
@@ -306,6 +337,8 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         delete nextLinks[avatar];
         saveLinkedBooks(nextLinks);
         set({ linkedBookIdsByAvatar: nextLinks });
+        markLinkedBooksDirty();
+        patchLinkedBooksServer(nextLinks).catch(() => {});
       }
       // No post-delete refetch: the server's character list endpoint can
       // briefly still include the just-deleted character (filesystem/cache
@@ -710,6 +743,39 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     }
     saveLinkedBooks(next);
     set({ linkedBookIdsByAvatar: next });
+    markLinkedBooksDirty();
+    patchLinkedBooksServer(next).catch(() => {});
+  },
+
+  fetchLinkedBooks: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const section = settings[LINKED_BOOKS_SERVER_KEY] as Record<string, unknown> | undefined;
+      const localTs = Number(localStorage.getItem(LINKED_BOOKS_LOCAL_TS_KEY) || 0);
+      const serverTs = Number(section?._ts || 0);
+
+      if (localTs > serverTs) {
+        // Local has links that never confirmed to the server — re-upload.
+        patchLinkedBooksServer(get().linkedBookIdsByAvatar).catch(() => {});
+        return;
+      }
+
+      if (!section) return; // No server state and no newer local — keep local.
+
+      const links = section.links;
+      if (links && typeof links === 'object' && !Array.isArray(links)) {
+        const map = links as Record<string, string[]>;
+        saveLinkedBooks(map);
+        try { localStorage.setItem(LINKED_BOOKS_LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+        set({ linkedBookIdsByAvatar: map });
+      }
+    } catch { /* non-fatal — localStorage values remain active */ }
+  },
+
+  resetLinkedBooks: () => {
+    try { localStorage.removeItem(LINKED_BOOKS_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(LINKED_BOOKS_LOCAL_TS_KEY); } catch { /* ignore */ }
+    set({ linkedBookIdsByAvatar: {} });
   },
 
   getActiveBookIdsForCharacter: (avatar) => {
