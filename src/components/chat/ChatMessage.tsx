@@ -485,7 +485,7 @@ export function ChatMessage({
         />
 
         <div
-          className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
+          className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} ${isEditing ? 'w-full' : ''}`}
           style={{ maxWidth: `${chatMaxWidth}%` }}
         >
           <div className="flex items-center gap-2 mb-1">
@@ -493,7 +493,7 @@ export function ChatMessage({
             {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
           </div>
 
-          <div className="flex items-start gap-2 relative">
+          <div className={`flex items-start gap-2 relative ${isEditing ? 'w-full' : ''}`}>
             {actionButtons}
             <div
               className={`
