@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 /** Phase 8.2: Regex Scripts — find/replace patterns applied to AI output,
  *  user input, or both. Scripts can be display-only (render transform only)
@@ -36,7 +36,7 @@ let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 function schedulePersist(scripts: RegexScript[]): void {
   if (!_persistEnabled) return;
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
   _persistTimer = setTimeout(() => {
     _persistTimer = null;
@@ -222,7 +222,6 @@ export const useRegexScriptStore = create<RegexScriptState>((set, get) => ({
       const stored = settings[SERVER_KEY] as
         | { scripts?: RegexScript[]; _ts?: number }
         | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
 
       if (!stored) {
@@ -238,7 +237,7 @@ export const useRegexScriptStore = create<RegexScriptState>((set, get) => ({
         return;
       }
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         _persistEnabled = true;
         patchServerKey(
           SERVER_KEY,
@@ -252,7 +251,7 @@ export const useRegexScriptStore = create<RegexScriptState>((set, get) => ({
       const scripts = Array.isArray(stored.scripts) ? stored.scripts : [];
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(scripts));
-        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+        recordServerTs(LOCAL_TS_KEY, serverTs);
       } catch { /* ignore */ }
       set({ scripts });
       _persistEnabled = true;

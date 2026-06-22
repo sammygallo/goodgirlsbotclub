@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { api } from '../api/client';
 import { useSettingsStore } from './settingsStore';
-import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 let _currentHandle: string | null = null;
 
@@ -39,7 +39,7 @@ function localTsKey(): string {
 }
 
 function markLocalDirty(): void {
-  try { localStorage.setItem(localTsKey(), String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(localTsKey()); } catch { /* ignore */ }
 }
 
 async function patchServer(patch: Record<string, unknown>): Promise<void> {
@@ -187,10 +187,9 @@ export const useSummarizeStore = create<SummarizeState>()(
         try {
           const settings = await getSettingsBlob();
           const section = settings[SERVER_KEY] as Record<string, unknown> | undefined;
-          const localTs = Number(localStorage.getItem(localTsKey()) || 0);
           const serverTs = Number(section?._ts || 0);
 
-          if (localTs > serverTs) {
+          if (shouldReuploadSection(localTsKey(), serverTs)) {
             const s = get();
             patchServer({
               autoSummarize: s.autoSummarize,
@@ -219,7 +218,7 @@ export const useSummarizeStore = create<SummarizeState>()(
             ? section.compactWhenSummarized
             : cur.compactWhenSummarized;
 
-          try { localStorage.setItem(localTsKey(), String(serverTs)); } catch { /* ignore */ }
+          try { recordServerTs(localTsKey(), serverTs); } catch { /* ignore */ }
           set({ autoSummarize, autoTriggerEvery, injectionDepth, injectionRole, compactWhenSummarized });
         } catch { /* non-fatal — localStorage values remain active */ }
       },

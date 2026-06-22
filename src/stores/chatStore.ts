@@ -8,7 +8,7 @@ import {
   type GenerationOptions,
   type GenerationImage,
 } from '../api/client';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import { useSettingsStore } from './settingsStore';
 import { usePersonaStore } from './personaStore';
 import {
@@ -183,7 +183,7 @@ const _latestSnapshot: ChatStateSnapshot = {
 
 function schedulePersist(): void {
   if (!_persistEnabled) return;
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
   _persistTimer = setTimeout(() => {
     _persistTimer = null;
@@ -3308,7 +3308,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const stored = settings[SERVER_KEY] as
         | (ChatStateSnapshot & { _ts?: number })
         | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
 
       if (!stored) {
@@ -3332,7 +3331,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
       }
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         // Local has unconfirmed mutations — push them.
         _persistEnabled = true;
         const s = get();
@@ -3365,7 +3364,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         localStorage.setItem(AUTHOR_NOTES_KEY, JSON.stringify(authorNotes));
         localStorage.setItem(GROUP_CHATS_KEY, JSON.stringify(groupChats));
         localStorage.setItem(CHAT_VARIABLES_KEY, JSON.stringify(chatVariables));
-        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+        recordServerTs(LOCAL_TS_KEY, serverTs);
       } catch { /* ignore */ }
       _latestSnapshot.authorNotes = authorNotes;
       _latestSnapshot.groupChats = groupChats;

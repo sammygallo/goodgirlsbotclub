@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { getDefaultContextSize } from '../utils/tokenizer';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 // Sampler parameters supported across providers. Not every provider uses
 // every field; unused params are ignored by the backend.
@@ -264,7 +264,7 @@ const SERVER_KEY = 'stm_generation';
 const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 
 function markLocalDirty(): void {
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
 }
 
 interface PersistedShape {
@@ -638,10 +638,9 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     try {
       const settings = await getSettingsBlob();
       const stored = settings[SERVER_KEY] as (PersistedShape & { _ts?: number }) | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         // Local has unconfirmed mutations — re-upload them.
         const s = get();
         patchServerKey(SERVER_KEY, {
@@ -673,7 +672,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         promptOrder: mergePromptOrder(stored.promptOrder),
       };
       saveToStorage(merged);
-      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
       set({
         sampler: merged.sampler,
         presets: merged.presets,

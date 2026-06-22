@@ -10,7 +10,7 @@
  */
 import { create } from 'zustand';
 import type { ChatMessage } from './chatStore';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 export interface Branch {
   id: string;
@@ -58,7 +58,7 @@ let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 function schedulePersist(data: Record<string, Branch[]>): void {
   if (!_persistEnabled) return;
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
   _persistTimer = setTimeout(() => {
     _persistTimer = null;
@@ -160,7 +160,6 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       const stored = settings[SERVER_KEY] as
         | { all?: Record<string, Branch[]>; _ts?: number }
         | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
 
       if (!stored || !stored.all) {
@@ -177,7 +176,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
         return;
       }
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         // Local has unconfirmed mutations — push them.
         _persistEnabled = true;
         patchServerKey(
@@ -195,7 +194,7 @@ export const useBranchStore = create<BranchState>((set, get) => ({
       // will refresh next time loadBranchesForChat is called by the chat view.
       // Clear the in-memory list so stale entries aren't shown.
       set({ branches: [], activeBranchId: null });
-      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
       _persistEnabled = true;
     } catch {
       // Network failure — keep local state. Future mutations will mark

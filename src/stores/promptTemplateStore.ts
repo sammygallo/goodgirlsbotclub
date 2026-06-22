@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import {
   useGenerationStore,
   DEFAULT_PROMPT_CONFIG,
@@ -84,7 +84,7 @@ let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 function schedulePersist(state: PersistedShape): void {
   if (!_persistEnabled) return;
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
   _persistTimer = setTimeout(() => {
     _persistTimer = null;
@@ -412,7 +412,6 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
       const stored = settings[SERVER_KEY] as
         | (PersistedShape & { _ts?: number })
         | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
 
       if (!stored) {
@@ -434,7 +433,7 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
         return;
       }
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         _persistEnabled = true;
         const s = get();
         const snapshot: PersistedShape = {
@@ -466,7 +465,7 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
           STORAGE_KEY,
           JSON.stringify({ templates, activeTemplateId, linkedTemplateByAvatar, mainPromptSnapshot }),
         );
-        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+        recordServerTs(LOCAL_TS_KEY, serverTs);
       } catch { /* ignore */ }
       set({ templates, activeTemplateId, linkedTemplateByAvatar, mainPromptSnapshot });
       _persistEnabled = true;

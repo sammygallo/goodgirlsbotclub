@@ -18,7 +18,7 @@ import {
   bookToCharacterBookV2,
 } from './worldInfoStore';
 import { useCharacterOwnershipStore } from './characterOwnershipStore';
-import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 const FAVORITES_KEY = 'sillytavern_character_favorites';
 const LINKED_BOOKS_KEY = 'sillytavern_character_linked_books_v1';
@@ -37,7 +37,7 @@ const LINKED_BOOKS_SERVER_KEY = 'stm_character_links';
 const LINKED_BOOKS_LOCAL_TS_KEY = 'stm:character-links-local-ts';
 
 function markLinkedBooksDirty(): void {
-  try { localStorage.setItem(LINKED_BOOKS_LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LINKED_BOOKS_LOCAL_TS_KEY); } catch { /* ignore */ }
 }
 
 async function patchLinkedBooksServer(map: Record<string, string[]>): Promise<void> {
@@ -151,7 +151,8 @@ interface CharacterState {
    * Clear character→book links from memory and localStorage on logout. The
    * links live under a browser-global key, so without this the next user on
    * the same browser could re-upload the previous user's links to their own
-   * account (localTs would be ahead of their server state).
+   * account (the section's dirty flag + version token would survive into their
+   * session and trigger a re-upload).
    */
   resetLinkedBooks: () => void;
   /** Ids to merge with the globally-active ids during scan. */
@@ -751,10 +752,9 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     try {
       const settings = await getSettingsBlob();
       const section = settings[LINKED_BOOKS_SERVER_KEY] as Record<string, unknown> | undefined;
-      const localTs = Number(localStorage.getItem(LINKED_BOOKS_LOCAL_TS_KEY) || 0);
       const serverTs = Number(section?._ts || 0);
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LINKED_BOOKS_LOCAL_TS_KEY, serverTs)) {
         // Local has links that never confirmed to the server — re-upload.
         patchLinkedBooksServer(get().linkedBookIdsByAvatar).catch(() => {});
         return;
@@ -766,7 +766,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       if (links && typeof links === 'object' && !Array.isArray(links)) {
         const map = links as Record<string, string[]>;
         saveLinkedBooks(map);
-        try { localStorage.setItem(LINKED_BOOKS_LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+        try { recordServerTs(LINKED_BOOKS_LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
         set({ linkedBookIdsByAvatar: map });
       }
     } catch { /* non-fatal — localStorage values remain active */ }

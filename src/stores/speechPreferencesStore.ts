@@ -20,7 +20,7 @@
  */
 
 import { create } from 'zustand';
-import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import {
   getSpeechLanguage,
   setSpeechLanguage as lsSetSpeechLang,
@@ -63,13 +63,13 @@ interface SpeechPrefsState {
 const LOCAL_TS_KEY = 'stm:speech-local-ts';
 
 function markLocalDirty(): void {
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
 }
 
 /**
- * PUT the merged stm_speech section. patchServerKey advances LOCAL_TS_KEY
- * only on success, so a network failure leaves it ahead and the next
- * fetchPrefs re-uploads.
+ * PUT the merged stm_speech section. patchServerKey adopts the server_ts and
+ * clears the dirty flag only on success, so a network failure leaves the
+ * section dirty and the next fetchPrefs re-uploads.
  */
 async function patchServer(patch: Record<string, unknown>): Promise<void> {
   const settings = await getSettingsBlob();
@@ -93,10 +93,9 @@ export const useSpeechPreferencesStore = create<SpeechPrefsState>((set, get) => 
     try {
       const settings = await getSettingsBlob();
       const speech = settings.stm_speech as Record<string, unknown> | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(speech?._ts || 0);
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         // Local has mutations that never confirmed to the server — re-upload them.
         const s = get();
         patchServer({
@@ -125,7 +124,7 @@ export const useSpeechPreferencesStore = create<SpeechPrefsState>((set, get) => 
       lsSetTtsAutoRead(ttsAutoRead);
 
       // Advance LOCAL_TS_KEY so a future fetchPrefs doesn't re-upload stale local state.
-      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
 
       set({ speechLang, ttsVoiceUri, ttsRate, ttsPitch, ttsAutoRead });
     } catch { /* non-fatal — localStorage values remain active */ }

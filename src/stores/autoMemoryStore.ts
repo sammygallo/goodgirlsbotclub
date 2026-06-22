@@ -25,7 +25,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import { api } from '../api/client';
 import { useSettingsStore } from './settingsStore';
 import { useWorldInfoStore } from './worldInfoStore';
-import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import type { CharacterInfo } from '../api/client';
 
 let _currentHandle: string | null = null;
@@ -63,7 +63,7 @@ function localTsKey(): string {
 }
 
 function markLocalDirty(): void {
-  try { localStorage.setItem(localTsKey(), String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(localTsKey()); } catch { /* ignore */ }
 }
 
 async function patchServer(patch: Record<string, unknown>): Promise<void> {
@@ -212,10 +212,9 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
         try {
           const settings = await getSettingsBlob();
           const section = settings[SERVER_KEY] as Record<string, unknown> | undefined;
-          const localTs = Number(localStorage.getItem(localTsKey()) || 0);
           const serverTs = Number(section?._ts || 0);
 
-          if (localTs > serverTs) {
+          if (shouldReuploadSection(localTsKey(), serverTs)) {
             const s = get();
             patchServer({ enabled: s.enabled, triggerEvery: s.triggerEvery }).catch(() => {});
             return;
@@ -227,7 +226,7 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
           const triggerEvery = typeof section.triggerEvery === 'number'
             ? Math.max(10, Math.min(200, Math.round(section.triggerEvery)))
             : get().triggerEvery;
-          try { localStorage.setItem(localTsKey(), String(serverTs)); } catch { /* ignore */ }
+          try { recordServerTs(localTsKey(), serverTs); } catch { /* ignore */ }
           set({ enabled, triggerEvery });
         } catch { /* non-fatal — localStorage values remain active */ }
       },
