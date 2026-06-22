@@ -22,7 +22,7 @@
 import { create } from 'zustand';
 import { useDataBankStore } from './dataBankStore';
 import { cosineSimilarity, getEmbedding } from '../utils/embeddings';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -148,7 +148,7 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
   setEnabled: (on) => {
     saveEnabled(on);
     set({ enabled: on });
-    try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+    try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
     patchServerKey(SERVER_KEY, { enabled: on }, LOCAL_TS_KEY).catch(() => {});
   },
 
@@ -156,16 +156,15 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
     try {
       const settings = await getSettingsBlob();
       const stored = settings[SERVER_KEY] as Record<string, unknown> | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         patchServerKey(SERVER_KEY, { enabled: get().enabled }, LOCAL_TS_KEY).catch(() => {});
         return;
       }
       if (!stored) return;
       const enabled = typeof stored.enabled === 'boolean' ? stored.enabled : get().enabled;
       saveEnabled(enabled);
-      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
       set({ enabled });
     } catch { /* non-fatal */ }
   },

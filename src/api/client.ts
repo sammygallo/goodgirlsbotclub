@@ -53,6 +53,25 @@ export class ChatConflictError extends Error {
   }
 }
 
+/** 409 body from PUT /sync/section/{name} (mirrors backend SectionConflictDetail).
+ *  Returned when the section's server_ts moved since we last observed it. */
+export interface SectionConflict {
+  error: string;
+  current_ts: number;
+  current_data: unknown;
+}
+
+/** Thrown by putSection on a 409 so the sync layer can merge against the
+ *  authoritative server state and retry instead of silently overwriting it. */
+export class SectionConflictError extends Error {
+  conflict: SectionConflict;
+  constructor(conflict: SectionConflict) {
+    super(`section sync conflict: ${conflict.error}`);
+    this.name = 'SectionConflictError';
+    this.conflict = conflict;
+  }
+}
+
 // ggbc-backend speaks roles (owner/admin/contributor/end_user); SillyTavern
 // speaks permission group ids (e.g. owner-default). The frontend was built
 // around the ST shape, so we translate at the boundary.
@@ -125,6 +144,58 @@ export async function apiRequestText(
     throw new Error(error.error || error.message || `HTTP ${response.status}`);
   }
   return response.text();
+}
+
+/**
+ * PUT one settings section with optimistic concurrency. Sends the last-observed
+ * `server_ts` as `base_ts`; the backend returns the new `server_ts` on success
+ * or a 409 + current state when another device wrote first. Throws
+ * SectionConflictError on 409 so the caller can merge and retry instead of
+ * clobbering. Mirrors saveChat's 409 handling for the per-section /sync API
+ * (apiRequest collapses non-2xx into a generic Error and would hide the 409 body).
+ */
+export async function putSection(
+  name: string,
+  data: unknown,
+  baseTs?: number | null
+): Promise<{ server_ts: number; data: unknown }> {
+  const token = await getCsrfToken();
+  const response = await fetch(`/sync/section/${name}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': token,
+    },
+    body: JSON.stringify({
+      data,
+      ...(typeof baseTs === 'number' ? { base_ts: baseTs } : {}),
+    }),
+  });
+
+  if (response.status === 409) {
+    // FastAPI nests the model under `detail`.
+    const body = await response.json().catch(() => ({}));
+    const detail = (body?.detail ?? body) as Partial<SectionConflict>;
+    throw new SectionConflictError({
+      error: typeof detail?.error === 'string' ? detail.error : 'conflict',
+      current_ts: typeof detail?.current_ts === 'number' ? detail.current_ts : 0,
+      current_data: detail?.current_data ?? null,
+    });
+  }
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error || err?.message || `HTTP ${response.status}`);
+  }
+
+  const out = (await response.json().catch(() => ({}))) as {
+    server_ts?: number;
+    data?: unknown;
+  };
+  return {
+    server_ts: typeof out.server_ts === 'number' ? out.server_ts : 0,
+    data: out.data,
+  };
 }
 
 // ---------------------------------------------------------------------------

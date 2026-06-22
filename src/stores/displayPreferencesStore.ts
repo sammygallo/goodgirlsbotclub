@@ -21,7 +21,7 @@
  */
 
 import { create } from 'zustand';
-import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import {
   type ChatLayoutMode,
   type AvatarShape,
@@ -80,7 +80,7 @@ interface DisplayPrefsState {
 const LOCAL_TS_KEY = 'stm:display-local-ts';
 
 function markLocalDirty(): void {
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
 }
 
 function getInitialCostumes(): Record<string, string> {
@@ -99,9 +99,9 @@ function getInitialCostumes(): Record<string, string> {
 }
 
 /**
- * PUT the merged stm_display section. patchServerKey advances LOCAL_TS_KEY
- * only on a successful 2xx, so a network failure leaves LOCAL_TS_KEY ahead
- * of the server's server_ts and the next fetchPrefs re-uploads.
+ * PUT the merged stm_display section. patchServerKey adopts the server_ts and
+ * clears the dirty flag only on a successful 2xx, so a network failure leaves
+ * the section dirty and the next fetchPrefs re-uploads.
  */
 async function patchServer(patch: Record<string, unknown>): Promise<void> {
   const settings = await getSettingsBlob();
@@ -128,10 +128,9 @@ export const useDisplayPreferencesStore = create<DisplayPrefsState>((set, get) =
     try {
       const settings = await getSettingsBlob();
       const display = settings.stm_display as Record<string, unknown> | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(display?._ts || 0);
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         // Local has mutations that never confirmed to the server — re-upload them.
         const s = get();
         patchServer({
@@ -180,7 +179,7 @@ export const useDisplayPreferencesStore = create<DisplayPrefsState>((set, get) =
       } catch { /* ignore */ }
 
       // Advance LOCAL_TS_KEY so a future fetchPrefs doesn't re-upload stale local state.
-      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
 
       set({ chatLayoutMode, avatarShape, chatFontSize, chatMaxWidth, vnMode, standardizeMessageFormatting, enterToSendMode, costumes });
     } catch { /* non-fatal — localStorage values remain active */ }

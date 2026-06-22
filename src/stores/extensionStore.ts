@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { getSettingsBlob, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 let _currentHandle: string | null = null;
 
@@ -38,7 +38,7 @@ function localTsKey(): string {
 }
 
 function markLocalDirty(): void {
-  try { localStorage.setItem(localTsKey(), String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(localTsKey()); } catch { /* ignore */ }
 }
 
 async function patchServer(patch: Record<string, unknown>): Promise<void> {
@@ -71,10 +71,9 @@ export const useExtensionStore = create<ExtensionState>()(
         try {
           const settings = await getSettingsBlob();
           const section = settings[SERVER_KEY] as Record<string, unknown> | undefined;
-          const localTs = Number(localStorage.getItem(localTsKey()) || 0);
           const serverTs = Number(section?._ts || 0);
 
-          if (localTs > serverTs) {
+          if (shouldReuploadSection(localTsKey(), serverTs)) {
             // Local has mutations that never confirmed to the server — re-upload.
             patchServer({ enabled: get().enabled }).catch(() => {});
             return;
@@ -83,7 +82,7 @@ export const useExtensionStore = create<ExtensionState>()(
           if (!section) return; // No server state and no newer local — keep local.
 
           const enabled = (section.enabled as Record<string, boolean>) ?? get().enabled;
-          try { localStorage.setItem(localTsKey(), String(serverTs)); } catch { /* ignore */ }
+          try { recordServerTs(localTsKey(), serverTs); } catch { /* ignore */ }
           set({ enabled });
         } catch { /* non-fatal — localStorage values remain active */ }
       },

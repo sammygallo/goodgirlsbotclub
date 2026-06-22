@@ -11,7 +11,7 @@
 
 import { create } from 'zustand';
 import type { SamplerParams } from './generationStore';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 export interface ConnectionProfile {
   id: string;
@@ -51,7 +51,7 @@ const SERVER_KEY = 'stm_connection_profiles';
 const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 
 function markLocalDirty(): void {
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
 }
 
 function syncToServer(profiles: ConnectionProfile[], activeProfileId: string | null): void {
@@ -129,10 +129,9 @@ export const useConnectionProfileStore = create<ConnectionProfileState>((set, ge
     try {
       const settings = await getSettingsBlob();
       const stored = settings[SERVER_KEY] as Record<string, unknown> | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         syncToServer(get().profiles, get().activeProfileId);
         return;
       }
@@ -143,7 +142,7 @@ export const useConnectionProfileStore = create<ConnectionProfileState>((set, ge
       const activeProfileId = (stored.activeProfileId as string | null) ?? null;
 
       save({ profiles, activeProfileId });
-      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
       set({ profiles, activeProfileId });
     } catch { /* non-fatal */ }
   },

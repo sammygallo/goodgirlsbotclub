@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { imageGenApi, type ImageGenBackend } from '../api/imageGenApi';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 // ---------------------------------------------------------------------------
 // Gallery entry — persisted alongside config
@@ -28,7 +28,7 @@ let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 function schedulePersist(config: ImageGenConfig): void {
   if (!_persistEnabled) return;
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
   _persistTimer = setTimeout(() => {
     _persistTimer = null;
@@ -277,7 +277,6 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
       const stored = settings[SERVER_KEY] as
         | (ImageGenConfig & { _ts?: number })
         | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
 
       const currentConfig = (): ImageGenConfig => {
@@ -308,7 +307,7 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
         return;
       }
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         _persistEnabled = true;
         patchServerKey(
           SERVER_KEY,
@@ -322,7 +321,7 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
       const merged: ImageGenConfig = { ...DEFAULT_CONFIG, ...stored };
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-        localStorage.setItem(LOCAL_TS_KEY, String(serverTs));
+        recordServerTs(LOCAL_TS_KEY, serverTs);
       } catch { /* ignore */ }
       set(merged);
       _persistEnabled = true;

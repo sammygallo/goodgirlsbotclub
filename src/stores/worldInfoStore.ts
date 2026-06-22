@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { estimateTokens, type TokenizerProfile } from '../utils/tokenizer';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import type {
   CharacterBookV2,
   CharacterBookEntryV2,
@@ -1494,7 +1494,6 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       const stored = settings[SERVER_KEY] as
         | (PersistedShape & { _ts?: number })
         | undefined;
-      const localTs = Number(localStorage.getItem(LOCAL_TS_KEY) || 0);
       const serverTs = Number(stored?._ts || 0);
 
       if (!stored) {
@@ -1516,7 +1515,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
         return;
       }
 
-      if (localTs > serverTs) {
+      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         // Local has unconfirmed mutations — push them and keep local state.
         _persistEnabled = true;
         patchServerKey(
@@ -1557,10 +1556,10 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
           localStorage.setItem(scopedKey(TOKEN_BUDGET_KEY, handle), String(stored.tokenBudget ?? DEFAULT_TOKEN_BUDGET));
         } catch { /* ignore */ }
       }
-      try { localStorage.setItem(LOCAL_TS_KEY, String(serverTs)); } catch { /* ignore */ }
+      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
       _persistEnabled = true;
     } catch {
-      // Network failure — keep local state. Next mutation marks LOCAL_TS_KEY
+      // Network failure — keep local state. Next mutation marks the section
       // dirty, so a future fetchPrefs will detect the local-newer case.
       _persistEnabled = true;
     }
@@ -1588,7 +1587,7 @@ function snapshotForServer(s: WorldInfoState): PersistedShape {
 
 useWorldInfoStore.subscribe((state) => {
   if (!_persistEnabled) return;
-  try { localStorage.setItem(LOCAL_TS_KEY, String(Date.now())); } catch { /* ignore */ }
+  try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
   _persistTimer = setTimeout(() => {
     _persistTimer = null;
