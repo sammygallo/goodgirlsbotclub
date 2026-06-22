@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { getDefaultContextSize } from '../utils/tokenizer';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
 // Sampler parameters supported across providers. Not every provider uses
 // every field; unused params are ignored by the backend.
@@ -257,6 +257,8 @@ interface GenerationState {
 
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
+  /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
+  resetUser: () => void;
 }
 
 const STORAGE_KEY = 'sillytavern_generation_settings_v1';
@@ -632,6 +634,23 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
 
   setLastTokenEstimate: (n) => {
     set({ lastTokenEstimate: n });
+  },
+
+  resetUser: () => {
+    set({
+      sampler: { ...DEFAULT_SAMPLER },
+      presets: [],
+      activePresetId: null,
+      defaultPresetId: null,
+      linkedPresetByAvatar: {},
+      prompt: { ...DEFAULT_PROMPT_CONFIG },
+      context: { ...DEFAULT_CONTEXT_CONFIG },
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+      promptOrder: mergePromptOrder(undefined),
+      lastTokenEstimate: 0,
+    });
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+    clearLocalTs(LOCAL_TS_KEY);
   },
 
   fetchPrefs: async () => {

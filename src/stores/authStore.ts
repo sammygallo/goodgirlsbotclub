@@ -22,7 +22,62 @@ import { useAutoMemoryStore } from './autoMemoryStore';
 import { useTranslateStore } from './translateStore';
 import { useQuickReplyStore } from './quickReplyStore';
 import { useExpressionsStore } from './expressionsStore';
+import { clearAllAppStorage } from '../utils/serverSettings';
 import type { UserRole, Permission } from '../types';
+
+/** Survives clearAllAppStorage() (different prefix) so we can detect when the
+ *  authenticated handle changes between sessions on a shared browser. */
+const ACTIVE_HANDLE_KEY = 'ggbc:active-handle';
+
+/**
+ * Wipe every trace of the current user: each store's in-memory state and the
+ * entire app-owned localStorage keyspace. Called on logout and whenever the
+ * active handle changes, so a shared browser can never carry one account's
+ * data (settings, secrets, transcripts, version tokens) into the next.
+ */
+function resetAllUserState(): void {
+  useCharacterStore.getState().resetUser();
+  useChatStore.getState().resetUser();
+  useSettingsStore.setState({
+    secrets: {},
+    globalSecrets: {},
+    globalSharingEnabled: false,
+    globalSharingSupported: false,
+    activeProvider: 'openai',
+    activeModel: 'gpt-4o',
+    error: null,
+    successMessage: null,
+  });
+  useWorldInfoStore.getState().resetUser();
+  useExtensionStore.getState().resetUser();
+  useSummarizeStore.getState().resetUser();
+  useAutoMemoryStore.getState().resetUser();
+  useTranslateStore.getState().resetUser();
+  useQuickReplyStore.getState().resetUser();
+  useExpressionsStore.getState().resetUser();
+  useDataBankStore.getState().resetUser();
+  useChatHistoryRagStore.getState().resetUser();
+  useImageGenStore.getState().resetUser();
+  useGenerationStore.getState().resetUser();
+  useBranchStore.getState().resetUser();
+  // Catch-all for orphan keys no single store owns (VN backgrounds, costumes,
+  // global vars, the migration sentinel) and stores without their own resetUser.
+  clearAllAppStorage();
+}
+
+/**
+ * Ensure cached state belongs to `handle`. If the last active handle differs
+ * (or is unknown), reset everything before the new user hydrates; a normal
+ * same-user reload keeps its instant-render cache.
+ */
+function ensureUserScope(handle: string): void {
+  let prev: string | null = null;
+  try { prev = localStorage.getItem(ACTIVE_HANDLE_KEY); } catch { prev = null; }
+  if (prev !== handle) {
+    resetAllUserState();
+  }
+  try { localStorage.setItem(ACTIVE_HANDLE_KEY, handle); } catch { /* ignore */ }
+}
 
 interface CurrentUser {
   handle: string;
@@ -66,6 +121,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const user = await api.getCurrentUser();
       if (user) {
+        ensureUserScope(user.handle);
         useWorldInfoStore.getState().initForUser(user.handle);
         useExtensionStore.getState().initForUser(user.handle);
         useSummarizeStore.getState().initForUser(user.handle);
@@ -138,6 +194,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       // get permissions/avatar/groupId in the same shape login uses).
       const user = await api.getCurrentUser();
       const h = user?.handle ?? result.handle;
+      ensureUserScope(h);
       useWorldInfoStore.getState().initForUser(h);
       useExtensionStore.getState().initForUser(h);
       useSummarizeStore.getState().initForUser(h);
@@ -194,6 +251,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       // Fetch real user data so role, permissions, and display name are correct.
       const user = await api.getCurrentUser();
       const h = user?.handle ?? handle;
+      ensureUserScope(h);
       useWorldInfoStore.getState().initForUser(h);
       useExtensionStore.getState().initForUser(h);
       useSummarizeStore.getState().initForUser(h);
@@ -253,46 +311,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       clearCsrfToken();
       set({ isAuthenticated: false, currentUser: null });
 
-      // Clear all stores to prevent data leakage between users
-      useCharacterStore.setState({
-        characters: [],
-        selectedCharacter: null,
-        isGroupChatMode: false,
-        groupChatCharacters: [],
-      });
-      useChatStore.setState({
-        messages: [],
-        chatFiles: [],
-        groupChats: [],
-        currentChatFile: null,
-        isStreaming: false,
-        isSending: false,
-        error: null,
-        abortController: null,
-        currentSpeakerName: null,
-      });
-      useSettingsStore.setState({
-        secrets: {},
-        globalSecrets: {},
-        globalSharingEnabled: false,
-        globalSharingSupported: false,
-        activeProvider: 'openai',
-        activeModel: 'gpt-4o',
-        error: null,
-        successMessage: null,
-      });
-      useCharacterStore.getState().resetLinkedBooks();
-      useWorldInfoStore.getState().resetUser();
-      useExtensionStore.getState().resetUser();
-      useSummarizeStore.getState().resetUser();
-      useAutoMemoryStore.getState().resetUser();
-      useTranslateStore.getState().resetUser();
-      useQuickReplyStore.getState().resetUser();
-      useExpressionsStore.getState().resetUser();
-
-      // Clear persisted localStorage data
-      localStorage.removeItem('sillytavern_group_chats');
-      localStorage.removeItem('sillytavern_author_notes');
+      // Reset every store's in-memory state and wipe the app-owned localStorage
+      // keyspace so nothing leaks into the next account on a shared browser.
+      resetAllUserState();
+      try { localStorage.removeItem(ACTIVE_HANDLE_KEY); } catch { /* ignore */ }
     }
   },
 

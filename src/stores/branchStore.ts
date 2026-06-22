@@ -10,7 +10,7 @@
  */
 import { create } from 'zustand';
 import type { ChatMessage } from './chatStore';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
 export interface Branch {
   id: string;
@@ -100,6 +100,8 @@ interface BranchState {
    * is currently in localStorage so pre-A3 checkpoints survive the cutover.
    */
   fetchPrefs(): Promise<void>;
+  /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
+  resetUser(): void;
 }
 
 export const useBranchStore = create<BranchState>((set, get) => ({
@@ -152,6 +154,12 @@ export const useBranchStore = create<BranchState>((set, get) => ({
 
   setActiveBranch(id) {
     set({ activeBranchId: id });
+  },
+
+  resetUser: () => {
+    set({ branches: [], activeBranchId: null });
+    try { localStorage.removeItem(BRANCHES_KEY); } catch { /* ignore */ }
+    clearLocalTs(LOCAL_TS_KEY);
   },
 
   fetchPrefs: async () => {

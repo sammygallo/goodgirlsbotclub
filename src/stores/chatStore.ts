@@ -8,7 +8,7 @@ import {
   type GenerationOptions,
   type GenerationImage,
 } from '../api/client';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 import { useSettingsStore } from './settingsStore';
 import { usePersonaStore } from './personaStore';
 import {
@@ -541,6 +541,8 @@ interface ChatState {
    * already in localStorage so pre-A3 state survives the cutover.
    */
   fetchPrefs: () => Promise<void>;
+  /** Wipe chat state + localStorage keys for the current user (logout/switch). */
+  resetUser: () => void;
 }
 
 let messageIdCounter = 0;
@@ -3301,6 +3303,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearChat: () => set({ messages: [], chatFiles: [], currentChatFile: null }),
+
+  resetUser: () => {
+    // Stop any pending debounced persist from flushing the previous user's
+    // snapshot into the next account.
+    _persistEnabled = false;
+    if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; }
+    _latestSnapshot.authorNotes = {};
+    _latestSnapshot.groupChats = [];
+    _latestSnapshot.chatVariables = {};
+    set({
+      messages: [],
+      chatFiles: [],
+      groupChats: [],
+      currentChatFile: null,
+      isStreaming: false,
+      isSending: false,
+      error: null,
+      abortController: null,
+      currentSpeakerName: null,
+      authorNotes: {},
+      chatVariables: {},
+    });
+    try { localStorage.removeItem(CHAT_VARIABLES_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(AUTHOR_NOTES_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(GROUP_CHATS_KEY); } catch { /* ignore */ }
+    clearLocalTs(LOCAL_TS_KEY);
+  },
 
   fetchPrefs: async () => {
     try {
