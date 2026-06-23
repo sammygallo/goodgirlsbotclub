@@ -23,9 +23,10 @@ import {
   Zap,
 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
-import { useDataBankStore, type DataBankDocument } from '../../stores/dataBankStore';
+import { useDataBankStore, embeddingsConfigured, type DataBankDocument } from '../../stores/dataBankStore';
 import { useChatHistoryRagStore } from '../../stores/chatHistoryRagStore';
 import { useCharacterStore } from '../../stores/characterStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { Button } from '../ui';
 
 // ---------------------------------------------------------------------------
@@ -288,7 +289,6 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
   const {
     documents,
     embeddingIds,
-    embeddingsApiKey,
     setEmbeddingsApiKey,
     addDocument,
     deleteDocument,
@@ -296,13 +296,23 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
   } = useDataBankStore();
 
   const characters = useCharacterStore((s) => s.characters);
+  const secrets = useSettingsStore((s) => s.secrets);
+  const hasKey = embeddingsConfigured(secrets);
 
-  const [apiKeyInput, setApiKeyInput] = useState(embeddingsApiKey);
+  const [apiKeyInput, setApiKeyInput] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [embedError, setEmbedError] = useState<string | null>(null);
 
-  const handleSaveKey = () => {
-    setEmbeddingsApiKey(apiKeyInput.trim());
+  const handleSaveKey = async () => {
+    const v = apiKeyInput.trim();
+    if (!v) return;
+    setEmbedError(null);
+    try {
+      await setEmbeddingsApiKey(v);
+      setApiKeyInput('');
+    } catch (e) {
+      setEmbedError(e instanceof Error ? e.message : 'Failed to save key');
+    }
   };
 
   const handleEmbed = async (id: string) => {
@@ -355,7 +365,8 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
           </div>
           <p className="text-xs text-[var(--color-text-secondary)]">
             Required to embed documents and perform similarity search. Uses{' '}
-            <span className="font-mono">text-embedding-3-small</span>. Stored in your browser only.
+            <span className="font-mono">text-embedding-3-small</span>. Stored securely on the
+            server; the key never reaches your browser.
           </p>
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -363,7 +374,7 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
                 type={showApiKey ? 'text' : 'password'}
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
-                placeholder="sk-…"
+                placeholder={hasKey ? '•••• configured — enter to replace' : 'sk-…'}
                 className="w-full text-sm bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg px-3 py-2 pr-9 text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
               />
               <button
@@ -376,14 +387,14 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
             <Button
               size="sm"
               onClick={handleSaveKey}
-              disabled={apiKeyInput.trim() === embeddingsApiKey}
+              disabled={!apiKeyInput.trim()}
             >
               Save
             </Button>
           </div>
-          {embeddingsApiKey && (
+          {hasKey && (
             <p className="text-xs text-green-400">
-              Key saved. Documents can now be embedded.
+              Embeddings key configured. Documents can now be embedded.
             </p>
           )}
         </section>
@@ -417,7 +428,7 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
               key={doc.id}
               doc={doc}
               isEmbedding={embeddingIds.has(doc.id)}
-              hasApiKey={!!embeddingsApiKey}
+              hasApiKey={hasKey}
               onEmbed={handleEmbed}
               onDelete={deleteDocument}
               characterName={doc.characterAvatar ? charByAvatar[doc.characterAvatar] : undefined}
@@ -455,7 +466,7 @@ function ChatHistoryRagSection() {
   const enabled = useChatHistoryRagStore((s) => s.enabled);
   const setEnabled = useChatHistoryRagStore((s) => s.setEnabled);
   const embeddingsByChat = useChatHistoryRagStore((s) => s.embeddingsByChat);
-  const apiKey = useDataBankStore((s) => s.embeddingsApiKey);
+  const hasKey = embeddingsConfigured(useSettingsStore((s) => s.secrets));
 
   const totalChats = Object.keys(embeddingsByChat).length;
   const totalEmbeddings = Object.values(embeddingsByChat).reduce(
@@ -490,12 +501,12 @@ function ChatHistoryRagSection() {
         — pairs well with summary compaction. Costs one OpenAI embedding call
         per new message and uses the API key above.
       </p>
-      {enabled && !apiKey && (
+      {enabled && !hasKey && (
         <p className="text-xs text-amber-400">
           No OpenAI embeddings key set — chat memory is inactive until you save one above.
         </p>
       )}
-      {enabled && apiKey && totalEmbeddings > 0 && (
+      {enabled && hasKey && totalEmbeddings > 0 && (
         <p className="text-xs text-[var(--color-text-secondary)]">
           {totalEmbeddings} message{totalEmbeddings === 1 ? '' : 's'} embedded across {totalChats} chat{totalChats === 1 ? '' : 's'}.
         </p>

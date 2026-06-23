@@ -20,7 +20,7 @@
  */
 
 import { create } from 'zustand';
-import { useDataBankStore } from './dataBankStore';
+import { hasEmbeddingsKey } from './dataBankStore';
 import { cosineSimilarity, getEmbedding } from '../utils/embeddings';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
@@ -183,8 +183,7 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
     if (!state.enabled) return;
     if (state.embeddingChats.has(chatFile)) return; // already embedding this chat
 
-    const apiKey = useDataBankStore.getState().embeddingsApiKey;
-    if (!apiKey) return;
+    if (!hasEmbeddingsKey()) return;
 
     const existing = state.embeddingsByChat[chatFile] ?? [];
     const existingIds = new Set(existing.map((e) => e.id));
@@ -211,7 +210,7 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
       const fresh: ChatMessageEmbedding[] = [];
       for (const item of todo) {
         try {
-          const embedding = await getEmbedding(item.text, apiKey);
+          const embedding = await getEmbedding(item.text);
           fresh.push({ ...item, embedding });
         } catch {
           // Skip individual failures — partial coverage is still useful.
@@ -237,14 +236,13 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
   queryTopK: async (chatFile, query, k = 3) => {
     const state = get();
     if (!state.enabled) return [];
-    const apiKey = useDataBankStore.getState().embeddingsApiKey;
-    if (!apiKey) return [];
+    if (!hasEmbeddingsKey()) return [];
 
     const stored = state.embeddingsByChat[chatFile] ?? [];
     if (stored.length === 0) return [];
 
     try {
-      const queryEmbedding = await getEmbedding(query, apiKey);
+      const queryEmbedding = await getEmbedding(query);
       return stored
         .map((m) => ({
           text: m.text,
