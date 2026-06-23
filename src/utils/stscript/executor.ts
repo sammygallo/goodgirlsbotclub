@@ -12,10 +12,14 @@ import { getCommand } from './registry';
 import { processMacros, type MacroContext } from '../macros';
 import { getUICallbacks } from './uiCallbacks';
 import { useChatStore } from '../../stores/chatStore';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../serverSettings';
 
 const MAX_LOOP_ITERATIONS = 100;
 const MAX_RECURSION_DEPTH = 10;
 const GLOBAL_VARS_KEY = 'stm:global-vars';
+// Cross-device sync of STscript global variables via `stm_stscript_globals`.
+const GLOBALS_SERVER_KEY = 'stm_stscript_globals';
+const GLOBALS_LOCAL_TS_KEY = 'stm:stscript-globals-local-ts';
 
 // ───── Global variable persistence ─────
 
@@ -28,10 +32,39 @@ function loadGlobalVars(): Record<string, string> {
   } catch { return {}; }
 }
 
-function saveGlobalVars(vars: Record<string, string>): void {
+function writeGlobalVarsLocal(vars: Record<string, string>): void {
   try {
     localStorage.setItem(GLOBAL_VARS_KEY, JSON.stringify(vars));
   } catch { /* ignore quota */ }
+}
+
+function saveGlobalVars(vars: Record<string, string>): void {
+  writeGlobalVarsLocal(vars);
+  markSectionDirty(GLOBALS_LOCAL_TS_KEY);
+  patchServerKey(GLOBALS_SERVER_KEY, { vars }, GLOBALS_LOCAL_TS_KEY).catch(() => {});
+}
+
+/**
+ * Reconcile STscript global variables with the server after login. Mirrors the
+ * synced-store fetchPrefs pattern: re-upload pending local edits, otherwise
+ * adopt the server's copy into localStorage. Called from authStore.
+ */
+export async function syncGlobalVarsFromServer(): Promise<void> {
+  try {
+    const settings = await getSettingsBlob();
+    const section = settings[GLOBALS_SERVER_KEY] as
+      | { vars?: Record<string, string>; _ts?: number }
+      | undefined;
+    const serverTs = Number(section?._ts || 0);
+    if (shouldReuploadSection(GLOBALS_LOCAL_TS_KEY, serverTs)) {
+      patchServerKey(GLOBALS_SERVER_KEY, { vars: loadGlobalVars() }, GLOBALS_LOCAL_TS_KEY).catch(() => {});
+      return;
+    }
+    if (section && section.vars && typeof section.vars === 'object') {
+      writeGlobalVarsLocal(section.vars);
+      try { recordServerTs(GLOBALS_LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
+    }
+  } catch { /* non-fatal — localStorage values remain active */ }
 }
 
 // ───── Scope helpers ─────

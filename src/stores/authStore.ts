@@ -24,6 +24,7 @@ import { useQuickReplyStore } from './quickReplyStore';
 import { useExpressionsStore } from './expressionsStore';
 import { useMotionModeStore } from './motionModeStore';
 import { clearAllAppStorage } from '../utils/serverSettings';
+import { syncGlobalVarsFromServer } from '../utils/stscript/executor';
 import type { UserRole, Permission } from '../types';
 
 /** Survives clearAllAppStorage() (different prefix) so we can detect when the
@@ -161,6 +162,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       useExtensionStore.getState().fetchPrefs();
       useSummarizeStore.getState().fetchPrefs();
       useAutoMemoryStore.getState().fetchPrefs();
+      useTranslateStore.getState().fetchPrefs();
+      useQuickReplyStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchSummaries();
+      syncGlobalVarsFromServer();
       useCharacterStore.getState().fetchLinkedBooks();
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
@@ -239,6 +244,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       useExtensionStore.getState().fetchPrefs();
       useSummarizeStore.getState().fetchPrefs();
       useAutoMemoryStore.getState().fetchPrefs();
+      useTranslateStore.getState().fetchPrefs();
+      useQuickReplyStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchSummaries();
+      syncGlobalVarsFromServer();
       useCharacterStore.getState().fetchLinkedBooks();
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
@@ -299,6 +308,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       useExtensionStore.getState().fetchPrefs();
       useSummarizeStore.getState().fetchPrefs();
       useAutoMemoryStore.getState().fetchPrefs();
+      useTranslateStore.getState().fetchPrefs();
+      useQuickReplyStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchSummaries();
+      syncGlobalVarsFromServer();
       useCharacterStore.getState().fetchLinkedBooks();
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
