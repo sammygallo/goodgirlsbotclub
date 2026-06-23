@@ -109,16 +109,26 @@ const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 const LEGACY_EMBED_KEY_STORAGE = 'stm:data-bank-embed-key';
 
 /** True if the embeddings proxy will find a usable key server-side: a dedicated
- *  embeddings secret, or the chat OpenAI key it falls back to. */
-export function embeddingsConfigured(secrets: SecretsResponse): boolean {
-  const has = (k: string) => Array.isArray(secrets[k]) && (secrets[k] as unknown[]).length > 0;
+ *  embeddings secret or the chat OpenAI key it falls back to — set either as the
+ *  user's personal secret or (when sharing is on) an owner-managed global one.
+ *  Mirrors the personal-OR-global check the provider keys use in MyKeysPage. */
+export function embeddingsConfigured(
+  secrets: SecretsResponse,
+  globalSecrets?: SecretsResponse,
+  globalSharingEnabled?: boolean,
+): boolean {
+  const nonEmpty = (store: SecretsResponse | undefined, k: string) =>
+    !!store && Array.isArray(store[k]) && (store[k] as unknown[]).length > 0;
+  const has = (k: string) =>
+    nonEmpty(secrets, k) || (!!globalSharingEnabled && nonEmpty(globalSecrets, k));
   return has(SECRET_KEYS.OPENAI_EMBEDDINGS) || has(SECRET_KEYS.OPENAI);
 }
 
-/** Non-reactive gate for store actions. Components should select `secrets` from
- *  settingsStore and call embeddingsConfigured() directly so they re-render. */
+/** Non-reactive gate for store actions. Components should select the secrets
+ *  slices from settingsStore and call embeddingsConfigured() so they re-render. */
 export function hasEmbeddingsKey(): boolean {
-  return embeddingsConfigured(useSettingsStore.getState().secrets);
+  const s = useSettingsStore.getState();
+  return embeddingsConfigured(s.secrets, s.globalSecrets, s.globalSharingEnabled);
 }
 
 interface PersistedShape {

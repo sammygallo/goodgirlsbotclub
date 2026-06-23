@@ -297,7 +297,9 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
 
   const characters = useCharacterStore((s) => s.characters);
   const secrets = useSettingsStore((s) => s.secrets);
-  const hasKey = embeddingsConfigured(secrets);
+  const globalSecrets = useSettingsStore((s) => s.globalSecrets);
+  const globalSharingEnabled = useSettingsStore((s) => s.globalSharingEnabled);
+  const hasKey = embeddingsConfigured(secrets, globalSecrets, globalSharingEnabled);
 
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -466,7 +468,11 @@ function ChatHistoryRagSection() {
   const enabled = useChatHistoryRagStore((s) => s.enabled);
   const setEnabled = useChatHistoryRagStore((s) => s.setEnabled);
   const embeddingsByChat = useChatHistoryRagStore((s) => s.embeddingsByChat);
-  const hasKey = embeddingsConfigured(useSettingsStore((s) => s.secrets));
+  const hasKey = embeddingsConfigured(
+    useSettingsStore((s) => s.secrets),
+    useSettingsStore((s) => s.globalSecrets),
+    useSettingsStore((s) => s.globalSharingEnabled),
+  );
 
   const totalChats = Object.keys(embeddingsByChat).length;
   const totalEmbeddings = Object.values(embeddingsByChat).reduce(
