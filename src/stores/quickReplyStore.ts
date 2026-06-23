@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 let _currentHandle: string | null = null;
 
@@ -17,6 +18,31 @@ const scopedLocalStorage = {
     localStorage.removeItem(key);
   },
 };
+
+// Cross-device sync of the authored quick-reply sets via `stm_quick_replies`.
+// `activeSetId` is a local UI selection and intentionally not synced. Because
+// there are many mutators, a single subscription pushes whenever `sets` changes
+// rather than threading a call through every action. Pushes are gated by
+// _syncEnabled so the initial rehydrate, the fetchPrefs apply, and logout's
+// resetUser() can't echo back to the server.
+const SERVER_KEY = 'stm_quick_replies';
+
+function localTsKey(): string {
+  return _currentHandle ? `stm:quick-replies-local-ts_${_currentHandle}` : 'stm:quick-replies-local-ts';
+}
+
+let _syncEnabled = false;
+let _syncTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePush(sets: QuickReplySet[]): void {
+  if (!_syncEnabled) return;
+  markSectionDirty(localTsKey());
+  if (_syncTimer) clearTimeout(_syncTimer);
+  _syncTimer = setTimeout(() => {
+    _syncTimer = null;
+    patchServerKey(SERVER_KEY, { sets }, localTsKey()).catch(() => {});
+  }, 500);
+}
 
 export interface QuickReplyEntry {
   id: string;
@@ -45,6 +71,8 @@ interface QuickReplyState {
   deleteEntry: (setId: string, entryId: string) => void;
   moveEntryUp: (setId: string, entryId: string) => void;
   moveEntryDown: (setId: string, entryId: string) => void;
+  /** Seed quick-reply sets from the server after login. */
+  fetchPrefs: () => Promise<void>;
   initForUser: (handle: string) => void;
   resetUser: () => void;
 }
@@ -55,7 +83,7 @@ function uid(): string {
 
 export const useQuickReplyStore = create<QuickReplyState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       sets: [],
       activeSetId: null,
 
@@ -141,11 +169,34 @@ export const useQuickReplyStore = create<QuickReplyState>()(
             return { ...qs, entries };
           }),
         })),
+      fetchPrefs: async () => {
+        _syncEnabled = false;
+        try {
+          const settings = await getSettingsBlob();
+          const section = settings[SERVER_KEY] as { sets?: QuickReplySet[]; _ts?: number } | undefined;
+          const serverTs = Number(section?._ts || 0);
+          if (shouldReuploadSection(localTsKey(), serverTs)) {
+            patchServerKey(SERVER_KEY, { sets: get().sets }, localTsKey()).catch(() => {});
+            return;
+          }
+          if (section && Array.isArray(section.sets)) {
+            set({ sets: section.sets });
+            try { recordServerTs(localTsKey(), serverTs); } catch { /* ignore */ }
+          }
+        } catch { /* non-fatal — localStorage values remain active */ } finally {
+          _syncEnabled = true;
+        }
+      },
+
       initForUser: (handle) => {
         _currentHandle = handle;
         useQuickReplyStore.persist.rehydrate();
       },
       resetUser: () => {
+        // Disable sync first so clearing in-memory state on logout never pushes
+        // an empty set up to the server.
+        _syncEnabled = false;
+        if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
         _currentHandle = null;
         set({ sets: [], activeSetId: null });
       },
@@ -156,3 +207,8 @@ export const useQuickReplyStore = create<QuickReplyState>()(
     }
   )
 );
+
+// Push authored sets to the server whenever they change (gated by _syncEnabled).
+useQuickReplyStore.subscribe((state, prev) => {
+  if (state.sets !== prev.sets) schedulePush(state.sets);
+});

@@ -56,6 +56,21 @@ export interface ChatSummary {
   messageCount: number;
 }
 
+// The per-chat summaries cache syncs in its own section (separate from the
+// settings above) since it's larger and changes on a different cadence.
+const SUMMARIES_SERVER_KEY = 'stm_summaries';
+
+function summariesLocalTsKey(): string {
+  return _currentHandle
+    ? `stm:summaries-local-ts_${_currentHandle}`
+    : 'stm:summaries-local-ts';
+}
+
+function pushSummaries(summaries: Record<string, ChatSummary>): void {
+  markSectionDirty(summariesLocalTsKey());
+  patchServerKey(SUMMARIES_SERVER_KEY, { summaries }, summariesLocalTsKey()).catch(() => {});
+}
+
 interface SummarizeState {
   // --- persisted settings ---
   autoSummarize: boolean;
@@ -87,6 +102,8 @@ interface SummarizeState {
   setCompactWhenSummarized: (on: boolean) => void;
   /** Pull settings from the server after login and reconcile with local. */
   fetchPrefs: () => Promise<void>;
+  /** Pull the per-chat summaries cache from the server after login. */
+  fetchSummaries: () => Promise<void>;
   getSummary: (chatFile: string) => ChatSummary | null;
   clearSummary: (chatFile: string) => void;
   clearError: () => void;
@@ -223,13 +240,31 @@ export const useSummarizeStore = create<SummarizeState>()(
         } catch { /* non-fatal — localStorage values remain active */ }
       },
 
+      fetchSummaries: async () => {
+        try {
+          const settings = await getSettingsBlob();
+          const section = settings[SUMMARIES_SERVER_KEY] as
+            | { summaries?: Record<string, ChatSummary>; _ts?: number }
+            | undefined;
+          const serverTs = Number(section?._ts || 0);
+          if (shouldReuploadSection(summariesLocalTsKey(), serverTs)) {
+            pushSummaries(get().summaries);
+            return;
+          }
+          if (section && section.summaries && typeof section.summaries === 'object') {
+            set({ summaries: section.summaries });
+            try { recordServerTs(summariesLocalTsKey(), serverTs); } catch { /* ignore */ }
+          }
+        } catch { /* non-fatal — localStorage values remain active */ }
+      },
+
       getSummary: (chatFile) => get().summaries[chatFile] ?? null,
 
-      clearSummary: (chatFile) =>
-        set((s) => {
-          const { [chatFile]: _removed, ...rest } = s.summaries;
-          return { summaries: rest };
-        }),
+      clearSummary: (chatFile) => {
+        const { [chatFile]: _removed, ...rest } = get().summaries;
+        set({ summaries: rest });
+        pushSummaries(rest);
+      },
 
       clearError: () => set({ error: null }),
 
@@ -294,12 +329,12 @@ export const useSummarizeStore = create<SummarizeState>()(
 
           if (text) {
             const messageCount = chatMessages.filter((m) => !m.isSystem).length;
-            set((s) => ({
-              summaries: {
-                ...s.summaries,
-                [chatFile]: { text, generatedAt: Date.now(), messageCount },
-              },
-            }));
+            const summaries = {
+              ...get().summaries,
+              [chatFile]: { text, generatedAt: Date.now(), messageCount },
+            };
+            set({ summaries });
+            pushSummaries(summaries);
           }
         } catch (err) {
           set({ error: err instanceof Error ? err.message : 'Summarization failed' });

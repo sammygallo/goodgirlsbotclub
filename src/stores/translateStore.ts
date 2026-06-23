@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { translateText, type TranslateProvider } from '../api/translateApi';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 
 let _currentHandle: string | null = null;
 
@@ -19,6 +20,22 @@ const scopedLocalStorage = {
   },
 };
 
+// Cross-device sync of the translation provider + target language via the
+// `stm_translate` section. The response cache / pending / visible sets stay
+// local (session-only).
+const SERVER_KEY = 'stm_translate';
+
+function localTsKey(): string {
+  return _currentHandle ? `stm:translate-local-ts_${_currentHandle}` : 'stm:translate-local-ts';
+}
+
+async function patchServer(patch: Record<string, unknown>): Promise<void> {
+  const settings = await getSettingsBlob();
+  const section = (settings[SERVER_KEY] as Record<string, unknown>) || {};
+  Object.assign(section, patch);
+  await patchServerKey(SERVER_KEY, section, localTsKey());
+}
+
 interface TranslateState {
   // Persisted settings
   provider: TranslateProvider;
@@ -33,6 +50,8 @@ interface TranslateState {
   setTargetLang: (l: string) => void;
   /** Toggle the translation panel for a message. Fetches from API if not cached. */
   toggleTranslation: (messageId: string, text: string) => Promise<void>;
+  /** Seed provider + target language from the server after login. */
+  fetchPrefs: () => Promise<void>;
   initForUser: (handle: string) => void;
   resetUser: () => void;
 }
@@ -46,13 +65,19 @@ export const useTranslateStore = create<TranslateState>()(
       pending: new Set(),
       visible: new Set(),
 
-      setProvider: (p) =>
+      setProvider: (p) => {
         // Changing provider invalidates all cached translations
-        set({ provider: p, cache: new Map(), visible: new Set() }),
+        set({ provider: p, cache: new Map(), visible: new Set() });
+        markSectionDirty(localTsKey());
+        patchServer({ provider: p }).catch(() => {});
+      },
 
-      setTargetLang: (l) =>
+      setTargetLang: (l) => {
         // Changing target language invalidates all cached translations
-        set({ targetLang: l, cache: new Map(), visible: new Set() }),
+        set({ targetLang: l, cache: new Map(), visible: new Set() });
+        markSectionDirty(localTsKey());
+        patchServer({ targetLang: l }).catch(() => {});
+      },
 
       toggleTranslation: async (messageId, text) => {
         const { visible, cache, pending, provider, targetLang } = get();
@@ -101,6 +126,25 @@ export const useTranslateStore = create<TranslateState>()(
           newVisible.delete(messageId);
           set({ pending: newPending, visible: newVisible });
         }
+      },
+
+      fetchPrefs: async () => {
+        try {
+          const settings = await getSettingsBlob();
+          const section = settings[SERVER_KEY] as Record<string, unknown> | undefined;
+          const serverTs = Number(section?._ts || 0);
+          if (shouldReuploadSection(localTsKey(), serverTs)) {
+            const s = get();
+            patchServer({ provider: s.provider, targetLang: s.targetLang }).catch(() => {});
+            return;
+          }
+          if (!section) return;
+          const cur = get();
+          const provider = (section.provider as TranslateProvider) ?? cur.provider;
+          const targetLang = typeof section.targetLang === 'string' ? section.targetLang : cur.targetLang;
+          try { recordServerTs(localTsKey(), serverTs); } catch { /* ignore */ }
+          set({ provider, targetLang });
+        } catch { /* non-fatal — localStorage values remain active */ }
       },
 
       initForUser: (handle) => {

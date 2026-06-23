@@ -23,6 +23,7 @@ import { useTranslateStore } from './translateStore';
 import { useQuickReplyStore } from './quickReplyStore';
 import { useExpressionsStore } from './expressionsStore';
 import { clearAllAppStorage } from '../utils/serverSettings';
+import { syncGlobalVarsFromServer } from '../utils/stscript/executor';
 import type { UserRole, Permission } from '../types';
 
 /** Survives clearAllAppStorage() (different prefix) so we can detect when the
@@ -158,6 +159,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       useExtensionStore.getState().fetchPrefs();
       useSummarizeStore.getState().fetchPrefs();
       useAutoMemoryStore.getState().fetchPrefs();
+      useTranslateStore.getState().fetchPrefs();
+      useQuickReplyStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchSummaries();
+      syncGlobalVarsFromServer();
       useCharacterStore.getState().fetchLinkedBooks();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
@@ -233,6 +238,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       useExtensionStore.getState().fetchPrefs();
       useSummarizeStore.getState().fetchPrefs();
       useAutoMemoryStore.getState().fetchPrefs();
+      useTranslateStore.getState().fetchPrefs();
+      useQuickReplyStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchSummaries();
+      syncGlobalVarsFromServer();
       useCharacterStore.getState().fetchLinkedBooks();
       return true;
     } catch (error) {
@@ -290,6 +299,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       useExtensionStore.getState().fetchPrefs();
       useSummarizeStore.getState().fetchPrefs();
       useAutoMemoryStore.getState().fetchPrefs();
+      useTranslateStore.getState().fetchPrefs();
+      useQuickReplyStore.getState().fetchPrefs();
+      useSummarizeStore.getState().fetchSummaries();
+      syncGlobalVarsFromServer();
       useCharacterStore.getState().fetchLinkedBooks();
       return true;
     } catch (error) {
