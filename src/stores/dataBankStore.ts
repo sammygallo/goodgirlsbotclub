@@ -163,11 +163,32 @@ function loadFromStorage(): DataBankDocument[] {
   return [];
 }
 
-function saveToStorage(documents: DataBankDocument[]) {
+/**
+ * Drop the embedding vectors (~6 KB/chunk) before caching to localStorage —
+ * they're the heavy, rebuildable part and the authoritative copy lives in the
+ * server section (schedulePersist pushes the full documents). The in-memory
+ * state keeps the vectors; fetchPrefs re-hydrates them from the server on the
+ * next load. Text/metadata stay cached for instant render.
+ */
+function stripEmbeddings(documents: DataBankDocument[]): DataBankDocument[] {
+  return documents.map((d) => ({
+    ...d,
+    chunks: d.chunks.map((c) => (c.embedding.length ? { ...c, embedding: [] } : c)),
+  }));
+}
+
+function writeCache(documents: DataBankDocument[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ documents } satisfies PersistedShape));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ documents: stripEmbeddings(documents) } satisfies PersistedShape),
+    );
   } catch { /* ignore */ }
-  schedulePersist(documents);
+}
+
+function saveToStorage(documents: DataBankDocument[]) {
+  writeCache(documents);
+  schedulePersist(documents); // full documents (with embeddings) go to the server
 }
 
 // ---------------------------------------------------------------------------
@@ -322,12 +343,10 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
 
       _persistEnabled = false;
       const documents = Array.isArray(stored.documents) ? stored.documents : [];
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ documents }));
-        recordServerTs(LOCAL_TS_KEY, serverTs);
-      } catch { /* ignore */ }
-      // Imported documents have no embeddings yet — caller will re-embed when
-      // RAG is next used. Same as the in-memory shape after a fresh load.
+      // In-memory keeps the server's embeddings; the localStorage cache strips
+      // them (writeCache) to stay KB-scale.
+      writeCache(documents);
+      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
       set({ documents, embeddingIds: new Set() });
       _persistEnabled = true;
     } catch {

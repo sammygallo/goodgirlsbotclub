@@ -82,33 +82,13 @@ interface ChatHistoryRagState {
 const STORAGE_KEY = 'stm:chat-history-rag';
 const ENABLED_KEY = 'stm:chat-history-rag-enabled';
 
-interface PersistedShape {
-  embeddingsByChat: Record<string, ChatMessageEmbedding[]>;
-}
-
-function loadFromStorage(): Record<string, ChatMessageEmbedding[]> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as PersistedShape;
-      return parsed.embeddingsByChat ?? {};
-    }
-  } catch {
-    /* ignore */
-  }
-  return {};
-}
-
-function saveToStorage(embeddingsByChat: Record<string, ChatMessageEmbedding[]>) {
-  try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ embeddingsByChat } satisfies PersistedShape)
-    );
-  } catch {
-    /* ignore */
-  }
-}
+// The per-message embeddings (raw transcript text + ~6 KB vectors each) are NOT
+// persisted: at ~6 MB per 1000 messages they were the single biggest localStorage
+// consumer and risked silently blowing the ~5 MB quota. They live in memory for
+// the session and are recomputed on demand by ensureEmbedded() next session.
+// Only the lightweight `enabled` flag is persisted (and synced). Purge any heavy
+// cache left by older builds.
+try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
 
 function loadEnabled(): boolean {
   try {
@@ -144,7 +124,7 @@ const MIN_CHARS = 40;
 
 export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => ({
   enabled: loadEnabled(),
-  embeddingsByChat: loadFromStorage(),
+  embeddingsByChat: {}, // in-memory only; recomputed per session (see note above)
   embeddingChats: new Set(),
 
   setEnabled: (on) => {
@@ -221,8 +201,7 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
           ...get().embeddingsByChat,
           [chatFile]: [...existing, ...fresh],
         };
-        saveToStorage(next);
-        set({ embeddingsByChat: next });
+        set({ embeddingsByChat: next }); // in-memory only — not persisted
       }
     } finally {
       set((s) => {
@@ -260,7 +239,6 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
   clearChat: (chatFile) => {
     const next = { ...get().embeddingsByChat };
     delete next[chatFile];
-    saveToStorage(next);
     set({ embeddingsByChat: next });
   },
 }));
