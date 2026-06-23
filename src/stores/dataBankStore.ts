@@ -19,6 +19,8 @@ import { create } from 'zustand';
 import { chunkText } from '../utils/chunker';
 import { getEmbedding, findTopK } from '../utils/embeddings';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
+import { settingsApi, SECRET_KEYS, type SecretsResponse } from '../api/client';
+import { useSettingsStore } from './settingsStore';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,14 +51,13 @@ interface DataBankState {
   documents: DataBankDocument[];
   /** IDs of documents currently being embedded (transient, not persisted). */
   embeddingIds: Set<string>;
-  /**
-   * OpenAI API key used exclusively for embeddings. Stored in localStorage
-   * separately from the chat provider key (which lives on the ST backend).
-   * The user enters it once in the Data Bank settings page.
-   */
-  embeddingsApiKey: string;
 
-  setEmbeddingsApiKey: (key: string) => void;
+  /**
+   * Store the OpenAI embeddings key as a server-side secret
+   * (`api_key_openai_embeddings`). The key is never persisted in the browser;
+   * the backend embeddings proxy resolves it. Refreshes settingsStore secrets.
+   */
+  setEmbeddingsApiKey: (key: string) => Promise<void>;
 
   /** Add a document and chunk it. Returns the new document's id. */
   addDocument: (
@@ -69,20 +70,19 @@ interface DataBankState {
   deleteDocument: (id: string) => void;
 
   /**
-   * Embed all chunks of a document using the OpenAI embeddings API.
-   * Falls back to `embeddingsApiKey` from the store if `apiKey` is omitted.
+   * Embed all chunks of a document via the backend embeddings proxy.
+   * Throws if no embeddings key is configured server-side.
    */
-  embedDocument: (id: string, apiKey?: string) => Promise<void>;
+  embedDocument: (id: string) => Promise<void>;
 
   /**
    * Find the top-K most relevant chunks for `query` across all in-scope
    * documents (global + those matching `characterAvatar`).
    *
    * Returns an array of {text, docName} objects sorted by relevance, or [] if
-   * no embedded documents are in scope or the API call fails. Each result
-   * carries its parent document's name so callers can attribute the source
-   * when injecting into a prompt. Falls back to `embeddingsApiKey` from the
-   * store if `apiKey` is omitted.
+   * no embedded documents are in scope, no embeddings key is configured, or the
+   * proxy call fails. Each result carries its parent document's name so callers
+   * can attribute the source when injecting into a prompt.
    */
   queryRelevantChunks: (
     query: string,
@@ -104,7 +104,32 @@ const STORAGE_KEY = 'stm:data-bank';
 const SERVER_KEY = 'stm_data_bank';
 const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 
-const EMBED_KEY_STORAGE = 'stm:data-bank-embed-key';
+/** Legacy localStorage key the embeddings secret used to live under (now moved
+ *  server-side). Kept only so resetUser can purge leftovers on upgrade. */
+const LEGACY_EMBED_KEY_STORAGE = 'stm:data-bank-embed-key';
+
+/** True if the embeddings proxy will find a usable key server-side: a dedicated
+ *  embeddings secret or the chat OpenAI key it falls back to — set either as the
+ *  user's personal secret or (when sharing is on) an owner-managed global one.
+ *  Mirrors the personal-OR-global check the provider keys use in MyKeysPage. */
+export function embeddingsConfigured(
+  secrets: SecretsResponse,
+  globalSecrets?: SecretsResponse,
+  globalSharingEnabled?: boolean,
+): boolean {
+  const nonEmpty = (store: SecretsResponse | undefined, k: string) =>
+    !!store && Array.isArray(store[k]) && (store[k] as unknown[]).length > 0;
+  const has = (k: string) =>
+    nonEmpty(secrets, k) || (!!globalSharingEnabled && nonEmpty(globalSecrets, k));
+  return has(SECRET_KEYS.OPENAI_EMBEDDINGS) || has(SECRET_KEYS.OPENAI);
+}
+
+/** Non-reactive gate for store actions. Components should select the secrets
+ *  slices from settingsStore and call embeddingsConfigured() so they re-render. */
+export function hasEmbeddingsKey(): boolean {
+  const s = useSettingsStore.getState();
+  return embeddingsConfigured(s.secrets, s.globalSecrets, s.globalSharingEnabled);
+}
 
 interface PersistedShape {
   documents: DataBankDocument[];
@@ -145,13 +170,6 @@ function saveToStorage(documents: DataBankDocument[]) {
   schedulePersist(documents);
 }
 
-function loadEmbedKey(): string {
-  try { return localStorage.getItem(EMBED_KEY_STORAGE) ?? ''; } catch { return ''; }
-}
-function saveEmbedKey(key: string) {
-  try { localStorage.setItem(EMBED_KEY_STORAGE, key); } catch { /* ignore */ }
-}
-
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -159,11 +177,12 @@ function saveEmbedKey(key: string) {
 export const useDataBankStore = create<DataBankState>((set, get) => ({
   documents: loadFromStorage(),
   embeddingIds: new Set(),
-  embeddingsApiKey: loadEmbedKey(),
 
-  setEmbeddingsApiKey: (key) => {
-    saveEmbedKey(key);
-    set({ embeddingsApiKey: key });
+  setEmbeddingsApiKey: async (key) => {
+    const trimmed = key.trim();
+    if (!trimmed) return;
+    await settingsApi.writeSecret(SECRET_KEYS.OPENAI_EMBEDDINGS, trimmed, 'OpenAI Embeddings');
+    await useSettingsStore.getState().fetchSecrets();
   },
 
   addDocument: (name, content, scope, characterAvatar) => {
@@ -196,9 +215,8 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
     set({ documents });
   },
 
-  embedDocument: async (id, apiKey) => {
-    const key = apiKey ?? get().embeddingsApiKey;
-    if (!key) throw new Error('No embeddings API key configured. Set one in Data Bank settings.');
+  embedDocument: async (id) => {
+    if (!hasEmbeddingsKey()) throw new Error('No embeddings API key configured. Set one in Data Bank settings.');
 
     const doc = get().documents.find((d) => d.id === id);
     if (!doc) return;
@@ -210,7 +228,7 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
         doc.chunks.map(async (chunk) => {
           // Skip chunks that already have embeddings
           if (chunk.embedding.length > 0) return chunk;
-          const embedding = await getEmbedding(chunk.text, key);
+          const embedding = await getEmbedding(chunk.text);
           return { ...chunk, embedding };
         })
       );
@@ -229,8 +247,7 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
   },
 
   queryRelevantChunks: async (query, characterAvatar, topK = 3) => {
-    const key = get().embeddingsApiKey;
-    if (!key) return [];
+    if (!hasEmbeddingsKey()) return [];
 
     const { documents } = get();
 
@@ -252,7 +269,7 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
     if (allChunks.length === 0) return [];
 
     try {
-      const queryEmbedding = await getEmbedding(query, key);
+      const queryEmbedding = await getEmbedding(query);
       const results = findTopK(queryEmbedding, allChunks, topK);
       // Only return chunks with at least weak relevance (score > 0.3)
       return results
@@ -265,9 +282,10 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
   },
 
   resetUser: () => {
-    set({ documents: [], embeddingIds: new Set(), embeddingsApiKey: '' });
+    set({ documents: [], embeddingIds: new Set() });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
-    try { localStorage.removeItem(EMBED_KEY_STORAGE); } catch { /* ignore */ }
+    // Legacy: older builds stored the embeddings key in localStorage; purge it.
+    try { localStorage.removeItem(LEGACY_EMBED_KEY_STORAGE); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
   },
 

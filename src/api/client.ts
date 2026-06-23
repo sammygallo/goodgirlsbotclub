@@ -1329,6 +1329,9 @@ export interface SecretsResponse {
 
 export const SECRET_KEYS = {
   OPENAI: 'api_key_openai',
+  // Data Bank / RAG embeddings. Resolved server-side by the embeddings proxy,
+  // which falls back to OPENAI when this isn't set. Never stored in the browser.
+  OPENAI_EMBEDDINGS: 'api_key_openai_embeddings',
   CLAUDE: 'api_key_claude',
   GOOGLE: 'api_key_makersuite',
   MISTRAL: 'api_key_mistralai',
