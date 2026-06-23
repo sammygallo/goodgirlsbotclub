@@ -44,6 +44,20 @@ async function patchLinkedBooksServer(map: Record<string, string[]>): Promise<vo
   await patchServerKey(LINKED_BOOKS_SERVER_KEY, { links: map }, LINKED_BOOKS_LOCAL_TS_KEY);
 }
 
+// Favorites sync in their own section (the links section above stays focused on
+// character→book links; folding both in would risk a links-only patch dropping
+// favorites).
+const FAVORITES_SERVER_KEY = 'stm_character_favorites';
+const FAVORITES_LOCAL_TS_KEY = 'stm:character-favorites-local-ts';
+
+function markFavoritesDirty(): void {
+  try { markSectionDirty(FAVORITES_LOCAL_TS_KEY); } catch { /* ignore */ }
+}
+
+async function patchFavoritesServer(favorites: Set<string>): Promise<void> {
+  await patchServerKey(FAVORITES_SERVER_KEY, { favorites: Array.from(favorites) }, FAVORITES_LOCAL_TS_KEY);
+}
+
 function loadFavorites(): Set<string> {
   try {
     const raw = localStorage.getItem(FAVORITES_KEY);
@@ -147,6 +161,8 @@ interface CharacterState {
   setLinkedBookIds: (avatar: string, ids: string[]) => void;
   /** Pull character→book links from the server after login and reconcile. */
   fetchLinkedBooks: () => Promise<void>;
+  /** Pull favorite characters from the server after login and reconcile. */
+  fetchFavorites: () => Promise<void>;
   /**
    * Full per-user reset on logout/switch: clears the character list, favorites,
    * and character→book links from memory and localStorage. The links live under
@@ -327,6 +343,8 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         newFavorites.delete(avatar);
         saveFavorites(newFavorites);
         set({ favorites: newFavorites });
+        markFavoritesDirty();
+        patchFavoritesServer(newFavorites).catch(() => {});
       }
       // Ownership cleanup happens server-side as part of /api/characters/delete
       // when the target is a global character. For personal characters there's
@@ -390,6 +408,8 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     }
     saveFavorites(newFavorites);
     set({ favorites: newFavorites });
+    markFavoritesDirty();
+    patchFavoritesServer(newFavorites).catch(() => {});
   },
 
   isFavorite: (avatar: string) => get().favorites.has(avatar),
@@ -772,6 +792,28 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     } catch { /* non-fatal — localStorage values remain active */ }
   },
 
+  fetchFavorites: async () => {
+    try {
+      const settings = await getSettingsBlob();
+      const section = settings[FAVORITES_SERVER_KEY] as Record<string, unknown> | undefined;
+      const serverTs = Number(section?._ts || 0);
+
+      if (shouldReuploadSection(FAVORITES_LOCAL_TS_KEY, serverTs)) {
+        patchFavoritesServer(get().favorites).catch(() => {});
+        return;
+      }
+
+      if (!section) return;
+
+      if (Array.isArray(section.favorites)) {
+        const favorites = new Set(section.favorites.filter((a): a is string => typeof a === 'string'));
+        saveFavorites(favorites);
+        try { recordServerTs(FAVORITES_LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
+        set({ favorites });
+      }
+    } catch { /* non-fatal — localStorage values remain active */ }
+  },
+
   resetUser: () => {
     set({
       characters: [],
@@ -784,6 +826,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     try { localStorage.removeItem(FAVORITES_KEY); } catch { /* ignore */ }
     try { localStorage.removeItem(LINKED_BOOKS_KEY); } catch { /* ignore */ }
     clearLocalTs(LINKED_BOOKS_LOCAL_TS_KEY);
+    clearLocalTs(FAVORITES_LOCAL_TS_KEY);
   },
 
   getActiveBookIdsForCharacter: (avatar) => {
