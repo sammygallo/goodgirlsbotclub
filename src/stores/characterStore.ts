@@ -18,7 +18,7 @@ import {
   bookToCharacterBookV2,
 } from './worldInfoStore';
 import { useCharacterOwnershipStore } from './characterOwnershipStore';
-import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
 const FAVORITES_KEY = 'sillytavern_character_favorites';
 const LINKED_BOOKS_KEY = 'sillytavern_character_linked_books_v1';
@@ -148,13 +148,13 @@ interface CharacterState {
   /** Pull character→book links from the server after login and reconcile. */
   fetchLinkedBooks: () => Promise<void>;
   /**
-   * Clear character→book links from memory and localStorage on logout. The
-   * links live under a browser-global key, so without this the next user on
-   * the same browser could re-upload the previous user's links to their own
-   * account (the section's dirty flag + version token would survive into their
-   * session and trigger a re-upload).
+   * Full per-user reset on logout/switch: clears the character list, favorites,
+   * and character→book links from memory and localStorage. The links live under
+   * a browser-global key, so without this the next user on the same browser
+   * could re-upload the previous user's links to their own account (the
+   * section's dirty flag + version token would survive into their session).
    */
-  resetLinkedBooks: () => void;
+  resetUser: () => void;
   /** Ids to merge with the globally-active ids during scan. */
   getActiveBookIdsForCharacter: (avatar: string) => string[];
   // Organization actions
@@ -772,10 +772,18 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     } catch { /* non-fatal — localStorage values remain active */ }
   },
 
-  resetLinkedBooks: () => {
+  resetUser: () => {
+    set({
+      characters: [],
+      selectedCharacter: null,
+      isGroupChatMode: false,
+      groupChatCharacters: [],
+      favorites: new Set(),
+      linkedBookIdsByAvatar: {},
+    });
+    try { localStorage.removeItem(FAVORITES_KEY); } catch { /* ignore */ }
     try { localStorage.removeItem(LINKED_BOOKS_KEY); } catch { /* ignore */ }
-    try { localStorage.removeItem(LINKED_BOOKS_LOCAL_TS_KEY); } catch { /* ignore */ }
-    set({ linkedBookIdsByAvatar: {} });
+    clearLocalTs(LINKED_BOOKS_LOCAL_TS_KEY);
   },
 
   getActiveBookIdsForCharacter: (avatar) => {

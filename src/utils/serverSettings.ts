@@ -171,6 +171,53 @@ export function recordServerTs(localTsKey: string, serverTs: number): void {
   } catch { /* ignore */ }
 }
 
+/** Drop a section's version token and its dirty flag — used by store
+ *  resetUser() on logout/user-switch so the next account starts from a clean
+ *  slate (no stale token that would re-upload the previous user's snapshot). */
+export function clearLocalTs(localTsKey: string): void {
+  try {
+    localStorage.removeItem(localTsKey);
+    localStorage.removeItem(dirtyKeyFor(localTsKey));
+  } catch { /* ignore */ }
+}
+
+/** Prefixes for every localStorage key this app owns. Anything under these is
+ *  per-user data (caches, version tokens, dirty flags, secrets) that must not
+ *  survive a logout or leak into the next account on a shared browser.
+ *  Covers the `stm:` / `sillytavern_` keyspaces plus the zustand-persist store
+ *  names (`st-mobile-*`, `quick-reply-store`, `live-portrait`,
+ *  `portrait-position`) — including their `_<handle>` scoped variants. */
+const APP_STORAGE_PREFIXES = [
+  'stm:',
+  'sillytavern_',
+  'st-mobile-',
+  'quick-reply-store',
+  'live-portrait',
+  'portrait-position',
+] as const;
+
+/**
+ * Remove every app-owned localStorage key. This is the catch-all isolation
+ * guarantee for logout / user-switch: rather than relying on each store to
+ * enumerate its keys (fragile — a forgotten key, like the per-section `:dirty`
+ * flags, is exactly how cross-account leakage happens), wipe the whole
+ * app-owned keyspace and let each store re-hydrate from its own server data.
+ * Keys outside these prefixes (e.g. the `ggbc:` active-handle marker) are left
+ * intact.
+ */
+export function clearAllAppStorage(): void {
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && APP_STORAGE_PREFIXES.some((p) => key.startsWith(p))) {
+        toRemove.push(key);
+      }
+    }
+    for (const key of toRemove) localStorage.removeItem(key);
+  } catch { /* ignore */ }
+}
+
 /**
  * fetchPrefs decision: re-upload local state only when we have pending local
  * edits AND our confirmed token is at least the server's (i.e. no other device

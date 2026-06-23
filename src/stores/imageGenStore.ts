@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { imageGenApi, type ImageGenBackend } from '../api/imageGenApi';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
 // ---------------------------------------------------------------------------
 // Gallery entry — persisted alongside config
@@ -150,6 +150,8 @@ interface ImageGenState extends ImageGenConfig {
    * to A3.2's blob storage.
    */
   fetchPrefs: () => Promise<void>;
+  /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
+  resetUser: () => void;
 }
 
 export const useImageGenStore = create<ImageGenState>((set, get) => ({
@@ -269,6 +271,14 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
   clearGallery: () => {
     saveGallery([]);
     set({ gallery: [] });
+  },
+
+  resetUser: () => {
+    _persistEnabled = false;
+    set({ ...DEFAULT_CONFIG, gallery: [], isGenerating: false, error: null });
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(GALLERY_KEY); } catch { /* ignore */ }
+    clearLocalTs(LOCAL_TS_KEY);
   },
 
   fetchPrefs: async () => {

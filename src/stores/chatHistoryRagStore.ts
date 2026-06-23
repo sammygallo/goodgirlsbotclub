@@ -22,7 +22,7 @@
 import { create } from 'zustand';
 import { useDataBankStore } from './dataBankStore';
 import { cosineSimilarity, getEmbedding } from '../utils/embeddings';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,6 +49,8 @@ interface ChatHistoryRagState {
   setEnabled: (on: boolean) => void;
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
+  /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
+  resetUser: () => void;
 
   /**
    * Make sure every non-system message in `messages` has an embedding stored
@@ -150,6 +152,13 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
     set({ enabled: on });
     try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
     patchServerKey(SERVER_KEY, { enabled: on }, LOCAL_TS_KEY).catch(() => {});
+  },
+
+  resetUser: () => {
+    set({ enabled: false, embeddingsByChat: {}, embeddingChats: new Set() });
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(ENABLED_KEY); } catch { /* ignore */ }
+    clearLocalTs(LOCAL_TS_KEY);
   },
 
   fetchPrefs: async () => {

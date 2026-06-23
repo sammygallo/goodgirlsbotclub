@@ -18,7 +18,7 @@
 import { create } from 'zustand';
 import { chunkText } from '../utils/chunker';
 import { getEmbedding, findTopK } from '../utils/embeddings';
-import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -92,6 +92,8 @@ interface DataBankState {
 
   /** A3.1d — pull /sync/section/stm_data_bank and reconcile. */
   fetchPrefs: () => Promise<void>;
+  /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
+  resetUser: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +262,13 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
       // Fail silently so generation still proceeds without RAG
       return [];
     }
+  },
+
+  resetUser: () => {
+    set({ documents: [], embeddingIds: new Set(), embeddingsApiKey: '' });
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(EMBED_KEY_STORAGE); } catch { /* ignore */ }
+    clearLocalTs(LOCAL_TS_KEY);
   },
 
   fetchPrefs: async () => {
