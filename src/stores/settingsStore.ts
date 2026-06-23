@@ -33,23 +33,30 @@ function modelFieldFor(provider: string): string {
   return PROVIDER_MODEL_FIELD[provider] ?? `${provider}_model`;
 }
 
-const FALLBACK_STORAGE_KEY = 'sillytavern_fallback_provider';
+// Fallback provider/model now live inside the synced `oai_settings` blob so they
+// follow the user across devices. Previously a local-only global key that leaked
+// across accounts on a shared browser.
+const FALLBACK_PROVIDER_FIELD = 'stm_fallback_provider';
+const FALLBACK_MODEL_FIELD = 'stm_fallback_model';
 
-function loadFallback(): { provider: string; model: string } | null {
-  try {
-    const raw = localStorage.getItem(FALLBACK_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveFallback(provider: string, model: string) {
-  localStorage.setItem(FALLBACK_STORAGE_KEY, JSON.stringify({ provider, model }));
-}
-
-function clearFallback() {
-  localStorage.removeItem(FALLBACK_STORAGE_KEY);
+/** Fire-and-forget: fold the fallback selection into oai_settings and save. */
+function persistFallback(provider: string, model: string): void {
+  void (async () => {
+    try {
+      const response = await settingsApi.getSettings();
+      let settings: Record<string, unknown> = {};
+      if (typeof response.settings === 'string') {
+        try { settings = JSON.parse(response.settings); } catch { settings = {}; }
+      } else if (response.settings) {
+        settings = response.settings as Record<string, unknown>;
+      }
+      const oaiSettings = (settings.oai_settings as Record<string, unknown>) || {};
+      oaiSettings[FALLBACK_PROVIDER_FIELD] = provider;
+      oaiSettings[FALLBACK_MODEL_FIELD] = model;
+      settings.oai_settings = oaiSettings;
+      await settingsApi.saveSettings(settings);
+    } catch { /* non-fatal */ }
+  })();
 }
 
 interface SettingsState {
@@ -98,8 +105,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   successMessage: null,
   globalSecrets: {},
   globalSharingEnabled: false,
-  fallbackProvider: loadFallback()?.provider ?? '',
-  fallbackModel: loadFallback()?.model ?? '',
+  fallbackProvider: '',
+  fallbackModel: '',
   globalSharingSupported: false,
 
   fetchSecrets: async () => {
@@ -145,6 +152,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const model = (oaiSettings[modelField] as string) || fallbackModel;
 
       const customUrl = (oaiSettings.custom_url as string) || '';
+      const fbProvider = (oaiSettings[FALLBACK_PROVIDER_FIELD] as string) || '';
+      const fbModel = (oaiSettings[FALLBACK_MODEL_FIELD] as string) || '';
 
       console.log('[Settings] Loaded provider:', chatCompletionSource, 'model:', model);
 
@@ -152,6 +161,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         activeProvider: chatCompletionSource,
         activeModel: model,
         customUrl,
+        fallbackProvider: fbProvider,
+        fallbackModel: fbModel,
         isLoading: false,
       });
     } catch (error) {
@@ -391,19 +402,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setFallbackProvider: (provider: string) => {
     const { fallbackModel } = get();
-    const model = fallbackModel || '';
-    saveFallback(provider, model);
     set({ fallbackProvider: provider });
+    persistFallback(provider, fallbackModel || '');
   },
 
   setFallbackModel: (model: string) => {
     const { fallbackProvider } = get();
-    saveFallback(fallbackProvider, model);
     set({ fallbackModel: model });
+    persistFallback(fallbackProvider, model);
   },
 
   clearFallbackProvider: () => {
-    clearFallback();
     set({ fallbackProvider: '', fallbackModel: '' });
+    persistFallback('', '');
   },
 }));
