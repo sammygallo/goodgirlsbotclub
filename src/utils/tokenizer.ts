@@ -124,16 +124,18 @@ export function trimHistoryToBudget<
     0
   );
   let remaining = budget - systemCost - 2;
-  if (remaining <= 0) {
-    return { kept: [], dropped: history.length, usedTokens: systemCost };
-  }
 
-  // Walk from most recent to oldest, keeping what fits.
+  // Walk from most recent to oldest, keeping what fits. The most recent
+  // message (the user's just-sent turn) is ALWAYS kept, even when the system
+  // block has eaten the whole budget — otherwise a long thread with a large
+  // system block (accumulated summary + RAG) would drop every turn and ship a
+  // turn-less request, which providers answer with an empty completion or a
+  // 400. A degraded request the model can still respond to beats silence.
   const kept: T[] = [];
   for (let i = history.length - 1; i >= 0; i--) {
     const msg = history[i];
     const cost = estimateMessageTokens(msg, profile);
-    if (cost > remaining) break;
+    if (kept.length > 0 && cost > remaining) break;
     kept.unshift(msg);
     remaining -= cost;
   }

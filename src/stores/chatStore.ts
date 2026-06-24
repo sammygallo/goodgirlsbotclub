@@ -1085,10 +1085,20 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       }
     }
 
-    historyWithInsertions.push({
-      role: msg.isUser ? 'user' : 'assistant',
-      content: sub(msg.content),
-    });
+    // Skip empty-content turns. A failed generation can leave a blank
+    // assistant bubble in the saved history; re-sending it as an empty content
+    // block makes providers like Claude 400 ("text content blocks must be
+    // non-empty"), which silently breaks every subsequent turn in the chat.
+    // Image-only user messages legitimately have empty text — keep those so
+    // client.ts can still fold their attachments into the request.
+    const subbed = sub(msg.content);
+    const hasImages = Array.isArray(msg.images) && msg.images.length > 0;
+    if (subbed.trim() !== '' || hasImages) {
+      historyWithInsertions.push({
+        role: msg.isUser ? 'user' : 'assistant',
+        content: subbed,
+      });
+    }
   }
 
   // If depth exceeds history length, prepend to entire history
@@ -1428,6 +1438,15 @@ async function generateGroupTurn(
   // characters' turns in one response.
   const strippedText = stripGroupArtifacts(stripEmotionTag(responseText), character.name);
 
+  if (strippedText.trim() === '') {
+    // This speaker produced nothing — drop the blank bubble so it neither
+    // shows as an empty message nor poisons the next speaker's history.
+    set((state) => ({
+      messages: state.messages.filter((msg) => msg.id !== aiMessageId),
+    }));
+    return get().isSending;
+  }
+
   set((state) => ({
     messages: state.messages.map((msg) =>
       msg.id === aiMessageId
@@ -1460,6 +1479,16 @@ function getProviderAndModel(): { provider: string; model: string } {
       provider = 'claude';
       model = 'claude-sonnet-4-20250514';
       useSettingsStore.setState({ activeProvider: provider, activeModel: model });
+      // Rescue the context budget. Users land on Claude (200k window) via this
+      // silent auto-switch but keep the legacy 8192-token default, which on a
+      // long thread trims away the whole conversation and yields empty/failed
+      // turns. Raise it to a sane-but-cost-conscious window — only when still
+      // at/below the old default, so a user's own larger choice is untouched.
+      // The guard self-clears after the first bump, so this runs at most once.
+      const gen = useGenerationStore.getState();
+      if (gen.context.maxTokens <= 8192) {
+        gen.setContext({ maxTokens: 32768 });
+      }
     }
   }
 
@@ -2572,17 +2601,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const emotion = parseEmotion(responseText);
       const cleanedContent = stripEmotionTag(responseText);
 
-      set((state) => ({
-        messages: state.messages.map((m) => {
-          if (m.id !== messageId) return m;
-          const newSwipes = [...m.swipes];
-          newSwipes[newSwipeIndex] = cleanedContent;
-          return { ...m, content: cleanedContent, emotion, swipes: newSwipes };
-        }),
-      }));
+      if (cleanedContent.trim() === '') {
+        // Empty swipe — discard the blank swipe slot we appended and snap back
+        // to the previous swipe instead of leaving a blank one in the rotation.
+        const aborted = !get().isSending;
+        set((state) => ({
+          messages: state.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const restoredSwipes = m.swipes.slice(0, newSwipeIndex);
+            const swipes = restoredSwipes.length > 0 ? restoredSwipes : [''];
+            const swipeId = swipes.length - 1;
+            return { ...m, swipes, swipeId, content: swipes[swipeId] ?? '' };
+          }),
+          error: aborted
+            ? state.error
+            : 'The model returned an empty response. Try swiping again.',
+        }));
+      } else {
+        set((state) => ({
+          messages: state.messages.map((m) => {
+            if (m.id !== messageId) return m;
+            const newSwipes = [...m.swipes];
+            newSwipes[newSwipeIndex] = cleanedContent;
+            return { ...m, content: cleanedContent, emotion, swipes: newSwipes };
+          }),
+        }));
 
-      // Save
-      saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+        // Save
+        saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+      }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         set({ error: error instanceof Error ? error.message : 'Failed to generate swipe' });
@@ -2934,15 +2981,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const emotion = parseEmotion(responseText);
         const cleanedContent = stripEmotionTag(responseText);
 
-        set((state) => ({
-          messages: state.messages.map((msg) =>
-            msg.id === aiMessageId
-              ? { ...msg, content: cleanedContent, emotion, swipes: [cleanedContent] }
-              : msg
-          ),
-        }));
+        if (cleanedContent.trim() === '') {
+          // Zero tokens streamed back (empty completion, upstream timeout, or
+          // provider filter). Drop the blank placeholder rather than saving it
+          // — a persisted empty bubble both reads as "nothing happened" and
+          // poisons later turns. Surface a retry hint unless the user aborted.
+          const aborted = !get().isSending;
+          set((state) => ({
+            messages: state.messages.filter((msg) => msg.id !== aiMessageId),
+            error: aborted
+              ? state.error
+              : 'The model returned an empty response. Tap send again to retry.',
+          }));
+        } else {
+          set((state) => ({
+            messages: state.messages.map((msg) =>
+              msg.id === aiMessageId
+                ? { ...msg, content: cleanedContent, emotion, swipes: [cleanedContent] }
+                : msg
+            ),
+          }));
 
-        saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+          saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+        }
       }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
@@ -3271,15 +3332,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const emotion = parseEmotion(responseText);
         const cleanedContent = stripEmotionTag(responseText);
 
-        set((state) => ({
-          messages: state.messages.map((msg) =>
-            msg.id === aiMessageId
-              ? { ...msg, content: cleanedContent, emotion, swipes: [cleanedContent] }
-              : msg
-          ),
-        }));
+        if (cleanedContent.trim() === '') {
+          // Empty completion on edit-and-regenerate — drop the blank
+          // placeholder instead of persisting it (see sendMessage above).
+          const aborted = !get().isSending;
+          set((state) => ({
+            messages: state.messages.filter((msg) => msg.id !== aiMessageId),
+            error: aborted
+              ? state.error
+              : 'The model returned an empty response. Tap regenerate to retry.',
+          }));
+        } else {
+          set((state) => ({
+            messages: state.messages.map((msg) =>
+              msg.id === aiMessageId
+                ? { ...msg, content: cleanedContent, emotion, swipes: [cleanedContent] }
+                : msg
+            ),
+          }));
 
-        saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+          saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+        }
       }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
