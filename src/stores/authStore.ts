@@ -23,6 +23,7 @@ import { useTranslateStore } from './translateStore';
 import { useQuickReplyStore } from './quickReplyStore';
 import { useExpressionsStore } from './expressionsStore';
 import { useMotionModeStore } from './motionModeStore';
+import { useUsageStore } from './usageStore';
 import { clearAllAppStorage } from '../utils/serverSettings';
 import { syncGlobalVarsFromServer } from '../utils/stscript/executor';
 import type { UserRole, Permission } from '../types';
@@ -58,6 +59,7 @@ function resetAllUserState(): void {
   useQuickReplyStore.getState().resetUser();
   useExpressionsStore.getState().resetUser();
   useMotionModeStore.getState().resetUser();
+  useUsageStore.getState().resetUser();
   useDataBankStore.getState().resetUser();
   useChatHistoryRagStore.getState().resetUser();
   useImageGenStore.getState().resetUser();
@@ -133,6 +135,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         useQuickReplyStore.getState().initForUser(user.handle);
         useExpressionsStore.getState().initForUser(user.handle);
         useMotionModeStore.getState().initForUser(user.handle);
+        useUsageStore.getState().initForUser(user.handle);
         set({
           isAuthenticated: true,
           currentUser: {
@@ -169,6 +172,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useCharacterStore.getState().fetchLinkedBooks();
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
+      useUsageStore.getState().fetchPrefs();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
       }
@@ -213,6 +217,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useQuickReplyStore.getState().initForUser(h);
       useExpressionsStore.getState().initForUser(h);
       useMotionModeStore.getState().initForUser(h);
+      useUsageStore.getState().initForUser(h);
       set({
         isAuthenticated: true,
         currentUser: user
@@ -251,6 +256,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useCharacterStore.getState().fetchLinkedBooks();
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
+      useUsageStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
@@ -277,6 +283,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useQuickReplyStore.getState().initForUser(h);
       useExpressionsStore.getState().initForUser(h);
       useMotionModeStore.getState().initForUser(h);
+      useUsageStore.getState().initForUser(h);
       set({
         isAuthenticated: true,
         currentUser: user
@@ -315,6 +322,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useCharacterStore.getState().fetchLinkedBooks();
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
+      useUsageStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({

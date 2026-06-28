@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { ArrowLeft, BookOpen, ChevronRight, Database, Edit3, FileText, Image, Languages, Loader2, MessageSquare, Mic, Palette, Plus, Replace, Shield, Sliders, Sparkles, Trash2, UserPlus, Users, Volume2, Zap } from 'lucide-react';
+import { ArrowLeft, BookOpen, ChevronRight, Database, Edit3, FileText, Gauge, Image, Languages, Loader2, MessageSquare, Mic, Palette, Plus, Replace, Shield, Sliders, Sparkles, Trash2, UserPlus, Users, Volume2, Zap } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useOnboardingStore } from '../../stores/onboardingStore';
@@ -168,6 +168,27 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                   </h3>
                   <p className="text-xs text-[var(--color-text-secondary)]">
                     Samplers, prompts, context, and instruct mode
+                  </p>
+                </div>
+                <ChevronRight size={20} className="text-[var(--color-text-secondary)]" />
+              </button>
+            </section>
+
+            {/* Usage Link */}
+            <section className="bg-[var(--color-bg-secondary)] rounded-lg overflow-hidden cyberpunk-card">
+              <button
+                onClick={() => pushPage('usage')}
+                className="w-full flex items-center gap-3 p-4 hover:bg-[var(--color-bg-tertiary)] transition-colors text-left"
+              >
+                <div className="w-10 h-10 rounded-lg bg-[var(--color-primary)]/20 flex items-center justify-center">
+                  <Gauge size={20} className="text-[var(--color-primary)]" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+                    Usage
+                  </h3>
+                  <p className="text-xs text-[var(--color-text-secondary)]">
+                    Token spend, budget, and per-turn costs
                   </p>
                 </div>
                 <ChevronRight size={20} className="text-[var(--color-text-secondary)]" />

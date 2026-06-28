@@ -10,6 +10,9 @@ import { stripEmotionTag } from '../../utils/emotions';
 import { MarkdownContent } from './MarkdownContent';
 import { useSpeechSynthesis } from '../../hooks/useSpeechSynthesis';
 import type { ChatLayoutMode, AvatarShape } from '../../hooks/displayPreferences';
+import type { TokenUsage } from '../../stores/chatStore';
+import { formatTokens } from '../../stores/usageStore';
+import { estimateTokens, profileForProvider } from '../../utils/tokenizer';
 import { useRegexScriptStore } from '../../stores/regexScriptStore';
 import { applyRegexScripts, getActiveScripts } from '../../utils/regexScripts';
 import { useTranslateStore } from '../../stores/translateStore';
@@ -49,6 +52,8 @@ interface ChatMessageProps {
   avatarShape?: AvatarShape;
   fontSize?: number;
   chatMaxWidth?: number;
+  /** Estimated per-turn token usage (AI messages only); renders a cost chip. */
+  usage?: TokenUsage;
   // Swipe support (only for AI messages)
   swipes?: string[];
   swipeId?: number;
@@ -84,6 +89,7 @@ export function ChatMessage({
   images,
   videos,
   characterAvatar,
+  usage,
   swipes,
   swipeId,
   showSwipeControl,
@@ -258,6 +264,24 @@ export function ChatMessage({
   const timeStr = timestamp
     ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
+
+  // Per-turn token cost chip (AI messages only). Output is recomputed from the
+  // currently displayed text so it stays accurate when navigating between
+  // swipes; the prompt (input) is shared across a turn's swipes, so the stored
+  // value is reused. Estimated — the leading "~" and tooltip make that clear.
+  const usageOutTokens =
+    !isUser && usage
+      ? estimateTokens(displayContent, profileForProvider(usage.provider || ''))
+      : 0;
+  const usageChip =
+    !isUser && usage && (usage.inputTokens > 0 || usageOutTokens > 0) ? (
+      <span
+        className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] tabular-nums whitespace-nowrap"
+        title={`Estimated this turn: ~${usage.inputTokens.toLocaleString()} input + ~${usageOutTokens.toLocaleString()} output tokens`}
+      >
+        ~{formatTokens(usage.inputTokens + usageOutTokens)} tok
+      </span>
+    ) : null;
 
   const actionButtons = !isEditing && (onEdit || onDelete) ? (
     <div className="relative flex flex-col gap-0.5">
@@ -516,6 +540,7 @@ export function ChatMessage({
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs font-medium text-[var(--color-text-secondary)]">{name}</span>
             {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
+            {usageChip}
           </div>
 
           <div className={`flex items-start gap-2 relative ${isEditing ? 'w-full' : ''}`}>
@@ -572,6 +597,7 @@ export function ChatMessage({
             {name}
           </span>
           {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
+          {usageChip}
           <div className="ml-auto">{actionButtons}</div>
         </div>
 
@@ -609,6 +635,7 @@ export function ChatMessage({
             {name}
           </span>
           {timeStr && <span className="text-xs text-zinc-500 ml-2">{timeStr}</span>}
+          {usageChip}
 
           {imageGrid && <div className="mt-1">{imageGrid}</div>}
           {videoBlock && <div className="mt-1">{videoBlock}</div>}
