@@ -9,6 +9,7 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import { processMacros, type MacroContext } from '../../utils/macros';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
+import { UsageGauge } from './UsageGauge';
 import { ChatOptionsMenu } from './ChatOptionsMenu';
 import { BottomSheet } from '../ui/BottomSheet';
 import { ChatHistoryPanel } from './ChatHistoryPanel';
@@ -1601,6 +1602,7 @@ export function ChatView() {
                     chatMaxWidth={chatMaxWidth}
                     swipes={message.swipes}
                     swipeId={message.swipeId}
+                    usage={message.usage}
                     showSwipeControl={showSwipeControl}
                     canGenerateSwipe={isLastAiMessage}
                     onSwipeLeft={() => handleSwipeLeft(message.id)}
@@ -1743,6 +1745,9 @@ export function ChatView() {
         onSend={handleSend}
         disabled={isSending}
       />
+
+      {/* Always-present token fuel gauge */}
+      <UsageGauge />
 
       {/* Input Area */}
       <ChatInput

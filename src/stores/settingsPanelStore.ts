@@ -17,7 +17,8 @@ export type SettingsPageId =
   | 'extensions'
   | 'databank'
   | 'gallery'
-  | 'themes';
+  | 'themes'
+  | 'usage';
 
 export interface SettingsStackEntry {
   page: SettingsPageId;

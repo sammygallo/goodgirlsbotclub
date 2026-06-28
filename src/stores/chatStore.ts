@@ -30,9 +30,11 @@ import { dataUrlToPart, supportsVision } from '../utils/images';
 import { processMacros, type MacroContext } from '../utils/macros';
 import {
   estimateConversationTokens,
+  estimateTokens,
   profileForProvider,
   trimHistoryToBudget,
 } from '../utils/tokenizer';
+import { useUsageStore } from './usageStore';
 import { getInstructTemplate, formatInstructPrompt } from '../utils/instructTemplates';
 import { useRegexScriptStore } from './regexScriptStore';
 import { applyRegexScripts, getActiveScripts } from '../utils/regexScripts';
@@ -54,6 +56,25 @@ function getUserDisplayName(characterAvatar?: string): string {
   return 'User';
 }
 
+/**
+ * Estimated token usage for a single assistant turn.
+ *
+ * v1 is tokens-only and client-estimated — the app ships a char-heuristic
+ * tokenizer (not real BPE) and the backend does not echo usage, so figures are
+ * approximate and surfaced with a leading "~". `source` and `costUsd` are
+ * reserved so measured usage and a dollar readout can slot in later without a
+ * storage migration. Persisted per message in the JSONL `extra.usage` field.
+ */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  source: 'estimated' | 'measured';
+  provider?: string;
+  model?: string;
+  /** Reserved for a future dollar readout; undefined in tokens-only v1. */
+  costUsd?: number;
+}
+
 export interface ChatMessage {
   id: string;
   name: string;
@@ -65,6 +86,10 @@ export interface ChatMessage {
   characterAvatar?: string;
   swipes: string[];
   swipeId: number;
+  /** Estimated token usage for this assistant turn (AI messages only).
+   *  Drives the per-turn cost chip; recorded at generation finalize and
+   *  persisted into the JSONL record's `extra.usage` field. */
+  usage?: TokenUsage;
   /** Phase 6.1: user-attached images as data URLs (e.g. data:image/jpeg;base64,...).
    *  Rendered as a grid above content in ChatMessage.tsx and folded into the
    *  provider's multimodal content parts on the LAST user turn when calling
@@ -616,6 +641,44 @@ async function* parseSSEStream(
   } finally {
     reader.releaseLock();
   }
+}
+
+/**
+ * Record one finished generation for the usage gauge AND build the per-message
+ * usage snapshot shown as a cost chip.
+ *
+ * Called once per *generation* so every send / swipe / regenerate / continue /
+ * group-member turn counts toward the lifetime + budget odometers (the
+ * "count every generation" decision) — even swipes that get discarded, since
+ * those tokens were really spent.
+ *
+ * Input tokens come from the prompt size computed at context-assembly time
+ * (`lastTokenEstimate`); the group path doesn't populate that, so it passes an
+ * explicit override. Output is estimated from the completion text. Pass
+ * `chipOutputText` when the gauge and the chip should differ (continue: the
+ * gauge counts only the freshly streamed tokens, but the chip reflects the
+ * whole bubble).
+ */
+function recordTurnUsage(
+  provider: string,
+  model: string,
+  completion: string,
+  opts?: { inputTokensOverride?: number; chipOutputText?: string },
+): TokenUsage {
+  const profile = profileForProvider(provider);
+  const inputTokens = Math.max(
+    0,
+    Math.round(opts?.inputTokensOverride ?? useGenerationStore.getState().lastTokenEstimate ?? 0),
+  );
+  const generatedTokens = estimateTokens(completion, profile);
+  // The gauge counts the tokens this call actually spent.
+  useUsageStore.getState().recordGeneration(inputTokens, generatedTokens);
+  // The chip reflects the visible bubble (whole content for a continue).
+  const chipOutputTokens =
+    opts?.chipOutputText !== undefined
+      ? estimateTokens(opts.chipOutputText, profile)
+      : generatedTokens;
+  return { inputTokens, outputTokens: chipOutputTokens, source: 'estimated', provider, model };
 }
 
 // Resolve advanced character fields (checks both top-level and data.*)
@@ -1447,10 +1510,18 @@ async function generateGroupTurn(
     return get().isSending;
   }
 
+  // The group builder doesn't populate lastTokenEstimate, so derive this
+  // speaker's prompt size from the context we actually sent.
+  const usage = recordTurnUsage(provider, model, strippedText, {
+    inputTokensOverride: estimateConversationTokens(
+      finalContext as { role: string; content: string }[],
+      profileForProvider(provider),
+    ),
+  });
   set((state) => ({
     messages: state.messages.map((msg) =>
       msg.id === aiMessageId
-        ? { ...msg, content: strippedText, emotion, swipes: [strippedText] }
+        ? { ...msg, content: strippedText, emotion, swipes: [strippedText], usage }
         : msg
     ),
   }));
@@ -1652,13 +1723,17 @@ function buildChatPayload(
       // extra.image (first element, SillyTavern-compat fallback for any
       // code path that still reads the scalar form). Scene videos ride
       // along in extra.videos.
-      ...((msg.images && msg.images.length > 0) || (msg.videos && msg.videos.length > 0)
+      ...((msg.images && msg.images.length > 0) ||
+      (msg.videos && msg.videos.length > 0) ||
+      msg.usage
         ? {
             extra: {
               ...(msg.images && msg.images.length > 0
                 ? { images: msg.images, image: msg.images[0] }
                 : {}),
               ...(msg.videos && msg.videos.length > 0 ? { videos: msg.videos } : {}),
+              // Per-turn token usage (estimated). Opaque to the backend.
+              ...(msg.usage ? { usage: msg.usage } : {}),
             },
           }
         : {}),
@@ -1979,6 +2054,7 @@ function normalizeMessage(msg: {
     images?: unknown;
     image?: unknown;
     videos?: unknown;
+    usage?: unknown;
     [key: string]: unknown;
   };
 }): ChatMessage {
@@ -2011,6 +2087,25 @@ function normalizeMessage(msg: {
     if (arr.length > 0) videos = arr;
   }
 
+  // Recover per-turn token usage written by recordTurnUsage.
+  let usage: TokenUsage | undefined;
+  const rawUsage = msg.extra?.usage;
+  if (rawUsage && typeof rawUsage === 'object') {
+    const u = rawUsage as Record<string, unknown>;
+    const inputTokens = Number(u.inputTokens);
+    const outputTokens = Number(u.outputTokens);
+    if (Number.isFinite(inputTokens) && Number.isFinite(outputTokens)) {
+      usage = {
+        inputTokens: Math.max(0, Math.round(inputTokens)),
+        outputTokens: Math.max(0, Math.round(outputTokens)),
+        source: u.source === 'measured' ? 'measured' : 'estimated',
+        provider: typeof u.provider === 'string' ? u.provider : undefined,
+        model: typeof u.model === 'string' ? u.model : undefined,
+        costUsd: Number.isFinite(Number(u.costUsd)) ? Number(u.costUsd) : undefined,
+      };
+    }
+  }
+
   return {
     id: generateId(),
     name: msg.name,
@@ -2023,6 +2118,7 @@ function normalizeMessage(msg: {
     characterAvatar: msg.character_avatar,
     images,
     videos,
+    usage,
   };
 }
 
@@ -2618,12 +2714,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : 'The model returned an empty response. Try swiping again.',
         }));
       } else {
+        const usage = recordTurnUsage(provider, model, cleanedContent);
         set((state) => ({
           messages: state.messages.map((m) => {
             if (m.id !== messageId) return m;
             const newSwipes = [...m.swipes];
             newSwipes[newSwipeIndex] = cleanedContent;
-            return { ...m, content: cleanedContent, emotion, swipes: newSwipes };
+            return { ...m, content: cleanedContent, emotion, swipes: newSwipes, usage };
           }),
         }));
 
@@ -2713,12 +2810,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const fullText = existingContent + newTokens;
       const cleanedContent = stripEmotionTag(fullText);
 
+      // Gauge counts only the freshly streamed tokens (the prior reply was
+      // already billed when first generated); the chip shows the whole bubble.
+      // Skip accounting entirely when the continuation produced nothing (empty
+      // completion / provider filter / abort) — otherwise we'd bump the
+      // odometers by a full prompt's worth of input and clobber the existing
+      // per-turn chip. Mirrors the empty-completion guard in the other paths.
+      const produced = newTokens.trim() !== '';
+      const usage = produced
+        ? recordTurnUsage(provider, model, newTokens, { chipOutputText: cleanedContent })
+        : lastAiMsg.usage;
       set((state) => ({
         messages: state.messages.map((m) => {
           if (m.id !== lastAiMsg.id) return m;
           const newSwipes = [...m.swipes];
           newSwipes[m.swipeId] = cleanedContent;
-          return { ...m, content: cleanedContent, swipes: newSwipes };
+          return { ...m, content: cleanedContent, swipes: newSwipes, usage };
         }),
       }));
 
@@ -2994,10 +3101,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
               : 'The model returned an empty response. Tap send again to retry.',
           }));
         } else {
+          const usage = recordTurnUsage(provider, model, cleanedContent);
           set((state) => ({
             messages: state.messages.map((msg) =>
               msg.id === aiMessageId
-                ? { ...msg, content: cleanedContent, emotion, swipes: [cleanedContent] }
+                ? { ...msg, content: cleanedContent, emotion, swipes: [cleanedContent], usage }
                 : msg
             ),
           }));
@@ -3343,10 +3451,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
               : 'The model returned an empty response. Tap regenerate to retry.',
           }));
         } else {
+          const usage = recordTurnUsage(provider, model, cleanedContent);
           set((state) => ({
             messages: state.messages.map((msg) =>
               msg.id === aiMessageId
-                ? { ...msg, content: cleanedContent, emotion, swipes: [cleanedContent] }
+                ? { ...msg, content: cleanedContent, emotion, swipes: [cleanedContent], usage }
                 : msg
             ),
           }));

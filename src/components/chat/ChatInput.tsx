@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Send, Mic, Paperclip, Square, X, Image, Menu, Puzzle } from 'lucide-react';
 import { CommandAutocomplete } from './CommandAutocomplete';
+import { ContextMeter } from './ContextMeter';
 import { Button } from '../ui';
 import { useSlotItems, invokeSlotItem } from '../../extensions/sandbox/sandboxSlotRegistry';
 import {
@@ -473,6 +474,9 @@ export function ChatInput({
           )}
         </div>
       )}
+
+      {/* Context-window fill meter — shows while composing, dismissible */}
+      <ContextMeter draft={message} />
 
       <div className="flex items-end gap-2">
         {/* Chat Options Menu Button */}

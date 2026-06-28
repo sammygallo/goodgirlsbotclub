@@ -15,6 +15,7 @@ import { DataBankPage } from './DataBankPage';
 import { GalleryPage } from './GalleryPage';
 import { ThemeEditorPage } from './ThemeEditorPage';
 import { AISettingsPage } from './AISettingsPage';
+import { UsagePage } from './UsagePage';
 import { ProviderCatalogPage } from './ProviderCatalogPage';
 import { MyKeysPage } from './MyKeysPage';
 import { WorldInfoPage } from '../worldinfo';
@@ -42,6 +43,7 @@ const PAGE_COMPONENTS: Record<SettingsPageId, React.ComponentType<{ params?: Rec
   databank: DataBankPage,
   gallery: GalleryPage,
   themes: ThemeEditorPage,
+  usage: UsagePage,
 };
 
 // ---------------------------------------------------------------------------
