@@ -39,6 +39,29 @@ function modelFieldFor(provider: string): string {
 const FALLBACK_PROVIDER_FIELD = 'stm_fallback_provider';
 const FALLBACK_MODEL_FIELD = 'stm_fallback_model';
 
+/**
+ * Fetch the current settings blob and its oai_settings sub-object, tolerating
+ * both the string-encoded and already-parsed object forms the backend may
+ * return. The read-modify-write save methods below all rely on getting the
+ * *existing* blob back so a targeted field update can't drop everything else —
+ * previously they only handled the string form, so an object-form response
+ * silently produced an empty blob and clobbered oai_settings on save.
+ */
+async function loadSettingsBlob(): Promise<{
+  settings: Record<string, unknown>;
+  oaiSettings: Record<string, unknown>;
+}> {
+  const response = await settingsApi.getSettings();
+  let settings: Record<string, unknown> = {};
+  if (typeof response.settings === 'string') {
+    try { settings = JSON.parse(response.settings); } catch { settings = {}; }
+  } else if (response.settings && typeof response.settings === 'object') {
+    settings = response.settings as Record<string, unknown>;
+  }
+  const oaiSettings = (settings.oai_settings as Record<string, unknown>) || {};
+  return { settings, oaiSettings };
+}
+
 /** Fire-and-forget: fold the fallback selection into oai_settings and save. */
 function persistFallback(provider: string, model: string): void {
   void (async () => {
@@ -234,29 +257,26 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ isSaving: true, error: null });
     try {
       const providerInfo = PROVIDERS.find((p) => p.id === provider);
-      // For custom, there's no preset model list — preserve whatever is in custom_model.
-      const defaultModel = provider === 'custom' ? get().activeModel : (providerInfo?.models[0] || 'gpt-4o');
 
       // Get current settings first to merge properly
-      const response = await settingsApi.getSettings();
-      let settings: Record<string, unknown> = {};
-      if (typeof response.settings === 'string') {
-        try {
-          settings = JSON.parse(response.settings);
-        } catch {
-          settings = {};
-        }
-      }
+      const { settings, oaiSettings } = await loadSettingsBlob();
 
       // Update oai_settings with new provider
-      const oaiSettings = (settings.oai_settings as Record<string, unknown>) || {};
       oaiSettings.chat_completion_source = provider;
 
-      // Also set the appropriate model for this provider. For 'custom',
+      // Pick the model to activate. Prefer the model already saved for this
+      // provider so re-selecting the current provider (or switching away and
+      // back) keeps the user's choice — only fall back to the provider default
+      // when nothing has been saved yet. Previously this always wrote
+      // providerInfo.models[0], which silently reverted a saved model (e.g. to
+      // OpenAI's gpt-4.1) whenever the provider chip was tapped. For 'custom',
       // custom_url / custom_model are managed by setCustomUrl / setActiveModel
       // (or customProviderStore.activate) separately.
+      let activeModel = get().activeModel;
       if (provider !== 'custom') {
-        oaiSettings[modelFieldFor(provider)] = defaultModel;
+        const savedModel = oaiSettings[modelFieldFor(provider)] as string | undefined;
+        activeModel = savedModel || providerInfo?.models[0] || 'gpt-4o';
+        oaiSettings[modelFieldFor(provider)] = activeModel;
         // Switching to a native provider clears the "which user provider is
         // currently in the custom slot" marker — it's no longer active.
         oaiSettings.stm_active_custom_provider = null;
@@ -266,11 +286,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
       await settingsApi.saveSettings(settings);
 
-      console.log('[Settings] Saved provider:', provider, 'model:', defaultModel);
+      console.log('[Settings] Saved provider:', provider, 'model:', activeModel);
 
       set({
         activeProvider: provider,
-        activeModel: defaultModel,
+        activeModel,
         isSaving: false,
       });
     } catch (error) {
@@ -287,19 +307,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const { activeProvider } = get();
 
       // Get current settings first to merge properly
-      const response = await settingsApi.getSettings();
-      let settings: Record<string, unknown> = {};
-      if (typeof response.settings === 'string') {
-        try {
-          settings = JSON.parse(response.settings);
-        } catch {
-          settings = {};
-        }
-      }
+      const { settings, oaiSettings } = await loadSettingsBlob();
 
       // Update oai_settings with new model — generic mapping covers all
       // native providers + 'custom'.
-      const oaiSettings = (settings.oai_settings as Record<string, unknown>) || {};
       oaiSettings[modelFieldFor(activeProvider)] = model;
       settings.oai_settings = oaiSettings;
 
@@ -317,16 +328,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setCustomUrl: async (url: string) => {
     set({ isSaving: true, error: null });
     try {
-      const response = await settingsApi.getSettings();
-      let settings: Record<string, unknown> = {};
-      if (typeof response.settings === 'string') {
-        try {
-          settings = JSON.parse(response.settings);
-        } catch {
-          settings = {};
-        }
-      }
-      const oaiSettings = (settings.oai_settings as Record<string, unknown>) || {};
+      const { settings, oaiSettings } = await loadSettingsBlob();
       oaiSettings.custom_url = url;
       settings.oai_settings = oaiSettings;
       await settingsApi.saveSettings(settings);
