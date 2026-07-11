@@ -24,6 +24,7 @@ import { useQuickReplyStore } from './quickReplyStore';
 import { useExpressionsStore } from './expressionsStore';
 import { useMotionModeStore } from './motionModeStore';
 import { useUsageStore } from './usageStore';
+import { useLovenseStore } from './lovenseStore';
 import { clearAllAppStorage } from '../utils/serverSettings';
 import { syncGlobalVarsFromServer } from '../utils/stscript/executor';
 import type { UserRole, Permission } from '../types';
@@ -60,6 +61,7 @@ function resetAllUserState(): void {
   useExpressionsStore.getState().resetUser();
   useMotionModeStore.getState().resetUser();
   useUsageStore.getState().resetUser();
+  useLovenseStore.getState().resetUser();
   useDataBankStore.getState().resetUser();
   useChatHistoryRagStore.getState().resetUser();
   useImageGenStore.getState().resetUser();
@@ -136,6 +138,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         useExpressionsStore.getState().initForUser(user.handle);
         useMotionModeStore.getState().initForUser(user.handle);
         useUsageStore.getState().initForUser(user.handle);
+        useLovenseStore.getState().initForUser(user.handle);
         set({
           isAuthenticated: true,
           currentUser: {
@@ -218,6 +221,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useExpressionsStore.getState().initForUser(h);
       useMotionModeStore.getState().initForUser(h);
       useUsageStore.getState().initForUser(h);
+      useLovenseStore.getState().initForUser(h);
       set({
         isAuthenticated: true,
         currentUser: user
@@ -284,6 +288,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useExpressionsStore.getState().initForUser(h);
       useMotionModeStore.getState().initForUser(h);
       useUsageStore.getState().initForUser(h);
+      useLovenseStore.getState().initForUser(h);
       set({
         isAuthenticated: true,
         currentUser: user
