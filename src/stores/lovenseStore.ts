@@ -8,32 +8,23 @@ import { useExtensionStore } from './extensionStore';
 // Lovense device control store
 //
 // A fresh GGBC-native implementation of Lovense connectivity (NOT a port of any
-// third-party SillyTavern extension code). It talks to the official Lovense
-// Cloud API (https://api.lovense.com) directly from the browser, which is the
-// same transport community integrations use:
+// third-party SillyTavern extension code). Everything goes through the GGBC
+// backend proxy — the browser never calls api.lovense.com directly (no CORS),
+// and the app-level developer token lives server-side, never in the client:
 //
-//   • QR pairing:  POST /api/lan/getQrCode   -> returns a QR image the user
-//                  scans with the Lovense Remote app to link their toys.
-//   • Commands:    POST /api/lan/v2/command  -> drives the paired toy(s) with
-//                  an action + intensity for a given duration.
-//
-// A developer token (from the Lovense developer dashboard) is required for both
-// calls.
-//
-// Pairing is brokered by the GGBC backend so we can detect scan completion
-// without a Socket API:
-//   1. POST /api/lovense/pairing-intent  -> the backend mints an opaque `uid`
-//      for this user and marks the pairing pending.
-//   2. That `uid` is handed to Lovense's getQrCode; the same `uid` is what
-//      Lovense echoes to the backend's /api/lovense/callback when the user
-//      scans, flipping the pairing to "paired".
-//   3. We poll GET /api/lovense/session until it reports "paired", then treat
-//      the toy as connected. The backend keeps the LAN credentials; the
-//      browser only learns status + toy names.
-// The `uid` from step 1 is also what we send with every Cloud command.
+//   1. POST /api/lovense/pairing-intent  -> backend mints an opaque `uid` and
+//      marks the pairing pending.
+//   2. POST /api/lovense/qr              -> backend proxies Lovense getQrCode
+//      (injecting the dev token + uid) and returns the QR image to show.
+//   3. The user scans; Lovense calls the backend's /api/lovense/callback with
+//      that `uid`, flipping the pairing to "paired".
+//   4. We poll GET /api/lovense/session until it reports "paired".
+//   5. POST /api/lovense/command         -> backend proxies a toy command
+//      (injecting token + the user's paired uid). We only send action +
+//      intensity + duration.
+// The backend keeps the LAN credentials; the browser only learns status + toy
+// names.
 // ---------------------------------------------------------------------------
-
-const LOVENSE_API_BASE = 'https://api.lovense.com';
 
 let _currentHandle: string | null = null;
 
@@ -101,10 +92,8 @@ const DEFAULT_MAPPINGS: KeywordMapping[] = [
 
 interface LovenseState {
   // --- persisted settings ---
-  /** Lovense developer token. Required for every Cloud API call. */
-  devToken: string;
-  /** Server-minted pairing id (from /api/lovense/pairing-intent), sent as
-   *  `uid` to Lovense for both QR pairing and commands. */
+  /** Server-minted pairing id (from /api/lovense/pairing-intent). Informational
+   *  on the client; the backend owns it for QR + command proxying. */
   uid: string;
   /** Scan finished AI messages for keywords and drive the toy automatically. */
   autoReact: boolean;
@@ -126,7 +115,6 @@ interface LovenseState {
   isSending: boolean;
 
   // --- actions ---
-  setDevToken: (t: string) => void;
   setAutoReact: (on: boolean) => void;
   setGlobalIntensityScale: (n: number) => void;
   setDefaultDurationSec: (n: number) => void;
@@ -135,7 +123,7 @@ interface LovenseState {
   removeMapping: (id: string) => void;
   clearError: () => void;
 
-  /** Ask the Cloud API for a pairing QR the user scans in the Lovense app. */
+  /** Ask the backend to mint a pairing intent + proxy a QR to scan. */
   generateQr: () => Promise<void>;
   /** Send a single action to the paired toy(s). */
   sendCommand: (action: LovenseAction, intensity: number, timeSec?: number) => Promise<boolean>;
@@ -171,22 +159,9 @@ function stopPairingPoll(): void {
   }
 }
 
-async function lovensePost(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const res = await fetch(`${LOVENSE_API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(`Lovense API ${res.status}`);
-  }
-  return (await res.json()) as Record<string, unknown>;
-}
-
 export const useLovenseStore = create<LovenseState>()(
   persist(
     (set, get) => ({
-      devToken: '',
       uid: '',
       autoReact: false,
       mappings: DEFAULT_MAPPINGS,
@@ -201,7 +176,6 @@ export const useLovenseStore = create<LovenseState>()(
       error: null,
       isSending: false,
 
-      setDevToken: (t) => set({ devToken: t.trim(), connected: false, status: 'idle' }),
       setAutoReact: (on) => set({ autoReact: on }),
       setGlobalIntensityScale: (n) =>
         set({ globalIntensityScale: Math.max(0.1, Math.min(2, n)) }),
@@ -229,11 +203,6 @@ export const useLovenseStore = create<LovenseState>()(
       clearError: () => set({ error: null }),
 
       generateQr: async () => {
-        const { devToken } = get();
-        if (!devToken) {
-          set({ error: 'Enter a Lovense developer token first.', status: 'error' });
-          return;
-        }
         stopPairingPoll();
         set({
           status: 'generating-qr',
@@ -244,31 +213,19 @@ export const useLovenseStore = create<LovenseState>()(
           toys: null,
         });
         try {
-          // 1. Ask the backend for a fresh pairing uid (also marks it pending
-          //    and configures who the callback resolves to).
+          // 1. Backend mints a fresh pairing uid and marks it pending.
           const intent = await apiRequest<{ uid: string }>(
             '/api/lovense/pairing-intent',
             { method: 'POST' },
           );
-          const uid = intent.uid;
-          set({ uid });
+          set({ uid: intent.uid });
 
-          // 2. Hand that uid to Lovense to mint the QR the user scans.
-          const data = await lovensePost('/api/lan/getQrCode', {
-            token: devToken,
-            uid,
-            uname: _currentHandle ?? 'GGBC user',
-            v: 2,
-          });
-          const inner = (data.data ?? data) as Record<string, unknown>;
-          const qr = typeof inner.qr === 'string' ? inner.qr : null;
-          const code = typeof inner.code === 'string' ? inner.code : null;
-          if (!qr) {
-            const msg = typeof data.message === 'string' ? data.message : 'No QR returned';
-            set({ status: 'error', error: `Lovense: ${msg}` });
-            return;
-          }
-          set({ status: 'awaiting-scan', qrUrl: qr, pairingCode: code });
+          // 2. Backend proxies Lovense getQrCode (token stays server-side).
+          const qr = await apiRequest<{ uid: string; qr: string; code: string | null }>(
+            '/api/lovense/qr',
+            { method: 'POST' },
+          );
+          set({ status: 'awaiting-scan', qrUrl: qr.qr, pairingCode: qr.code });
 
           // 3. Poll the backend until Lovense's callback flips us to "paired".
           let ticks = 0;
@@ -289,38 +246,26 @@ export const useLovenseStore = create<LovenseState>()(
       },
 
       sendCommand: async (action, intensity, timeSec) => {
-        const { devToken, uid } = get();
-        if (!devToken) {
-          set({ error: 'Enter a Lovense developer token first.' });
-          return false;
-        }
-        if (!uid) {
-          set({ error: 'Pair a toy first (generate a QR code).' });
-          return false;
-        }
         const clamped = Math.max(0, Math.min(actionMaxIntensity(action), Math.round(intensity)));
-        const seconds = timeSec ?? get().defaultDurationSec;
+        const durationSec = timeSec ?? get().defaultDurationSec;
         set({ isSending: true });
         try {
-          const data = await lovensePost('/api/lan/v2/command', {
-            token: devToken,
-            uid,
-            command: 'Function',
-            action: `${action}:${clamped}`,
-            timeSec: seconds,
-            apiVer: 1,
-          });
-          const code = typeof data.code === 'number' ? data.code : -1;
-          const ok = code === 0 || data.result === true;
-          if (ok) {
-            set({ connected: true, status: 'connected', error: null });
+          // Backend injects the dev token + the user's paired uid.
+          const res = await apiRequest<{ result: boolean; message: string | null }>(
+            '/api/lovense/command',
+            {
+              method: 'POST',
+              body: JSON.stringify({ action, intensity: clamped, durationSec }),
+            },
+          );
+          if (res.result) {
+            set({ error: null });
           } else {
-            const msg = typeof data.message === 'string' ? data.message : 'Command rejected';
-            set({ error: `Lovense: ${msg}` });
+            set({ error: res.message ? `Lovense: ${res.message}` : 'Command rejected' });
           }
-          return ok;
+          return res.result;
         } catch (err) {
-          set({ error: err instanceof Error ? err.message : 'Command failed', connected: false });
+          set({ error: err instanceof Error ? err.message : 'Command failed' });
           return false;
         } finally {
           set({ isSending: false });
@@ -378,7 +323,6 @@ export const useLovenseStore = create<LovenseState>()(
         _currentHandle = null;
         stopPairingPoll();
         set({
-          devToken: '',
           uid: '',
           autoReact: false,
           mappings: DEFAULT_MAPPINGS,
@@ -398,7 +342,6 @@ export const useLovenseStore = create<LovenseState>()(
       name: 'ggbc-lovense',
       storage: createJSONStorage(() => scopedLocalStorage),
       partialize: (s) => ({
-        devToken: s.devToken,
         uid: s.uid,
         autoReact: s.autoReact,
         mappings: s.mappings,
@@ -428,7 +371,7 @@ useChatStore.subscribe((state) => {
 
   if (!useExtensionStore.getState().enabled['lovense']) return;
   const lovense = useLovenseStore.getState();
-  if (!lovense.autoReact || !lovense.connected || !lovense.devToken) return;
+  if (!lovense.autoReact || !lovense.connected) return;
 
   // The just-finished assistant turn is the last non-user, non-system message.
   const msgs = state.messages;

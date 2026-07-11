@@ -107,8 +107,6 @@ function MappingRow({ id }: { id: string }) {
 }
 
 function LovenseSettings() {
-  const devToken = useLovenseStore((s) => s.devToken);
-  const setDevToken = useLovenseStore((s) => s.setDevToken);
   const qrUrl = useLovenseStore((s) => s.qrUrl);
   const pairingCode = useLovenseStore((s) => s.pairingCode);
   const status = useLovenseStore((s) => s.status);
@@ -143,28 +141,13 @@ function LovenseSettings() {
 
   return (
     <div className="space-y-4">
-      {/* Developer token */}
-      <div className="space-y-1">
-        <div className={labelClass}>
-          <span>Developer token</span>
-          <StatusPill />
-        </div>
-        <input
-          type="password"
-          placeholder="Lovense developer token"
-          value={devToken}
-          onChange={(e) => setDevToken(e.target.value)}
-          className={`${inputClass} w-full`}
-          autoComplete="off"
-        />
-        <p className="text-[10px] text-[var(--color-text-secondary)]/60">
-          From the Lovense developer dashboard. Stored per-account on this device only.
-        </p>
-      </div>
-
       {/* Pairing */}
       <div className="space-y-2">
-        <button type="button" onClick={() => generateQr()} disabled={!devToken || status === 'generating-qr'} className={btnClass}>
+        <div className={labelClass}>
+          <span>Device pairing</span>
+          <StatusPill />
+        </div>
+        <button type="button" onClick={() => generateQr()} disabled={status === 'generating-qr'} className={btnClass}>
           {status === 'generating-qr' ? (
             <span className="flex items-center gap-1.5">
               <Loader2 size={12} className="animate-spin" /> Generating…
@@ -294,7 +277,7 @@ function LovenseSettings() {
           <button
             type="button"
             onClick={() => sendCommand(testAction, Math.min(testIntensity, actionMaxIntensity(testAction)))}
-            disabled={!devToken || isSending}
+            disabled={!connected || isSending}
             className={btnClass}
           >
             {isSending ? 'Sending…' : 'Send test'}
@@ -302,7 +285,7 @@ function LovenseSettings() {
           <button
             type="button"
             onClick={() => stopAll()}
-            disabled={!devToken}
+            disabled={!connected}
             className="flex items-center gap-1 px-3 py-1.5 text-xs rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
           >
             <Square size={11} /> Stop
