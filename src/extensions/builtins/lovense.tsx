@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Vibrate, Loader2, Plus, Trash2, Square } from 'lucide-react';
 import { extensionRegistry } from '../registry';
 import {
@@ -112,6 +112,8 @@ function LovenseSettings() {
   const qrUrl = useLovenseStore((s) => s.qrUrl);
   const pairingCode = useLovenseStore((s) => s.pairingCode);
   const status = useLovenseStore((s) => s.status);
+  const connected = useLovenseStore((s) => s.connected);
+  const toys = useLovenseStore((s) => s.toys);
   const error = useLovenseStore((s) => s.error);
   const isSending = useLovenseStore((s) => s.isSending);
 
@@ -126,12 +128,18 @@ function LovenseSettings() {
   const addMapping = useLovenseStore((s) => s.addMapping);
 
   const generateQr = useLovenseStore((s) => s.generateQr);
-  const testConnection = useLovenseStore((s) => s.testConnection);
+  const checkPairing = useLovenseStore((s) => s.checkPairing);
   const sendCommand = useLovenseStore((s) => s.sendCommand);
   const stopAll = useLovenseStore((s) => s.stopAll);
 
   const [testAction, setTestAction] = useState<LovenseAction>('Vibrate');
   const [testIntensity, setTestIntensity] = useState(10);
+
+  // Reflect the real backend pairing state when the panel opens (e.g. after a
+  // reload where the toy is still paired server-side).
+  useEffect(() => {
+    void checkPairing();
+  }, [checkPairing]);
 
   return (
     <div className="space-y-4">
@@ -165,16 +173,30 @@ function LovenseSettings() {
             'Generate pairing QR'
           )}
         </button>
-        {qrUrl && (
+        {qrUrl && !connected && (
           <div className="flex flex-col items-center gap-2 p-3 rounded border border-[var(--color-border)] bg-[var(--color-bg-primary)]/40">
             <img src={qrUrl} alt="Lovense pairing QR" className="w-40 h-40 rounded bg-white p-1" />
             <p className="text-[10px] text-[var(--color-text-secondary)] text-center">
               Scan with the Lovense Remote app to link your toy.
               {pairingCode && <span className="block">Code: {pairingCode}</span>}
             </p>
-            <button type="button" onClick={() => testConnection()} disabled={status === 'testing'} className={btnClass}>
-              {status === 'testing' ? 'Testing…' : "I've paired — test connection"}
+            <div className="flex items-center gap-1.5 text-[10px] text-[var(--color-text-secondary)]">
+              <Loader2 size={11} className="animate-spin" /> Waiting for you to scan…
+            </div>
+            <button type="button" onClick={() => checkPairing()} className={btnClass}>
+              Check now
             </button>
+          </div>
+        )}
+        {connected && (
+          <div className="flex items-center gap-2 p-2 rounded border border-green-500/30 bg-green-500/10 text-xs text-green-400">
+            <Vibrate size={14} />
+            <span>
+              Paired
+              {toys && typeof toys === 'object'
+                ? ` — ${Object.keys(toys as Record<string, unknown>).length} toy(s) connected`
+                : ''}
+            </span>
           </div>
         )}
       </div>

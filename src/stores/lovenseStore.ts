@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { apiRequest } from '../api/client';
 import { useChatStore } from './chatStore';
 import { useExtensionStore } from './extensionStore';
 
@@ -17,10 +18,19 @@ import { useExtensionStore } from './extensionStore';
 //                  an action + intensity for a given duration.
 //
 // A developer token (from the Lovense developer dashboard) is required for both
-// calls. Live "scan complete" detection needs Lovense's Socket API or a
-// server-side callback and is intentionally out of scope for this first pass —
-// instead the user pairs in the app, then hits "Test connection" which sends a
-// no-op command and reports whether a toy responded. See the PR notes.
+// calls.
+//
+// Pairing is brokered by the GGBC backend so we can detect scan completion
+// without a Socket API:
+//   1. POST /api/lovense/pairing-intent  -> the backend mints an opaque `uid`
+//      for this user and marks the pairing pending.
+//   2. That `uid` is handed to Lovense's getQrCode; the same `uid` is what
+//      Lovense echoes to the backend's /api/lovense/callback when the user
+//      scans, flipping the pairing to "paired".
+//   3. We poll GET /api/lovense/session until it reports "paired", then treat
+//      the toy as connected. The backend keeps the LAN credentials; the
+//      browser only learns status + toy names.
+// The `uid` from step 1 is also what we send with every Cloud command.
 // ---------------------------------------------------------------------------
 
 const LOVENSE_API_BASE = 'https://api.lovense.com';
@@ -93,7 +103,8 @@ interface LovenseState {
   // --- persisted settings ---
   /** Lovense developer token. Required for every Cloud API call. */
   devToken: string;
-  /** Stable per-user id sent as `uid` to the Cloud API. */
+  /** Server-minted pairing id (from /api/lovense/pairing-intent), sent as
+   *  `uid` to Lovense for both QR pairing and commands. */
   uid: string;
   /** Scan finished AI messages for keywords and drive the toy automatically. */
   autoReact: boolean;
@@ -105,8 +116,10 @@ interface LovenseState {
 
   // --- session state ---
   status: ConnectionStatus;
-  /** Whether a paired toy last responded to a command. */
+  /** True once the backend reports the pairing as "paired". */
   connected: boolean;
+  /** Connected toy names/types as reported by the backend session, if any. */
+  toys: unknown | null;
   qrUrl: string | null;
   pairingCode: string | null;
   error: string | null;
@@ -128,8 +141,8 @@ interface LovenseState {
   sendCommand: (action: LovenseAction, intensity: number, timeSec?: number) => Promise<boolean>;
   /** Immediately halt all toy activity. */
   stopAll: () => Promise<void>;
-  /** Fire a brief no-op command to confirm a toy is paired and reachable. */
-  testConnection: () => Promise<void>;
+  /** Fetch the backend pairing session once and reconcile connected state. */
+  checkPairing: () => Promise<void>;
   /** Scan finished AI text for mapped keywords and drive the toy. */
   scanAndTrigger: (text: string) => Promise<void>;
 
@@ -137,13 +150,25 @@ interface LovenseState {
   resetUser: () => void;
 }
 
-function ensureUid(get: () => LovenseState, set: (p: Partial<LovenseState>) => void): string {
-  let uid = get().uid;
-  if (!uid) {
-    uid = _currentHandle ? `ggbc-${_currentHandle}` : `ggbc-${genId()}`;
-    set({ uid });
+/** Shape of GET /api/lovense/session. */
+interface PairingSession {
+  status: 'none' | 'pending' | 'paired';
+  toys?: unknown | null;
+  platform?: string | null;
+}
+
+// Poll the backend for scan completion after a QR is shown. Module-level so a
+// re-render never spawns a second poller; capped so a never-scanned QR (they
+// expire after 4h) doesn't poll forever.
+let _pollTimer: ReturnType<typeof setInterval> | null = null;
+const POLL_INTERVAL_MS = 3000;
+const POLL_MAX_TICKS = 100; // ~5 minutes
+
+function stopPairingPoll(): void {
+  if (_pollTimer) {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
   }
-  return uid;
 }
 
 async function lovensePost(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -170,6 +195,7 @@ export const useLovenseStore = create<LovenseState>()(
 
       status: 'idle',
       connected: false,
+      toys: null,
       qrUrl: null,
       pairingCode: null,
       error: null,
@@ -208,9 +234,26 @@ export const useLovenseStore = create<LovenseState>()(
           set({ error: 'Enter a Lovense developer token first.', status: 'error' });
           return;
         }
-        const uid = ensureUid(get, set);
-        set({ status: 'generating-qr', error: null, qrUrl: null, pairingCode: null });
+        stopPairingPoll();
+        set({
+          status: 'generating-qr',
+          error: null,
+          qrUrl: null,
+          pairingCode: null,
+          connected: false,
+          toys: null,
+        });
         try {
+          // 1. Ask the backend for a fresh pairing uid (also marks it pending
+          //    and configures who the callback resolves to).
+          const intent = await apiRequest<{ uid: string }>(
+            '/api/lovense/pairing-intent',
+            { method: 'POST' },
+          );
+          const uid = intent.uid;
+          set({ uid });
+
+          // 2. Hand that uid to Lovense to mint the QR the user scans.
           const data = await lovensePost('/api/lan/getQrCode', {
             token: devToken,
             uid,
@@ -226,6 +269,17 @@ export const useLovenseStore = create<LovenseState>()(
             return;
           }
           set({ status: 'awaiting-scan', qrUrl: qr, pairingCode: code });
+
+          // 3. Poll the backend until Lovense's callback flips us to "paired".
+          let ticks = 0;
+          _pollTimer = setInterval(() => {
+            ticks += 1;
+            if (ticks > POLL_MAX_TICKS) {
+              stopPairingPoll();
+              return;
+            }
+            void get().checkPairing();
+          }, POLL_INTERVAL_MS);
         } catch (err) {
           set({
             status: 'error',
@@ -235,12 +289,15 @@ export const useLovenseStore = create<LovenseState>()(
       },
 
       sendCommand: async (action, intensity, timeSec) => {
-        const { devToken } = get();
+        const { devToken, uid } = get();
         if (!devToken) {
           set({ error: 'Enter a Lovense developer token first.' });
           return false;
         }
-        const uid = ensureUid(get, set);
+        if (!uid) {
+          set({ error: 'Pair a toy first (generate a QR code).' });
+          return false;
+        }
         const clamped = Math.max(0, Math.min(actionMaxIntensity(action), Math.round(intensity)));
         const seconds = timeSec ?? get().defaultDurationSec;
         set({ isSending: true });
@@ -274,11 +331,21 @@ export const useLovenseStore = create<LovenseState>()(
         await get().sendCommand('All', 0, 0);
       },
 
-      testConnection: async () => {
-        set({ status: 'testing', error: null });
-        // A 1-second, zero-intensity pulse: reaches the toy without doing anything.
-        const ok = await get().sendCommand('Vibrate', 0, 1);
-        set({ status: ok ? 'connected' : 'error' });
+      checkPairing: async () => {
+        try {
+          const session = await apiRequest<PairingSession>('/api/lovense/session');
+          if (session.status === 'paired') {
+            stopPairingPoll();
+            set({ connected: true, status: 'connected', toys: session.toys ?? null });
+          } else if (session.status === 'pending') {
+            set({ connected: false, status: 'awaiting-scan' });
+          } else {
+            set({ connected: false, toys: null });
+          }
+        } catch {
+          // Non-fatal: a transient poll failure shouldn't surface an error or
+          // drop an already-established connection.
+        }
       },
 
       scanAndTrigger: async (text) => {
@@ -309,6 +376,7 @@ export const useLovenseStore = create<LovenseState>()(
       },
       resetUser: () => {
         _currentHandle = null;
+        stopPairingPoll();
         set({
           devToken: '',
           uid: '',
@@ -318,6 +386,7 @@ export const useLovenseStore = create<LovenseState>()(
           defaultDurationSec: 3,
           status: 'idle',
           connected: false,
+          toys: null,
           qrUrl: null,
           pairingCode: null,
           error: null,
