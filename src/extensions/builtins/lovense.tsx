@@ -122,7 +122,12 @@ function LovenseSettings() {
   const defaultDurationSec = useLovenseStore((s) => s.defaultDurationSec);
   const setDefaultDurationSec = useLovenseStore((s) => s.setDefaultDurationSec);
 
-  const mappingIds = useLovenseStore((s) => s.mappings.map((m) => m.id));
+  // Select the array reference itself (stable until an action replaces it) and
+  // derive ids in render. Returning `s.mappings.map(...)` from the selector
+  // would produce a NEW array every call, which under zustand v5's Object.is
+  // equality triggers an infinite render loop (React throws) the moment the
+  // panel mounts.
+  const mappings = useLovenseStore((s) => s.mappings);
   const addMapping = useLovenseStore((s) => s.addMapping);
 
   const generateQr = useLovenseStore((s) => s.generateQr);
@@ -235,10 +240,10 @@ function LovenseSettings() {
           </button>
         </div>
         <div className="space-y-1.5">
-          {mappingIds.map((id) => (
-            <MappingRow key={id} id={id} />
+          {mappings.map((m) => (
+            <MappingRow key={m.id} id={m.id} />
           ))}
-          {mappingIds.length === 0 && (
+          {mappings.length === 0 && (
             <p className="text-[10px] text-[var(--color-text-secondary)]/60">
               No mappings — add one to enable auto-react.
             </p>
