@@ -3,6 +3,7 @@ import { Plus, Trash2, MessageSquare, Download, Upload, Pencil, Check, X } from 
 import { Modal, ConfirmDialog } from '../ui';
 import { useChatStore } from '../../stores/chatStore';
 import { useCharacterStore } from '../../stores/characterStore';
+import { api } from '../../api/client';
 
 interface ChatHistoryPanelProps {
   isOpen: boolean;
@@ -17,6 +18,7 @@ export function ChatHistoryPanel({ isOpen, onClose }: ChatHistoryPanelProps) {
   const [renamingFile, setRenamingFile] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
 
@@ -45,20 +47,14 @@ export function ChatHistoryPanel({ isOpen, onClose }: ChatHistoryPanelProps) {
 
   const handleExportChat = async (fileName: string) => {
     if (!selectedCharacter) return;
+    setExportError(null);
     try {
-      const response = await fetch('/api/chats/get', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          file_name: fileName,
-          avatar_url: selectedCharacter.avatar,
-        }),
-      });
-      const data = await response.json();
-      const jsonl = Array.isArray(data)
-        ? data.map((entry) => JSON.stringify(entry)).join('\n')
-        : '';
+      const { messages } = await api.getChatMessages(selectedCharacter.avatar, fileName);
+      if (!messages.length) {
+        setExportError('This chat has no messages to export.');
+        return;
+      }
+      const jsonl = messages.map((entry) => JSON.stringify(entry)).join('\n');
       const blob = new Blob([jsonl], { type: 'application/jsonl' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -68,6 +64,7 @@ export function ChatHistoryPanel({ isOpen, onClose }: ChatHistoryPanelProps) {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('[Export] Failed:', err);
+      setExportError(err instanceof Error ? err.message : 'Export failed');
     }
   };
 
@@ -133,6 +130,12 @@ export function ChatHistoryPanel({ isOpen, onClose }: ChatHistoryPanelProps) {
               onChange={handleImport}
             />
           </div>
+
+          {exportError && (
+            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+              Export failed: {exportError}
+            </div>
+          )}
 
           {importError && (
             <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
