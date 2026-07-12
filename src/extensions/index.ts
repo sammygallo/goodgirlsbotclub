@@ -6,6 +6,7 @@ import './builtins/translate';
 import './builtins/summarize';
 import './builtins/autoMemory';
 import './builtins/expressions';
+import './builtins/lovense';
 
 // Re-export for external consumption.
 export { extensionRegistry } from './registry';
