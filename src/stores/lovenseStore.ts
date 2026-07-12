@@ -318,6 +318,13 @@ export const useLovenseStore = create<LovenseState>()(
       initForUser: (handle) => {
         _currentHandle = handle;
         useLovenseStore.persist.rehydrate();
+        // Reconcile pairing state from the backend so auto-react works after a
+        // reload/login without waiting for the settings panel to mount. Only
+        // when the extension is enabled, to avoid a request for users who don't
+        // use it. (extensionStore.initForUser runs earlier in the auth flow.)
+        if (useExtensionStore.getState().enabled['lovense']) {
+          void useLovenseStore.getState().checkPairing();
+        }
       },
       resetUser: () => {
         _currentHandle = null;
@@ -357,11 +364,18 @@ export const useLovenseStore = create<LovenseState>()(
 // for mapped keywords and drive the toy. Wired as a module-level subscription
 // (the extension manifest's onAfterAIMessage/onInit hooks aren't consumed by
 // the app yet) and fully gated: the Lovense extension must be enabled, the
-// autoReact toggle on, and a toy already reachable. Fires once per generation,
-// on the isStreaming true -> false edge.
+// autoReact toggle on, and a toy already reachable.
 // ---------------------------------------------------------------------------
 
 let _prevStreaming = false;
+// Id of the last assistant message we reacted to. Reacting once per NEW
+// assistant message id (rather than on every isStreaming edge) skips:
+//   • Impersonate — streams, but appends a *user* turn, so the last assistant
+//     message is unchanged and would otherwise be re-scanned.
+//   • Continue — extends the same assistant message in place (same id), which
+//     would re-fire keywords that already triggered.
+//   • Swipe/regen — same message id; browsing alternatives shouldn't re-buzz.
+let _lastScannedMsgId: string | null = null;
 
 useChatStore.subscribe((state) => {
   const streaming = state.isStreaming;
@@ -378,6 +392,8 @@ useChatStore.subscribe((state) => {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.isUser || m.isSystem) continue;
+    if (m.id === _lastScannedMsgId) break; // not a new AI reply — don't re-fire
+    _lastScannedMsgId = m.id;
     void lovense.scanAndTrigger(m.content);
     break;
   }

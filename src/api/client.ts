@@ -113,7 +113,10 @@ export async function apiRequest<T>(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || error.message || `HTTP ${response.status}`);
+    // ggbc-backend (FastAPI) reports errors as { detail }; keep .error/.message
+    // for any legacy/edge shapes so the user sees the crafted message, not a
+    // bare "HTTP 4xx".
+    throw new Error(error.error || error.detail || error.message || `HTTP ${response.status}`);
   }
 
   // Handle empty responses
@@ -141,7 +144,10 @@ export async function apiRequestText(
   const response = await fetch(endpoint, { ...options, headers, credentials: 'include' });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || error.message || `HTTP ${response.status}`);
+    // ggbc-backend (FastAPI) reports errors as { detail }; keep .error/.message
+    // for any legacy/edge shapes so the user sees the crafted message, not a
+    // bare "HTTP 4xx".
+    throw new Error(error.error || error.detail || error.message || `HTTP ${response.status}`);
   }
   return response.text();
 }
