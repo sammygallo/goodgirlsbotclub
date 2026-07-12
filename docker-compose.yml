@@ -55,6 +55,9 @@ services:
       # If unset, ggbc-backend falls back to a public dev key — anyone
       # with the source can decrypt the DB.
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-}
+      # Lovense app-level developer token (feature #303). Set in .env on the
+      # droplet. If unset, the /api/lovense QR + command endpoints return 503.
+      - LOVENSE_DEV_TOKEN=${LOVENSE_DEV_TOKEN:-}
     # Run pending migrations, then start uvicorn. Migrations are idempotent
     # so this is safe on every container start.
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 127.0.0.1 --port 8001"]
