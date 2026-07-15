@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { LoginPage } from './components/auth/LoginPage';
 import { RegisterPage } from './components/auth/RegisterPage';
@@ -11,11 +12,21 @@ import { GuidesRouteRedirect } from './components/guides/GuidesRouteRedirect';
 import { ToastProvider } from './components/ui/Toast';
 import { GlobalExtensionHost } from './extensions/sandbox/GlobalExtensionHost';
 import { ExtensionPopupRoot } from './extensions/sandbox/ExtensionPopupRoot';
+import { useAuthStore } from './stores/authStore';
 
 // Phase 7.1: Register all built-in extensions at app startup.
 import './extensions';
 
 function App() {
+  const checkAuth = useAuthStore((state) => state.checkAuth);
+
+  // Runs once at the app root so isLoading resolves regardless of which
+  // route the user lands on first (e.g. a deep link to /login or /profile,
+  // which mount outside MainLayout and would otherwise never call this).
+  useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
+
   return (
     <BrowserRouter>
     <ToastProvider>

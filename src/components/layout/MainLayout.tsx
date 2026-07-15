@@ -15,13 +15,12 @@ export function MainLayout() {
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   const swipeRef = useSwipeSidebar(sidebarOpen, openSidebar, closeSidebar);
-  const { isAuthenticated, isLoading, checkAuth } = useAuthStore();
+  const { isAuthenticated, isLoading } = useAuthStore();
   const { fetchSettings, fetchSecrets, fetchGlobalSecrets } = useSettingsStore();
   const navigate = useNavigate();
 
-  useEffect(() => {
-    checkAuth();
-  }, [checkAuth]);
+  // checkAuth() is called once at the App root so it resolves regardless of
+  // which route mounts first — no need to call it again here.
 
   // Load settings when authenticated
   useEffect(() => {

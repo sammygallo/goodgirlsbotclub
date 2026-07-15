@@ -15,7 +15,18 @@ interface RequireRoleProps {
  * meets or exceeds `minRole`. Otherwise redirects.
  */
 export function RequireRole({ minRole, children, redirectTo = '/' }: RequireRoleProps) {
-  const { isAuthenticated, currentUser } = useAuthStore();
+  const { isAuthenticated, isLoading, currentUser } = useAuthStore();
+
+  // Wait for the app-root checkAuth() to resolve before deciding — otherwise
+  // a hard reload on a guarded route bounces to /login even when the user
+  // has a valid session, since isAuthenticated defaults to false.
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[var(--color-bg-primary)]">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[var(--color-primary)]" />
+      </div>
+    );
+  }
 
   if (!isAuthenticated || !currentUser) {
     return <Navigate to="/login" replace />;
