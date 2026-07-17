@@ -39,6 +39,9 @@ interface PromptTemplateState {
   /** Per-character linked template, keyed by avatar filename. Loaded
    *  transiently on chat enter and restored on switch-away. */
   linkedTemplateByAvatar: Record<string, string>;
+  /** Per-chat-session linked template, keyed by chat file name. Takes
+   *  precedence over the character link when both exist. */
+  linkedTemplateByChatFile: Record<string, string>;
   /**
    * Snapshot of the user's mainPrompt when a transient (character-linked)
    * template was loaded. Restored on exit so per-character links don't
@@ -67,6 +70,12 @@ interface PromptTemplateState {
   renameTemplate: (id: string, name: string) => void;
   /** Link an existing template to a character (or unlink with null). */
   setLinkedTemplate: (avatar: string, templateId: string | null) => void;
+  /** Link an existing template to a chat session (or unlink with null). */
+  setChatLinkedTemplate: (chatFile: string, templateId: string | null) => void;
+  /** Find a template by exact name or create one with the given mainPrompt
+   *  (other settings taken from current globals). Never changes
+   *  activeTemplateId. Returns the template id. */
+  ensureTemplate: (name: string, mainPrompt: string) => string;
   importTemplates: (json: string) => { imported: number; errors: number };
   exportTemplates: () => string;
   exportTemplate: (id: string) => string | null;
@@ -100,6 +109,7 @@ interface PersistedShape {
   templates: PromptTemplate[];
   activeTemplateId: string | null;
   linkedTemplateByAvatar?: Record<string, string>;
+  linkedTemplateByChatFile?: Record<string, string>;
   /** Persisted so a mid-chat refresh doesn't lose the user's original
    *  mainPrompt. If the page reloads while a transient template is active,
    *  the snapshot survives and gets restored on switch-away. */
@@ -120,6 +130,12 @@ function loadFromStorage(): PersistedShape {
         typeof parsed.linkedTemplateByAvatar === 'object' &&
         !Array.isArray(parsed.linkedTemplateByAvatar)
           ? (parsed.linkedTemplateByAvatar as Record<string, string>)
+          : {},
+      linkedTemplateByChatFile:
+        parsed.linkedTemplateByChatFile &&
+        typeof parsed.linkedTemplateByChatFile === 'object' &&
+        !Array.isArray(parsed.linkedTemplateByChatFile)
+          ? (parsed.linkedTemplateByChatFile as Record<string, string>)
           : {},
       mainPromptSnapshot:
         typeof parsed.mainPromptSnapshot === 'string' ? parsed.mainPromptSnapshot : null,
@@ -188,6 +204,7 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
   templates: initial.templates,
   activeTemplateId: initial.activeTemplateId,
   linkedTemplateByAvatar: initial.linkedTemplateByAvatar ?? {},
+  linkedTemplateByChatFile: initial.linkedTemplateByChatFile ?? {},
   mainPromptSnapshot: initial.mainPromptSnapshot ?? null,
 
   saveTemplateWithPrompt: (name, mainPrompt) => {
@@ -327,24 +344,73 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
     });
   },
 
+  setChatLinkedTemplate: (chatFile, templateId) => {
+    set((state) => {
+      const nextLinks = { ...state.linkedTemplateByChatFile };
+      if (templateId === null) {
+        delete nextLinks[chatFile];
+      } else {
+        nextLinks[chatFile] = templateId;
+      }
+      saveToStorage({
+        templates: state.templates,
+        activeTemplateId: state.activeTemplateId,
+        linkedTemplateByAvatar: state.linkedTemplateByAvatar,
+        linkedTemplateByChatFile: nextLinks,
+      });
+      return { linkedTemplateByChatFile: nextLinks };
+    });
+  },
+
+  ensureTemplate: (name, mainPrompt) => {
+    const trimmed = name.trim();
+    const state = get();
+    const existing = state.templates.find((t) => t.name === trimmed);
+    if (existing) return existing.id;
+    const gen = useGenerationStore.getState();
+    const template: PromptTemplate = {
+      id: generateId(),
+      name: trimmed,
+      prompt: { ...gen.prompt, mainPrompt },
+      context: { ...gen.context },
+      instruct: { ...gen.instruct },
+      promptOrder: gen.promptOrder.map((e) => ({ ...e })),
+      createdAt: Date.now(),
+    };
+    const nextTemplates = [...state.templates, template];
+    saveToStorage({
+      templates: nextTemplates,
+      activeTemplateId: state.activeTemplateId,
+      linkedTemplateByAvatar: state.linkedTemplateByAvatar,
+    });
+    set({ templates: nextTemplates });
+    return template.id;
+  },
+
   deleteTemplate: (id) => {
-    const { templates, activeTemplateId, linkedTemplateByAvatar } = get();
+    const { templates, activeTemplateId, linkedTemplateByAvatar, linkedTemplateByChatFile } = get();
     const nextTemplates = templates.filter((t) => t.id !== id);
     const nextActive = activeTemplateId === id ? null : activeTemplateId;
-    // Drop any character links that pointed at the deleted template.
+    // Drop any character/chat links that pointed at the deleted template.
     const nextLinks: Record<string, string> = {};
     for (const [avatar, templateId] of Object.entries(linkedTemplateByAvatar)) {
       if (templateId !== id) nextLinks[avatar] = templateId;
+    }
+    const nextChatLinks: Record<string, string> = {};
+    for (const [chatFile, templateId] of Object.entries(linkedTemplateByChatFile)) {
+      if (templateId !== id) nextChatLinks[chatFile] = templateId;
     }
     saveToStorage({
       templates: nextTemplates,
       activeTemplateId: nextActive,
       linkedTemplateByAvatar: nextLinks,
+      linkedTemplateByChatFile: nextChatLinks,
     });
     set({
       templates: nextTemplates,
       activeTemplateId: nextActive,
       linkedTemplateByAvatar: nextLinks,
+      linkedTemplateByChatFile: nextChatLinks,
     });
   },
 
@@ -421,9 +487,14 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
           templates: s.templates,
           activeTemplateId: s.activeTemplateId,
           linkedTemplateByAvatar: s.linkedTemplateByAvatar,
+          linkedTemplateByChatFile: s.linkedTemplateByChatFile,
           mainPromptSnapshot: s.mainPromptSnapshot,
         };
-        if (s.templates.length > 0 || Object.keys(s.linkedTemplateByAvatar).length > 0) {
+        if (
+          s.templates.length > 0 ||
+          Object.keys(s.linkedTemplateByAvatar).length > 0 ||
+          Object.keys(s.linkedTemplateByChatFile).length > 0
+        ) {
           patchServerKey(
             SERVER_KEY,
             snapshot as unknown as Record<string, unknown>,
@@ -440,6 +511,7 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
           templates: s.templates,
           activeTemplateId: s.activeTemplateId,
           linkedTemplateByAvatar: s.linkedTemplateByAvatar,
+          linkedTemplateByChatFile: s.linkedTemplateByChatFile,
           mainPromptSnapshot: s.mainPromptSnapshot,
         };
         patchServerKey(
@@ -458,16 +530,20 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
         stored.linkedTemplateByAvatar && typeof stored.linkedTemplateByAvatar === 'object'
           ? stored.linkedTemplateByAvatar
           : {};
+      const linkedTemplateByChatFile =
+        stored.linkedTemplateByChatFile && typeof stored.linkedTemplateByChatFile === 'object'
+          ? stored.linkedTemplateByChatFile
+          : {};
       const mainPromptSnapshot =
         typeof stored.mainPromptSnapshot === 'string' ? stored.mainPromptSnapshot : null;
       try {
         localStorage.setItem(
           STORAGE_KEY,
-          JSON.stringify({ templates, activeTemplateId, linkedTemplateByAvatar, mainPromptSnapshot }),
+          JSON.stringify({ templates, activeTemplateId, linkedTemplateByAvatar, linkedTemplateByChatFile, mainPromptSnapshot }),
         );
         recordServerTs(LOCAL_TS_KEY, serverTs);
       } catch { /* ignore */ }
-      set({ templates, activeTemplateId, linkedTemplateByAvatar, mainPromptSnapshot });
+      set({ templates, activeTemplateId, linkedTemplateByAvatar, linkedTemplateByChatFile, mainPromptSnapshot });
       _persistEnabled = true;
     } catch {
       _persistEnabled = true;

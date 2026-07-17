@@ -215,6 +215,9 @@ interface GenerationState {
   defaultPresetId: string | null;
   /** Per-character linked preset, keyed by avatar filename. */
   linkedPresetByAvatar: Record<string, string>;
+  /** Per-chat-session linked preset, keyed by chat file name. Takes
+   *  precedence over the character link when both exist. */
+  linkedPresetByChatFile: Record<string, string>;
 
   prompt: PromptConfig;
   context: ContextConfig;
@@ -239,6 +242,11 @@ interface GenerationState {
   savePresetAndLink: (name: string, avatar: string) => string;
   /** Link an existing preset to a character (or unlink with null). */
   setLinkedPreset: (avatar: string, presetId: string | null) => void;
+  /** Link an existing preset to a chat session (or unlink with null). */
+  setChatLinkedPreset: (chatFile: string, presetId: string | null) => void;
+  /** Find a preset by exact name or create it with the given sampler.
+   *  Never touches activePresetId/defaultPresetId. Returns the preset id. */
+  ensurePreset: (name: string, sampler: SamplerParams) => string;
 
   setPrompt: (prompt: Partial<PromptConfig>) => void;
   resetPrompt: () => void;
@@ -275,6 +283,7 @@ interface PersistedShape {
   activePresetId: string | null;
   defaultPresetId?: string | null;
   linkedPresetByAvatar?: Record<string, string>;
+  linkedPresetByChatFile?: Record<string, string>;
   prompt: PromptConfig;
   context: ContextConfig;
   instruct: InstructConfig;
@@ -306,6 +315,7 @@ function persist(state: GenerationState) {
     activePresetId: state.activePresetId,
     defaultPresetId: state.defaultPresetId,
     linkedPresetByAvatar: state.linkedPresetByAvatar,
+    linkedPresetByChatFile: state.linkedPresetByChatFile,
     prompt: state.prompt,
     context: state.context,
     instruct: state.instruct,
@@ -357,6 +367,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   activePresetId: initial.activePresetId ?? null,
   defaultPresetId: initial.defaultPresetId ?? initial.activePresetId ?? null,
   linkedPresetByAvatar: initial.linkedPresetByAvatar ?? {},
+  linkedPresetByChatFile: initial.linkedPresetByChatFile ?? {},
   prompt: { ...DEFAULT_PROMPT_CONFIG, ...(initial.prompt ?? {}) },
   context: { ...DEFAULT_CONTEXT_CONFIG, ...(initial.context ?? {}) },
   instruct: { ...DEFAULT_INSTRUCT_CONFIG, ...(initial.instruct ?? {}) },
@@ -476,14 +487,18 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   },
 
   deletePreset: (id) => {
-    const { presets, activePresetId, defaultPresetId, linkedPresetByAvatar } = get();
+    const { presets, activePresetId, defaultPresetId, linkedPresetByAvatar, linkedPresetByChatFile } = get();
     const nextPresets = presets.filter((p) => p.id !== id);
     const nextActive = activePresetId === id ? null : activePresetId;
     const nextDefault = defaultPresetId === id ? null : defaultPresetId;
-    // Drop any character links that point at the deleted preset.
+    // Drop any character/chat links that point at the deleted preset.
     const nextLinks: Record<string, string> = {};
     for (const [avatar, presetId] of Object.entries(linkedPresetByAvatar)) {
       if (presetId !== id) nextLinks[avatar] = presetId;
+    }
+    const nextChatLinks: Record<string, string> = {};
+    for (const [chatFile, presetId] of Object.entries(linkedPresetByChatFile)) {
+      if (presetId !== id) nextChatLinks[chatFile] = presetId;
     }
     set((state) => {
       const next = {
@@ -492,6 +507,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         activePresetId: nextActive,
         defaultPresetId: nextDefault,
         linkedPresetByAvatar: nextLinks,
+        linkedPresetByChatFile: nextChatLinks,
       };
       persist(next);
       return {
@@ -499,6 +515,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         activePresetId: nextActive,
         defaultPresetId: nextDefault,
         linkedPresetByAvatar: nextLinks,
+        linkedPresetByChatFile: nextChatLinks,
       };
     });
   },
@@ -543,6 +560,39 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       persist(next);
       return { linkedPresetByAvatar: nextLinks };
     });
+  },
+
+  setChatLinkedPreset: (chatFile, presetId) => {
+    set((state) => {
+      const nextLinks = { ...state.linkedPresetByChatFile };
+      if (presetId === null) {
+        delete nextLinks[chatFile];
+      } else {
+        nextLinks[chatFile] = presetId;
+      }
+      const next = { ...state, linkedPresetByChatFile: nextLinks };
+      persist(next);
+      return { linkedPresetByChatFile: nextLinks };
+    });
+  },
+
+  ensurePreset: (name, sampler) => {
+    const trimmed = name.trim();
+    const existing = get().presets.find((p) => p.name === trimmed);
+    if (existing) return existing.id;
+    const preset: GenerationPreset = {
+      id: generatePresetId(),
+      name: trimmed,
+      sampler: { ...sampler },
+      createdAt: Date.now(),
+    };
+    set((state) => {
+      const nextPresets = [...state.presets, preset];
+      const next = { ...state, presets: nextPresets };
+      persist(next);
+      return { presets: nextPresets };
+    });
+    return preset.id;
   },
 
   setPrompt: (patch) => {
@@ -643,6 +693,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       activePresetId: null,
       defaultPresetId: null,
       linkedPresetByAvatar: {},
+      linkedPresetByChatFile: {},
       prompt: { ...DEFAULT_PROMPT_CONFIG },
       context: { ...DEFAULT_CONTEXT_CONFIG },
       instruct: { ...DEFAULT_INSTRUCT_CONFIG },
@@ -668,6 +719,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           activePresetId: s.activePresetId,
           defaultPresetId: s.defaultPresetId,
           linkedPresetByAvatar: s.linkedPresetByAvatar,
+          linkedPresetByChatFile: s.linkedPresetByChatFile,
           prompt: s.prompt,
           context: s.context,
           instruct: s.instruct,
@@ -685,6 +737,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         activePresetId: stored.activePresetId ?? null,
         defaultPresetId: stored.defaultPresetId ?? null,
         linkedPresetByAvatar: (stored.linkedPresetByAvatar as Record<string, string>) ?? {},
+        linkedPresetByChatFile: (stored.linkedPresetByChatFile as Record<string, string>) ?? {},
         prompt: { ...DEFAULT_PROMPT_CONFIG, ...(stored.prompt ?? {}) },
         context: { ...DEFAULT_CONTEXT_CONFIG, ...(stored.context ?? {}) },
         instruct: { ...DEFAULT_INSTRUCT_CONFIG, ...(stored.instruct ?? {}) },
@@ -698,6 +751,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         activePresetId: merged.activePresetId,
         defaultPresetId: merged.defaultPresetId,
         linkedPresetByAvatar: merged.linkedPresetByAvatar,
+        linkedPresetByChatFile: merged.linkedPresetByChatFile,
         prompt: merged.prompt,
         context: merged.context,
         instruct: merged.instruct,
