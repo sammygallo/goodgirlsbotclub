@@ -4,7 +4,6 @@ import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, Che
 import { showToastGlobal } from '../ui/Toast';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
-import { useProjectStore } from '../../stores/projectStore';
 import { usePersonaStore } from '../../stores/personaStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { processMacros, type MacroContext } from '../../utils/macros';
@@ -731,14 +730,7 @@ export function ChatView() {
     if (!selectedCharacter) return;
     if (lastCharacterRef.current !== selectedCharacter.avatar) return;
 
-    // The Works panel can request a specific chat while switching
-    // characters; honor that over the latest-chat default.
-    const pendingChat = useProjectStore
-      .getState()
-      .consumePendingChat(selectedCharacter.avatar);
-    if (pendingChat) {
-      loadChat(selectedCharacter.avatar, pendingChat);
-    } else if (chatFiles.length > 0) {
+    if (chatFiles.length > 0) {
       loadChat(selectedCharacter.avatar, chatFiles[0].fileName);
     } else if (messages.length === 0) {
       startNewChat(selectedCharacter);
