@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import { Palette } from 'lucide-react';
 import { useGenerationStore } from '../../stores/generationStore';
 import { usePromptTemplateStore } from '../../stores/promptTemplateStore';
-import { QUICK_CHAT_STYLES } from '../../utils/chatStyles';
+import { QUICK_CHAT_STYLES, CHAT_STYLE_NONE } from '../../utils/chatStyles';
 import { Modal } from '../ui';
 
 interface ChatStyleModalProps {
@@ -42,19 +43,30 @@ export function ChatStyleModal({ isOpen, onClose, chatFile, characterAvatar }: C
 
   const effectivePreset = presets.find((p) => p.id === (chatPresetId ?? charPresetId));
 
+  // Which halves a quick-style tap applies. Unchecking "Writing style" lets
+  // quick styles set only the sampler (no HYPERCODE prompt), and vice versa.
+  const [applyPrompt, setApplyPrompt] = useState(true);
+  const [applySampler, setApplySampler] = useState(true);
+
   const applyQuickStyle = (styleId: string) => {
     const style = QUICK_CHAT_STYLES.find((s) => s.id === styleId);
     if (!style) return;
-    const templateId = usePromptTemplateStore.getState().ensureTemplate(style.name, style.mainPrompt);
-    const presetId = useGenerationStore.getState().ensurePreset(style.name, style.sampler);
-    setChatLinkedTemplate(chatFile, templateId);
-    setChatLinkedPreset(chatFile, presetId);
+    if (applyPrompt) {
+      const templateId = usePromptTemplateStore.getState().ensureTemplate(style.name, style.mainPrompt);
+      setChatLinkedTemplate(chatFile, templateId);
+    }
+    if (applySampler) {
+      const presetId = useGenerationStore.getState().ensurePreset(style.name, style.sampler);
+      setChatLinkedPreset(chatFile, presetId);
+    }
   };
 
+  // A card lights up when any half of this chat's style points at it, so
+  // mixed setups (e.g. Immersive prompt + Natural sampler) show both.
   const quickStyleActive = (styleName: string): boolean => {
     const t = chatTemplateId ? templates.find((x) => x.id === chatTemplateId) : undefined;
     const p = chatPresetId ? presets.find((x) => x.id === chatPresetId) : undefined;
-    return t?.name === styleName && p?.name === styleName;
+    return t?.name === styleName || p?.name === styleName;
   };
 
   return (
@@ -98,6 +110,31 @@ export function ChatStyleModal({ isOpen, onClose, chatFile, characterAvatar }: C
               );
             })}
           </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs text-[var(--color-text-secondary)]">
+              <input
+                type="checkbox"
+                checked={applyPrompt}
+                onChange={(e) => setApplyPrompt(e.target.checked)}
+                className="w-3.5 h-3.5 accent-[var(--color-primary)]"
+              />
+              Writing style (HYPERCODE prompt)
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs text-[var(--color-text-secondary)]">
+              <input
+                type="checkbox"
+                checked={applySampler}
+                onChange={(e) => setApplySampler(e.target.checked)}
+                className="w-3.5 h-3.5 accent-[var(--color-primary)]"
+              />
+              Generation settings (length &amp; sampler)
+            </label>
+          </div>
+          {!applyPrompt && !applySampler && (
+            <p className="text-xs text-[var(--color-text-secondary)] mt-1">
+              Both parts are unchecked — tapping a quick style won't change anything.
+            </p>
+          )}
         </div>
 
         {/* Prompt style */}
@@ -113,6 +150,11 @@ export function ChatStyleModal({ isOpen, onClose, chatFile, characterAvatar }: C
             <option value="">
               Default — {charTemplate ? `${charTemplate.name} (character)` : 'global settings'}
             </option>
+            {charTemplate && (
+              <option value={CHAT_STYLE_NONE}>
+                None — global settings (skip character's style)
+              </option>
+            )}
             {templates.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name}
@@ -134,6 +176,11 @@ export function ChatStyleModal({ isOpen, onClose, chatFile, characterAvatar }: C
             <option value="">
               Default — {charPreset ? `${charPreset.name} (character)` : 'global settings'}
             </option>
+            {charPreset && (
+              <option value={CHAT_STYLE_NONE}>
+                None — global settings (skip character's preset)
+              </option>
+            )}
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}

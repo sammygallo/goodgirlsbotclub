@@ -15,6 +15,7 @@ import { BottomSheet } from '../ui/BottomSheet';
 import { ChatHistoryPanel } from './ChatHistoryPanel';
 import { ChatLorebookModal } from './ChatLorebookModal';
 import { ChatStyleModal } from './ChatStyleModal';
+import { CHAT_STYLE_NONE } from '../../utils/chatStyles';
 import { GenerateLorebookModal } from '../worldinfo/GenerateLorebookModal';
 import { GenerateSceneModal } from './GenerateSceneModal';
 import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
@@ -635,14 +636,18 @@ export function ChatView() {
   }, [selectedCharacter?.avatar]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-load the linked generation preset. Chat-session link wins over the
-  // character link (Option B); with neither, restore the user's default. All
-  // loads are transient — on unmount or switch-away the default is restored.
+  // character link (Option B); the CHAT_STYLE_NONE sentinel forces global
+  // settings even when the character has a link; with neither, restore the
+  // user's default. All loads are transient — on unmount or switch-away the
+  // default is restored.
   useEffect(() => {
     const avatar = selectedCharacter?.avatar;
     const gen = useGenerationStore.getState();
+    const chatLink = currentChatFile ? gen.linkedPresetByChatFile[currentChatFile] : undefined;
     const linked =
-      (currentChatFile ? gen.linkedPresetByChatFile[currentChatFile] : undefined) ??
-      (avatar ? gen.linkedPresetByAvatar[avatar] : undefined);
+      chatLink === CHAT_STYLE_NONE
+        ? undefined
+        : chatLink ?? (avatar ? gen.linkedPresetByAvatar[avatar] : undefined);
     if (linked) {
       gen.loadPresetTransient(linked);
     } else {
@@ -653,15 +658,18 @@ export function ChatView() {
     };
   }, [selectedCharacter?.avatar, currentChatFile, chatLinkedPresetId]);
 
-  // Auto-load the linked HYPERCODE/prompt template, chat-session link first.
-  // Only the mainPrompt is swapped — the user's other generation settings are
-  // preserved. On exit, the original mainPrompt is restored.
+  // Auto-load the linked HYPERCODE/prompt template, chat-session link first,
+  // with the same CHAT_STYLE_NONE escape hatch. Only the mainPrompt is
+  // swapped — the user's other generation settings are preserved. On exit,
+  // the original mainPrompt is restored.
   useEffect(() => {
     const avatar = selectedCharacter?.avatar;
     const tpl = usePromptTemplateStore.getState();
+    const chatLink = currentChatFile ? tpl.linkedTemplateByChatFile[currentChatFile] : undefined;
     const linked =
-      (currentChatFile ? tpl.linkedTemplateByChatFile[currentChatFile] : undefined) ??
-      (avatar ? tpl.linkedTemplateByAvatar[avatar] : undefined);
+      chatLink === CHAT_STYLE_NONE
+        ? undefined
+        : chatLink ?? (avatar ? tpl.linkedTemplateByAvatar[avatar] : undefined);
     if (linked) {
       tpl.loadTemplateMainPromptTransient(linked);
     } else {

@@ -244,8 +244,9 @@ interface GenerationState {
   setLinkedPreset: (avatar: string, presetId: string | null) => void;
   /** Link an existing preset to a chat session (or unlink with null). */
   setChatLinkedPreset: (chatFile: string, presetId: string | null) => void;
-  /** Find a preset by exact name or create it with the given sampler.
-   *  Never touches activePresetId/defaultPresetId. Returns the preset id. */
+  /** Find a preset by exact name (resetting its sampler to the given values)
+   *  or create it. Never touches activePresetId/defaultPresetId. Returns the
+   *  preset id. Used by quick chat styles, which must be deterministic. */
   ensurePreset: (name: string, sampler: SamplerParams) => string;
 
   setPrompt: (prompt: Partial<PromptConfig>) => void;
@@ -579,7 +580,23 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   ensurePreset: (name, sampler) => {
     const trimmed = name.trim();
     const existing = get().presets.find((p) => p.name === trimmed);
-    if (existing) return existing.id;
+    if (existing) {
+      // Reset to stock values — tapping a quick style should always yield
+      // that style, not whatever the entry drifted to. If this preset is
+      // currently active (transiently loaded for the open chat), mirror the
+      // reset into the live sampler too.
+      set((state) => {
+        const nextPresets = state.presets.map((p) =>
+          p.id === existing.id ? { ...p, sampler: { ...sampler } } : p,
+        );
+        const nextSampler =
+          state.activePresetId === existing.id ? { ...sampler } : state.sampler;
+        const next = { ...state, presets: nextPresets, sampler: nextSampler };
+        persist(next);
+        return { presets: nextPresets, sampler: nextSampler };
+      });
+      return existing.id;
+    }
     const preset: GenerationPreset = {
       id: generatePresetId(),
       name: trimmed,
