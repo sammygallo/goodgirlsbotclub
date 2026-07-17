@@ -218,6 +218,14 @@ interface GenerationState {
   /** Per-chat-session linked preset, keyed by chat file name. Takes
    *  precedence over the character link when both exist. */
   linkedPresetByChatFile: Record<string, string>;
+  /**
+   * Snapshot of the user's own sampler taken when a transient (linked)
+   * preset loads and no default preset exists to restore from. Without it,
+   * restoreDefault() is a no-op for users who never saved a preset, so a
+   * styled chat's sampler (e.g. Natural Chat's 400-token cap) lingers
+   * globally after switching away. Persisted so a mid-chat reload heals too.
+   */
+  samplerSnapshot: SamplerParams | null;
 
   prompt: PromptConfig;
   context: ContextConfig;
@@ -285,6 +293,7 @@ interface PersistedShape {
   defaultPresetId?: string | null;
   linkedPresetByAvatar?: Record<string, string>;
   linkedPresetByChatFile?: Record<string, string>;
+  samplerSnapshot?: SamplerParams | null;
   prompt: PromptConfig;
   context: ContextConfig;
   instruct: InstructConfig;
@@ -317,6 +326,7 @@ function persist(state: GenerationState) {
     defaultPresetId: state.defaultPresetId,
     linkedPresetByAvatar: state.linkedPresetByAvatar,
     linkedPresetByChatFile: state.linkedPresetByChatFile,
+    samplerSnapshot: state.samplerSnapshot,
     prompt: state.prompt,
     context: state.context,
     instruct: state.instruct,
@@ -369,6 +379,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   defaultPresetId: initial.defaultPresetId ?? initial.activePresetId ?? null,
   linkedPresetByAvatar: initial.linkedPresetByAvatar ?? {},
   linkedPresetByChatFile: initial.linkedPresetByChatFile ?? {},
+  samplerSnapshot: initial.samplerSnapshot ?? null,
   prompt: { ...DEFAULT_PROMPT_CONFIG, ...(initial.prompt ?? {}) },
   context: { ...DEFAULT_CONTEXT_CONFIG, ...(initial.context ?? {}) },
   instruct: { ...DEFAULT_INSTRUCT_CONFIG, ...(initial.instruct ?? {}) },
@@ -460,24 +471,41 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     });
   },
 
-  // In-memory only. Both callers (ChatView's character-link auto-loader and
-  // restoreDefault below) run on every chat-open / unmount, so persisting
-  // here would silently overwrite the user's hand-tuned sampler with the
-  // linked preset's stored values on every session — the user's edits would
-  // never survive a logout/login.
+  // Sampler swap is in-memory only. Both callers (ChatView's link auto-loader
+  // and restoreDefault below) run on every chat-open / unmount, so persisting
+  // the swapped sampler here would silently overwrite the user's hand-tuned
+  // sampler with the linked preset's stored values on every session. The
+  // snapshot, however, IS persisted — it's what makes the original sampler
+  // recoverable for users with no default preset (see samplerSnapshot).
   loadPresetTransient: (id) => {
-    const { presets } = get();
+    const { presets, defaultPresetId, samplerSnapshot, activePresetId, sampler } = get();
     const preset = presets.find((p) => p.id === id);
     if (!preset) return;
+    // Snapshot once, and only the user's own sampler — never a value another
+    // transient load already put in place.
+    if (!defaultPresetId && samplerSnapshot === null && activePresetId === null) {
+      set((state) => {
+        const next = { ...state, samplerSnapshot: { ...sampler } };
+        persist(next);
+        return { samplerSnapshot: next.samplerSnapshot };
+      });
+    }
     set({ sampler: { ...preset.sampler }, activePresetId: preset.id });
   },
 
-  // Also in-memory only — see loadPresetTransient. ChatView calls this on
-  // unmount and on switch to an unlinked character; persisting would clobber
-  // server-stored edits with the default preset's snapshot.
   restoreDefault: () => {
-    const { defaultPresetId, presets, activePresetId } = get();
+    const { defaultPresetId, presets, activePresetId, samplerSnapshot } = get();
     if (!defaultPresetId) {
+      // No default preset — fall back to the snapshot taken when the first
+      // transient preset loaded, so styled-chat samplers don't linger.
+      if (samplerSnapshot) {
+        set((state) => {
+          const next = { ...state, sampler: { ...samplerSnapshot }, samplerSnapshot: null, activePresetId: null };
+          persist(next);
+          return { sampler: next.sampler, samplerSnapshot: null, activePresetId: null };
+        });
+        return;
+      }
       if (activePresetId !== null) set({ activePresetId: null });
       return;
     }
@@ -711,6 +739,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       defaultPresetId: null,
       linkedPresetByAvatar: {},
       linkedPresetByChatFile: {},
+      samplerSnapshot: null,
       prompt: { ...DEFAULT_PROMPT_CONFIG },
       context: { ...DEFAULT_CONTEXT_CONFIG },
       instruct: { ...DEFAULT_INSTRUCT_CONFIG },
@@ -737,6 +766,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           defaultPresetId: s.defaultPresetId,
           linkedPresetByAvatar: s.linkedPresetByAvatar,
           linkedPresetByChatFile: s.linkedPresetByChatFile,
+          samplerSnapshot: s.samplerSnapshot,
           prompt: s.prompt,
           context: s.context,
           instruct: s.instruct,
@@ -755,6 +785,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         defaultPresetId: stored.defaultPresetId ?? null,
         linkedPresetByAvatar: (stored.linkedPresetByAvatar as Record<string, string>) ?? {},
         linkedPresetByChatFile: (stored.linkedPresetByChatFile as Record<string, string>) ?? {},
+        samplerSnapshot: stored.samplerSnapshot ?? null,
         prompt: { ...DEFAULT_PROMPT_CONFIG, ...(stored.prompt ?? {}) },
         context: { ...DEFAULT_CONTEXT_CONFIG, ...(stored.context ?? {}) },
         instruct: { ...DEFAULT_INSTRUCT_CONFIG, ...(stored.instruct ?? {}) },
@@ -769,6 +800,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         defaultPresetId: merged.defaultPresetId,
         linkedPresetByAvatar: merged.linkedPresetByAvatar,
         linkedPresetByChatFile: merged.linkedPresetByChatFile,
+        samplerSnapshot: merged.samplerSnapshot ?? null,
         prompt: merged.prompt,
         context: merged.context,
         instruct: merged.instruct,
