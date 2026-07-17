@@ -942,12 +942,23 @@ function buildConversationContext(
   const personality = sub(getCharacterField(character, 'personality'));
   const scenario = sub(getCharacterField(character, 'scenario'));
   const mesExample = sub(getCharacterField(character, 'mes_example'));
+  // A transiently-applied linked template (mainPromptSnapshot is non-null
+  // while one is active) is an explicit per-chat/per-character style choice.
+  // It must beat BOTH of the card author's style channels — system_prompt
+  // AND post_history_instructions. The PHI lands after the chat history
+  // (the most authoritative slot), so a card PHI like "craft cinematically
+  // rich immersive roleplay" re-instructs prose on every turn and silently
+  // defeats the chosen style if left in place.
+  const linkedStyleActive =
+    usePromptTemplateStore.getState().mainPromptSnapshot !== null;
+
   const charSystemPromptOverride = genState.prompt.respectCharacterOverride
     ? sub(getCharacterField(character, 'system_prompt'))
     : '';
-  const charPostHistoryInstructions = genState.prompt.respectCharacterPHI
-    ? sub(getCharacterField(character, 'post_history_instructions'))
-    : '';
+  const charPostHistoryInstructions =
+    genState.prompt.respectCharacterPHI && !linkedStyleActive
+      ? sub(getCharacterField(character, 'post_history_instructions'))
+      : '';
 
   // User-level prompt overrides from generation settings
   const userMainPrompt = sub(genState.prompt.mainPrompt);
@@ -978,14 +989,10 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   const charInfoBlock = charInfoParts.join('\n\n');
 
   // Main system prompt: linked style > character override > user override >
-  // default. A transiently-applied linked template (mainPromptSnapshot is
-  // non-null while one is active) is an explicit per-chat/per-character style
-  // choice, so it must beat the card's baked-in system_prompt — otherwise
-  // cards that ship their own prompt silently ignore the chosen style while
-  // the style's sampler cap still applies, producing verbose-but-truncated
-  // replies.
-  const linkedStyleActive =
-    usePromptTemplateStore.getState().mainPromptSnapshot !== null;
+  // default (see linkedStyleActive above — an explicit style choice beats
+  // the card's baked-in system_prompt; otherwise cards shipping their own
+  // prompt silently ignore the chosen style while the style's sampler cap
+  // still applies, producing verbose-but-truncated replies).
   const mainPrompt =
     (linkedStyleActive && userMainPrompt) ||
     charSystemPromptOverride ||
@@ -1037,7 +1044,14 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     rag_context: ragContext
       ? `[Relevant background information]\n${ragContext}`
       : '',
-    char_phi: charPostHistoryInstructions,
+    // With a linked style active the card PHI is suppressed (see above); the
+    // slot instead carries a style reinforcement. Post-history placement is
+    // what makes this work: in an established chat the history itself anchors
+    // the old style (pages of prose beat one instruction at the top), so the
+    // chosen style needs the last word too.
+    char_phi: linkedStyleActive
+      ? '[Style note: follow the writing style and reply length defined in the system prompt for this conversation, even if earlier replies were longer or written differently.]'
+      : charPostHistoryInstructions,
     user_phi: userPHI,
     wi_after_an: wiAfterAn,
     ext_after_an: extAfterAn,
