@@ -72,9 +72,10 @@ interface PromptTemplateState {
   setLinkedTemplate: (avatar: string, templateId: string | null) => void;
   /** Link an existing template to a chat session (or unlink with null). */
   setChatLinkedTemplate: (chatFile: string, templateId: string | null) => void;
-  /** Find a template by exact name or create one with the given mainPrompt
-   *  (other settings taken from current globals). Never changes
-   *  activeTemplateId. Returns the template id. */
+  /** Find a template by exact name (resetting its mainPrompt to the given
+   *  value) or create one (other settings taken from current globals). Never
+   *  changes activeTemplateId. Returns the template id. Used by quick chat
+   *  styles, which must be deterministic. */
   ensureTemplate: (name: string, mainPrompt: string) => string;
   importTemplates: (json: string) => { imported: number; errors: number };
   exportTemplates: () => string;
@@ -366,7 +367,26 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
     const trimmed = name.trim();
     const state = get();
     const existing = state.templates.find((t) => t.name === trimmed);
-    if (existing) return existing.id;
+    if (existing) {
+      // Reset to the stock prompt — see ensurePreset. If this template is
+      // transiently active for the open chat, push the new mainPrompt into
+      // the live generation config so the reset applies immediately.
+      const nextTemplates = state.templates.map((t) =>
+        t.id === existing.id
+          ? { ...t, prompt: { ...t.prompt, mainPrompt } }
+          : t,
+      );
+      saveToStorage({
+        templates: nextTemplates,
+        activeTemplateId: state.activeTemplateId,
+        linkedTemplateByAvatar: state.linkedTemplateByAvatar,
+      });
+      set({ templates: nextTemplates });
+      if (state.activeTemplateId === existing.id && state.mainPromptSnapshot !== null) {
+        useGenerationStore.getState().setPrompt({ mainPrompt });
+      }
+      return existing.id;
+    }
     const gen = useGenerationStore.getState();
     const template: PromptTemplate = {
       id: generateId(),

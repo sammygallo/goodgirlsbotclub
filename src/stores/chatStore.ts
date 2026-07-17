@@ -35,6 +35,7 @@ import {
   trimHistoryToBudget,
 } from '../utils/tokenizer';
 import { useUsageStore } from './usageStore';
+import { usePromptTemplateStore } from './promptTemplateStore';
 import { getInstructTemplate, formatInstructPrompt } from '../utils/instructTemplates';
 import { useRegexScriptStore } from './regexScriptStore';
 import { applyRegexScripts, getActiveScripts } from '../utils/regexScripts';
@@ -976,8 +977,17 @@ Choose the emotion that best matches how ${character.name} would feel based on t
 
   const charInfoBlock = charInfoParts.join('\n\n');
 
-  // Main system prompt: character override > user override > default
+  // Main system prompt: linked style > character override > user override >
+  // default. A transiently-applied linked template (mainPromptSnapshot is
+  // non-null while one is active) is an explicit per-chat/per-character style
+  // choice, so it must beat the card's baked-in system_prompt — otherwise
+  // cards that ship their own prompt silently ignore the chosen style while
+  // the style's sampler cap still applies, producing verbose-but-truncated
+  // replies.
+  const linkedStyleActive =
+    usePromptTemplateStore.getState().mainPromptSnapshot !== null;
   const mainPrompt =
+    (linkedStyleActive && userMainPrompt) ||
     charSystemPromptOverride ||
     userMainPrompt ||
     `You are ${character.name}. Stay in character.`;
