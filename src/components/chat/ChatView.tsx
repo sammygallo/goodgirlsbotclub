@@ -14,6 +14,7 @@ import { ChatOptionsMenu } from './ChatOptionsMenu';
 import { BottomSheet } from '../ui/BottomSheet';
 import { ChatHistoryPanel } from './ChatHistoryPanel';
 import { ChatLorebookModal } from './ChatLorebookModal';
+import { ChatStyleModal } from './ChatStyleModal';
 import { GenerateLorebookModal } from '../worldinfo/GenerateLorebookModal';
 import { GenerateSceneModal } from './GenerateSceneModal';
 import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
@@ -205,6 +206,16 @@ export function ChatView() {
   const [chatLorebookOpen, setChatLorebookOpen] = useState(false);
   const chatLorebookCount = useWorldInfoStore((s) =>
     currentChatFile ? (s.chatLinkedBookIds[currentChatFile]?.length ?? 0) : 0
+  );
+  // Per-chat style: chat-linked preset/template ids. Subscribed reactively so
+  // editing links in the Chat Style modal re-applies them while the chat is
+  // open (the transient-load effects below depend on these).
+  const [chatStyleOpen, setChatStyleOpen] = useState(false);
+  const chatLinkedPresetId = useGenerationStore((s) =>
+    currentChatFile ? s.linkedPresetByChatFile[currentChatFile] : undefined
+  );
+  const chatLinkedTemplateId = usePromptTemplateStore((s) =>
+    currentChatFile ? s.linkedTemplateByChatFile[currentChatFile] : undefined
   );
 
   // Phase 6.4: VN mode — background image and costume
@@ -623,45 +634,43 @@ export function ChatView() {
     }
   }, [selectedCharacter?.avatar]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-load character-linked generation preset (Option B). On character switch,
-  // if the active character has a linked preset, load it transiently. On unmount
-  // or unlinked-character switch, restore the user's default preset.
+  // Auto-load the linked generation preset. Chat-session link wins over the
+  // character link (Option B); with neither, restore the user's default. All
+  // loads are transient — on unmount or switch-away the default is restored.
   useEffect(() => {
     const avatar = selectedCharacter?.avatar;
-    if (!avatar) {
-      useGenerationStore.getState().restoreDefault();
-      return;
-    }
-    const linked = useGenerationStore.getState().linkedPresetByAvatar[avatar];
+    const gen = useGenerationStore.getState();
+    const linked =
+      (currentChatFile ? gen.linkedPresetByChatFile[currentChatFile] : undefined) ??
+      (avatar ? gen.linkedPresetByAvatar[avatar] : undefined);
     if (linked) {
-      useGenerationStore.getState().loadPresetTransient(linked);
+      gen.loadPresetTransient(linked);
     } else {
-      useGenerationStore.getState().restoreDefault();
+      gen.restoreDefault();
     }
     return () => {
       useGenerationStore.getState().restoreDefault();
     };
-  }, [selectedCharacter?.avatar]);
+  }, [selectedCharacter?.avatar, currentChatFile, chatLinkedPresetId]);
 
-  // Auto-load character-linked HYPERCODE/prompt template. Only the
-  // mainPrompt is swapped — the user's other generation settings are
+  // Auto-load the linked HYPERCODE/prompt template, chat-session link first.
+  // Only the mainPrompt is swapped — the user's other generation settings are
   // preserved. On exit, the original mainPrompt is restored.
   useEffect(() => {
     const avatar = selectedCharacter?.avatar;
-    if (!avatar) {
-      usePromptTemplateStore.getState().restoreDefaultMainPrompt();
-      return;
-    }
-    const linked = usePromptTemplateStore.getState().linkedTemplateByAvatar[avatar];
+    const tpl = usePromptTemplateStore.getState();
+    const linked =
+      (currentChatFile ? tpl.linkedTemplateByChatFile[currentChatFile] : undefined) ??
+      (avatar ? tpl.linkedTemplateByAvatar[avatar] : undefined);
     if (linked) {
-      usePromptTemplateStore.getState().loadTemplateMainPromptTransient(linked);
+      tpl.loadTemplateMainPromptTransient(linked);
     } else {
-      usePromptTemplateStore.getState().restoreDefaultMainPrompt();
+      tpl.restoreDefaultMainPrompt();
     }
     return () => {
       usePromptTemplateStore.getState().restoreDefaultMainPrompt();
     };
-  }, [selectedCharacter?.avatar]);
+  }, [selectedCharacter?.avatar, currentChatFile, chatLinkedTemplateId]);
 
   // Phase 6.4: track the last 3 distinct AI speakers for VN group sprite layout
   const recentSpeakers = useMemo<string[]>(() => {
@@ -1865,6 +1874,8 @@ export function ChatView() {
           }}
           onStartNewChat={() => startNewChat(selectedCharacter)}
           onManageChatFiles={() => setIsHistoryPanelOpen(true)}
+          onChatStyle={currentChatFile ? () => setChatStyleOpen(true) : undefined}
+          chatStyleActive={!!(chatLinkedPresetId || chatLinkedTemplateId)}
           onSaveCheckpoint={currentChatFile && lastAiMessageId ? () => handleCheckpoint(lastAiMessageId) : undefined}
           onDeleteMessages={() => startNewChat(selectedCharacter)}
           onConvertToGroup={!isGroupChatMode && selectedCharacter ? () => { setConvertGroupSelected([]); setIsConvertToGroupOpen(true); } : undefined}
@@ -1980,6 +1991,16 @@ export function ChatView() {
           isOpen={chatLorebookOpen}
           onClose={() => setChatLorebookOpen(false)}
           chatFile={currentChatFile}
+        />
+      )}
+
+      {/* Chat Style modal (opened from chat options menu) */}
+      {currentChatFile && (
+        <ChatStyleModal
+          isOpen={chatStyleOpen}
+          onClose={() => setChatStyleOpen(false)}
+          chatFile={currentChatFile}
+          characterAvatar={selectedCharacter?.avatar}
         />
       )}
 

@@ -15,6 +15,7 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 import {
   BookOpen, FileText, GitFork, Library, MessageSquare, FolderOpen,
   Trash2, Flag, Users, RefreshCw, ArrowRight, User, Image, ImageOff, BookPlus,
+  Palette,
 } from 'lucide-react';
 import { BottomSheet } from '../ui/BottomSheet';
 
@@ -41,6 +42,9 @@ interface ChatOptionsMenuProps {
 
   onStartNewChat: () => void;
   onManageChatFiles: () => void;
+  onChatStyle?: () => void;
+  /** True when this chat has its own style (linked preset or template). */
+  chatStyleActive?: boolean;
   onSaveCheckpoint?: () => void;
   onDeleteMessages: () => void;
   onConvertToGroup?: () => void;
@@ -103,6 +107,8 @@ function MenuBody({
   extensionPanels,
   onStartNewChat,
   onManageChatFiles,
+  onChatStyle,
+  chatStyleActive,
   onSaveCheckpoint,
   onDeleteMessages,
   onConvertToGroup,
@@ -126,6 +132,8 @@ function MenuBody({
   }>;
   onStartNewChat: () => void;
   onManageChatFiles: () => void;
+  onChatStyle?: () => void;
+  chatStyleActive?: boolean;
   onSaveCheckpoint?: () => void;
   onDeleteMessages: () => void;
   onConvertToGroup?: () => void;
@@ -173,6 +181,13 @@ function MenuBody({
       <div className="py-1">
         <ActionRow icon={MessageSquare} label="Start new chat" onClick={wrap(onStartNewChat)} />
         <ActionRow icon={FolderOpen} label="Manage chat files" onClick={wrap(onManageChatFiles)} />
+        {onChatStyle && (
+          <ActionRow
+            icon={Palette}
+            label={chatStyleActive ? 'Chat style (custom)' : 'Chat style'}
+            onClick={wrap(onChatStyle)}
+          />
+        )}
         {onSaveCheckpoint && (
           <ActionRow icon={Flag} label="Save checkpoint" onClick={wrap(onSaveCheckpoint)} />
         )}
@@ -293,6 +308,8 @@ export function ChatOptionsMenu({
   lorebook,
   onStartNewChat,
   onManageChatFiles,
+  onChatStyle,
+  chatStyleActive,
   onSaveCheckpoint,
   onDeleteMessages,
   onConvertToGroup,
@@ -351,6 +368,8 @@ export function ChatOptionsMenu({
       extensionPanels={extensionPanels}
       onStartNewChat={onStartNewChat}
       onManageChatFiles={onManageChatFiles}
+      onChatStyle={onChatStyle}
+      chatStyleActive={chatStyleActive}
       onSaveCheckpoint={onSaveCheckpoint}
       onDeleteMessages={onDeleteMessages}
       onConvertToGroup={onConvertToGroup}
