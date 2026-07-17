@@ -4,6 +4,7 @@ import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, Che
 import { showToastGlobal } from '../ui/Toast';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
+import { useProjectStore } from '../../stores/projectStore';
 import { usePersonaStore } from '../../stores/personaStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { processMacros, type MacroContext } from '../../utils/macros';
@@ -498,12 +499,25 @@ export function ChatView() {
       .map((m) => m.id);
   }, [messages, searchQuery]);
 
+  // Pure chat (companion) mode — the greeting/opening scene is hidden from
+  // the rendered chat too, so the session reads as plain texting from the
+  // user's first message. Purely presentational: the messages stay in the
+  // store/backend and reappear when the mode is toggled off.
+  const pureChatMode = usePromptTemplateStore((s) =>
+    currentChatFile ? s.chatCompanionModeByChatFile[currentChatFile] ?? false : false
+  );
+
   // Messages to actually render — filtered when search is active
   const displayedMessages = useMemo(() => {
-    if (!isSearchOpen || !searchQuery.trim()) return messages;
+    let base = messages;
+    if (pureChatMode) {
+      const firstUserIdx = base.findIndex((m) => m.isUser && !m.isSystem);
+      base = firstUserIdx === -1 ? [] : base.slice(firstUserIdx);
+    }
+    if (!isSearchOpen || !searchQuery.trim()) return base;
     const matchSet = new Set(searchMatchIds);
-    return messages.filter((m) => matchSet.has(m.id));
-  }, [isSearchOpen, searchQuery, messages, searchMatchIds]);
+    return base.filter((m) => matchSet.has(m.id));
+  }, [isSearchOpen, searchQuery, messages, searchMatchIds, pureChatMode]);
 
   const getAvatarUrl = useCallback(
     (avatar: string, emotion?: Emotion | null) => {
@@ -717,7 +731,14 @@ export function ChatView() {
     if (!selectedCharacter) return;
     if (lastCharacterRef.current !== selectedCharacter.avatar) return;
 
-    if (chatFiles.length > 0) {
+    // The Works panel can request a specific chat while switching
+    // characters; honor that over the latest-chat default.
+    const pendingChat = useProjectStore
+      .getState()
+      .consumePendingChat(selectedCharacter.avatar);
+    if (pendingChat) {
+      loadChat(selectedCharacter.avatar, pendingChat);
+    } else if (chatFiles.length > 0) {
       loadChat(selectedCharacter.avatar, chatFiles[0].fileName);
     } else if (messages.length === 0) {
       startNewChat(selectedCharacter);

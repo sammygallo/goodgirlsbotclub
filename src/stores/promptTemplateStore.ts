@@ -42,6 +42,10 @@ interface PromptTemplateState {
   /** Per-chat-session linked template, keyed by chat file name. Takes
    *  precedence over the character link when both exist. */
   linkedTemplateByChatFile: Record<string, string>;
+  /** Per-chat "pure chat" (companion) mode: hides the greeting/opening scene,
+   *  card scenario, example prose, and card PHI from the AI so replies read
+   *  like plain texting. Keyed by chat file name. */
+  chatCompanionModeByChatFile: Record<string, boolean>;
   /**
    * Snapshot of the user's mainPrompt when a transient (character-linked)
    * template was loaded. Restored on exit so per-character links don't
@@ -72,6 +76,8 @@ interface PromptTemplateState {
   setLinkedTemplate: (avatar: string, templateId: string | null) => void;
   /** Link an existing template to a chat session (or unlink with null). */
   setChatLinkedTemplate: (chatFile: string, templateId: string | null) => void;
+  /** Toggle pure-chat (companion) mode for a chat session. */
+  setChatCompanionMode: (chatFile: string, on: boolean) => void;
   /** Find a template by exact name (resetting its mainPrompt to the given
    *  value) or create one (other settings taken from current globals). Never
    *  changes activeTemplateId. Returns the template id. Used by quick chat
@@ -111,6 +117,7 @@ interface PersistedShape {
   activeTemplateId: string | null;
   linkedTemplateByAvatar?: Record<string, string>;
   linkedTemplateByChatFile?: Record<string, string>;
+  chatCompanionModeByChatFile?: Record<string, boolean>;
   /** Persisted so a mid-chat refresh doesn't lose the user's original
    *  mainPrompt. If the page reloads while a transient template is active,
    *  the snapshot survives and gets restored on switch-away. */
@@ -137,6 +144,12 @@ function loadFromStorage(): PersistedShape {
         typeof parsed.linkedTemplateByChatFile === 'object' &&
         !Array.isArray(parsed.linkedTemplateByChatFile)
           ? (parsed.linkedTemplateByChatFile as Record<string, string>)
+          : {},
+      chatCompanionModeByChatFile:
+        parsed.chatCompanionModeByChatFile &&
+        typeof parsed.chatCompanionModeByChatFile === 'object' &&
+        !Array.isArray(parsed.chatCompanionModeByChatFile)
+          ? (parsed.chatCompanionModeByChatFile as Record<string, boolean>)
           : {},
       mainPromptSnapshot:
         typeof parsed.mainPromptSnapshot === 'string' ? parsed.mainPromptSnapshot : null,
@@ -206,6 +219,7 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
   activeTemplateId: initial.activeTemplateId,
   linkedTemplateByAvatar: initial.linkedTemplateByAvatar ?? {},
   linkedTemplateByChatFile: initial.linkedTemplateByChatFile ?? {},
+  chatCompanionModeByChatFile: initial.chatCompanionModeByChatFile ?? {},
   mainPromptSnapshot: initial.mainPromptSnapshot ?? null,
 
   saveTemplateWithPrompt: (name, mainPrompt) => {
@@ -363,6 +377,24 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
     });
   },
 
+  setChatCompanionMode: (chatFile, on) => {
+    set((state) => {
+      const nextModes = { ...state.chatCompanionModeByChatFile };
+      if (on) {
+        nextModes[chatFile] = true;
+      } else {
+        delete nextModes[chatFile];
+      }
+      saveToStorage({
+        templates: state.templates,
+        activeTemplateId: state.activeTemplateId,
+        linkedTemplateByAvatar: state.linkedTemplateByAvatar,
+        chatCompanionModeByChatFile: nextModes,
+      });
+      return { chatCompanionModeByChatFile: nextModes };
+    });
+  },
+
   ensureTemplate: (name, mainPrompt) => {
     const trimmed = name.trim();
     const state = get();
@@ -508,12 +540,14 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
           activeTemplateId: s.activeTemplateId,
           linkedTemplateByAvatar: s.linkedTemplateByAvatar,
           linkedTemplateByChatFile: s.linkedTemplateByChatFile,
+          chatCompanionModeByChatFile: s.chatCompanionModeByChatFile,
           mainPromptSnapshot: s.mainPromptSnapshot,
         };
         if (
           s.templates.length > 0 ||
           Object.keys(s.linkedTemplateByAvatar).length > 0 ||
-          Object.keys(s.linkedTemplateByChatFile).length > 0
+          Object.keys(s.linkedTemplateByChatFile).length > 0 ||
+          Object.keys(s.chatCompanionModeByChatFile).length > 0
         ) {
           patchServerKey(
             SERVER_KEY,
@@ -532,6 +566,7 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
           activeTemplateId: s.activeTemplateId,
           linkedTemplateByAvatar: s.linkedTemplateByAvatar,
           linkedTemplateByChatFile: s.linkedTemplateByChatFile,
+          chatCompanionModeByChatFile: s.chatCompanionModeByChatFile,
           mainPromptSnapshot: s.mainPromptSnapshot,
         };
         patchServerKey(
@@ -554,16 +589,20 @@ export const usePromptTemplateStore = create<PromptTemplateState>((set, get) => 
         stored.linkedTemplateByChatFile && typeof stored.linkedTemplateByChatFile === 'object'
           ? stored.linkedTemplateByChatFile
           : {};
+      const chatCompanionModeByChatFile =
+        stored.chatCompanionModeByChatFile && typeof stored.chatCompanionModeByChatFile === 'object'
+          ? stored.chatCompanionModeByChatFile
+          : {};
       const mainPromptSnapshot =
         typeof stored.mainPromptSnapshot === 'string' ? stored.mainPromptSnapshot : null;
       try {
         localStorage.setItem(
           STORAGE_KEY,
-          JSON.stringify({ templates, activeTemplateId, linkedTemplateByAvatar, linkedTemplateByChatFile, mainPromptSnapshot }),
+          JSON.stringify({ templates, activeTemplateId, linkedTemplateByAvatar, linkedTemplateByChatFile, chatCompanionModeByChatFile, mainPromptSnapshot }),
         );
         recordServerTs(LOCAL_TS_KEY, serverTs);
       } catch { /* ignore */ }
-      set({ templates, activeTemplateId, linkedTemplateByAvatar, linkedTemplateByChatFile, mainPromptSnapshot });
+      set({ templates, activeTemplateId, linkedTemplateByAvatar, linkedTemplateByChatFile, chatCompanionModeByChatFile, mainPromptSnapshot });
       _persistEnabled = true;
     } catch {
       _persistEnabled = true;

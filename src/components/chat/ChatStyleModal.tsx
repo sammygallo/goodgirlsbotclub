@@ -26,6 +26,8 @@ const selectClass =
 export function ChatStyleModal({ isOpen, onClose, chatFile, characterAvatar }: ChatStyleModalProps) {
   const templates = usePromptTemplateStore((s) => s.templates);
   const chatTemplateId = usePromptTemplateStore((s) => s.linkedTemplateByChatFile[chatFile]);
+  const pureChat = usePromptTemplateStore((s) => s.chatCompanionModeByChatFile[chatFile] ?? false);
+  const setChatCompanionMode = usePromptTemplateStore((s) => s.setChatCompanionMode);
   const charTemplateId = usePromptTemplateStore((s) =>
     characterAvatar ? s.linkedTemplateByAvatar[characterAvatar] : undefined
   );
@@ -54,6 +56,7 @@ export function ChatStyleModal({ isOpen, onClose, chatFile, characterAvatar }: C
     if (applyPrompt) {
       const templateId = usePromptTemplateStore.getState().ensureTemplate(style.name, style.mainPrompt);
       setChatLinkedTemplate(chatFile, templateId);
+      setChatCompanionMode(chatFile, style.pureChat);
     }
     if (applySampler) {
       const presetId = useGenerationStore.getState().ensurePreset(style.name, style.sampler);
@@ -135,6 +138,29 @@ export function ChatStyleModal({ isOpen, onClose, chatFile, characterAvatar }: C
               Both parts are unchecked — tapping a quick style won't change anything.
             </p>
           )}
+        </div>
+
+        {/* Pure chat mode */}
+        <div>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={pureChat}
+              onChange={(e) => setChatCompanionMode(chatFile, e.target.checked)}
+              className="w-4 h-4 mt-0.5 accent-[var(--color-primary)]"
+            />
+            <span>
+              <span className="block text-sm text-[var(--color-text-primary)]">
+                Pure chat mode
+              </span>
+              <span className="block text-xs text-[var(--color-text-secondary)] mt-0.5">
+                Hides the opening scene, scenario, and example prose from the AI
+                (and hides the greeting in this chat), so replies read like real
+                texting — no narrated actions or inner thoughts. Natural Chat
+                turns this on; uncheck to keep the scene.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Prompt style */}
