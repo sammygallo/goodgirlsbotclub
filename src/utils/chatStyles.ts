@@ -24,6 +24,10 @@ export interface QuickChatStyle {
   description: string;
   mainPrompt: string;
   sampler: SamplerParams;
+  /** Whether applying this style also turns on pure-chat (companion) mode
+   *  for the chat — hiding the greeting/opening scene, card scenario,
+   *  example prose, and card PHI from the model. */
+  pureChat: boolean;
 }
 
 export const NATURAL_CHAT_PROMPT = `You are {{char}}, messaging with {{user}} in real time. This is a casual conversation, not a story.
@@ -60,6 +64,7 @@ export const QUICK_CHAT_STYLES: QuickChatStyle[] = [
       topP: 0.97,
       minP: 0.05,
     },
+    pureChat: false,
   },
   {
     id: 'natural',
@@ -76,5 +81,6 @@ export const QUICK_CHAT_STYLES: QuickChatStyle[] = [
       topP: 0.9,
       minP: 0.05,
     },
+    pureChat: true,
   },
 ];

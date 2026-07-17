@@ -951,12 +951,19 @@ function buildConversationContext(
   // defeats the chosen style if left in place.
   const linkedStyleActive =
     usePromptTemplateStore.getState().mainPromptSnapshot !== null;
+  // Pure chat (companion) mode: the chat should read like plain texting, so
+  // everything that frames the conversation as narrated fiction is withheld
+  // from the model — the greeting/opening scene, the card's scenario and
+  // example prose, and the card PHI.
+  const pureChatMode = ctxChatFile
+    ? usePromptTemplateStore.getState().chatCompanionModeByChatFile[ctxChatFile] ?? false
+    : false;
 
   const charSystemPromptOverride = genState.prompt.respectCharacterOverride
     ? sub(getCharacterField(character, 'system_prompt'))
     : '';
   const charPostHistoryInstructions =
-    genState.prompt.respectCharacterPHI && !linkedStyleActive
+    genState.prompt.respectCharacterPHI && !linkedStyleActive && !pureChatMode
       ? sub(getCharacterField(character, 'post_history_instructions'))
       : '';
 
@@ -978,12 +985,14 @@ Example: [emotion:joy] I'm so glad you asked about that!
 
 Choose the emotion that best matches how ${character.name} would feel based on the conversation context.`.trim();
 
-  // Build character info block
+  // Build character info block. Pure chat mode keeps identity (description,
+  // personality) but drops the scene-setting fields — scenario and example
+  // prose are exactly what teach the model to narrate.
   const charInfoParts = [
     description && `Description: ${description}`,
     personality && `Personality: ${personality}`,
-    scenario && `Scenario: ${scenario}`,
-    mesExample && `Example dialogue:\n${mesExample}`,
+    !pureChatMode && scenario && `Scenario: ${scenario}`,
+    !pureChatMode && mesExample && `Example dialogue:\n${mesExample}`,
   ].filter(Boolean);
 
   const charInfoBlock = charInfoParts.join('\n\n');
@@ -1044,14 +1053,17 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     rag_context: ragContext
       ? `[Relevant background information]\n${ragContext}`
       : '',
-    // With a linked style active the card PHI is suppressed (see above); the
-    // slot instead carries a style reinforcement. Post-history placement is
-    // what makes this work: in an established chat the history itself anchors
-    // the old style (pages of prose beat one instruction at the top), so the
-    // chosen style needs the last word too.
-    char_phi: linkedStyleActive
-      ? '[Style note: follow the writing style and reply length defined in the system prompt for this conversation, even if earlier replies were longer or written differently.]'
-      : charPostHistoryInstructions,
+    // With a linked style (or pure chat mode) active the card PHI is
+    // suppressed (see above); the slot instead carries a style
+    // reinforcement. Post-history placement is what makes this work: in an
+    // established chat the history itself anchors the old style (pages of
+    // prose beat one instruction at the top), so the chosen style needs the
+    // last word too. Pure chat mode uses a sharper no-narration variant.
+    char_phi: pureChatMode
+      ? `[Style note: reply as plain chat messages in ${character.name}'s voice — no narration, no describing actions or inner thoughts, no scene-setting. Follow the reply length defined in the system prompt, even if earlier replies were longer or written differently.]`
+      : linkedStyleActive
+        ? '[Style note: follow the writing style and reply length defined in the system prompt for this conversation, even if earlier replies were longer or written differently.]'
+        : charPostHistoryInstructions,
     user_phi: userPHI,
     wi_after_an: wiAfterAn,
     ext_after_an: extAfterAn,
@@ -1075,9 +1087,17 @@ Choose the emotion that best matches how ${character.name} would feel based on t
 
   // Decide how many messages to consider for history.
   const ctxConfig = genState.context;
-  const historyPool = ctxConfig.tokenAware
+  let historyPool = ctxConfig.tokenAware
     ? messages.filter((m) => !m.isSystem)
     : messages.slice(-ctxConfig.messageCount).filter((m) => !m.isSystem);
+  // Pure chat mode: hide the greeting block (leading non-user messages) from
+  // the model. The opening scene is prose in the character's own voice — as
+  // the first "assistant" turn it anchors narration harder than any
+  // instruction can counter. The user's first message becomes the real start.
+  if (pureChatMode) {
+    const firstUserIdx = historyPool.findIndex((m) => m.isUser);
+    historyPool = firstUserIdx === -1 ? [] : historyPool.slice(firstUserIdx);
+  }
   // Summary compaction: when a summary covers the first N non-system turns,
   // drop those turns from the prompt — the summary is already injected
   // separately by the summarize extension. Big token win on long chats.
