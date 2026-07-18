@@ -574,13 +574,30 @@ interface ChatState {
 let messageIdCounter = 0;
 const generateId = () => `msg_${++messageIdCounter}_${Date.now()}`;
 
+// Optional out-param populated with the upstream provider's finish/stop
+// reason (e.g. "length", "content_filter", "stop") as it's observed in the
+// stream, so callers can tell an over-length cutoff from a content-filter
+// refusal instead of just seeing "empty response" either way.
+type SSEStreamMeta = { finishReason: string | null };
+
 // Parse SSE stream and extract content tokens
 async function* parseSSEStream(
-  stream: ReadableStream<Uint8Array>
+  stream: ReadableStream<Uint8Array>,
+  meta?: SSEStreamMeta
 ): AsyncGenerator<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+
+  const captureFinishReason = (json: Record<string, unknown>) => {
+    if (!meta) return;
+    const choice = (json.choices as Array<Record<string, unknown>> | undefined)?.[0];
+    const reason =
+      (choice?.finish_reason as string | undefined) ||
+      (json.stop_reason as string | undefined) ||
+      ((json.delta as Record<string, unknown> | undefined)?.stop_reason as string | undefined);
+    if (reason) meta.finishReason = reason;
+  };
 
   try {
     while (true) {
@@ -603,6 +620,7 @@ async function* parseSSEStream(
 
           try {
             const json = JSON.parse(data);
+            captureFinishReason(json);
             const content =
               json.choices?.[0]?.delta?.content ||
               json.choices?.[0]?.text ||
@@ -628,6 +646,7 @@ async function* parseSSEStream(
         if (data && data !== '[DONE]') {
           try {
             const json = JSON.parse(data);
+            captureFinishReason(json);
             const content = json.choices?.[0]?.delta?.content ||
                            json.choices?.[0]?.text ||
                            json.delta?.text ||
@@ -642,6 +661,28 @@ async function* parseSSEStream(
   } finally {
     reader.releaseLock();
   }
+}
+
+// Build the empty-response error message, distinguishing an over-length
+// cutoff or content-filter refusal (when the upstream reason is known) from
+// a request whose newest message alone blew the local token budget, falling
+// back to the given generic message otherwise.
+// `retryAction` completes "..., then <retryAction>." (e.g. "tap send again").
+function buildEmptyResponseError(
+  genericMessage: string,
+  retryAction: string,
+  finishReason: string | null
+): string {
+  if (finishReason === 'length' || finishReason === 'max_tokens') {
+    return `The model ran out of tokens before writing a reply. Try raising Response Reserve (or Max Context Tokens) in Settings → Generation, then ${retryAction}.`;
+  }
+  if (finishReason === 'content_filter') {
+    return `The response was blocked by the provider's content filter. Try rewording your message, then ${retryAction}.`;
+  }
+  if (useGenerationStore.getState().lastRequestOverBudget) {
+    return `Your message may be too long for the current context window. Try raising Max Context Tokens in Settings → Generation, or shortening your message, then ${retryAction}.`;
+  }
+  return genericMessage;
 }
 
 /**
@@ -1256,7 +1297,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   // Token-aware trimming: keep system prompts, drop oldest history that exceeds budget
   if (ctxConfig.tokenAware) {
     const systemPrompts = context.slice(); // system prompt we already pushed
-    const { kept, usedTokens } = trimHistoryToBudget(
+    const { kept, usedTokens, overBudget } = trimHistoryToBudget(
       systemPrompts,
       historyWithInsertions,
       ctxConfig.responseReserve,
@@ -1265,7 +1306,9 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     );
     context.push(...kept);
     genState.setLastTokenEstimate(usedTokens);
+    genState.setLastRequestOverBudget(overBudget);
   } else {
+    genState.setLastRequestOverBudget(false);
     context.push(...historyWithInsertions);
   }
 
@@ -2724,7 +2767,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
 
       let responseText = '';
-      for await (const token of parseSSEStream(stream)) {
+      const sseMeta: SSEStreamMeta = { finishReason: null };
+      for await (const token of parseSSEStream(stream, sseMeta)) {
         if (!get().isSending) break; // Aborted
         responseText += token;
         if (!get().isStreaming) set({ isStreaming: true });
@@ -2755,7 +2799,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }),
           error: aborted
             ? state.error
-            : 'The model returned an empty response. Try swiping again.',
+            : buildEmptyResponseError(
+                'The model returned an empty response. Try swiping again.',
+                'swiping again',
+                sseMeta.finishReason
+              ),
         }));
       } else {
         const usage = recordTurnUsage(provider, model, cleanedContent);
@@ -3118,7 +3166,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
 
         let responseText = '';
-        for await (const token of parseSSEStream(stream)) {
+        const sseMeta: SSEStreamMeta = { finishReason: null };
+        for await (const token of parseSSEStream(stream, sseMeta)) {
           if (!get().isSending) break;
           responseText += token;
           if (!get().isStreaming) set({ isStreaming: true });
@@ -3142,7 +3191,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             messages: state.messages.filter((msg) => msg.id !== aiMessageId),
             error: aborted
               ? state.error
-              : 'The model returned an empty response. Tap send again to retry.',
+              : buildEmptyResponseError(
+                  'The model returned an empty response. Tap send again to retry.',
+                  'tap send again',
+                  sseMeta.finishReason
+                ),
           }));
         } else {
           const usage = recordTurnUsage(provider, model, cleanedContent);
@@ -3470,7 +3523,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
 
         let responseText = '';
-        for await (const token of parseSSEStream(stream)) {
+        const sseMeta: SSEStreamMeta = { finishReason: null };
+        for await (const token of parseSSEStream(stream, sseMeta)) {
           if (!get().isSending) break;
           responseText += token;
           if (!get().isStreaming) set({ isStreaming: true });
@@ -3492,7 +3546,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             messages: state.messages.filter((msg) => msg.id !== aiMessageId),
             error: aborted
               ? state.error
-              : 'The model returned an empty response. Tap regenerate to retry.',
+              : buildEmptyResponseError(
+                  'The model returned an empty response. Tap regenerate to retry.',
+                  'tap regenerate',
+                  sseMeta.finishReason
+                ),
           }));
         } else {
           const usage = recordTurnUsage(provider, model, cleanedContent);

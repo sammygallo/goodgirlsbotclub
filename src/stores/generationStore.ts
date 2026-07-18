@@ -235,6 +235,9 @@ interface GenerationState {
 
   // Cached last-used token estimate for the UI badge
   lastTokenEstimate: number;
+  /** True when the last-assembled request's newest message alone exceeded
+   *  the configured token budget and had to be force-included anyway. */
+  lastRequestOverBudget: boolean;
 
   // Actions
   setSampler: (sampler: Partial<SamplerParams>) => void;
@@ -271,6 +274,7 @@ interface GenerationState {
   resetPromptOrder: () => void;
 
   setLastTokenEstimate: (n: number) => void;
+  setLastRequestOverBudget: (v: boolean) => void;
 
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
@@ -385,6 +389,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   instruct: { ...DEFAULT_INSTRUCT_CONFIG, ...(initial.instruct ?? {}) },
   promptOrder: mergePromptOrder(initial.promptOrder),
   lastTokenEstimate: 0,
+  lastRequestOverBudget: false,
 
   setSampler: (patch) => {
     set((state) => {
@@ -731,6 +736,10 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     set({ lastTokenEstimate: n });
   },
 
+  setLastRequestOverBudget: (v) => {
+    set({ lastRequestOverBudget: v });
+  },
+
   resetUser: () => {
     set({
       sampler: { ...DEFAULT_SAMPLER },
@@ -745,6 +754,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       instruct: { ...DEFAULT_INSTRUCT_CONFIG },
       promptOrder: mergePromptOrder(undefined),
       lastTokenEstimate: 0,
+      lastRequestOverBudget: false,
     });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
