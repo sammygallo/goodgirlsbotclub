@@ -1572,3 +1572,130 @@ export const spritesApi = {
     });
   },
 };
+
+// ---------------------------------------------------------------------------
+// Projects ("Works") — productization step 1
+//
+// A Project is the persistent creative workspace above chats: it groups
+// chats + characters and accumulates toward a typed deliverable. Members
+// are referenced by the same string identity the rest of the app keys on
+// (character `avatar`; chat `(character_avatar, file_name)`), so refs can
+// dangle after a delete/rename — callers reconcile against the live
+// character/chat lists on display.
+// ---------------------------------------------------------------------------
+
+export type ProjectDeliverableType = 'freeform' | 'novel' | 'comic' | 'video_series';
+export type ProjectStatus = 'active' | 'archived';
+
+export interface ProjectChatRef {
+  character_avatar: string;
+  file_name: string;
+}
+
+export interface ProjectListItem {
+  id: string;
+  name: string;
+  description: string;
+  deliverable_type: ProjectDeliverableType;
+  status: ProjectStatus;
+  character_count: number;
+  chat_count: number;
+  updated_at: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  deliverable_type: ProjectDeliverableType;
+  status: ProjectStatus;
+  characters: string[];
+  chats: ProjectChatRef[];
+  story_state: Record<string, unknown>;
+  server_ts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectPatch {
+  name?: string;
+  description?: string;
+  deliverable_type?: ProjectDeliverableType;
+  status?: ProjectStatus;
+  characters?: string[];
+  chats?: ProjectChatRef[];
+  story_state?: Record<string, unknown>;
+  base_ts?: number;
+}
+
+/** 409 from PATCH /projects/{id} — carries the winning state so the caller
+ * can adopt it and re-apply, mirroring putSection's SectionConflictError. */
+export class ProjectConflictError extends Error {
+  currentTs: number;
+  current: Project | null;
+
+  constructor(currentTs: number, current: Project | null) {
+    super('project write conflict');
+    this.name = 'ProjectConflictError';
+    this.currentTs = currentTs;
+    this.current = current;
+  }
+}
+
+export const projectsApi = {
+  async list(): Promise<ProjectListItem[]> {
+    return apiRequest<ProjectListItem[]>('/projects');
+  },
+
+  async get(id: string): Promise<Project> {
+    return apiRequest<Project>(`/projects/${id}`);
+  },
+
+  async create(data: {
+    name: string;
+    description?: string;
+    deliverable_type?: ProjectDeliverableType;
+  }): Promise<Project> {
+    return apiRequest<Project>('/projects', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  /** PATCH with optimistic concurrency. Include `base_ts` in the patch to
+   * detect cross-device races; a stale write throws ProjectConflictError
+   * (apiRequest would collapse the 409 body into a useless generic Error). */
+  async update(id: string, patch: ProjectPatch): Promise<Project> {
+    const token = await getCsrfToken();
+    const response = await fetch(`/projects/${id}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': token,
+      },
+      body: JSON.stringify(patch),
+    });
+
+    if (response.status === 409) {
+      const body = await response.json().catch(() => ({}));
+      const detail = (body?.detail ?? body) as {
+        current_ts?: number;
+        current?: Project;
+      };
+      throw new ProjectConflictError(
+        typeof detail?.current_ts === 'number' ? detail.current_ts : 0,
+        detail?.current ?? null
+      );
+    }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err?.error || err?.detail || err?.message || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+
+  async remove(id: string): Promise<void> {
+    await apiRequest<Record<string, never>>(`/projects/${id}`, { method: 'DELETE' });
+  },
+};

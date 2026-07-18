@@ -16,11 +16,13 @@ import {
   ArrowUpDown,
   Loader2,
   Info,
+  Library,
 } from 'lucide-react';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore, type GroupChatInfo } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
-import { can } from '../../utils/permissions';
+import { useProjectStore } from '../../stores/projectStore';
+import { can, hasPermission } from '../../utils/permissions';
 import { haptic } from '../../utils/haptics';
 import { Avatar, Button, Input } from '../ui';
 import { CharacterCreation } from '../character/CharacterCreation';
@@ -90,6 +92,16 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   } = useCharacterStore();
   const { messages, startNewGroupChat, groupChats, loadGroupChat, deleteGroupChat } = useChatStore();
   const [showGroupChats, setShowGroupChats] = useState(false);
+  const canViewWorks = hasPermission(currentUser, 'project:view');
+  const canManageWorks = hasPermission(currentUser, 'project:manage');
+  const works = useProjectStore((s) => s.items);
+  const fetchProjects = useProjectStore((s) => s.fetchProjects);
+  const openWorksPanel = useProjectStore((s) => s.openPanel);
+  const [showWorks, setShowWorks] = useState(false);
+
+  useEffect(() => {
+    if (canViewWorks) fetchProjects();
+  }, [canViewWorks, fetchProjects]);
 
   const filteredCharacters = getFilteredCharacters();
   const allTags = getAllTags();
@@ -655,6 +667,71 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 </ul>
               )}
             </div>
+
+            {/* Works Section — the project container above chats */}
+            {canViewWorks && !isGroupSelectMode && (
+              <div className="border-t border-[var(--color-border)]">
+                <button
+                  onClick={() => setShowWorks(!showWorks)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]"
+                >
+                  <span className="flex items-center gap-2">
+                    <Library size={16} />
+                    Works ({works.length})
+                  </span>
+                  <ChevronLeft
+                    size={16}
+                    className={`transform transition-transform ${showWorks ? '-rotate-90' : ''}`}
+                  />
+                </button>
+                {showWorks && (
+                  <ul className="pb-2">
+                    {works.map((work) => (
+                      <li key={work.id}>
+                        <button
+                          onClick={() => {
+                            haptic();
+                            openWorksPanel(work.id);
+                            onClose();
+                          }}
+                          className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[var(--color-bg-tertiary)]"
+                        >
+                          <div className="w-10 h-10 rounded-full bg-[var(--color-primary)]/20 flex items-center justify-center flex-shrink-0">
+                            <Library size={18} className="text-[var(--color-primary)]" />
+                          </div>
+                          <div className="flex-1 min-w-0 text-left">
+                            <p className={`text-sm font-medium truncate ${work.status === 'archived' ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-primary)]'}`}>
+                              {work.name}
+                            </p>
+                            <p className="text-xs text-[var(--color-text-secondary)] truncate">
+                              {work.chat_count} chat{work.chat_count === 1 ? '' : 's'} ·{' '}
+                              {work.character_count} character{work.character_count === 1 ? '' : 's'}
+                              {work.status === 'archived' ? ' · archived' : ''}
+                            </p>
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                    {canManageWorks && (
+                      <li>
+                        <button
+                          onClick={() => {
+                            openWorksPanel();
+                            onClose();
+                          }}
+                          className="w-full flex items-center gap-3 px-4 py-2 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]"
+                        >
+                          <div className="w-10 h-10 rounded-full border border-dashed border-[var(--color-border)] flex items-center justify-center flex-shrink-0">
+                            <Plus size={16} />
+                          </div>
+                          {works.length === 0 ? 'Start your first work' : 'New work'}
+                        </button>
+                      </li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            )}
 
             {/* Group Chats Section */}
             {groupChats.length > 0 && !isGroupSelectMode && (

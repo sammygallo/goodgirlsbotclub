@@ -32,6 +32,7 @@ export default defineConfig({
       '/api': proxyTarget,
       '/characters': proxyTarget,
       '/chats': proxyTarget,
+      '/projects': proxyTarget,
       '/scripts': {
         ...proxyTarget,
         // Specific upstream-compat shim modules served from public/ must NOT
