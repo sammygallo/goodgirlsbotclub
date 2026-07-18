@@ -674,7 +674,18 @@ function buildEmptyResponseError(
   finishReason: string | null
 ): string {
   if (finishReason === 'length' || finishReason === 'max_tokens') {
-    return `The model ran out of tokens before writing a reply. Try raising Response Reserve (or Max Context Tokens) in Settings → Generation, then ${retryAction}.`;
+    // finish_reason: length means the OUTPUT cap (sampler.maxTokens, aka
+    // "Max Response Tokens" / Response Length in Settings → Generation) was
+    // hit before any visible content came out — a completely different knob
+    // from the context/input budget. Reasoning-capable models can burn the
+    // whole cap on hidden reasoning tokens with nothing visible left over,
+    // which shows up easily under a Quick Chat Style like Natural Chat that
+    // caps replies at 400 tokens.
+    const cap = useGenerationStore.getState().sampler.maxTokens;
+    const styleHint = cap <= 512
+      ? ' A Chat Style with a short response cap (e.g. Natural Chat) may be active for this chat — check Chat Style in the chat options menu.'
+      : '';
+    return `The model ran out of its response token budget (currently ${cap}) before writing any visible reply.${styleHint} Raise Max Response Tokens in Settings → Generation → Response Length, then ${retryAction}.`;
   }
   if (finishReason === 'content_filter') {
     return `The response was blocked by the provider's content filter. Try rewording your message, then ${retryAction}.`;
