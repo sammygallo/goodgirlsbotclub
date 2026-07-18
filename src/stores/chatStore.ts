@@ -1146,18 +1146,38 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   // the model. The opening scene is prose in the character's own voice — as
   // the first "assistant" turn it anchors narration harder than any
   // instruction can counter. The user's first message becomes the real start.
+  // `pureChatRemoved` tracks how many leading messages this trim dropped, so
+  // summary compaction below (whose messageCount is computed against the
+  // untrimmed pool) can re-base its slice index onto historyPool's new
+  // indexing instead of double-counting the same messages as still present.
+  let pureChatRemoved = 0;
   if (pureChatMode) {
     const firstUserIdx = historyPool.findIndex((m) => m.isUser);
+    pureChatRemoved = firstUserIdx === -1 ? historyPool.length : firstUserIdx;
     historyPool = firstUserIdx === -1 ? [] : historyPool.slice(firstUserIdx);
   }
   // Summary compaction: when a summary covers the first N non-system turns,
   // drop those turns from the prompt — the summary is already injected
   // separately by the summarize extension. Big token win on long chats.
+  //
+  // sumForChat.messageCount is computed against the full non-system message
+  // list (chatMessages.filter(!isSystem).length in summarizeStore), i.e.
+  // BEFORE the pure-chat greeting trim above. Slicing historyPool by that
+  // raw count directly over-shoots by exactly `pureChatRemoved` messages —
+  // in the worst case (a summary freshly covering the whole chat) that
+  // over-shoot swallows the just-sent turn too, leaving recentMessages
+  // empty and shipping a request with zero conversation messages upstream
+  // (providers reject that outright, e.g. Anthropic's "at least one message
+  // is required" 400). Subtracting pureChatRemoved re-bases the count onto
+  // historyPool's own indexing before it's used as a slice offset.
   const sumState = useSummarizeStore.getState();
   const sumForChat = ctxChatFile ? sumState.getSummary(ctxChatFile) : null;
+  const summarySliceOffset = sumForChat
+    ? Math.max(0, sumForChat.messageCount - pureChatRemoved)
+    : 0;
   const compactedHistory =
     sumState.compactWhenSummarized && sumForChat && sumForChat.messageCount > 0
-      ? historyPool.slice(Math.min(sumForChat.messageCount, historyPool.length))
+      ? historyPool.slice(Math.min(summarySliceOffset, historyPool.length))
       : historyPool;
   const recentMessages = compactedHistory;
 
