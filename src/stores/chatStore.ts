@@ -1175,9 +1175,24 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   const summarySliceOffset = sumForChat
     ? Math.max(0, sumForChat.messageCount - pureChatRemoved)
     : 0;
+  // Hard floor: never let compaction slice away the LAST message in
+  // historyPool, however large summarySliceOffset is. The rebasing above
+  // handles the pure-chat skew, but the summary can independently "cover"
+  // (or exceed) whatever's in historyPool for other reasons too — e.g.
+  // swipeRight/regenerate deliberately truncate historyPool to messages
+  // before the swiped slot, so a summary covering the full chat trivially
+  // exceeds that truncated count. Capping the offset at `length - 1` (not
+  // `length`) guarantees at least one real turn always survives, matching
+  // trimHistoryToBudget's "the newest message is always kept" guarantee one
+  // stage earlier — otherwise this stage can hand trimHistoryToBudget an
+  // empty array and there's nothing left for it to protect.
+  const cappedOffset =
+    historyPool.length > 0
+      ? Math.min(summarySliceOffset, historyPool.length - 1)
+      : 0;
   const compactedHistory =
     sumState.compactWhenSummarized && sumForChat && sumForChat.messageCount > 0
-      ? historyPool.slice(Math.min(summarySliceOffset, historyPool.length))
+      ? historyPool.slice(cappedOffset)
       : historyPool;
   const recentMessages = compactedHistory;
 
