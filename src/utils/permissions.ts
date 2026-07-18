@@ -43,6 +43,10 @@ export const PERMISSIONS = [
   'worldinfo:view',
   'worldinfo:manage',
 
+  // Projects (Works)
+  'project:view',
+  'project:manage',
+
   // Settings
   'settings:view',
   'settings:connection',
@@ -151,6 +155,7 @@ const LEGACY_PERM_MIN_LEVEL: Record<string, number> = {
   'databank:view': 0, 'settings:view': 0,
   'generation:use': 0, 'system:backup:self': 0,
   'settings:api_keys': 0,
+  'project:view': 0, 'project:manage': 0,
 
   // contributor level
   'chat:delete': 1, 'chat:import_export': 1,

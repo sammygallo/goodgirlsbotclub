@@ -7,6 +7,7 @@ import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import { SettingsPanel } from '../settings/SettingsPanel';
 import { GuidesPanel } from '../guides/GuidesPanel';
+import { WorksPanel } from '../works/WorksPanel';
 import { OnboardingWalkthrough } from '../onboarding/OnboardingWalkthrough';
 import { useOnboardingStore } from '../../stores/onboardingStore';
 
@@ -82,6 +83,9 @@ export function MainLayout() {
 
       {/* Guides Panel — slides in from right, overlays chat */}
       <GuidesPanel />
+
+      {/* Works Panel — slides in from right, overlays chat */}
+      <WorksPanel />
 
       {/* Onboarding Walkthrough */}
       <OnboardingWalkthrough />
