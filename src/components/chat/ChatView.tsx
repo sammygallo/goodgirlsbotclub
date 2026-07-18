@@ -421,14 +421,14 @@ export function ChatView() {
     };
   }, [selectedCharacter, displayPersona, activeModel]);
 
-  // Scene-video: render the current chat moment as a ~15s video. Tapping
-  // "Generate scene" opens GenerateSceneModal, which distills the recent
-  // transcript into an editable scene prompt via the active text model;
-  // on confirm the backend renders wan-2.7-r2v segments with the character
-  // avatar as an identity reference (not the first frame). The result lands
-  // in chat as a new message with an inline player, like image-gen results.
-  // generation:video is owner-only by default — the backend enforces it
-  // too; this just hides the menu entry.
+  // Scene-video: render the current chat moment as a short video. Tapping
+  // "Generate scene" opens GenerateSceneModal, which asks the backend for
+  // the motion menu: on the self-hosted Wan-Animate path the user picks a
+  // curated motion driver (no LLM call); on the Replicate path the active
+  // text model distills the transcript into an editable scene prompt +
+  // motion beats. The result lands in chat as a new message with an inline
+  // player, like image-gen results. generation:video is owner-only by
+  // default — the backend enforces it too; this just hides the menu entry.
   const currentUser = useAuthStore((s) => s.currentUser);
   const canGenerateScene = hasPermission(currentUser, 'generation:video');
   const [sceneModal, setSceneModal] = useState<{
@@ -461,7 +461,7 @@ export function ChatView() {
     setSceneModal({ transcript, fallbackPrompt });
   };
 
-  const startSceneRender = async (prompt: string, beats: string[]) => {
+  const startSceneRender = async (prompt: string, beats: string[], driverId?: string) => {
     if (!selectedCharacter) return;
     setSceneGenProgress(0);
     try {
@@ -469,6 +469,7 @@ export function ChatView() {
         selectedCharacter.name,
         prompt,
         beats,
+        driverId,
         (s) => {
           setSceneGenProgress(s.progress);
         }
@@ -1940,9 +1941,9 @@ export function ChatView() {
           characterName={selectedCharacter.name}
           characterDescription={displayMacroCtx.characterDescription}
           fallbackPrompt={sceneModal?.fallbackPrompt ?? ''}
-          onGenerate={(p, b) => {
+          onGenerate={(p, b, d) => {
             setSceneModal(null);
-            void startSceneRender(p, b);
+            void startSceneRender(p, b, d);
           }}
         />
       )}

@@ -18,12 +18,36 @@ export interface SceneJobStatus {
   status: 'queued' | 'running' | 'completed' | 'error';
   progress: number;
   videoUrl: string | null;
+  keyframeUrl?: string | null;
   error: string | null;
 }
 
+/** One entry of the curated motion menu (self-hosted Wan-Animate path). */
+export interface SceneDriver {
+  id: string;
+  label: string;
+}
+
 const POLL_INTERVAL_MS = 5000;
-// Generous — matches the backend's 10-min-per-segment budget (×3) + concat.
-const POLL_TIMEOUT_MS = 35 * 60 * 1000;
+// Generous — must cover the self-hosted animate path, where one serverless
+// job absorbs a full cold start + render (backend's own budget is 40 min).
+const POLL_TIMEOUT_MS = 45 * 60 * 1000;
+
+/**
+ * The motion menu for the Generate Scene modal. Empty on the Replicate
+ * path (backend env unset) — callers fall back to the beats flow. Errors
+ * degrade to [] so the modal never blocks on this call.
+ */
+export async function fetchSceneDrivers(): Promise<SceneDriver[]> {
+  try {
+    const res = await fetch('/api/scene-video/drivers', { credentials: 'include' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Kick off a scene-video job. Returns the jobId; the caller polls via
@@ -33,6 +57,7 @@ export async function startSceneGenerate(
   characterName: string,
   prompt: string,
   beats: string[] = [],
+  driverId?: string,
 ): Promise<string> {
   const token = await getCsrfToken();
   const res = await fetch('/api/scene-video/generate', {
@@ -42,7 +67,12 @@ export async function startSceneGenerate(
       'X-CSRF-Token': token,
     },
     credentials: 'include',
-    body: JSON.stringify({ characterName, prompt, beats }),
+    body: JSON.stringify({
+      characterName,
+      prompt,
+      beats,
+      ...(driverId ? { driverId } : {}),
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -74,9 +104,10 @@ export async function generateSceneVideo(
   characterName: string,
   prompt: string,
   beats: string[] = [],
+  driverId?: string,
   onProgress?: (state: SceneJobStatus) => void,
 ): Promise<string> {
-  const jobId = await startSceneGenerate(characterName, prompt, beats);
+  const jobId = await startSceneGenerate(characterName, prompt, beats, driverId);
   const startedAt = Date.now();
   while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
