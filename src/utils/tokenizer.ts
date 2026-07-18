@@ -117,7 +117,7 @@ export function trimHistoryToBudget<
   responseReserve: number,
   maxTokens: number,
   profile: TokenizerProfile = 'generic'
-): { kept: T[]; dropped: number; usedTokens: number } {
+): { kept: T[]; dropped: number; usedTokens: number; overBudget: boolean } {
   const budget = Math.max(256, maxTokens - responseReserve);
   const systemCost = systemPrompts.reduce(
     (acc, m) => acc + estimateMessageTokens(m, profile),
@@ -131,6 +131,9 @@ export function trimHistoryToBudget<
   // system block (accumulated summary + RAG) would drop every turn and ship a
   // turn-less request, which providers answer with an empty completion or a
   // 400. A degraded request the model can still respond to beats silence.
+  // When that forced inclusion drives `remaining` negative, `overBudget`
+  // tells the caller the assembled request may exceed the model's real
+  // context window even though this function "succeeded".
   const kept: T[] = [];
   for (let i = history.length - 1; i >= 0; i--) {
     const msg = history[i];
@@ -142,5 +145,5 @@ export function trimHistoryToBudget<
 
   const dropped = history.length - kept.length;
   const usedTokens = budget - remaining;
-  return { kept, dropped, usedTokens };
+  return { kept, dropped, usedTokens, overBudget: remaining < 0 };
 }
