@@ -1175,20 +1175,24 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   const summarySliceOffset = sumForChat
     ? Math.max(0, sumForChat.messageCount - pureChatRemoved)
     : 0;
-  // Hard floor: never let compaction slice away the LAST message in
-  // historyPool, however large summarySliceOffset is. The rebasing above
-  // handles the pure-chat skew, but the summary can independently "cover"
-  // (or exceed) whatever's in historyPool for other reasons too — e.g.
-  // swipeRight/regenerate deliberately truncate historyPool to messages
-  // before the swiped slot, so a summary covering the full chat trivially
-  // exceeds that truncated count. Capping the offset at `length - 1` (not
-  // `length`) guarantees at least one real turn always survives, matching
-  // trimHistoryToBudget's "the newest message is always kept" guarantee one
-  // stage earlier — otherwise this stage can hand trimHistoryToBudget an
-  // empty array and there's nothing left for it to protect.
+  // Hard floor: never let compaction slice away the last MIN_RAW_TAIL
+  // messages in historyPool, however large summarySliceOffset is. The
+  // rebasing above handles the pure-chat skew, but the summary can
+  // independently "cover" (or exceed) whatever's in historyPool for other
+  // reasons too — e.g. swipeRight/regenerate deliberately truncate
+  // historyPool to messages before the swiped slot, so a summary covering
+  // the full chat trivially exceeds that truncated count. A 1-message floor
+  // technically avoids the empty-array 400, but right after each
+  // auto-summarize trigger it left only the newest message as raw text —
+  // every other recent turn got folded into the terse 2-4 sentence summary,
+  // so fine detail from the last few exchanges was lost until enough new
+  // messages accumulated to widen the window back out. Keeping several raw
+  // turns always in the prompt avoids that "forgets the last few messages"
+  // gap while still discarding everything older once it's summarized.
+  const MIN_RAW_TAIL = 6;
   const cappedOffset =
     historyPool.length > 0
-      ? Math.min(summarySliceOffset, historyPool.length - 1)
+      ? Math.min(summarySliceOffset, Math.max(historyPool.length - MIN_RAW_TAIL, 0))
       : 0;
   const compactedHistory =
     sumState.compactWhenSummarized && sumForChat && sumForChat.messageCount > 0
