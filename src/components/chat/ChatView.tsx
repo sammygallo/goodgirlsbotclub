@@ -1,6 +1,6 @@
 import { useEffect, useRef, useMemo, useState, useCallback, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, ChevronDown, X, Check, Clapperboard } from 'lucide-react';
+import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, ChevronDown, X, Check, Clapperboard, PanelTopClose, PanelTopOpen, Wallpaper } from 'lucide-react';
 import { showToastGlobal } from '../ui/Toast';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
@@ -67,13 +67,14 @@ import {
   MIN_PORTRAIT_HEIGHT,
   MAX_PORTRAIT_HEIGHT,
   PORTRAIT_HEIGHT_STEP,
+  getMobilePortraitCollapsed,
+  setMobilePortraitCollapsed,
 } from '../../hooks/mobilePortraitHeight';
 import {
   getChatLayoutMode,
   getAvatarShape,
   getChatFontSize,
   getChatMaxWidth,
-  getVnMode,
   getVnBgForCharacter,
   setVnBgForCharacter,
   clearVnBgForCharacter,
@@ -84,6 +85,44 @@ import {
 } from '../../hooks/displayPreferences';
 import { useDisplayPreferencesStore } from '../../stores/displayPreferencesStore';
 import { fireSandboxLifecycleEvent } from '../../extensions/sandbox/sandboxEventBus';
+
+// Search / send-to-background / collapse-toggle button trio shared by the
+// mobile portrait header (expanded) and the collapsed character bar — kept
+// as one implementation so the two states can't drift out of sync.
+function PortraitHeaderActions({
+  variant,
+  onSearch,
+  onBackground,
+  onToggleCollapse,
+}: {
+  variant: 'expanded' | 'collapsed';
+  onSearch: () => void;
+  onBackground: () => void;
+  onToggleCollapse: () => void;
+}) {
+  const isExpanded = variant === 'expanded';
+  const buttonClass = isExpanded
+    ? 'p-1.5 rounded-full bg-black/30 text-white/80 backdrop-blur-sm hover:bg-black/50 transition-colors'
+    : 'p-1.5 rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] transition-colors';
+  return (
+    <>
+      <button onClick={onSearch} className={buttonClass} aria-label="Search messages" title="Search messages">
+        <Search size={15} />
+      </button>
+      <button onClick={onBackground} className={buttonClass} aria-label="Send character to background" title="Send character to background">
+        <Wallpaper size={15} />
+      </button>
+      <button
+        onClick={onToggleCollapse}
+        className={buttonClass}
+        aria-label={isExpanded ? 'Close character view' : 'Show character view'}
+        title={isExpanded ? 'Close character view' : 'Show character view'}
+      >
+        {isExpanded ? <PanelTopClose size={15} /> : <PanelTopOpen size={15} />}
+      </button>
+    </>
+  );
+}
 
 export function ChatView() {
   const routerNavigate = useNavigate();
@@ -137,8 +176,10 @@ export function ChatView() {
   const avatarShapePref = getAvatarShape();
   const chatFontSize = getChatFontSize();
   const chatMaxWidth = getChatMaxWidth();
-  // Phase 6.4: VN mode (re-read on every render so settings changes take effect immediately)
-  const [isVnMode, setIsVnModeState] = useState<boolean>(() => getVnMode());
+  // Phase 6.4: VN mode — read reactively from the store (not local state) so
+  // toggling it from Settings, while ChatView stays mounted underneath the
+  // Settings overlay, is reflected immediately instead of going stale.
+  const isVnMode = useDisplayPreferencesStore(s => s.vnMode);
   // Phase 6.3: Mobile UX hooks
   const isMobile = useIsMobile();
   const { isLandscape } = useOrientation();
@@ -148,6 +189,8 @@ export function ChatView() {
   const [failedExpressions, setFailedExpressions] = useState<Set<string>>(new Set());
   const [prefillText, setPrefillText] = useState<string | undefined>(undefined);
   const [portraitHeight, setPortraitHeight] = useState<number>(getMobilePortraitHeight);
+  // Mobile: user-collapsed the character portrait to maximize chat reading space.
+  const [isPortraitCollapsed, setIsPortraitCollapsedState] = useState<boolean>(getMobilePortraitCollapsed);
 
   const handlePortraitResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -181,6 +224,15 @@ export function ChatView() {
       return next;
     });
   }, []);
+
+  const handleTogglePortraitCollapsed = useCallback(() => {
+    setIsPortraitCollapsedState((prev) => {
+      const next = !prev;
+      setMobilePortraitCollapsed(next);
+      return next;
+    });
+  }, []);
+
   const [prefillNonce, setPrefillNonce] = useState(0);
   const [showGroupControls, setShowGroupControls] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -849,15 +901,14 @@ export function ChatView() {
       // Auto-enable VN mode so the user immediately sees the background they
       // just chose. Without this, the upload would silently store the image
       // but render nothing because the bg <img> is gated on isVnMode.
-      if (!getVnMode()) {
+      if (!isVnMode) {
         storeSetVnMode(true);
-        setIsVnModeState(true);
       }
     };
     reader.readAsDataURL(file);
     // Reset so the same file can be re-selected later
     e.target.value = '';
-  }, [selectedCharacter]);
+  }, [selectedCharacter, isVnMode]);
 
   const handleClearBg = useCallback(() => {
     if (selectedCharacter) {
@@ -880,6 +931,17 @@ export function ChatView() {
       setActiveCostumeState(null);
     }
   }, [selectedCharacter]);
+
+  // Quick in-chat toggle for VN/background mode — lets mobile users send the
+  // character art behind the chat without a trip to Settings, and back out
+  // again (the only other entry point auto-enables it on background upload).
+  const handleEnableBackgroundMode = useCallback(() => {
+    storeSetVnMode(true);
+  }, []);
+
+  const handleDisableBackgroundMode = useCallback(() => {
+    storeSetVnMode(false);
+  }, []);
 
   const handleSend = (content: string, images?: string[]) => {
     if (isGroupChatMode && groupChatCharacters.length >= 2) {
@@ -1222,7 +1284,10 @@ export function ChatView() {
         </>
       ) : selectedCharacter ? (
         <>
-          {/* Mobile: character portrait (hidden in VN mode and mobile landscape) */}
+          {/* Mobile: character portrait (hidden in VN mode and mobile landscape).
+              CSS-hidden rather than unmounted when collapsed — not conditionally
+              rendered — so LivePortraitVideo keeps its decoded frame/playback
+              position across collapse/expand instead of restarting from scratch. */}
           {!isVnMode && !isMobileLandscape && (
             <>
               <div
@@ -1231,7 +1296,7 @@ export function ChatView() {
                 onPointerMove={handlePortraitPointerMove}
                 onPointerUp={handlePortraitPointerUp}
                 onPointerCancel={handlePortraitPointerUp}
-                className="lg:hidden relative bg-gradient-to-b from-[var(--color-bg-tertiary)] to-[var(--color-bg-primary)] overflow-hidden cursor-grab active:cursor-grabbing"
+                className={`lg:hidden relative bg-gradient-to-b from-[var(--color-bg-tertiary)] to-[var(--color-bg-primary)] overflow-hidden cursor-grab active:cursor-grabbing ${isPortraitCollapsed ? 'hidden' : ''}`}
                 style={{ height: `${portraitHeight * 100}vh`, touchAction: 'none' }}
               >
                 {hasLivePortrait ? (
@@ -1266,23 +1331,21 @@ export function ChatView() {
                 <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[var(--color-bg-primary)] to-transparent" />
                 <div className="absolute bottom-2 left-4 right-4 flex flex-col gap-2">
                   <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-semibold text-[var(--color-text-primary)] drop-shadow-lg">
+                    <h2 className="text-lg font-semibold text-[var(--color-text-primary)] drop-shadow-lg truncate min-w-0 flex-1">
                       {selectedCharacter.name}
                     </h2>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-shrink-0">
                       {latestEmotion && (
                         <span className="text-xs px-2 py-1 rounded-full bg-black/30 text-white/80 backdrop-blur-sm capitalize">
                           {latestEmotion}
                         </span>
                       )}
-                      <button
-                        onClick={openSearch}
-                        className="p-1.5 rounded-full bg-black/30 text-white/80 backdrop-blur-sm hover:bg-black/50 transition-colors"
-                        aria-label="Search messages"
-                        title="Search messages"
-                      >
-                        <Search size={15} />
-                      </button>
+                      <PortraitHeaderActions
+                        variant="expanded"
+                        onSearch={openSearch}
+                        onBackground={handleEnableBackgroundMode}
+                        onToggleCollapse={handleTogglePortraitCollapsed}
+                      />
                     </div>
                   </div>
                   <MotionModePicker
@@ -1293,20 +1356,40 @@ export function ChatView() {
                   />
                 </div>
               </div>
-              <div
-                onPointerDown={handlePortraitResize}
-                onKeyDown={handlePortraitResizeKey}
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label="Resize character portrait"
-                aria-valuenow={Math.round(portraitHeight * 100)}
-                aria-valuemin={Math.round(MIN_PORTRAIT_HEIGHT * 100)}
-                aria-valuemax={Math.round(MAX_PORTRAIT_HEIGHT * 100)}
-                tabIndex={0}
-                className="lg:hidden flex items-center justify-center h-3 bg-[var(--color-bg-primary)] cursor-ns-resize touch-none select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
-              >
-                <div className="h-1 w-10 rounded-full bg-[var(--color-border)]" />
-              </div>
+              {!isPortraitCollapsed && (
+                <div
+                  onPointerDown={handlePortraitResize}
+                  onKeyDown={handlePortraitResizeKey}
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize character portrait"
+                  aria-valuenow={Math.round(portraitHeight * 100)}
+                  aria-valuemin={Math.round(MIN_PORTRAIT_HEIGHT * 100)}
+                  aria-valuemax={Math.round(MAX_PORTRAIT_HEIGHT * 100)}
+                  tabIndex={0}
+                  className="lg:hidden flex items-center justify-center h-3 bg-[var(--color-bg-primary)] cursor-ns-resize touch-none select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
+                >
+                  <div className="h-1 w-10 rounded-full bg-[var(--color-border)]" />
+                </div>
+              )}
+              {isPortraitCollapsed && (
+                <div className="lg:hidden flex items-center gap-2 px-3 py-2 bg-gradient-to-b from-[var(--color-bg-tertiary)] to-[var(--color-bg-primary)] flex-shrink-0">
+                  <h2 className="text-sm font-semibold text-[var(--color-text-primary)] truncate min-w-0 flex-1">
+                    {selectedCharacter.name}
+                  </h2>
+                  {latestEmotion && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] capitalize">
+                      {latestEmotion}
+                    </span>
+                  )}
+                  <PortraitHeaderActions
+                    variant="collapsed"
+                    onSearch={openSearch}
+                    onBackground={handleEnableBackgroundMode}
+                    onToggleCollapse={handleTogglePortraitCollapsed}
+                  />
+                </div>
+              )}
             </>
           )}
 
@@ -1314,7 +1397,7 @@ export function ChatView() {
           {isVnMode && (
             <div className="lg:hidden bg-black/30 backdrop-blur-sm flex-shrink-0">
               <div className="flex items-center gap-2 px-3 py-2">
-                <h2 className="text-sm font-semibold text-white truncate flex-1">
+                <h2 className="text-sm font-semibold text-white truncate min-w-0 flex-1">
                   {selectedCharacter.name}
                 </h2>
                 {latestEmotion && (
@@ -1336,6 +1419,14 @@ export function ChatView() {
                   title="Search messages"
                 >
                   <Search size={15} />
+                </button>
+                <button
+                  onClick={handleDisableBackgroundMode}
+                  className="p-1.5 rounded-full text-white/80 hover:bg-black/30 transition-colors"
+                  aria-label="Exit background mode"
+                  title="Exit background mode"
+                >
+                  <PanelTopOpen size={15} />
                 </button>
                 <button
                   onClick={() => bgInputRef.current?.click()}
