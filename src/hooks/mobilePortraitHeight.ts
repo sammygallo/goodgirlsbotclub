@@ -33,3 +33,21 @@ export function setMobilePortraitHeight(v: number): void {
     /* ignore */
   }
 }
+
+const COLLAPSED_KEY = 'stm:mobile-portrait-collapsed';
+
+export function getMobilePortraitCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setMobilePortraitCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
