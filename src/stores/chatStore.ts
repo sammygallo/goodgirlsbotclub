@@ -2935,7 +2935,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       // Build context including the current AI message
       const ragCtx = await resolveRagContext(messages, character.avatar || '', get().currentChatFile || undefined);
-      const { context } = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
+      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
       // Append the continue instruction as a user turn, not a system one.
       // Gemini extracts system messages into its separate systemInstruction
       // field, which would leave contents[] ending with an assistant ('model')
@@ -2952,13 +2952,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         maybeApplyInstructMode(context),
         character.name,
       );
+      const generationOptions = getGenerationOptions();
       const stream = await api.generateMessage(
         finalContext,
         character.name,
         provider,
         model,
         abortController.signal,
-        getGenerationOptions(),
+        generationOptions,
         imagesFromLastUserMessage(messages, provider, model),
         isTextCompletionMode()
       );
@@ -2966,8 +2967,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const existingContent = lastAiMsg.content;
       let newTokens = '';
+      const sseMeta: SSEStreamMeta = { finishReason: null };
 
-      for await (const token of parseSSEStream(stream)) {
+      for await (const token of parseSSEStream(stream, sseMeta)) {
         if (!get().isSending) break;
         newTokens += token;
         if (!get().isStreaming) set({ isStreaming: true });
@@ -2996,6 +2998,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const usage = produced
         ? recordTurnUsage(provider, model, newTokens, { chipOutputText: cleanedContent })
         : lastAiMsg.usage;
+      const aborted = !get().isSending;
       set((state) => ({
         messages: state.messages.map((m) => {
           if (m.id !== lastAiMsg.id) return m;
@@ -3003,6 +3006,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           newSwipes[m.swipeId] = cleanedContent;
           return { ...m, content: cleanedContent, swipes: newSwipes, usage };
         }),
+        error:
+          produced || aborted
+            ? state.error
+            : buildEmptyResponseError(
+                'The model did not add anything new. Try tapping Continue again.',
+                'tapping Continue again',
+                sseMeta.finishReason,
+                generationOptions.maxTokens ?? 0,
+                overBudget
+              ),
       }));
 
     } catch (error) {
@@ -3025,7 +3038,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       const ragCtx = await resolveRagContext(messages, character.avatar || '', get().currentChatFile || undefined);
-      const { context } = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
+      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
       // User-role instruction so Gemini (which extracts system into a
       // separate systemInstruction field) doesn't leave contents[] ending
       // with an assistant turn and trip its 400. See continueMessage above
@@ -3040,17 +3053,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
         maybeApplyInstructMode(context),
         character.name,
       );
-      const stream = await api.generateMessage(finalContext, character.name, provider, model, abortController.signal, getGenerationOptions(), undefined, isTextCompletionMode());
+      const generationOptions = getGenerationOptions();
+      const stream = await api.generateMessage(finalContext, character.name, provider, model, abortController.signal, generationOptions, undefined, isTextCompletionMode());
       if (!stream) return '';
 
       let responseText = '';
-      for await (const token of parseSSEStream(stream)) {
+      const sseMeta: SSEStreamMeta = { finishReason: null };
+      for await (const token of parseSSEStream(stream, sseMeta)) {
         if (!get().isSending) break;
         responseText += token;
         if (!get().isStreaming) set({ isStreaming: true });
       }
 
-      return stripEmotionTag(responseText);
+      const cleanedContent = stripEmotionTag(responseText);
+      if (cleanedContent.trim() === '' && get().isSending) {
+        set({
+          error: buildEmptyResponseError(
+            'The model returned an empty response. Try impersonating again.',
+            'trying again',
+            sseMeta.finishReason,
+            generationOptions.maxTokens ?? 0,
+            overBudget
+          ),
+        });
+      }
+      return cleanedContent;
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         set({ error: error instanceof Error ? error.message : 'Failed to impersonate' });
@@ -3629,14 +3656,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (cleanedContent.trim() === '') {
           // Empty completion on edit-and-regenerate — drop the blank
           // placeholder instead of persisting it (see sendMessage above).
+          // Note: the generic Regenerate control targets the chat's last AI
+          // message, which after this drop is an earlier turn preceding the
+          // edit — so the retry hint below points at "Save & regenerate" on
+          // the edited message instead, the control that actually reruns
+          // this same request.
           const aborted = !get().isSending;
           set((state) => ({
             messages: state.messages.filter((msg) => msg.id !== aiMessageId),
             error: aborted
               ? state.error
               : buildEmptyResponseError(
-                  'The model returned an empty response. Tap regenerate to retry.',
-                  'tap regenerate',
+                  'The model returned an empty response. Edit your message again and choose "Save & regenerate" to retry.',
+                  'choosing "Save & regenerate" again',
                   sseMeta.finishReason,
                   generationOptions.maxTokens ?? 0,
                   overBudget
