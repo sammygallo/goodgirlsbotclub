@@ -2,8 +2,12 @@
  * Persistent chat display preferences backed by localStorage.
  *
  * Follows the same pattern as speechLanguage.ts — plain getter/setter
- * functions with `stm:` key prefix, no reactive store needed since the
- * chat view remounts when navigating back from settings.
+ * functions with `stm:` key prefix. Most of these are re-read fresh on every
+ * render (e.g. getChatLayoutMode() at the top of ChatView), so staleness
+ * isn't a concern. VN mode is the exception: it's mirrored into
+ * displayPreferencesStore precisely so consumers can subscribe reactively
+ * instead of caching a read in local state, which goes stale — ChatView
+ * does NOT remount when Settings (an overlay, not a route change) toggles it.
  */
 
 export type ChatLayoutMode = 'bubbles' | 'flat' | 'document';
