@@ -668,10 +668,17 @@ async function* parseSSEStream(
 // a request whose newest message alone blew the local token budget, falling
 // back to the given generic message otherwise.
 // `retryAction` completes "..., then <retryAction>." (e.g. "tap send again").
+// `maxTokens` and `overBudget` must be the values captured at dispatch time
+// (the request that actually produced this empty response), not re-read from
+// generationStore live — the sampler and trim-budget flag are shared mutable
+// state that a concurrent send/swipe/chat-switch can overwrite before this
+// stream resolves.
 function buildEmptyResponseError(
   genericMessage: string,
   retryAction: string,
-  finishReason: string | null
+  finishReason: string | null,
+  maxTokens: number,
+  overBudget: boolean
 ): string {
   if (finishReason === 'length' || finishReason === 'max_tokens') {
     // finish_reason: length means the OUTPUT cap (sampler.maxTokens, aka
@@ -681,7 +688,7 @@ function buildEmptyResponseError(
     // whole cap on hidden reasoning tokens with nothing visible left over,
     // which shows up easily under a Quick Chat Style like Natural Chat that
     // caps replies at 400 tokens.
-    const cap = useGenerationStore.getState().sampler.maxTokens;
+    const cap = maxTokens;
     const styleHint = cap <= 512
       ? ' A Chat Style with a short response cap (e.g. Natural Chat) may be active for this chat — check Chat Style in the chat options menu.'
       : '';
@@ -690,7 +697,7 @@ function buildEmptyResponseError(
   if (finishReason === 'content_filter') {
     return `The response was blocked by the provider's content filter. Try rewording your message, then ${retryAction}.`;
   }
-  if (useGenerationStore.getState().lastRequestOverBudget) {
+  if (overBudget) {
     return `Your message may be too long for the current context window. Try raising Max Context Tokens in Settings → Generation, or shortening your message, then ${retryAction}.`;
   }
   return genericMessage;
@@ -861,7 +868,15 @@ function buildConversationContext(
   availableEmotions?: string[],
   wiTimerOut?: { currentTurn: number; timers: Record<string, number>; activated: Set<string> },
   ragContext?: string
-): { role: 'user' | 'assistant' | 'system'; content: string }[] {
+): {
+  context: { role: 'user' | 'assistant' | 'system'; content: string }[];
+  /** True when the newest message alone exceeded the configured token
+   *  budget and had to be force-included anyway. Captured here (dispatch
+   *  time) rather than round-tripped through generationStore, since a
+   *  concurrent send/swipe can overwrite a shared store field before this
+   *  call's own stream resolves. */
+  overBudget: boolean;
+} {
   const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
 
   // Get active persona for this character/chat
@@ -1345,20 +1360,20 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   }
 
   // Token-aware trimming: keep system prompts, drop oldest history that exceeds budget
+  let overBudget = false;
   if (ctxConfig.tokenAware) {
     const systemPrompts = context.slice(); // system prompt we already pushed
-    const { kept, usedTokens, overBudget } = trimHistoryToBudget(
+    const trimmed = trimHistoryToBudget(
       systemPrompts,
       historyWithInsertions,
       ctxConfig.responseReserve,
       ctxConfig.maxTokens,
       tokenProfile
     );
-    context.push(...kept);
-    genState.setLastTokenEstimate(usedTokens);
-    genState.setLastRequestOverBudget(overBudget);
+    context.push(...trimmed.kept);
+    genState.setLastTokenEstimate(trimmed.usedTokens);
+    overBudget = trimmed.overBudget;
   } else {
-    genState.setLastRequestOverBudget(false);
     context.push(...historyWithInsertions);
   }
 
@@ -1385,7 +1400,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     chatStoreState.setChatVariables(ctxChatFile, variables);
   }
 
-  return context;
+  return { context, overBudget };
 }
 
 // Build conversation context for group chat AI
@@ -2784,12 +2799,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = contextMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(contextMessages, character.avatar || '', currentChatFile || undefined);
-      const context = buildConversationContext(contextMessages, character, availableEmotions, {
+      const { context, overBudget } = buildConversationContext(contextMessages, character, availableEmotions, {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
       }, ragCtx ?? undefined);
       const { provider, model } = getProviderAndModel();
+      const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
         maybeApplyInstructMode(context),
@@ -2801,7 +2817,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         provider,
         model,
         abortController.signal,
-        getGenerationOptions(),
+        generationOptions,
         imagesFromLastUserMessage(contextMessages, provider, model),
         isTextCompletionMode()
       );
@@ -2852,7 +2868,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : buildEmptyResponseError(
                 'The model returned an empty response. Try swiping again.',
                 'swiping again',
-                sseMeta.finishReason
+                sseMeta.finishReason,
+                generationOptions.maxTokens ?? 0,
+                overBudget
               ),
         }));
       } else {
@@ -2901,7 +2919,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       // Build context including the current AI message
       const ragCtx = await resolveRagContext(messages, character.avatar || '', get().currentChatFile || undefined);
-      const context = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
+      const { context } = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
       // Append the continue instruction as a user turn, not a system one.
       // Gemini extracts system messages into its separate systemInstruction
       // field, which would leave contents[] ending with an assistant ('model')
@@ -2991,7 +3009,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       const ragCtx = await resolveRagContext(messages, character.avatar || '', get().currentChatFile || undefined);
-      const context = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
+      const { context } = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
       // User-role instruction so Gemini (which extracts system into a
       // separate systemInstruction field) doesn't leave contents[] ending
       // with an assistant turn and trip its 400. See continueMessage above
@@ -3175,11 +3193,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
-      const context = buildConversationContext(updatedMessages, character, availableEmotions, {
+      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
       }, ragCtx ?? undefined);
+      const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
         maybeApplyInstructMode(context),
@@ -3191,7 +3210,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         provider,
         model,
         abortController.signal,
-        getGenerationOptions(),
+        generationOptions,
         resolveImagesForSend(attachedImages),
         isTextCompletionMode()
       );
@@ -3244,7 +3263,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               : buildEmptyResponseError(
                   'The model returned an empty response. Tap send again to retry.',
                   'tap send again',
-                  sseMeta.finishReason
+                  sseMeta.finishReason,
+                  generationOptions.maxTokens ?? 0,
+                  overBudget
                 ),
           }));
         } else {
@@ -3532,12 +3553,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
-      const context = buildConversationContext(updatedMessages, character, availableEmotions, {
+      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
       }, ragCtx ?? undefined);
       const { provider, model } = getProviderAndModel();
+      const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
         maybeApplyInstructMode(context),
@@ -3549,7 +3571,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         provider,
         model,
         abortController.signal,
-        getGenerationOptions(),
+        generationOptions,
         imagesFromLastUserMessage(updatedMessages, provider, model),
         isTextCompletionMode()
       );
@@ -3599,7 +3621,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               : buildEmptyResponseError(
                   'The model returned an empty response. Tap regenerate to retry.',
                   'tap regenerate',
-                  sseMeta.finishReason
+                  sseMeta.finishReason,
+                  generationOptions.maxTokens ?? 0,
+                  overBudget
                 ),
           }));
         } else {
