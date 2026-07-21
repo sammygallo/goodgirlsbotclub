@@ -589,9 +589,8 @@ async function* parseSSEStream(
   const decoder = new TextDecoder();
   let buffer = '';
 
-  const captureFinishReason = (json: Record<string, unknown>) => {
+  const captureFinishReason = (json: Record<string, unknown>, choice: Record<string, unknown> | undefined) => {
     if (!meta) return;
-    const choice = (json.choices as Array<Record<string, unknown>> | undefined)?.[0];
     const reason =
       (choice?.finish_reason as string | undefined) ||
       (json.stop_reason as string | undefined) ||
@@ -620,10 +619,11 @@ async function* parseSSEStream(
 
           try {
             const json = JSON.parse(data);
-            captureFinishReason(json);
+            const choice = json.choices?.[0];
+            captureFinishReason(json, choice);
             const content =
-              json.choices?.[0]?.delta?.content ||
-              json.choices?.[0]?.text ||
+              choice?.delta?.content ||
+              choice?.text ||
               json.delta?.text ||
               (json.type === 'content_block_delta' ? json.delta?.text : null) ||
               json.content ||
@@ -646,9 +646,10 @@ async function* parseSSEStream(
         if (data && data !== '[DONE]') {
           try {
             const json = JSON.parse(data);
-            captureFinishReason(json);
-            const content = json.choices?.[0]?.delta?.content ||
-                           json.choices?.[0]?.text ||
+            const choice = json.choices?.[0];
+            captureFinishReason(json, choice);
+            const content = choice?.delta?.content ||
+                           choice?.text ||
                            json.delta?.text ||
                            json.content || '';
             if (content) yield content;
