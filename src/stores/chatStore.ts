@@ -2932,8 +2932,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const existingContent = lastAiMsg.content;
       let newTokens = '';
+      const sseMeta: SSEStreamMeta = { finishReason: null };
 
-      for await (const token of parseSSEStream(stream)) {
+      for await (const token of parseSSEStream(stream, sseMeta)) {
         if (!get().isSending) break;
         newTokens += token;
         if (!get().isStreaming) set({ isStreaming: true });
@@ -2962,6 +2963,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const usage = produced
         ? recordTurnUsage(provider, model, newTokens, { chipOutputText: cleanedContent })
         : lastAiMsg.usage;
+      const aborted = !get().isSending;
       set((state) => ({
         messages: state.messages.map((m) => {
           if (m.id !== lastAiMsg.id) return m;
@@ -2969,6 +2971,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
           newSwipes[m.swipeId] = cleanedContent;
           return { ...m, content: cleanedContent, swipes: newSwipes, usage };
         }),
+        error:
+          produced || aborted
+            ? state.error
+            : buildEmptyResponseError(
+                'The model did not add anything new. Try tapping Continue again.',
+                'tapping Continue again',
+                sseMeta.finishReason
+              ),
       }));
 
     } catch (error) {
@@ -3010,13 +3020,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!stream) return '';
 
       let responseText = '';
-      for await (const token of parseSSEStream(stream)) {
+      const sseMeta: SSEStreamMeta = { finishReason: null };
+      for await (const token of parseSSEStream(stream, sseMeta)) {
         if (!get().isSending) break;
         responseText += token;
         if (!get().isStreaming) set({ isStreaming: true });
       }
 
-      return stripEmotionTag(responseText);
+      const cleanedContent = stripEmotionTag(responseText);
+      if (cleanedContent.trim() === '' && get().isSending) {
+        set({
+          error: buildEmptyResponseError(
+            'The model returned an empty response. Try impersonating again.',
+            'trying again',
+            sseMeta.finishReason
+          ),
+        });
+      }
+      return cleanedContent;
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         set({ error: error instanceof Error ? error.message : 'Failed to impersonate' });
@@ -3591,14 +3612,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (cleanedContent.trim() === '') {
           // Empty completion on edit-and-regenerate — drop the blank
           // placeholder instead of persisting it (see sendMessage above).
+          // Note: the generic Regenerate control targets the chat's last AI
+          // message, which after this drop is an earlier turn preceding the
+          // edit — so the retry hint below points at "Save & regenerate" on
+          // the edited message instead, the control that actually reruns
+          // this same request.
           const aborted = !get().isSending;
           set((state) => ({
             messages: state.messages.filter((msg) => msg.id !== aiMessageId),
             error: aborted
               ? state.error
               : buildEmptyResponseError(
-                  'The model returned an empty response. Tap regenerate to retry.',
-                  'tap regenerate',
+                  'The model returned an empty response. Edit your message again and choose "Save & regenerate" to retry.',
+                  'choosing "Save & regenerate" again',
                   sseMeta.finishReason
                 ),
           }));
