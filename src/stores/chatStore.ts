@@ -1139,9 +1139,19 @@ Choose the emotion that best matches how ${character.name} would feel based on t
 
   // Decide how many messages to consider for history.
   const ctxConfig = genState.context;
+  const allNonSystemMessages = messages.filter((m) => !m.isSystem);
   let historyPool = ctxConfig.tokenAware
-    ? messages.filter((m) => !m.isSystem)
+    ? allNonSystemMessages
     : messages.slice(-ctxConfig.messageCount).filter((m) => !m.isSystem);
+  // When tokenAware is false, historyPool above is pre-windowed to the last
+  // ctxConfig.messageCount raw messages — a different index frame than
+  // sumForChat.messageCount below, which is always counted from the true
+  // start of the chat (see summarizeStore.ts's generateSummary). windowSkew
+  // is how many earlier non-system messages that pre-windowing already
+  // dropped, so the summary offset rebase further down can correct for it
+  // the same way it already corrects for the pure-chat-mode greeting trim.
+  // tokenAware mode uses the full non-system list, so skew is always 0 there.
+  const windowSkew = allNonSystemMessages.length - historyPool.length;
   // Pure chat mode: hide the greeting block (leading non-user messages) from
   // the model. The opening scene is prose in the character's own voice — as
   // the first "assistant" turn it anchors narration harder than any
@@ -1162,24 +1172,29 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   //
   // sumForChat.messageCount is computed against the full non-system message
   // list (chatMessages.filter(!isSystem).length in summarizeStore), i.e.
-  // BEFORE the pure-chat greeting trim above. Slicing historyPool by that
-  // raw count directly over-shoots by exactly `pureChatRemoved` messages —
-  // in the worst case (a summary freshly covering the whole chat) that
-  // over-shoot swallows the just-sent turn too, leaving recentMessages
-  // empty and shipping a request with zero conversation messages upstream
-  // (providers reject that outright, e.g. Anthropic's "at least one message
-  // is required" 400). Subtracting pureChatRemoved re-bases the count onto
-  // historyPool's own indexing before it's used as a slice offset.
+  // BEFORE both the fixed-window pre-trim (windowSkew) and the pure-chat
+  // greeting trim (pureChatRemoved) above. Slicing historyPool by that raw
+  // count directly over-shoots by exactly `windowSkew + pureChatRemoved`
+  // messages — in the worst case (a summary freshly covering the whole
+  // chat) that over-shoot swallows the just-sent turn too, leaving
+  // recentMessages empty and shipping a request with zero conversation
+  // messages upstream (providers reject that outright, e.g. Anthropic's "at
+  // least one message is required" 400). Subtracting both re-bases the
+  // count onto historyPool's own indexing before it's used as a slice
+  // offset — without windowSkew, a fixed Message Count context (tokenAware
+  // off) would keep re-subtracting the summary's full-chat coverage from an
+  // already-windowed pool, shrinking the configured window far below what
+  // the user set any time compactWhenSummarized is on.
   const sumState = useSummarizeStore.getState();
   const sumForChat = ctxChatFile ? sumState.getSummary(ctxChatFile) : null;
   const summarySliceOffset = sumForChat
-    ? Math.max(0, sumForChat.messageCount - pureChatRemoved)
+    ? Math.max(0, sumForChat.messageCount - pureChatRemoved - windowSkew)
     : 0;
   // Hard floor: never let compaction slice away the last MIN_RAW_TAIL
   // messages in historyPool, however large summarySliceOffset is. The
-  // rebasing above handles the pure-chat skew, but the summary can
-  // independently "cover" (or exceed) whatever's in historyPool for other
-  // reasons too — e.g. swipeRight/regenerate deliberately truncate
+  // rebasing above handles the pure-chat and fixed-window skew, but the
+  // summary can independently "cover" (or exceed) whatever's in historyPool
+  // for other reasons too — e.g. swipeRight/regenerate deliberately truncate
   // historyPool to messages before the swiped slot, so a summary covering
   // the full chat trivially exceeds that truncated count. A 1-message floor
   // technically avoids the empty-array 400, but right after each
