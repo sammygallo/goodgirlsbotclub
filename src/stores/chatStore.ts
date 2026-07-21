@@ -589,9 +589,8 @@ async function* parseSSEStream(
   const decoder = new TextDecoder();
   let buffer = '';
 
-  const captureFinishReason = (json: Record<string, unknown>) => {
+  const captureFinishReason = (json: Record<string, unknown>, choice: Record<string, unknown> | undefined) => {
     if (!meta) return;
-    const choice = (json.choices as Array<Record<string, unknown>> | undefined)?.[0];
     const reason =
       (choice?.finish_reason as string | undefined) ||
       (json.stop_reason as string | undefined) ||
@@ -620,10 +619,11 @@ async function* parseSSEStream(
 
           try {
             const json = JSON.parse(data);
-            captureFinishReason(json);
+            const choice = json.choices?.[0];
+            captureFinishReason(json, choice);
             const content =
-              json.choices?.[0]?.delta?.content ||
-              json.choices?.[0]?.text ||
+              choice?.delta?.content ||
+              choice?.text ||
               json.delta?.text ||
               (json.type === 'content_block_delta' ? json.delta?.text : null) ||
               json.content ||
@@ -646,9 +646,10 @@ async function* parseSSEStream(
         if (data && data !== '[DONE]') {
           try {
             const json = JSON.parse(data);
-            captureFinishReason(json);
-            const content = json.choices?.[0]?.delta?.content ||
-                           json.choices?.[0]?.text ||
+            const choice = json.choices?.[0];
+            captureFinishReason(json, choice);
+            const content = choice?.delta?.content ||
+                           choice?.text ||
                            json.delta?.text ||
                            json.content || '';
             if (content) yield content;
@@ -671,7 +672,8 @@ async function* parseSSEStream(
 function buildEmptyResponseError(
   genericMessage: string,
   retryAction: string,
-  finishReason: string | null
+  finishReason: string | null,
+  overBudget: boolean
 ): string {
   if (finishReason === 'length' || finishReason === 'max_tokens') {
     // finish_reason: length means the OUTPUT cap (sampler.maxTokens, aka
@@ -690,7 +692,7 @@ function buildEmptyResponseError(
   if (finishReason === 'content_filter') {
     return `The response was blocked by the provider's content filter. Try rewording your message, then ${retryAction}.`;
   }
-  if (useGenerationStore.getState().lastRequestOverBudget) {
+  if (overBudget) {
     return `Your message may be too long for the current context window. Try raising Max Context Tokens in Settings → Generation, or shortening your message, then ${retryAction}.`;
   }
   return genericMessage;
@@ -860,7 +862,11 @@ function buildConversationContext(
   character: CharacterInfo,
   availableEmotions?: string[],
   wiTimerOut?: { currentTurn: number; timers: Record<string, number>; activated: Set<string> },
-  ragContext?: string
+  ragContext?: string,
+  /** Written with whether the newest message alone exceeded the configured
+   *  token budget and had to be force-included anyway, for callers that need
+   *  to build an over-budget error message after streaming completes. */
+  overBudgetOut?: { value: boolean }
 ): { role: 'user' | 'assistant' | 'system'; content: string }[] {
   const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
 
@@ -1356,9 +1362,9 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     );
     context.push(...kept);
     genState.setLastTokenEstimate(usedTokens);
-    genState.setLastRequestOverBudget(overBudget);
+    if (overBudgetOut) overBudgetOut.value = overBudget;
   } else {
-    genState.setLastRequestOverBudget(false);
+    if (overBudgetOut) overBudgetOut.value = false;
     context.push(...historyWithInsertions);
   }
 
@@ -2784,11 +2790,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = contextMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(contextMessages, character.avatar || '', currentChatFile || undefined);
+      const overBudgetOut = { value: false };
       const context = buildConversationContext(contextMessages, character, availableEmotions, {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
-      }, ragCtx ?? undefined);
+      }, ragCtx ?? undefined, overBudgetOut);
       const { provider, model } = getProviderAndModel();
 
       const finalContext = await runGenerateInterceptors(
@@ -2852,7 +2859,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : buildEmptyResponseError(
                 'The model returned an empty response. Try swiping again.',
                 'swiping again',
-                sseMeta.finishReason
+                sseMeta.finishReason,
+                overBudgetOut.value
               ),
         }));
       } else {
@@ -3175,11 +3183,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
+      const overBudgetOut = { value: false };
       const context = buildConversationContext(updatedMessages, character, availableEmotions, {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
-      }, ragCtx ?? undefined);
+      }, ragCtx ?? undefined, overBudgetOut);
 
       const finalContext = await runGenerateInterceptors(
         maybeApplyInstructMode(context),
@@ -3244,7 +3253,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               : buildEmptyResponseError(
                   'The model returned an empty response. Tap send again to retry.',
                   'tap send again',
-                  sseMeta.finishReason
+                  sseMeta.finishReason,
+                  overBudgetOut.value
                 ),
           }));
         } else {
@@ -3532,11 +3542,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
+      const overBudgetOut = { value: false };
       const context = buildConversationContext(updatedMessages, character, availableEmotions, {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
-      }, ragCtx ?? undefined);
+      }, ragCtx ?? undefined, overBudgetOut);
       const { provider, model } = getProviderAndModel();
 
       const finalContext = await runGenerateInterceptors(
@@ -3599,7 +3610,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               : buildEmptyResponseError(
                   'The model returned an empty response. Tap regenerate to retry.',
                   'tap regenerate',
-                  sseMeta.finishReason
+                  sseMeta.finishReason,
+                  overBudgetOut.value
                 ),
           }));
         } else {

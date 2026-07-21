@@ -320,9 +320,6 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
   const activateUserProvider = useCustomProviderStore((s) => s.activate);
   const setUserProviderApiKey = useCustomProviderStore((s) => s.setApiKey);
 
-  // Live Portrait still uses these keyed maps under its own pseudo-id ('replicate-live').
-  const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
-  const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [globalKeyInputs, setGlobalKeyInputs] = useState<Record<string, string>>({});
   const [showGlobalKey, setShowGlobalKey] = useState<Record<string, boolean>>({});
   const [globalKeysOpen, setGlobalKeysOpen] = useState(false);
@@ -765,51 +762,21 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
             <span className="font-mono">wan-video/wan-2.2-i2v-fast</span>.
             Videos are generated from the character's portrait — no driving videos needed.
           </p>
-          <div className="p-3 bg-[var(--color-bg-tertiary)] rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-[var(--color-text-primary)]">Replicate</span>
-              {hasApiKey('api_key_replicate') && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-green-400">Configured</span>
-                  <Button variant="ghost" size="sm" onClick={() => deleteApiKey('api_key_replicate')} disabled={isSaving} className="p-1 text-red-400 hover:text-red-300">
-                    <Trash2 size={14} />
-                  </Button>
-                </div>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <div className="flex-1 relative">
-                <Input
-                  type={showApiKey['replicate-live'] ? 'text' : 'password'}
-                  value={apiKeyInputs['replicate-live'] || ''}
-                  onChange={(e) => setApiKeyInputs((prev) => ({ ...prev, 'replicate-live': e.target.value }))}
-                  placeholder={hasApiKey('api_key_replicate') ? 'Enter new key to replace...' : 'r8_...'}
-                  className="pr-10"
-                />
-                <button type="button" onClick={() => setShowApiKey((prev) => ({ ...prev, 'replicate-live': !prev['replicate-live'] }))}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
-                  {showApiKey['replicate-live'] ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-              <Button
-                onClick={async () => {
-                  const key = apiKeyInputs['replicate-live'];
-                  if (!key?.trim()) return;
-                  try {
-                    await settingsApi.writeSecret('api_key_replicate', key.trim(), 'Replicate');
-                    await fetchSecrets();
-                    setApiKeyInputs((prev) => ({ ...prev, 'replicate-live': '' }));
-                  } catch (e) {
-                    showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
-                  }
-                }}
-                disabled={!apiKeyInputs['replicate-live']?.trim() || isSaving}
-                className="shrink-0"
-              >
-                {isSaving ? <Loader2 size={16} className="animate-spin" /> : 'Save'}
-              </Button>
-            </div>
-          </div>
+          <ProviderApiKeyInput
+            providerName="Replicate"
+            secretKey="api_key_replicate"
+            configured={hasApiKey('api_key_replicate')}
+            isSaving={isSaving}
+            onSave={async (key) => {
+              try {
+                await settingsApi.writeSecret('api_key_replicate', key, 'Replicate');
+                await fetchSecrets();
+              } catch (e) {
+                showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
+              }
+            }}
+            onDelete={() => deleteApiKey('api_key_replicate')}
+          />
         </section>
 
         {/* Scene Video (self-hosted RunPod) */}
@@ -823,51 +790,21 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
             scenes). Only used when the instance has a scene endpoint configured;
             without it, Generate Scene falls back to Replicate.
           </p>
-          <div className="p-3 bg-[var(--color-bg-tertiary)] rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-[var(--color-text-primary)]">RunPod</span>
-              {hasApiKey('api_key_runpod') && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-green-400">Configured</span>
-                  <Button variant="ghost" size="sm" onClick={() => deleteApiKey('api_key_runpod')} disabled={isSaving} className="p-1 text-red-400 hover:text-red-300">
-                    <Trash2 size={14} />
-                  </Button>
-                </div>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <div className="flex-1 relative">
-                <Input
-                  type={showApiKey['runpod-scene'] ? 'text' : 'password'}
-                  value={apiKeyInputs['runpod-scene'] || ''}
-                  onChange={(e) => setApiKeyInputs((prev) => ({ ...prev, 'runpod-scene': e.target.value }))}
-                  placeholder={hasApiKey('api_key_runpod') ? 'Enter new key to replace...' : 'rpa_...'}
-                  className="pr-10"
-                />
-                <button type="button" onClick={() => setShowApiKey((prev) => ({ ...prev, 'runpod-scene': !prev['runpod-scene'] }))}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
-                  {showApiKey['runpod-scene'] ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-              <Button
-                onClick={async () => {
-                  const key = apiKeyInputs['runpod-scene'];
-                  if (!key?.trim()) return;
-                  try {
-                    await settingsApi.writeSecret('api_key_runpod', key.trim(), 'RunPod');
-                    await fetchSecrets();
-                    setApiKeyInputs((prev) => ({ ...prev, 'runpod-scene': '' }));
-                  } catch (e) {
-                    showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
-                  }
-                }}
-                disabled={!apiKeyInputs['runpod-scene']?.trim() || isSaving}
-                className="shrink-0"
-              >
-                {isSaving ? <Loader2 size={16} className="animate-spin" /> : 'Save'}
-              </Button>
-            </div>
-          </div>
+          <ProviderApiKeyInput
+            providerName="RunPod"
+            secretKey="api_key_runpod"
+            configured={hasApiKey('api_key_runpod')}
+            isSaving={isSaving}
+            onSave={async (key) => {
+              try {
+                await settingsApi.writeSecret('api_key_runpod', key, 'RunPod');
+                await fetchSecrets();
+              } catch (e) {
+                showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
+              }
+            }}
+            onDelete={() => deleteApiKey('api_key_runpod')}
+          />
         </section>
 
         {/* Global API Keys — Owner only */}
