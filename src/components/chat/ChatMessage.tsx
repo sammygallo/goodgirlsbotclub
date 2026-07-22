@@ -14,6 +14,8 @@ import type { TokenUsage } from '../../stores/chatStore';
 import { formatTokens } from '../../stores/usageStore';
 import { estimateTokens, profileForProvider } from '../../utils/tokenizer';
 import { useRegexScriptStore } from '../../stores/regexScriptStore';
+import { useLovenseStore } from '../../stores/lovenseStore';
+import { stripLovenseTags } from '../../utils/lovense';
 import { applyRegexScripts, getActiveScripts } from '../../utils/regexScripts';
 import { useTranslateStore } from '../../stores/translateStore';
 import { useExtensionStore } from '../../stores/extensionStore';
@@ -122,6 +124,11 @@ export function ChatMessage({
   // For AI messages, also strip emotion tags and [Name]: prefixes that the
   // model echoes from group-chat history formatting.
   const regexScripts = useRegexScriptStore((s) => s.scripts);
+  // Hide Lovense control tags (e.g. "[lovense: vibrate 15]") from the rendered
+  // message when the extension is enabled and tag-hiding is on. The raw content
+  // (tags intact) stays in the store so the reaction parser still sees them.
+  const lovenseEnabled = useExtensionStore((s) => s.enabled.lovense);
+  const hideLovenseTags = useLovenseStore((s) => s.hideTagsInChat);
   const displayContent = useMemo(() => {
     const scope = isUser ? 'user_input' : 'ai_output';
     let text = content;
@@ -132,10 +139,11 @@ export function ChatMessage({
       // Truncate at first [OtherCharacter]: mid-response marker
       const otherTurn = text.match(/\n\[[^\]]+\]:\s*/);
       if (otherTurn?.index !== undefined) text = text.slice(0, otherTurn.index).trim();
+      if (lovenseEnabled && hideLovenseTags) text = stripLovenseTags(text).trim();
     }
     const scripts = getActiveScripts(regexScripts, characterAvatar, scope).filter(s => s.displayOnly);
     return scripts.length > 0 ? applyRegexScripts(text, scripts) : text;
-  }, [content, name, regexScripts, characterAvatar, isUser]);
+  }, [content, name, regexScripts, characterAvatar, isUser, lovenseEnabled, hideLovenseTags]);
 
   // Phase 7.1: Extension gates
   const ttsEnabled = useExtensionStore((s) => s.enabled.tts);
