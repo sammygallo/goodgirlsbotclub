@@ -176,6 +176,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
       useUsageStore.getState().fetchPrefs();
+      useLovenseStore.getState().fetchPrefs();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
       }
@@ -261,6 +262,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
       useUsageStore.getState().fetchPrefs();
+      useLovenseStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
@@ -328,6 +330,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useCharacterStore.getState().fetchFavorites();
       useMotionModeStore.getState().fetchPrefs();
       useUsageStore.getState().fetchPrefs();
+      useLovenseStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
@@ -339,6 +342,13 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
+    // Stop any running Lovense toy while the session is still valid — after
+    // api.logout() the command endpoint 401s and resetUser() sends no Stop, so
+    // a running toy would be orphaned until the user logs back in.
+    try {
+      const lovense = useLovenseStore.getState();
+      if (lovense.connected) await lovense.stopAll();
+    } catch { /* best effort — never block logout */ }
     try {
       await api.logout();
     } finally {

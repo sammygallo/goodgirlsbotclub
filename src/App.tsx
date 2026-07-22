@@ -12,6 +12,7 @@ import { GuidesRouteRedirect } from './components/guides/GuidesRouteRedirect';
 import { ToastProvider } from './components/ui/Toast';
 import { GlobalExtensionHost } from './extensions/sandbox/GlobalExtensionHost';
 import { ExtensionPopupRoot } from './extensions/sandbox/ExtensionPopupRoot';
+import { LovenseQuickControl } from './components/lovense/LovenseQuickControl';
 import { useAuthStore } from './stores/authStore';
 
 // Phase 7.1: Register all built-in extensions at app startup.
@@ -59,6 +60,7 @@ function App() {
       </Routes>
       <GlobalExtensionHost />
       <ExtensionPopupRoot />
+      <LovenseQuickControl />
     </ToastProvider>
     </BrowserRouter>
   );
