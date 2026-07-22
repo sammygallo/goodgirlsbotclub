@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo, useState, useCallback, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useMemo, useState, useCallback, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, ChevronDown, X, Check, Clapperboard, PanelTopClose, PanelTopOpen, Wallpaper } from 'lucide-react';
 import { showToastGlobal } from '../ui/Toast';
@@ -85,6 +85,11 @@ import {
 } from '../../hooks/displayPreferences';
 import { useDisplayPreferencesStore } from '../../stores/displayPreferencesStore';
 import { fireSandboxLifecycleEvent } from '../../extensions/sandbox/sandboxEventBus';
+
+// How many of the most recent messages render on open, and how many more each
+// "Load older" click reveals. Purely a render window — the store still holds
+// (and saves) the whole chat, so nothing that reads `messages` is affected.
+const MESSAGE_PAGE_SIZE = 20;
 
 // Search / send-to-background / collapse-toggle button trio shared by the
 // mobile portrait header (expanded) and the collapsed character bar — kept
@@ -301,6 +306,15 @@ export function ChatView() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const messageRefsMap = useRef<Map<string, HTMLDivElement>>(new Map());
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Render window: how many of the oldest messages are hidden. `null` means
+  // "default window" — a count derived from the current length, so appending a
+  // message keeps the window pinned to the last MESSAGE_PAGE_SIZE. Once the
+  // user reveals older messages this becomes a fixed number, so new messages
+  // extend the window instead of pushing revealed history back out of view.
+  const [hiddenOlderCount, setHiddenOlderCount] = useState<number | null>(null);
+  /** Scroll metrics captured just before a "load older" re-render, for pinning. */
+  const pendingScrollAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
   const { getSpritePath, availableEmotions } = useCharacterSprites(selectedCharacter?.avatar, activeCostume);
   const noExpressionFallback = useExpressionsStore((s) => s.noFallback);
@@ -560,17 +574,32 @@ export function ChatView() {
     currentChatFile ? s.chatCompanionModeByChatFile[currentChatFile] ?? false : false
   );
 
-  // Messages to actually render — filtered when search is active
-  const displayedMessages = useMemo(() => {
+  // Messages to actually render — filtered when search is active, otherwise
+  // windowed to the most recent slice. `hiddenCount` is how many older messages
+  // the window is leaving out (0 when everything is on screen).
+  const { displayedMessages, hiddenCount } = useMemo(() => {
     let base = messages;
     if (pureChatMode) {
       const firstUserIdx = base.findIndex((m) => m.isUser && !m.isSystem);
       base = firstUserIdx === -1 ? [] : base.slice(firstUserIdx);
     }
-    if (!isSearchOpen || !searchQuery.trim()) return base;
-    const matchSet = new Set(searchMatchIds);
-    return base.filter((m) => matchSet.has(m.id));
-  }, [isSearchOpen, searchQuery, messages, searchMatchIds, pureChatMode]);
+    // Search shows every match across the whole chat — the render window would
+    // silently drop old hits, which reads as "search is broken".
+    if (isSearchOpen && searchQuery.trim()) {
+      const matchSet = new Set(searchMatchIds);
+      return { displayedMessages: base.filter((m) => matchSet.has(m.id)), hiddenCount: 0 };
+    }
+    // Cap at `length - PAGE_SIZE` so a stale count (after a delete, branch load,
+    // or edit-and-regenerate shortened the chat) can never hide the whole view.
+    const hidden = Math.max(
+      0,
+      Math.min(hiddenOlderCount ?? base.length, base.length - MESSAGE_PAGE_SIZE)
+    );
+    return {
+      displayedMessages: hidden > 0 ? base.slice(hidden) : base,
+      hiddenCount: hidden,
+    };
+  }, [isSearchOpen, searchQuery, messages, searchMatchIds, pureChatMode, hiddenOlderCount]);
 
   const getAvatarUrl = useCallback(
     (avatar: string, emotion?: Emotion | null) => {
@@ -821,6 +850,43 @@ export function ChatView() {
     if (!isNearBottomRef.current && isStreaming) return;
     messagesEndRef.current?.scrollIntoView({ behavior: isStreaming ? 'auto' : 'smooth' });
   }, [messages, isStreaming, isSearchOpen]);
+
+  // Switching chats starts a fresh window at the most recent messages.
+  useEffect(() => {
+    setHiddenOlderCount(null);
+  }, [currentChatFile]);
+
+  // Reveal older messages. Both handlers snapshot the scroll metrics first so
+  // the layout effect below can keep the user's current message under the
+  // cursor instead of letting the prepended history shove it down the page.
+  const captureScrollAnchor = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (el) {
+      pendingScrollAnchorRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    }
+  }, []);
+
+  const loadOlderMessages = useCallback(() => {
+    captureScrollAnchor();
+    setHiddenOlderCount(Math.max(0, hiddenCount - MESSAGE_PAGE_SIZE));
+  }, [captureScrollAnchor, hiddenCount]);
+
+  const loadAllMessages = useCallback(() => {
+    captureScrollAnchor();
+    setHiddenOlderCount(0);
+  }, [captureScrollAnchor]);
+
+  // Pin scroll position across a window expansion: restore the previous offset
+  // plus however much taller the list got. Runs before paint, so there's no
+  // visible jump. Late-loading avatars can still shift things slightly.
+  useLayoutEffect(() => {
+    const anchor = pendingScrollAnchorRef.current;
+    if (!anchor) return;
+    pendingScrollAnchorRef.current = null;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = anchor.scrollTop + (el.scrollHeight - anchor.scrollHeight);
+  }, [displayedMessages]);
 
   // Phase 6.3: Auto-read — speak the last AI message when streaming completes.
   const wasStreamingRef = useRef(false);
@@ -1666,6 +1732,22 @@ export function ChatView() {
           </div>
         ) : (
           <div className="py-4">
+            {hiddenCount > 0 && (
+              <div className="flex items-center justify-center gap-2 px-4 pb-4">
+                <button
+                  onClick={loadOlderMessages}
+                  className="px-3 py-1.5 rounded-full text-xs font-medium bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] hover:bg-[var(--color-bg-secondary)] transition-colors"
+                >
+                  Load {Math.min(MESSAGE_PAGE_SIZE, hiddenCount)} older
+                </button>
+                <button
+                  onClick={loadAllMessages}
+                  className="px-3 py-1.5 rounded-full text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                >
+                  Load all {hiddenCount}
+                </button>
+              </div>
+            )}
             {displayedMessages.map((message) => {
               const charAvatar = isGroupChatMode && message.characterAvatar
                 ? message.characterAvatar
