@@ -349,6 +349,26 @@ export function stripLovenseTags(text: string): string {
   return text.replace(TAG_RE, '').replace(/[ \t]{2,}/g, ' ').replace(/ +\n/g, '\n');
 }
 
+/** A representative example directive for the connected toy — a multi-function
+ *  combo when the toy supports one (auto-strokers move via thrust + depth/stroke
+ *  together), so the model is shown it can drive several functions at once. */
+function exampleDirective(usable: LovenseAction[]): string {
+  const has = (a: LovenseAction) => usable.includes(a);
+  const mid = (a: LovenseAction) => (a === 'Pump' || a === 'Depth' ? 3 : 15);
+  // Stroker-class toys: pair the movement functions.
+  if (has('Thrusting') && has('Stroke')) return '[lovense: stroke 20-80, thrusting 12]';
+  if (has('Thrusting') && has('Depth')) return '[lovense: thrusting 15, depth 3]';
+  // Any two simple functions combine cleanly. (Stroke is excluded here — it
+  // needs a range and must pair with Thrusting, handled above.)
+  const simple = usable.filter((a) => a !== 'Stroke');
+  if (simple.length >= 2) {
+    const [a, b] = simple;
+    return `[lovense: ${a.toLowerCase()} ${mid(a)}, ${b.toLowerCase()} ${mid(b)}]`;
+  }
+  const only = simple[0] ?? usable[0] ?? 'Vibrate';
+  return `[lovense: ${only.toLowerCase()} ${mid(only)} for 5s]`;
+}
+
 /** The system instruction injected (opt-in, per character) to teach the model
  *  the directive syntax and which functions the connected toy supports. */
 export function buildAiControlInstruction(
@@ -358,20 +378,23 @@ export function buildAiControlInstruction(
 ): string {
   const usable = actions.filter((a) => a !== 'Stop' && a !== 'All');
   const list = usable.length ? usable.join(', ') : 'Vibrate';
-  const example = usable.includes('Vibrate')
-    ? '[lovense: vibrate 15 for 5s]'
-    : `[lovense: ${usable[0]?.toLowerCase() ?? 'vibrate'} 15 for 5s]`;
+  const example = exampleDirective(usable);
   const visibility = hidden
     ? 'These directives are removed before the user sees your message.'
     : 'Keep directives short so they read naturally in the scene.';
   const duration = `${Math.max(1, defaultDurationSec)}s`;
   const strokeHint = usable.includes('Stroke')
-    ? ' Stroke takes a position range 0–100, e.g. "[lovense: stroke 20-80]".'
+    ? ' Stroke takes a position range 0–100 and must be paired with Thrusting, e.g. "[lovense: stroke 20-80, thrusting 12]".'
     : '';
+  // Only worth teaching combos when the toy actually has multiple functions.
+  const comboHint =
+    usable.filter((a) => a !== 'Stroke').length >= 2 || (usable.includes('Stroke') && usable.includes('Thrusting'))
+      ? ' You can list several functions in one directive separated by commas to run them together (e.g. drive an auto-stroker with thrust, depth and stroke at once). A new directive replaces the previous one, so keep functions that should run simultaneously in the same directive.'
+      : '';
   return [
     '[Interactive toy control]',
     `A Lovense toy is connected. When it fits the scene, you may drive it by embedding an inline directive such as ${example}.`,
-    `Supported functions on the current toy: ${list} (intensity 0–20; Pump/Depth 0–3).${strokeHint} Use "[lovense: stop]" to stop.`,
+    `Supported functions on the current toy: ${list} (intensity 0–20; Pump/Depth 0–3).${strokeHint}${comboHint} Use "[lovense: stop]" to stop.`,
     `If you omit a duration it runs for ${duration}. Only use the listed functions. ${visibility}`,
   ].join(' ');
 }

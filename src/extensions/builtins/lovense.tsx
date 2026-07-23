@@ -292,7 +292,9 @@ function ProfileEditor() {
             AI-driven control
             <span className="block text-[10px] text-[var(--color-text-secondary)]/60 mt-0.5">
               Let the character control the toy with inline directives like
-              <code className="mx-1">[lovense: vibrate 15 for 5s]</code>. Replaces keyword matching.
+              <code className="mx-1">[lovense: vibrate 15 for 5s]</code>. Multiple functions
+              can be combined in one directive (e.g.
+              <code className="mx-1">[lovense: thrusting 15, depth 3]</code>). Replaces keyword matching.
             </span>
           </span>
           <Toggle on={profile.aiControl} onClick={() => updateProfile(editingScope, { aiControl: !profile.aiControl })} />
