@@ -186,7 +186,8 @@ export function clearLocalTs(localTsKey: string): void {
  *  survive a logout or leak into the next account on a shared browser.
  *  Covers the `stm:` / `sillytavern_` keyspaces plus the zustand-persist store
  *  names (`st-mobile-*`, `quick-reply-store`, `live-portrait`,
- *  `portrait-position`) — including their `_<handle>` scoped variants. */
+ *  `portrait-position`, `ggbc-lovense`) — including their `_<handle>` scoped
+ *  variants. */
 const APP_STORAGE_PREFIXES = [
   'stm:',
   'sillytavern_',
@@ -194,6 +195,9 @@ const APP_STORAGE_PREFIXES = [
   'quick-reply-store',
   'live-portrait',
   'portrait-position',
+  // Intimate-hardware preferences (keyword reactions, per-toy trims) must not
+  // survive into the next account on a shared browser.
+  'ggbc-lovense',
 ] as const;
 
 /**

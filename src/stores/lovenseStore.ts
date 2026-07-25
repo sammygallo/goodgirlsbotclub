@@ -14,33 +14,46 @@ import {
   actionMaxIntensity,
   capabilitiesForToy,
   parseLovenseDirectives,
+  planFunctionCommands,
+  planTargets,
   hasLovenseTag,
   type LovenseAction,
   type LovensePreset,
   type FunctionActionSpec,
   type LovenseDirective,
+  type PlannedCommand,
+  type TargetedActions,
+  type ToyPref,
+  type ToyRef,
 } from '../utils/lovense';
 import { useChatStore } from './chatStore';
 import { useExtensionStore } from './extensionStore';
 
 // ---------------------------------------------------------------------------
-// Lovense device control store (v2)
+// Lovense device control store (v3)
 //
 // A GGBC-native implementation of Lovense connectivity. Everything goes through
 // the GGBC backend proxy — the browser never calls the Lovense API directly (no
 // CORS) and the app-level developer token stays server-side:
 //
-//   1. POST /api/lovense/pairing-intent -> backend mints an opaque `uid`.
+//   1. POST /api/lovense/pairing-intent -> backend mints an opaque `uid` and
+//      returns the pairing row it belongs to.
 //   2. POST /api/lovense/qr             -> backend proxies getQrCode.
 //   3. The user scans; Lovense calls /api/lovense/callback, flipping to "paired".
-//   4. GET  /api/lovense/session        -> poll for "paired" + the toy list.
-//   5. POST /api/lovense/command        -> backend proxies a Function/Pattern/
-//      Preset command (injecting token + uid).
+//   4. GET  /api/lovense/session        -> poll for the pairing list + toys.
+//   5. POST /api/lovense/command(s)     -> backend proxies one / several
+//      Function/Preset commands, injecting token + uid(s).
 //
-// v2 adds: the full documented action set (fixing Thrust→Thrusting), per-toy
+// v2 added: the full documented action set (fixing Thrust→Thrusting), per-toy
 // capability detection, per-character control profiles, AI-driven control via
-// `[lovense: ...]` directives the character embeds in its replies, streaming
-// vs. finish reactions, and multi-toy targeting.
+// `[lovense: ...]` directives, and streaming vs. finish reactions.
+//
+// v3 adds MULTIPLE PAIRINGS and true multi-toy control. A user can scan several
+// Lovense apps; every toy across them is individually addressable (`@lush`), and
+// one directive is planned into the set of commands that drives every applicable
+// toy at once — each toy receiving only the functions it actually has. The whole
+// plan goes out as ONE request so the toys move together instead of being
+// serialized behind the client send throttle.
 // ---------------------------------------------------------------------------
 
 export {
@@ -50,8 +63,9 @@ export {
   actionMaxIntensity,
   capabilitiesForToy,
   toyDisplayName,
+  assignToyHandles,
 } from '../utils/lovense';
-export type { LovenseAction, LovensePreset } from '../utils/lovense';
+export type { LovenseAction, LovensePreset, ToyRef } from '../utils/lovense';
 
 let _currentHandle: string | null = null;
 
@@ -68,6 +82,14 @@ const scopedLocalStorage = {
 const SERVER_KEY = 'stm_lovense';
 const LOCAL_TS_KEY = () =>
   _currentHandle ? `${makeLocalTsKey(SERVER_KEY)}_${_currentHandle}` : makeLocalTsKey(SERVER_KEY);
+
+/** Matches MAX_BATCH_COMMANDS on the backend. */
+const MAX_BATCH_COMMANDS = 24;
+
+/** Shown only when the caller NAMED a toy that isn't there — an untargeted
+ *  command that matches nothing (every toy muted, or none supports the
+ *  function) is a no-op the user already chose, not an error worth reporting. */
+const NO_MATCH = 'No connected toy matched that command';
 
 export interface KeywordMapping {
   id: string;
@@ -94,10 +116,21 @@ export interface LovenseProfile {
 
 export interface LovenseToy {
   id: string;
+  /** Which pairing this toy is attached to — toy ids are only unique within one. */
+  pairingId: string;
   name?: string | null;
   nickname?: string | null;
   status?: string | null;
   battery?: number | null;
+}
+
+/** One paired Lovense app and the toys attached to it. */
+export interface LovensePairingInfo {
+  id: string;
+  label: string | null;
+  status: 'pending' | 'paired';
+  platform: string | null;
+  toys: LovenseToy[];
 }
 
 type ConnectionStatus =
@@ -128,32 +161,52 @@ function makeDefaultProfile(): LovenseProfile {
   };
 }
 
-/** Shape of GET /api/lovense/session. */
+/** Shape of one pairing in GET /api/lovense/session. */
+interface PairingPayload {
+  id: string;
+  label?: string | null;
+  status?: string | null;
+  platform?: string | null;
+  toy_list?: LovenseToy[] | null;
+}
+
+/** Shape of GET /api/lovense/session. `pairings` is the multi-pairing view;
+ *  the flat fields are the pre-multi-pairing aggregate, kept for compatibility. */
 interface PairingSession {
   status: 'none' | 'pending' | 'paired';
   toys?: unknown | null;
   toy_list?: LovenseToy[] | null;
   platform?: string | null;
+  pairings?: PairingPayload[] | null;
+}
+
+/** One command's outcome within a fan-out. */
+interface CommandResultDetail {
+  result: boolean;
+  message: string | null;
+  code?: number | null;
+  pairing_id?: string | null;
+  toy?: string[] | null;
 }
 
 interface CommandResult {
   result: boolean;
   message: string | null;
   code?: number | null;
+  results?: CommandResultDetail[] | null;
 }
 
 interface SendOptions {
   durationSec?: number;
-  toy?: string | string[];
+  /** Target tokens — a toy id, `@handle`, nickname, or 1-based index.
+   *  null/omitted targets every applicable toy. */
+  targets?: string[] | null;
   stopPrevious?: boolean;
   loopRunningSec?: number;
   loopPauseSec?: number;
 }
 
 interface LovenseState {
-  // --- persisted: pairing (device-local) ---
-  uid: string;
-
   // --- persisted: preferences (roam via stm_lovense) ---
   /** Master switch: react to finished AI messages at all. */
   autoReact: boolean;
@@ -169,18 +222,25 @@ interface LovenseState {
   defaultProfile: LovenseProfile;
   /** Per-character overrides, keyed by avatar filename. */
   profilesByAvatar: Record<string, LovenseProfile>;
+  /** Per-toy mute + intensity trim, keyed by toy id. Roams: toy ids are the
+   *  hardware's, so they mean the same thing on every device. */
+  toyPrefs: Record<string, ToyPref>;
 
   // --- session state (transient) ---
   status: ConnectionStatus;
   connected: boolean;
+  pairings: LovensePairingInfo[];
+  /** Every toy across every paired app, flattened. */
   toys: LovenseToy[];
   platform: string | null;
   qrUrl: string | null;
   pairingCode: string | null;
+  /** Which pairing the on-screen QR belongs to. */
+  qrPairingId: string | null;
   error: string | null;
   isSending: boolean;
-  /** Id of the toy the manual/quick controls target; null = all toys. */
-  activeToyId: string | null;
+  /** Toys the manual/quick controls target; empty = all toys. */
+  activeToyIds: string[];
 
   // --- preference actions ---
   setAutoReact: (on: boolean) => void;
@@ -188,7 +248,9 @@ interface LovenseState {
   setMatchWholeWord: (on: boolean) => void;
   setDefaultDurationSec: (n: number) => void;
   setHideTagsInChat: (on: boolean) => void;
-  setActiveToyId: (id: string | null) => void;
+  setActiveToyIds: (ids: string[]) => void;
+  toggleActiveToy: (id: string) => void;
+  setToyPref: (toyId: string, patch: Partial<ToyPref>) => void;
   clearError: () => void;
 
   // --- profile actions ---
@@ -202,13 +264,24 @@ interface LovenseState {
   removeMapping: (avatar: string | null, id: string) => void;
 
   // --- pairing ---
-  generateQr: () => Promise<void>;
+  /** Start (or re-start) a scan. Pass a pairing id to re-scan that one in
+   *  place; omit it to add a pairing alongside the ones already connected. */
+  generateQr: (pairingId?: string) => Promise<void>;
+  cancelQr: () => void;
   checkPairing: () => Promise<void>;
+  renamePairing: (pairingId: string, label: string) => Promise<void>;
+  unpairOne: (pairingId: string) => Promise<void>;
   unpair: () => Promise<void>;
 
   // --- commands ---
+  /** Toys in the shape the targeting/planning helpers want. */
+  toyRefs: () => ToyRef[];
   sendFunction: (actions: FunctionActionSpec[], opts?: SendOptions) => Promise<boolean>;
+  /** Drive several toys with different functions in one go. */
+  sendGroups: (groups: TargetedActions[], opts?: SendOptions) => Promise<boolean>;
   sendPreset: (name: LovensePreset, opts?: SendOptions) => Promise<boolean>;
+  /** Stop the named toys (null = every toy on every pairing). */
+  stopTargets: (targets: string[] | null) => Promise<void>;
   stopAll: () => Promise<void>;
   /** Union of supported actions across all connected toys. */
   connectedCapabilities: () => LovenseAction[];
@@ -222,7 +295,8 @@ interface LovenseState {
   resetUser: () => void;
 }
 
-// Pairing poll — module-level so a re-render never spawns a second poller.
+// Pairing poll — module-level so a re-render never spawns a second poller. One
+// poller is still enough with several pairings: /session returns all of them.
 let _pollTimer: ReturnType<typeof setInterval> | null = null;
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_TICKS = 100; // ~5 minutes
@@ -234,7 +308,9 @@ function stopPairingPoll(): void {
   }
 }
 
-// Soft throttle so a burst of reaction directives doesn't hammer the toy.
+// Soft throttle so a burst of reaction directives doesn't hammer the toys. One
+// tick covers a whole fan-out, because the entire plan is posted as a single
+// request — N toys never cost N throttle waits.
 const MIN_COMMAND_GAP_MS = 180;
 let _lastCommandAt = 0;
 async function throttle(): Promise<void> {
@@ -248,16 +324,9 @@ function clampIntensity(action: LovenseAction, n: number): number {
   return Math.max(0, Math.min(actionMaxIntensity(action), Math.round(n)));
 }
 
-function scaleSpec(spec: FunctionActionSpec, scale: number): FunctionActionSpec {
-  if (spec.action === 'Stroke' || spec.action === 'Stop') return spec;
-  return { ...spec, intensity: clampIntensity(spec.action, spec.intensity * scale) };
-}
-
 export const useLovenseStore = create<LovenseState>()(
   persist(
     (set, get) => ({
-      uid: '',
-
       autoReact: false,
       streamLive: false,
       matchWholeWord: false,
@@ -265,16 +334,19 @@ export const useLovenseStore = create<LovenseState>()(
       hideTagsInChat: true,
       defaultProfile: makeDefaultProfile(),
       profilesByAvatar: {},
+      toyPrefs: {},
 
       status: 'idle',
       connected: false,
+      pairings: [],
       toys: [],
       platform: null,
       qrUrl: null,
       pairingCode: null,
+      qrPairingId: null,
       error: null,
       isSending: false,
-      activeToyId: null,
+      activeToyIds: [],
 
       // ----- preference actions -----
       setAutoReact: (on) => {
@@ -299,7 +371,22 @@ export const useLovenseStore = create<LovenseState>()(
         set({ hideTagsInChat: on });
         persistPrefs(get);
       },
-      setActiveToyId: (id) => set({ activeToyId: id }),
+      setActiveToyIds: (ids) => set({ activeToyIds: [...new Set(ids)] }),
+      toggleActiveToy: (id) => {
+        const current = get().activeToyIds;
+        set({
+          activeToyIds: current.includes(id)
+            ? current.filter((x) => x !== id)
+            : [...current, id],
+        });
+      },
+      setToyPref: (toyId, patch) => {
+        const current = get().toyPrefs[toyId] ?? {};
+        const next: ToyPref = { ...current, ...patch };
+        if (next.scale !== undefined) next.scale = Math.max(0.1, Math.min(2, next.scale));
+        set({ toyPrefs: { ...get().toyPrefs, [toyId]: next } });
+        persistPrefs(get);
+      },
       clearError: () => set({ error: null }),
 
       // ----- profile actions -----
@@ -368,26 +455,51 @@ export const useLovenseStore = create<LovenseState>()(
       },
 
       // ----- pairing -----
-      generateQr: async () => {
+      generateQr: async (pairingId) => {
         stopPairingPoll();
+        // Re-scanning an already-paired app mints a new uid on that row and
+        // marks it pending, which makes its toys unreachable from /command —
+        // including Stop. So stop them FIRST, exactly as unpairOne does before
+        // deleting a row. Without this, re-scanning while the quick-control
+        // dial is running (durationSec: 0 — indefinite) strands a toy with no
+        // reachable STOP until the new scan completes.
+        const rescanning = pairingId
+          ? get().pairings.find((p) => p.id === pairingId && p.status === 'paired')
+          : undefined;
+        if (rescanning && rescanning.toys.length > 0) {
+          try {
+            await get().stopTargets(rescanning.toys.map((t) => t.id));
+          } catch {
+            /* best effort — never block the re-scan on it */
+          }
+        }
+        // Deliberately does NOT clear `connected`/`toys`/`pairings`: adding a
+        // second toy must not black out the one already running.
         set({
           status: 'generating-qr',
           error: null,
           qrUrl: null,
           pairingCode: null,
-          connected: false,
-          toys: [],
+          qrPairingId: null,
         });
         try {
-          const intent = await apiRequest<{ uid: string }>('/api/lovense/pairing-intent', {
-            method: 'POST',
-          });
-          set({ uid: intent.uid });
-          const qr = await apiRequest<{ uid: string; qr: string; code: string | null }>(
-            '/api/lovense/qr',
-            { method: 'POST' },
+          const intent = await apiRequest<{ uid: string; pairing_id: string }>(
+            '/api/lovense/pairing-intent',
+            {
+              method: 'POST',
+              body: JSON.stringify(pairingId ? { pairingId } : {}),
+            },
           );
-          set({ status: 'awaiting-scan', qrUrl: qr.qr, pairingCode: qr.code });
+          const qr = await apiRequest<{ qr: string; code: string | null }>('/api/lovense/qr', {
+            method: 'POST',
+            body: JSON.stringify({ pairingId: intent.pairing_id }),
+          });
+          set({
+            status: 'awaiting-scan',
+            qrUrl: qr.qr,
+            pairingCode: qr.code,
+            qrPairingId: intent.pairing_id,
+          });
 
           let ticks = 0;
           _pollTimer = setInterval(() => {
@@ -403,31 +515,93 @@ export const useLovenseStore = create<LovenseState>()(
         }
       },
 
+      cancelQr: () => {
+        stopPairingPoll();
+        set({
+          qrUrl: null,
+          pairingCode: null,
+          qrPairingId: null,
+          status: get().connected ? 'connected' : 'idle',
+        });
+      },
+
       checkPairing: async () => {
         try {
           const session = await apiRequest<PairingSession>('/api/lovense/session');
-          if (session.status === 'paired') {
-            stopPairingPoll();
-            set({
-              connected: true,
-              status: 'connected',
-              toys: session.toy_list ?? [],
-              platform: session.platform ?? null,
-            });
-          } else if (session.status === 'pending') {
-            set({ connected: false, status: 'awaiting-scan' });
-          } else {
-            set({ connected: false, toys: [] });
-          }
+          const pairings = pairingsFromSession(session);
+          const paired = pairings.filter((p) => p.status === 'paired');
+          const toys = paired.flatMap((p) => p.toys);
+          const connected = paired.length > 0;
+
+          // The scan we're waiting on has landed → drop the QR and stop polling.
+          const waitingFor = get().qrPairingId;
+          const scanned =
+            waitingFor !== null &&
+            pairings.some((p) => p.id === waitingFor && p.status === 'paired');
+          if (scanned) stopPairingPoll();
+          const stillWaiting = waitingFor !== null && !scanned;
+
+          const liveIds = new Set(toys.map((t) => t.id));
+          set({
+            pairings,
+            toys,
+            connected,
+            platform: paired[0]?.platform ?? null,
+            status: stillWaiting ? 'awaiting-scan' : connected ? 'connected' : 'idle',
+            // Don't leave the manual controls pointed at a toy that went away.
+            activeToyIds: get().activeToyIds.filter((id) => liveIds.has(id)),
+            ...(scanned ? { qrUrl: null, pairingCode: null, qrPairingId: null } : {}),
+          });
         } catch {
           // Non-fatal: a transient poll failure shouldn't drop the connection.
         }
       },
 
+      renamePairing: async (pairingId, label) => {
+        try {
+          await apiRequest(`/api/lovense/pairings/${encodeURIComponent(pairingId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ label }),
+          });
+          set({
+            pairings: get().pairings.map((p) =>
+              p.id === pairingId ? { ...p, label: label.trim() || null } : p,
+            ),
+          });
+        } catch (err) {
+          set({ error: err instanceof Error ? err.message : 'Rename failed' });
+        }
+      },
+
+      unpairOne: async (pairingId) => {
+        // Stop this pairing's toys BEFORE deleting the row — once it's gone the
+        // command endpoint can no longer reach them and they'd run on forever.
+        const toys = get().pairings.find((p) => p.id === pairingId)?.toys ?? [];
+        if (toys.length > 0) {
+          try {
+            await get().stopTargets(toys.map((t) => t.id));
+          } catch {
+            /* best effort */
+          }
+        }
+        try {
+          await apiRequest(`/api/lovense/pairings/${encodeURIComponent(pairingId)}`, {
+            method: 'DELETE',
+          });
+        } catch (err) {
+          set({ error: err instanceof Error ? err.message : 'Unpair failed' });
+        }
+        if (get().qrPairingId === pairingId) {
+          stopPairingPoll();
+          set({ qrUrl: null, pairingCode: null, qrPairingId: null });
+        }
+        await get().checkPairing();
+      },
+
       unpair: async () => {
         stopPairingPoll();
-        // Stop any running toy BEFORE deleting the pairing — once the row is
-        // gone the command endpoint 409s ("no paired toy") and the toy is
+        // Stop every running toy BEFORE deleting the pairings — once the rows
+        // are gone the command endpoint 409s ("no paired toy") and the toys are
         // unstoppable from the app.
         try {
           await get().stopAll();
@@ -442,79 +616,104 @@ export const useLovenseStore = create<LovenseState>()(
         set({
           connected: false,
           status: 'idle',
+          pairings: [],
           toys: [],
           qrUrl: null,
           pairingCode: null,
-          activeToyId: null,
+          qrPairingId: null,
+          activeToyIds: [],
         });
       },
 
       // ----- commands -----
-      connectedCapabilities: () => {
-        const toys = get().toys;
-        const set2 = new Set<LovenseAction>();
-        if (toys.length === 0) {
-          for (const a of capabilitiesForToy(null).actions) set2.add(a);
-        } else {
-          for (const t of toys) for (const a of capabilitiesForToy(t.name).actions) set2.add(a);
-        }
-        return LOVENSE_ACTIONS.filter((a) => set2.has(a));
+      toyRefs: () => {
+        const labels = new Map(get().pairings.map((p) => [p.id, p.label]));
+        return get().toys.map((t) => ({
+          id: t.id,
+          pairingId: t.pairingId,
+          name: t.name,
+          nickname: t.nickname,
+          pairingLabel: labels.get(t.pairingId) ?? null,
+        }));
       },
 
-      sendFunction: async (actions, opts) => {
-        if (actions.length === 0) return false;
+      connectedCapabilities: () => {
+        const toys = get().toys;
+        const seen = new Set<LovenseAction>();
+        if (toys.length === 0) {
+          for (const a of capabilitiesForToy(null).actions) seen.add(a);
+        } else {
+          for (const t of toys) for (const a of capabilitiesForToy(t.name).actions) seen.add(a);
+        }
+        return LOVENSE_ACTIONS.filter((a) => seen.has(a));
+      },
+
+      sendFunction: async (actions, opts) =>
+        get().sendGroups([{ targets: opts?.targets ?? null, actions }], opts),
+
+      sendGroups: async (groups, opts) => {
+        if (groups.length === 0) return false;
+        const planned = planFunctionCommands(groups, get().toyRefs(), {
+          toyPrefs: get().toyPrefs,
+        });
+        if (planned.length === 0) {
+          if (groups.some((g) => g.targets !== null)) set({ error: NO_MATCH });
+          return false;
+        }
+        return sendPlanned(get, set, planned, opts);
+      },
+
+      sendPreset: async (name, opts) => {
+        const plans = planTargets(opts?.targets ?? null, get().toyRefs(), {
+          toyPrefs: get().toyPrefs,
+        });
+        if (plans.length === 0) {
+          if (opts?.targets) set({ error: NO_MATCH });
+          return false;
+        }
         await throttle();
         set({ isSending: true });
         try {
-          const body: Record<string, unknown> = {
-            command: 'Function',
-            actions: actions.map((a) => ({
-              action: a.action,
-              intensity: a.intensity,
-              ...(a.action === 'Stroke' ? { min: a.min, max: a.max } : {}),
+          return await postCommands(
+            plans.map((p) => ({
+              command: 'Preset',
+              name,
+              durationSec: opts?.durationSec ?? get().defaultDurationSec,
+              ...(p.pairingId ? { pairingId: p.pairingId } : {}),
+              ...(p.toy ? { toy: p.toy } : {}),
             })),
-            durationSec: opts?.durationSec ?? get().defaultDurationSec,
-          };
-          const toy = opts?.toy ?? get().activeToyId ?? undefined;
-          if (toy) body.toy = toy;
-          if (opts?.stopPrevious !== undefined) body.stopPrevious = opts.stopPrevious;
-          if (opts?.loopRunningSec !== undefined) body.loopRunningSec = opts.loopRunningSec;
-          if (opts?.loopPauseSec !== undefined) body.loopPauseSec = opts.loopPauseSec;
-          return await postCommand(body, set);
+            set,
+          );
         } finally {
           set({ isSending: false });
         }
       },
 
-      sendPreset: async (name, opts) => {
-        await throttle();
+      stopTargets: async (targets) => {
+        // `ignorePrefs` so a toy the user muted is still stoppable — a mute must
+        // never be able to strand a running toy.
+        const plans = planTargets(targets, get().toyRefs(), { ignorePrefs: true });
+        if (plans.length === 0) return;
+        _lastCommandAt = 0; // never delay a stop
         set({ isSending: true });
         try {
-          const body: Record<string, unknown> = {
-            command: 'Preset',
-            name,
-            durationSec: opts?.durationSec ?? get().defaultDurationSec,
-          };
-          const toy = opts?.toy ?? get().activeToyId ?? undefined;
-          if (toy) body.toy = toy;
-          return await postCommand(body, set);
+          await postCommands(
+            plans.map((p) => ({
+              command: 'Function',
+              actions: [{ action: 'Stop', intensity: 0 }],
+              durationSec: 0,
+              ...(p.pairingId ? { pairingId: p.pairingId } : {}),
+              ...(p.toy ? { toy: p.toy } : {}),
+            })),
+            set,
+          );
         } finally {
           set({ isSending: false });
         }
       },
 
       stopAll: async () => {
-        // Stop targets every toy regardless of the active-toy selection.
-        _lastCommandAt = 0; // never delay a stop
-        set({ isSending: true });
-        try {
-          await postCommand(
-            { command: 'Function', actions: [{ action: 'Stop', intensity: 0 }], durationSec: 0 },
-            set,
-          );
-        } finally {
-          set({ isSending: false });
-        }
+        await get().stopTargets(null);
       },
 
       // ----- reactions -----
@@ -530,8 +729,9 @@ export const useLovenseStore = create<LovenseState>()(
           // Fire only directives beyond those already fired for this message.
           // Claim the counter SYNCHRONOUSLY (before the first await) so an
           // overlapping streaming tick + finish-edge invocation can't both read
-          // the stale count and re-send the same in-flight directive.
-          const directives = parseLovenseDirectives(content);
+          // the stale count and re-send the same in-flight directive. The whole
+          // fan-out for a directive happens inside one cursor advance.
+          const directives = parseLovenseDirectives(content, s.toyRefs());
           const start = key.firedDirectives;
           if (start >= directives.length) return;
           _reactKey.firedDirectives = directives.length;
@@ -548,7 +748,7 @@ export const useLovenseStore = create<LovenseState>()(
           _reactKey.scannedLen = content.length;
           // Mirror the directive cursor so a later aiControl toggle doesn't
           // re-fire directives from the portion already handled here.
-          _reactKey.firedDirectives = parseLovenseDirectives(content).length;
+          _reactKey.firedDirectives = parseLovenseDirectives(content, s.toyRefs()).length;
           await scanKeywords(get, span, profile);
         }
       },
@@ -587,7 +787,6 @@ export const useLovenseStore = create<LovenseState>()(
         _currentHandle = null;
         stopPairingPoll();
         set({
-          uid: '',
           autoReact: false,
           streamLive: false,
           matchWholeWord: false,
@@ -595,15 +794,18 @@ export const useLovenseStore = create<LovenseState>()(
           hideTagsInChat: true,
           defaultProfile: makeDefaultProfile(),
           profilesByAvatar: {},
+          toyPrefs: {},
           status: 'idle',
           connected: false,
+          pairings: [],
           toys: [],
           platform: null,
           qrUrl: null,
           pairingCode: null,
+          qrPairingId: null,
           error: null,
           isSending: false,
-          activeToyId: null,
+          activeToyIds: [],
         });
       },
     }),
@@ -612,7 +814,6 @@ export const useLovenseStore = create<LovenseState>()(
       version: 2,
       storage: createJSONStorage(() => scopedLocalStorage),
       partialize: (s) => ({
-        uid: s.uid,
         autoReact: s.autoReact,
         streamLive: s.streamLive,
         matchWholeWord: s.matchWholeWord,
@@ -620,10 +821,14 @@ export const useLovenseStore = create<LovenseState>()(
         hideTagsInChat: s.hideTagsInChat,
         defaultProfile: s.defaultProfile,
         profilesByAvatar: s.profilesByAvatar,
+        toyPrefs: s.toyPrefs,
       }),
       migrate: (persisted, version) => {
         // v1 stored a flat { mappings, globalIntensityScale }; fold those into
         // the default profile so upgrading users keep their keyword setup.
+        // (v3 added `toyPrefs` and dropped the never-read `uid`, neither of
+        // which needs a version bump: a missing key falls back to its default
+        // and a stale one is ignored by partialize.)
         if (version < 2 && persisted && typeof persisted === 'object') {
           const p = persisted as Record<string, unknown>;
           const legacyMappings = Array.isArray(p.mappings)
@@ -663,6 +868,7 @@ interface PersistedPrefs {
   hideTagsInChat: boolean;
   defaultProfile: LovenseProfile;
   profilesByAvatar: Record<string, LovenseProfile>;
+  toyPrefs: Record<string, ToyPref>;
 }
 
 function persistPrefs(get: () => LovenseState): void {
@@ -675,12 +881,46 @@ function persistPrefs(get: () => LovenseState): void {
     hideTagsInChat: s.hideTagsInChat,
     defaultProfile: s.defaultProfile,
     profilesByAvatar: s.profilesByAvatar,
+    toyPrefs: s.toyPrefs,
   };
   markSectionDirty(LOCAL_TS_KEY());
   patchServerKey(SERVER_KEY, value as unknown as Record<string, unknown>, LOCAL_TS_KEY()).catch(
     () => {},
   );
 }
+
+/** Normalize GET /session into the pairing list.
+ *
+ *  Falls back to synthesizing a single pairing from the flat fields, so a
+ *  backend that predates multi-pairing (or a response cached from one) still
+ *  drives the toy instead of showing "not connected". */
+function pairingsFromSession(session: PairingSession): LovensePairingInfo[] {
+  if (Array.isArray(session.pairings) && session.pairings.length > 0) {
+    return session.pairings.map((p) => ({
+      id: p.id,
+      label: p.label ?? null,
+      status: p.status === 'paired' ? 'paired' : 'pending',
+      platform: p.platform ?? null,
+      toys: (p.toy_list ?? []).map((t) => ({ ...t, pairingId: p.id })),
+    }));
+  }
+  if (session.status === 'none') return [];
+  const id = LEGACY_PAIRING_ID;
+  return [
+    {
+      id,
+      label: null,
+      status: session.status === 'paired' ? 'paired' : 'pending',
+      platform: session.platform ?? null,
+      toys: (session.toy_list ?? []).map((t) => ({ ...t, pairingId: id })),
+    },
+  ];
+}
+
+/** Stand-in id for the single pairing an older backend reports. Never sent as
+ *  a `pairingId` (such a backend ignores the field anyway), it only keys the
+ *  client-side grouping. */
+const LEGACY_PAIRING_ID = 'default';
 
 /** Validate one keyword mapping from an untrusted (server/cross-device) blob. */
 function sanitizeMapping(raw: unknown): KeywordMapping | null {
@@ -733,6 +973,18 @@ function sanitizePrefs(section: Partial<PersistedPrefs>): Partial<LovenseState> 
     }
     out.profilesByAvatar = clean;
   }
+  if (section.toyPrefs && typeof section.toyPrefs === 'object') {
+    const clean: Record<string, ToyPref> = {};
+    for (const [toyId, raw] of Object.entries(section.toyPrefs)) {
+      if (!raw || typeof raw !== 'object') continue;
+      const p = raw as Record<string, unknown>;
+      clean[toyId] = {
+        enabled: typeof p.enabled === 'boolean' ? p.enabled : true,
+        scale: typeof p.scale === 'number' ? Math.max(0.1, Math.min(2, p.scale)) : 1,
+      };
+    }
+    out.toyPrefs = clean;
+  }
   return out;
 }
 
@@ -743,15 +995,35 @@ function getProfileForEdit(get: () => LovenseState, avatar: string | null): Love
   return get().profilesByAvatar[avatar] ?? get().defaultProfile;
 }
 
-async function postCommand(
-  body: Record<string, unknown>,
+/** A pairing id worth sending — the synthetic legacy one means "unknown". */
+function wireP(pairingId: string | null): string | undefined {
+  return pairingId && pairingId !== LEGACY_PAIRING_ID ? pairingId : undefined;
+}
+
+/** POST a set of commands and fold the reply into the store's error state.
+ *
+ *  One command goes to /command (the endpoint every backend version has);
+ *  several go to /commands, which fans them out concurrently server-side. That
+ *  split also means a single-toy user never depends on the newer endpoint. */
+async function postCommands(
+  commands: Record<string, unknown>[],
   set: (partial: Partial<LovenseState>) => void,
 ): Promise<boolean> {
+  if (commands.length === 0) return false;
+  let batch = commands;
+  if (batch.length > MAX_BATCH_COMMANDS) {
+    batch = batch.slice(0, MAX_BATCH_COMMANDS);
+    set({ error: `Too many toys to drive at once — only the first ${MAX_BATCH_COMMANDS} were sent` });
+  }
   try {
-    const res = await apiRequest<CommandResult>('/api/lovense/command', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
+    const single = batch.length === 1;
+    const res = await apiRequest<CommandResult>(
+      single ? '/api/lovense/command' : '/api/lovense/commands',
+      {
+        method: 'POST',
+        body: JSON.stringify(single ? batch[0] : { commands: batch }),
+      },
+    );
     if (res.result) {
       set({ error: null });
     } else {
@@ -764,21 +1036,59 @@ async function postCommand(
   }
 }
 
+/** Send a planned Function fan-out as one request. */
+async function sendPlanned(
+  get: () => LovenseState,
+  set: (partial: Partial<LovenseState>) => void,
+  planned: PlannedCommand[],
+  opts?: SendOptions,
+): Promise<boolean> {
+  await throttle();
+  set({ isSending: true });
+  try {
+    return await postCommands(
+      planned.map((p) => ({
+        command: 'Function',
+        actions: p.actions.map((a) => ({
+          action: a.action,
+          intensity: a.intensity,
+          ...(a.action === 'Stroke' ? { min: a.min, max: a.max } : {}),
+        })),
+        durationSec: opts?.durationSec ?? get().defaultDurationSec,
+        ...(wireP(p.pairingId) ? { pairingId: wireP(p.pairingId) } : {}),
+        ...(p.toy ? { toy: p.toy } : {}),
+        ...(opts?.stopPrevious !== undefined ? { stopPrevious: opts.stopPrevious } : {}),
+        ...(opts?.loopRunningSec !== undefined ? { loopRunningSec: opts.loopRunningSec } : {}),
+        ...(opts?.loopPauseSec !== undefined ? { loopPauseSec: opts.loopPauseSec } : {}),
+      })),
+      set,
+    );
+  } finally {
+    set({ isSending: false });
+  }
+}
+
 async function executeDirective(
   get: () => LovenseState,
   dir: LovenseDirective,
   scale: number,
 ): Promise<void> {
   if (dir.kind === 'stop') {
-    await get().stopAll();
+    await get().stopTargets(dir.targets);
     return;
   }
   if (dir.kind === 'preset') {
-    await get().sendPreset(dir.name, { durationSec: dir.durationSec });
+    await get().sendPreset(dir.name, { targets: dir.targets, durationSec: dir.durationSec });
     return;
   }
-  const scaled = dir.actions.map((a) => scaleSpec(a, scale));
-  await get().sendFunction(scaled, { durationSec: dir.durationSec });
+  // Plan here (not in sendGroups) so the character's intensity scale is folded
+  // in alongside the per-toy trims before the toys are grouped by action set.
+  const planned = planFunctionCommands(dir.groups, get().toyRefs(), {
+    scale,
+    toyPrefs: get().toyPrefs,
+  });
+  if (planned.length === 0) return;
+  await sendPlanned(get, useLovenseStore.setState, planned, { durationSec: dir.durationSec });
 }
 
 function matchesKeyword(haystack: string, keyword: string, wholeWord: boolean): boolean {
@@ -809,6 +1119,7 @@ async function scanKeywords(
     action,
     intensity,
   }));
+  // Untargeted: the planner gives every toy the subset of these it supports.
   await get().sendFunction(actions);
 }
 
@@ -912,6 +1223,7 @@ useChatStore.subscribe((state) => {
 
 // Safety: if the user disables the Lovense extension while a toy is running,
 // stop it (disabling also unmounts the quick control, removing the STOP button).
+// Reaches every pairing, since stopAll is untargeted.
 let _prevEnabled = useExtensionStore.getState().enabled['lovense'] ?? false;
 useExtensionStore.subscribe((state) => {
   const enabled = state.enabled['lovense'] ?? false;
