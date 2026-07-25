@@ -2,7 +2,18 @@
    registers its manifest as a module side-effect and defines its settings-panel
    components inline, the same pattern as the other builtins. */
 import { useEffect, useMemo, useState } from 'react';
-import { Vibrate, Loader2, Plus, Trash2, Square, BatteryMedium, Unplug, Bot } from 'lucide-react';
+import {
+  Vibrate,
+  Loader2,
+  Plus,
+  Trash2,
+  Square,
+  BatteryMedium,
+  Unplug,
+  Bot,
+  QrCode,
+  X,
+} from 'lucide-react';
 import { extensionRegistry } from '../registry';
 import { registerCommand } from '../../utils/stscript/registry';
 import {
@@ -14,12 +25,15 @@ import {
   toyDisplayName,
   type LovenseAction,
   type LovenseProfile,
+  type LovenseToy,
 } from '../../stores/lovenseStore';
 import { useCharacterStore } from '../../stores/characterStore';
 import {
   parseLovenseDirectives,
   buildAiControlInstruction,
   unionCapabilities,
+  assignToyHandles,
+  resolveTargets,
 } from '../../utils/lovense';
 import type { ExtensionManifest, ContextBuildEvent, ContextContribution } from '../types';
 
@@ -29,6 +43,8 @@ const labelClass =
   'flex items-center justify-between text-xs text-[var(--color-text-secondary)]';
 const btnClass =
   'px-3 py-1.5 text-xs rounded bg-[var(--color-primary)] text-white disabled:opacity-50 hover:opacity-90 transition-opacity';
+const ghostBtnClass =
+  'flex items-center gap-1 px-2 py-1 text-[10px] rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors';
 const sectionTitle = 'text-xs font-medium text-[var(--color-text-primary)]';
 
 function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
@@ -54,8 +70,9 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
 function StatusPill() {
   const status = useLovenseStore((s) => s.status);
   const connected = useLovenseStore((s) => s.connected);
+  const toys = useLovenseStore((s) => s.toys);
   const label = connected
-    ? 'Connected'
+    ? `${toys.length || 1} toy${toys.length === 1 ? '' : 's'} connected`
     : status === 'awaiting-scan'
       ? 'Awaiting scan'
       : status === 'generating-qr'
@@ -73,51 +90,152 @@ function StatusPill() {
 
 // --- Pairing + toy list ----------------------------------------------------
 
-function ToyList() {
-  const toys = useLovenseStore((s) => s.toys);
-  if (toys.length === 0) return null;
+/** One toy: what it can do, its battery, plus the user's mute + intensity trim.
+ *  The trim is what makes two very different toys usable together — a Lush and
+ *  a Domi at the same nominal intensity are not the same experience. */
+function ToyRow({ toy, handle }: { toy: LovenseToy; handle: string }) {
+  const pref = useLovenseStore((s) => s.toyPrefs[toy.id]);
+  const setToyPref = useLovenseStore((s) => s.setToyPref);
+  const cap = capabilitiesForToy(toy.name);
+  const enabled = pref?.enabled !== false;
+  const scale = pref?.scale ?? 1;
+
   return (
-    <div className="space-y-1">
-      {toys.map((t) => {
-        const cap = capabilitiesForToy(t.name);
-        return (
-          <div
-            key={t.id}
-            className="flex items-center justify-between gap-2 p-2 rounded border border-[var(--color-border)] bg-[var(--color-bg-primary)]/40 text-xs"
-          >
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-[var(--color-text-primary)]">
-                <Vibrate size={12} className="flex-shrink-0" />
-                <span className="truncate">
-                  {t.nickname || toyDisplayName(t.name)}
-                  {t.nickname ? (
-                    <span className="text-[var(--color-text-secondary)]"> · {toyDisplayName(t.name)}</span>
-                  ) : null}
-                </span>
-              </div>
-              <div className="text-[10px] text-[var(--color-text-secondary)] mt-0.5">
-                {cap.actions.filter((a) => a !== 'All' && a !== 'Stop').join(', ')}
-                {!cap.known && ' (unrecognized — showing common functions)'}
-              </div>
-            </div>
-            {typeof t.battery === 'number' && t.battery >= 0 && (
-              <span className="flex items-center gap-1 text-[10px] text-[var(--color-text-secondary)] flex-shrink-0">
-                <BatteryMedium size={12} /> {t.battery}%
-              </span>
-            )}
+    <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-bg-primary)]/40 text-xs space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-[var(--color-text-primary)]">
+            <Vibrate size={12} className="flex-shrink-0" />
+            <span className="truncate">
+              {toy.nickname || toyDisplayName(toy.name)}
+              {toy.nickname ? (
+                <span className="text-[var(--color-text-secondary)]"> · {toyDisplayName(toy.name)}</span>
+              ) : null}
+            </span>
+            <code className="text-[10px] text-[var(--color-primary)] flex-shrink-0">@{handle}</code>
           </div>
-        );
-      })}
+          <div className="text-[10px] text-[var(--color-text-secondary)] mt-0.5">
+            {cap.actions.filter((a) => a !== 'All' && a !== 'Stop').join(', ')}
+            {!cap.known && ' (unrecognized — showing common functions)'}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {typeof toy.battery === 'number' && toy.battery >= 0 && (
+            <span className="flex items-center gap-1 text-[10px] text-[var(--color-text-secondary)]">
+              <BatteryMedium size={12} /> {toy.battery}%
+            </span>
+          )}
+          <Toggle on={enabled} onClick={() => setToyPref(toy.id, { enabled: !enabled })} />
+        </div>
+      </div>
+      <div className={`flex items-center gap-2 ${enabled ? '' : 'opacity-40'}`}>
+        <span className="text-[10px] text-[var(--color-text-secondary)] w-14">×{scale.toFixed(1)}</span>
+        <input
+          type="range"
+          min={0.1}
+          max={2}
+          step={0.1}
+          value={scale}
+          disabled={!enabled}
+          onChange={(e) => setToyPref(toy.id, { scale: parseFloat(e.target.value) })}
+          className="flex-1"
+          aria-label={`Intensity trim for ${toy.nickname || toyDisplayName(toy.name)}`}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PairingCard({ pairingId, index }: { pairingId: string; index: number }) {
+  const pairing = useLovenseStore((s) => s.pairings.find((p) => p.id === pairingId));
+  const allToys = useLovenseStore((s) => s.toys);
+  const renamePairing = useLovenseStore((s) => s.renamePairing);
+  const unpairOne = useLovenseStore((s) => s.unpairOne);
+  const generateQr = useLovenseStore((s) => s.generateQr);
+  const [draft, setDraft] = useState<string | null>(null);
+
+  // Handles are assigned across ALL toys, so they stay unique between pairings.
+  const handles = useMemo(() => assignToyHandles(allToys), [allToys]);
+  if (!pairing) return null;
+  const name = pairing.label || `Toy app ${index + 1}`;
+
+  return (
+    <div className="space-y-1.5 p-2 rounded-lg border border-[var(--color-border)]">
+      <div className="flex items-center gap-1.5">
+        {draft !== null ? (
+          <input
+            type="text"
+            autoFocus
+            value={draft}
+            placeholder="Name this app"
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => {
+              void renamePairing(pairing.id, draft);
+              setDraft(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur();
+              if (e.key === 'Escape') setDraft(null);
+            }}
+            className={`${inputClass} flex-1 min-w-0`}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setDraft(pairing.label ?? '')}
+            className="flex-1 min-w-0 text-left text-xs text-[var(--color-text-primary)] hover:text-[var(--color-primary)] truncate"
+            title="Rename"
+          >
+            {name}
+          </button>
+        )}
+        <span
+          className={`px-2 py-0.5 rounded-full text-[10px] flex-shrink-0 ${
+            pairing.status === 'paired'
+              ? 'bg-green-500/20 text-green-400'
+              : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)]'
+          }`}
+        >
+          {pairing.status === 'paired' ? 'Paired' : 'Awaiting scan'}
+        </span>
+      </div>
+
+      {pairing.toys.map((t) => (
+        <ToyRow
+          key={t.id}
+          toy={t}
+          handle={handles[allToys.findIndex((x) => x.id === t.id && x.pairingId === t.pairingId)] ?? t.id}
+        />
+      ))}
+      {pairing.status === 'paired' && pairing.toys.length === 0 && (
+        <p className="text-[10px] text-[var(--color-text-secondary)]/60">
+          Paired, but this app hasn&apos;t reported a toy yet.
+        </p>
+      )}
+
+      <div className="flex items-center gap-1.5">
+        <button type="button" onClick={() => generateQr(pairing.id)} className={ghostBtnClass}>
+          <QrCode size={11} /> Re-scan
+        </button>
+        <button
+          type="button"
+          onClick={() => unpairOne(pairing.id)}
+          className={`${ghostBtnClass} hover:!text-red-400`}
+        >
+          <Unplug size={11} /> Forget
+        </button>
+      </div>
     </div>
   );
 }
 
 function PairingSection() {
+  const pairings = useLovenseStore((s) => s.pairings);
   const qrUrl = useLovenseStore((s) => s.qrUrl);
   const pairingCode = useLovenseStore((s) => s.pairingCode);
   const status = useLovenseStore((s) => s.status);
-  const connected = useLovenseStore((s) => s.connected);
   const generateQr = useLovenseStore((s) => s.generateQr);
+  const cancelQr = useLovenseStore((s) => s.cancelQr);
   const checkPairing = useLovenseStore((s) => s.checkPairing);
   const unpair = useLovenseStore((s) => s.unpair);
 
@@ -131,7 +249,12 @@ function PairingSection() {
         <span>Device pairing</span>
         <StatusPill />
       </div>
-      {!connected && (
+
+      {pairings.map((p, i) => (
+        <PairingCard key={p.id} pairingId={p.id} index={i} />
+      ))}
+
+      {!qrUrl && (
         <button
           type="button"
           onClick={() => generateQr()}
@@ -142,12 +265,15 @@ function PairingSection() {
             <span className="flex items-center gap-1.5">
               <Loader2 size={12} className="animate-spin" /> Generating…
             </span>
-          ) : (
+          ) : pairings.length === 0 ? (
             'Generate pairing QR'
+          ) : (
+            'Pair another app'
           )}
         </button>
       )}
-      {qrUrl && !connected && (
+
+      {qrUrl && (
         <div className="flex flex-col items-center gap-2 p-3 rounded border border-[var(--color-border)] bg-[var(--color-bg-primary)]/40">
           <img src={qrUrl} alt="Lovense pairing QR" className="w-40 h-40 rounded bg-white p-1" />
           <p className="text-[10px] text-[var(--color-text-secondary)] text-center">
@@ -157,23 +283,31 @@ function PairingSection() {
           <div className="flex items-center gap-1.5 text-[10px] text-[var(--color-text-secondary)]">
             <Loader2 size={11} className="animate-spin" /> Waiting for you to scan…
           </div>
-          <button type="button" onClick={() => checkPairing()} className={btnClass}>
-            Check now
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button type="button" onClick={() => checkPairing()} className={btnClass}>
+              Check now
+            </button>
+            <button type="button" onClick={() => cancelQr()} className={ghostBtnClass}>
+              <X size={11} /> Cancel
+            </button>
+          </div>
         </div>
       )}
-      {connected && (
-        <>
-          <ToyList />
-          <button
-            type="button"
-            onClick={() => unpair()}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-red-400 transition-colors"
-          >
-            <Unplug size={12} /> Unpair
-          </button>
-        </>
+
+      {pairings.length > 1 && (
+        <button
+          type="button"
+          onClick={() => unpair()}
+          className="flex items-center gap-1 px-3 py-1.5 text-xs rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-red-400 transition-colors"
+        >
+          <Unplug size={12} /> Forget all pairings
+        </button>
       )}
+
+      <p className="text-[10px] text-[var(--color-text-secondary)]/60">
+        Each Lovense app you scan is its own pairing. One app can carry several
+        toys; scan again to add a toy from another phone or account.
+      </p>
     </div>
   );
 }
@@ -242,11 +376,13 @@ function ProfileEditor() {
   const createCharacterProfile = useLovenseStore((s) => s.createCharacterProfile);
   const removeCharacterProfile = useLovenseStore((s) => s.removeCharacterProfile);
   const addMapping = useLovenseStore((s) => s.addMapping);
+  const toys = useLovenseStore((s) => s.toys);
 
   const isCustom = avatar != null && !!profilesByAvatar[avatar];
   const profile: LovenseProfile = avatar == null ? defaultProfile : profilesByAvatar[avatar] ?? defaultProfile;
   const editingScope: string | null = avatar; // null = default
   const editable = avatar == null || isCustom;
+  const multiToy = toys.length > 1;
 
   return (
     <div className="space-y-2">
@@ -291,10 +427,18 @@ function ProfileEditor() {
           <span className="flex-1">
             AI-driven control
             <span className="block text-[10px] text-[var(--color-text-secondary)]/60 mt-0.5">
-              Let the character control the toy with inline directives like
+              Let the character control your toys with inline directives like
               <code className="mx-1">[lovense: vibrate 15 for 5s]</code>. Multiple functions
               can be combined in one directive (e.g.
-              <code className="mx-1">[lovense: thrusting 15, depth 3]</code>). Replaces keyword matching.
+              <code className="mx-1">[lovense: thrusting 15, depth 3]</code>).
+              {multiToy && (
+                <>
+                  {' '}
+                  With several toys connected it can drive each one differently in the same
+                  directive — <code className="mx-1">[lovense: @lush vibrate 15, @nora rotate 8]</code>.
+                </>
+              )}{' '}
+              Replaces keyword matching.
             </span>
           </span>
           <Toggle on={profile.aiControl} onClick={() => updateProfile(editingScope, { aiControl: !profile.aiControl })} />
@@ -331,6 +475,11 @@ function ProfileEditor() {
             {profile.mappings.length === 0 && (
               <p className="text-[10px] text-[var(--color-text-secondary)]/60">No mappings.</p>
             )}
+            {multiToy && (
+              <p className="text-[10px] text-[var(--color-text-secondary)]/60">
+                Keyword reactions go to every toy that supports the chosen function.
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -354,15 +503,20 @@ function ManualTest() {
   const connected = useLovenseStore((s) => s.connected);
   const toys = useLovenseStore((s) => s.toys);
   const isSending = useLovenseStore((s) => s.isSending);
-  const activeToyId = useLovenseStore((s) => s.activeToyId);
-  const setActiveToyId = useLovenseStore((s) => s.setActiveToyId);
+  const activeToyIds = useLovenseStore((s) => s.activeToyIds);
+  const toggleActiveToy = useLovenseStore((s) => s.toggleActiveToy);
+  const setActiveToyIds = useLovenseStore((s) => s.setActiveToyIds);
   const sendFunction = useLovenseStore((s) => s.sendFunction);
   const sendPreset = useLovenseStore((s) => s.sendPreset);
   const stopAll = useLovenseStore((s) => s.stopAll);
 
+  const handles = useMemo(() => assignToyHandles(toys), [toys]);
+  // With nothing selected the command goes to every toy, so the action list is
+  // the union over whichever set is actually being driven.
+  const targeted = activeToyIds.length > 0 ? toys.filter((t) => activeToyIds.includes(t.id)) : toys;
   const caps = useMemo<LovenseAction[]>(
-    () => unionCapabilities(toys.map((t) => t.name)).filter((a) => a !== 'Stop'),
-    [toys],
+    () => unionCapabilities(targeted.map((t) => t.name)).filter((a) => a !== 'Stop'),
+    [targeted],
   );
   const [action, setAction] = useState<LovenseAction>('Vibrate');
   const [intensity, setIntensity] = useState(10);
@@ -370,23 +524,47 @@ function ManualTest() {
   const currentAction = caps.includes(action) ? action : caps[0] ?? 'Vibrate';
   const max = actionMaxIntensity(currentAction);
   const clamped = Math.min(intensity, max);
+  const targets = activeToyIds.length > 0 ? activeToyIds : null;
 
   return (
     <div className="space-y-2 pt-1 border-t border-[var(--color-border)]">
       <div className={sectionTitle}>Manual test</div>
       {toys.length > 1 && (
-        <select
-          value={activeToyId ?? ''}
-          onChange={(e) => setActiveToyId(e.target.value || null)}
-          className={`${inputClass} w-full`}
-        >
-          <option value="">All toys</option>
-          {toys.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.nickname || toyDisplayName(t.name)}
-            </option>
-          ))}
-        </select>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[10px] text-[var(--color-text-secondary)]">
+            <span>Send to</span>
+            {activeToyIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveToyIds([])}
+                className="text-[var(--color-primary)] hover:opacity-80"
+              >
+                All toys
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {toys.map((t, i) => {
+              const on = activeToyIds.length === 0 || activeToyIds.includes(t.id);
+              return (
+                <button
+                  key={`${t.pairingId}:${t.id}`}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => toggleActiveToy(t.id)}
+                  className={`px-2 py-1 text-[10px] rounded border transition-colors ${
+                    on
+                      ? 'border-[var(--color-primary)] text-[var(--color-primary)]'
+                      : 'border-[var(--color-border)] text-[var(--color-text-secondary)]'
+                  }`}
+                >
+                  {t.nickname || toyDisplayName(t.name)}
+                  <span className="opacity-60"> @{handles[i]}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       )}
       <div className="flex items-center gap-1.5">
         <select
@@ -413,7 +591,7 @@ function ManualTest() {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => sendFunction([{ action: currentAction, intensity: clamped }])}
+          onClick={() => sendFunction([{ action: currentAction, intensity: clamped }], { targets })}
           disabled={!connected || isSending}
           className={btnClass}
         >
@@ -433,7 +611,7 @@ function ManualTest() {
           <button
             key={p}
             type="button"
-            onClick={() => sendPreset(p)}
+            onClick={() => sendPreset(p, { targets })}
             disabled={!connected || isSending}
             className="px-2 py-1 text-[10px] rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50 capitalize"
           >
@@ -441,6 +619,12 @@ function ManualTest() {
           </button>
         ))}
       </div>
+      {toys.length > 1 && (
+        <p className="text-[10px] text-[var(--color-text-secondary)]/60">
+          Each toy only receives the functions it actually has, so one command can
+          drive all of them at once.
+        </p>
+      )}
     </div>
   );
 }
@@ -450,6 +634,7 @@ function ManualTest() {
 function LovenseSettings() {
   const connected = useLovenseStore((s) => s.connected);
   const error = useLovenseStore((s) => s.error);
+  const toys = useLovenseStore((s) => s.toys);
 
   const autoReact = useLovenseStore((s) => s.autoReact);
   const setAutoReact = useLovenseStore((s) => s.setAutoReact);
@@ -471,7 +656,7 @@ function LovenseSettings() {
           <span className="flex-1">
             Auto-react to messages
             <span className="block text-[10px] text-[var(--color-text-secondary)]/60 mt-0.5">
-              Drive the toy from each AI reply (keywords or AI directives, per character below).
+              Drive your toys from each AI reply (keywords or AI directives, per character below).
             </span>
           </span>
           <Toggle on={autoReact} onClick={() => setAutoReact(!autoReact)} />
@@ -512,8 +697,14 @@ function LovenseSettings() {
       <p className="flex items-start gap-1.5 text-[10px] text-[var(--color-text-secondary)]/70">
         <Bot size={12} className="flex-shrink-0 mt-0.5" />
         <span>
-          Type <code>/lovense vibrate 15 for 5s</code>, <code>/lovense preset pulse</code>, or{' '}
-          <code>/lovense stop</code> in chat for manual control.
+          Type <code>/lovense vibrate 15 for 5s</code>, <code>/lovense preset pulse</code>,{' '}
+          <code>/lovense toys</code>, or <code>/lovense stop</code> in chat for manual control.
+          {toys.length > 1 && (
+            <>
+              {' '}
+              Target one toy with <code>/lovense @lush vibrate 12</code>.
+            </>
+          )}
         </span>
       </p>
 
@@ -531,9 +722,11 @@ function LovenseSettings() {
 
 registerCommand({
   name: 'lovense',
-  description: 'Control the connected Lovense toy: /lovense vibrate 15 for 5s | preset pulse | stop | status',
+  description:
+    'Control your Lovense toys: /lovense vibrate 15 for 5s | @lush vibrate 12 | preset pulse | stop | toys',
   category: 'system',
-  usage: '/lovense <action> <intensity> [for <n>s] | /lovense preset <name> | /lovense stop | /lovense status',
+  usage:
+    '/lovense [@toy] <action> <intensity> [for <n>s] | /lovense preset <name> | /lovense stop | /lovense toys',
   async handler(_args, rawArgs, ctx) {
     if (!extensionRegistry.isEnabled('lovense')) {
       ctx.showToast('The Lovense extension is disabled', 'warning');
@@ -542,27 +735,46 @@ registerCommand({
     const store = useLovenseStore.getState();
     const arg = rawArgs.trim();
     const lower = arg.toLowerCase();
+    const toys = store.toyRefs();
 
     if (!arg || lower === 'status' || lower === 'toys') {
-      if (!store.connected) return 'Lovense: not connected';
+      if (!store.connected) {
+        ctx.showToast('Lovense: not connected', 'warning');
+        return '';
+      }
+      // STscript return values aren't rendered anywhere, so report via toast.
+      const handles = assignToyHandles(toys);
       const list =
-        store.toys.map((t) => t.nickname || toyDisplayName(t.name)).join(', ') || 'unknown toy';
-      return `Lovense: connected (${list})`;
+        toys.map((t, i) => `@${handles[i]} (${t.nickname || toyDisplayName(t.name)})`).join(', ') ||
+        'no toys reported';
+      const apps = store.pairings.filter((p) => p.status === 'paired').length;
+      ctx.showToast(`Lovense: ${list} — ${apps} app${apps === 1 ? '' : 's'} paired`, 'info');
+      return '';
     }
     if (!store.connected) {
       ctx.showToast('No Lovense toy connected', 'warning');
       return '';
     }
 
-    const directives = parseLovenseDirectives(`[lovense: ${arg}]`);
+    const directives = parseLovenseDirectives(`[lovense: ${arg}]`, toys);
     if (directives.length === 0) {
       ctx.showToast(`/lovense: couldn't understand "${arg}"`, 'error');
       return '';
     }
     for (const d of directives) {
-      if (d.kind === 'stop') await store.stopAll();
-      else if (d.kind === 'preset') await store.sendPreset(d.name, { durationSec: d.durationSec });
-      else await store.sendFunction(d.actions, { durationSec: d.durationSec });
+      if (d.kind === 'stop') {
+        await store.stopTargets(d.targets);
+      } else if (d.kind === 'preset') {
+        await store.sendPreset(d.name, { targets: d.targets, durationSec: d.durationSec });
+      } else {
+        // Warn rather than fail silently when the named toy isn't connected.
+        const named = d.groups.flatMap((g) => g.targets ?? []);
+        if (named.length > 0 && resolveTargets(named, toys).length === 0) {
+          ctx.showToast(`/lovense: no connected toy matches "${named.join(', ')}"`, 'error');
+          continue;
+        }
+        await store.sendGroups(d.groups, { durationSec: d.durationSec });
+      }
     }
     return '';
   },
@@ -574,24 +786,31 @@ const manifest: ExtensionManifest = {
   id: 'lovense',
   displayName: 'Lovense Device Control',
   description:
-    'Connect any Lovense toy and drive it from chat — per-character keyword reactions, AI-directed control the characters can trigger themselves, presets, and multi-toy targeting.',
-  version: '2.0.0',
+    'Connect your Lovense toys and drive them from chat — pair several apps at once, per-character keyword reactions, AI-directed control the characters can trigger themselves, presets, and per-toy targeting so one directive can drive every toy simultaneously.',
+  version: '3.0.0',
   icon: Vibrate,
   // Opt-in: hardware + intimate content, off until the user enables it.
   defaultEnabled: false,
   settingsPanel: LovenseSettings,
 
-  // Teach AI-directive characters the tag syntax + the connected toy's
-  // functions. Solo chats only (the group builder runs no context hooks).
+  // Teach AI-directive characters the tag syntax, which toys are connected and
+  // what each one can do. Solo chats only (the group builder runs no context
+  // hooks).
   onBuildContext(event: ContextBuildEvent): ContextContribution[] {
     if (!extensionRegistry.isEnabled('lovense')) return [];
     const s = useLovenseStore.getState();
     if (!s.connected || !s.autoReact) return [];
     const profile = s.resolveProfile(event.characterAvatar);
     if (!profile.reactionEnabled || !profile.aiControl) return [];
-    const actions =
-      s.toys.length > 0 ? unionCapabilities(s.toys.map((t) => t.name)) : s.connectedCapabilities();
-    const instruction = buildAiControlInstruction(actions, s.defaultDurationSec, s.hideTagsInChat);
+    // Muted toys are left out of the prompt entirely — naming a toy the model
+    // can't actually drive just invites directives that go nowhere.
+    const toys = s.toyRefs().filter((t) => s.toyPrefs[t.id]?.enabled !== false);
+    const instruction = buildAiControlInstruction(
+      toys,
+      s.connectedCapabilities(),
+      s.defaultDurationSec,
+      s.hideTagsInChat,
+    );
     return [{ content: instruction, role: 'system', position: 'after_char', order: 60 }];
   },
 };
