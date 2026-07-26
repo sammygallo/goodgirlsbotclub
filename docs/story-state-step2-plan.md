@@ -1,0 +1,162 @@
+# Productization Step 2 — Story-State Layer: Implementation Plan (draft)
+
+> Status: draft for review. Successor to productization step 1 (Works container, PRs #39/#312, migration 0011).
+> Inputs: [story-state-schema-v1.md](story-state-schema-v1.md) and [story-state-schema-v1-audit.md](story-state-schema-v1-audit.md).
+> Repos: `goodgirlsbotclub` (frontend), `ggbc-backend` (backend, migration head 0012).
+
+---
+
+## 1. Goal & scope
+
+Step 2 turns the reserved `story_state` slot on a Work into a real, server-authoritative **story bible**: a structured, provenance-carrying representation of one chat's story (world, entities, user voice, scenes, continuity facts, contradictions) that a user can build from an existing RP, review, correct, and lock as canon.
+
+**What a user gets at the end of step 2:**
+
+- A **Story tab** in the Works panel: pick a source chat, see a preflight cost estimate, and build a bible on their own API key with visible per-chunk progress, abort/resume, and spend recorded in the existing fuel gauge.
+- A **starter bible in seconds** (from cards, lorebooks, persona — pass 1) and a full bible after the transcript walk and reconcile (passes 2–3).
+- A **review checkpoint**: contradiction cards with quoted evidence, low-confidence fact triage, a voice-profile check with a paste-your-own-prose fallback, then **Lock canon**.
+- **Incremental updates**: "23 new messages since last ingest — update bible," with drift detection when chat history was edited upstream.
+- Durable plumbing underneath: stable per-message IDs across the whole chat corpus, and a sub-resource story API with server-enforced append-only logs.
+
+**Explicitly deferred (step 3+):**
+
+- All renderers (novel/screenplay/comic/storyboard) and the transformation chains. Nothing in step 2 consumes a locked bible; step 2 ends at "locked canon exists."
+- **The annotate pass** (beats/tension/mood, narrative structure, scene `function`/`transformations`). Its only consumer is a step-3 renderer, so running it in step 2 would spend the user's tokens on output nothing reads. The checkpoint format treats passes independently, so it ships with the first renderer unchanged; step 2 runs the schema doc's other passes (cold-start, transcript walk, reconcile, review) and leaves `narrative` and per-scene annotation fields empty.
+- Round-trip edit propagation from rendered output (audit G6 — requires a renderer).
+- pgvector / embedding store (audit G7). Deferred until the first RAG-selective renderer phase; every embeddable object gets a stable UUID row now so the later `story_embeddings` table is purely additive. Interim renderer RAG can use the existing OpenAI-embeddings proxy on the user's key with in-memory cosine (the `chatHistoryRagStore` pattern).
+- Multi-session merging, branched threads, collaborative editing, bible export (per the schema doc's own v1 cuts).
+- Backend-orchestrated ingestion. The checkpoint format is designed so a later jobs-table orchestrator can adopt it unchanged, but v1 ingestion runs only while a tab is open.
+
+**Platform constraints honored throughout:** all LLM calls go through the existing generation proxy on the user's BYO key from the frontend; public identity stays string-based (avatar filename, `(character_avatar, file_name)`) with dangle-and-reconcile semantics; all server writes use per-row `server_ts` optimistic concurrency mirroring `/chats/save`; every phase is a single reviewable PR; migrations apply on container boot.
+
+---
+
+## 2. The four resolved decisions
+
+### Decision 1 — Message identity: permanent UUIDs at `extra.ggbc_id`, server-healed, with fingerprint drift detection
+
+Every non-header chat message gets a UUID minted by the frontend's `generateId` (switched to `crypto.randomUUID` with a v4 fallback), carried on the ST wire shape at `extra.ggbc_id` — ST's designated extension bag, passed through raw by GGBC's transcript importer. One honest caveat: client-side `normalizeMessage` preserves only a known subset of `extra` keys (images/videos/usage), so a stock-ST import's *other* extras survive the initial raw save but drop on the first post-load save; Phase 1 adds `ggbc_id` to the preserved subset, and the "merge, never clobber" guarantee for the full bag holds server-side only. The backend enforces the invariant on every `/chats/save` via an idempotent `_ensure_message_ids` heal (mint missing, re-mint duplicates, never touch the index-0 header), and a one-time raw-SQL backfill migration IDs the dormant corpus. Content hashes were rejected as primary identity (edits and swipes break them exactly when provenance needs to survive; RP transcripts are full of literal duplicates) but survive as a fingerprint: every bible message reference carries `{msg_id, swipe_idx, fingerprint {sha, send_date}}` so the client can classify refs as ok / edited / deleted and reconcile — the same dangle-and-reconcile philosophy as project member refs. Repurposing the existing in-memory `ChatMessage.id` (rather than adding a second field) incidentally fixes branchStore/translateStore keying, which currently breaks across reloads. This resolves audit C2/G1 and is the root of the dependency tree.
+
+### Decision 2 — Storage & API: four relational tables + sub-resource API; `projects.story_state` frozen at `{}`
+
+The bible does **not** live in the `story_state` JSONB blob. A hybrid decomposition ships instead: `story_sections` (one row per bible section — meta, world, entities, user_voice, narrative, continuity, rendering_hints, plus **ingestion** for checkpoint state), `story_scenes` (per-row, client-supplied UUIDs, sequence-ordered), and `story_facts` / `story_edits` (append-only tables with **no update/delete code path at all** — append-only becomes a server property, not a client promise). Section rows reuse the proven `user_documents` pattern but with **mandatory** `base_ts` (closing audit C4's unconditional-clobber hole); scenes get a ≤200-row all-or-nothing bulk endpoint for ingestion. `projects.story_state` stays in place permanently empty, guarded by a 422 on non-empty writes — the section name is the envelope, `schema_version` lives in `meta`. Full single-blob options were rejected because append-only fact/edit logs and sub-document reads are unachievable in a full-replace blob (audit C3/C4/G9); full per-field relational decomposition was rejected as premature while the schema is still churning. Pydantic models per section with `extra="forbid"` resolve the audit's enum ambiguities (single `FactCategory`; two POV enums with hints inheriting from narrative; discrete `Confidence` on facts vs. floats on model self-assessments). Byte caps (section 256KB, scene 64KB, fact 8KB, edit 16KB) plus manifest-only overview and cursor-paginated logs answer G9. pgvector is deferred (ops-risk swap of the prod Postgres image with zero v1 consumer), with join keys ready.
+
+*Conflict resolution:* Designs 2 and 3 originally targeted the `story_state` blob (section PUT into `story_state.story_bible[...]`, `/story/append`); Design 1's tables supersede that, and Design 2 anticipated exactly this ("if that design lands first, PR-3+ target its endpoints instead"). Ingestion therefore writes to the table-backed endpoints, and the checkpoint object lives in the `ingestion` section row (added to Design 1's section list), whose per-row `server_ts` naturally carries the soft-lock heartbeat. Design 1's `idx:`/`mid:` string-pattern message refs — a decoupling hedge against message identity slipping — are **dropped**: message identity ships first in this plan (Phases 1–2), so bible refs use the structured form from Decisions 1 and 4 directly, and the fingerprint covers drift regardless.
+
+### Decision 3 — Ingestion: frontend-orchestrated passes with per-chunk server checkpoints, on the user's key
+
+Four of the five schema-doc passes (cold-start, transcript walk, reconcile, review) run in the browser as a `src/utils/storyIngest/` module family orchestrated by a new `storyIngestStore`, calling `api.generateMessage` with the user's active provider/model — the BYO-key constraint satisfied literally, with zero new backend LLM or queue infrastructure; the fifth pass (annotate) is deferred to step 3 per scope. After every pass and every transcript chunk, accumulated output plus a cursor is written to the story API, so a closed tab loses at most one chunk and any device can resume; a heartbeat soft lock prevents two devices double-spending the user's key. Backend orchestration (the `scene_video.py` asyncio pattern) was rejected for v1 — in-memory job state dies on the droplet's pull-and-restart deploys, and making it durable is a big-bang — but the server-side checkpoint contract is designed for a later backend orchestrator to adopt. The pipeline reuses proven machinery: `lorebookFromTranscript`'s chunk planning and truncation-tolerant JSON recovery, `GenerateLorebookModal`'s progress UX, `usageStore.recordGeneration` for the fuel gauge, and a preflight token/cost estimate before any spend. A zero-LLM pass 1.5 replays the world-info scanner over history (marked `replay_approx`), and a tiny ship-first PR starts capturing live WI fired-state into the chat header so future ingests are exact rather than reconstructed. Incremental re-ingestion compares an ingest watermark against the live chat and walks only the new range.
+
+### Decision 4 — Identity & multi-chat grain: bible-local UUIDs, SourceRef envelope at the boundary, one designated source chat per project
+
+Every `*_uuid` in the schema doc (character, scene, fact, rule, place, act, contradiction, edit) is a **bible-local UUID** minted client-side at creation and never resolved against backend tables — principle 8 holds *inside* the document, the string-identity contract holds *at the boundary*. Every link back to a source becomes a **SourceRef** envelope `{kind, ref, snapshot, captured_at}`: a discriminated union over `character`, `card_field`, `chat`, `chat_message`, `persona`, `lorebook_entry`, `user_annotation`, `agent_inference`, where `ref` uses platform string identity (and may dangle, per contract) and `snapshot` captures names, excerpts, and content hashes so the bible stays self-sufficient and drift is detectable. `chat_message` refs carry the Decision-1 `msg_id` plus the fingerprint snapshot. Ref state (live / drifted / dangling) is computed client-side at display time, never persisted; the backend validates shape only, never referential integrity. `meta.source` is respecified in platform vocabulary — scalar `chat: SourceRef<chat>` (fixing audit D1/C6), avatar-string character refs, persona id + snapshot (personas have no backend identity), and an `ingest_watermark`. **Multi-chat grain:** one bible per project, exactly one designated source chat, honoring the schema doc's single-session v1 cut inside the multi-chat container — project.chats is membership, `meta.source.chat` is provenance. With N chats attached, the Story tab shows an explicit picker; non-source chats carry a "Not in bible" caption, never fake merge buttons. Best-effort rename healing in `chatStore.renameChat` updates the source ref on the renaming device; relink UX is the backstop.
+
+*Conflict resolution:* Design 3 stored the designation inside the `story_state` blob to avoid a migration; under Decision 2 it lives in the `meta` section row instead (same content, better home). "Change source chat" **discards** the bible behind a typed confirm (Design 3) rather than archiving it into `edit_log` (Design 2) — the 16KB edit-row byte cap makes whole-bible archival infeasible, and an archive feature is deliberately deferred (see Open Questions).
+
+---
+
+## 3. Phased delivery plan
+
+Each phase is one PR, human-reviewed, independently deployable. Backend tests run in disposable Docker per repo convention; migrations apply on container boot. Backend migrations form a **linear Alembic chain** (0001–0012 have no branch points), which forces a merge order: Phase 2's 0013 must merge before Phase 3b's 0014, whatever order they're developed in — "parallel tracks" below always means parallel development with backend merges serialized in migration order. New frontend stores must **not** statically import `chatStore` (module-init cycle → TDZ crash) — lazy `import()` per the `projectStore.openChatRef` precedent.
+
+### Phase 0 — WI fired-state capture + header read path (frontend, S) — ship immediately
+
+- **Repo:** goodgirlsbotclub.
+- **Work:** three pieces, all client-side. (1) **A raw chat-fetch variant in `client.ts`:** `api.getChatMessages` strips the header today (explicit `messages.slice(1)`, client.ts:786–791), and `buildChatPayload` rebuilds the header from scratch on every save — so without a read path, any header telemetry is clobbered on the first save after a reload. The backend already returns the full array; this is a client-only sibling method (or `include_header` option) that keeps element 0. It also becomes the read path Phase 6's pass 1.5 needs. (2) **Hydrate-then-accumulate:** on chat load, seed an in-memory per-chat activation map from persisted `header.wi_fired`; then feed it from the existing `wiTimerOut` out-param. Capture must cover **all** WI-scanning paths, not just the three persist sites (`sendMessage` 3239, `swipeRight` 2818, `editMessageAndRegenerate` 3599): `regenerateMessage`, `continueMessage`, and `impersonate` currently pass `wiTimerOut: undefined` (chatStore.ts:2938, 3041) yet still scan world info — wire the out-param through those calls too, or captured data silently misses regenerated turns. (3) **Serialize** the merged map into the header at `buildChatPayload` time as `header.wi_fired: { "<bookId>:<entryId>": {first_turn, last_turn, count} }`. No migration, no new sync section, no UI.
+- **Tests:** unit tests on hydration + accumulation + header serialization, including the reload-then-save round-trip (previously persisted fired-state must survive).
+- **Why first:** with hydration, telemetry accretes across sessions — every week of capture makes future ingests exact instead of replay-approximate. Blocks nothing; nothing blocks it.
+
+### Phase 1 — Message UUIDs, frontend (goodgirlsbotclub, S)
+
+- **Work:** four edit sites in `src/stores/chatStore.ts` — (1) `generateId` → `crypto.randomUUID` with a Math.random v4 fallback (non-secure-context LAN dev); every create path inherits it through this one function; (2) `buildChatPayload` always emits `extra: { ggbc_id: msg.id, ... }`; (3) `normalizeMessage` preserves `extra.ggbc_id` as the in-memory `id`, minting only when absent — note `normalizeMessage` keeps only a known subset of `extra` keys (images/videos/usage), so this adds `ggbc_id` to that subset; foreign ST extras still drop on the first post-load save, which is acceptable and out of scope; (4) type/doc touch-ups (`ChatMessage`, `src/types/index.ts`, the private wire type in `client.ts`). `chatTranscript.ts` needs no change (extra passthrough already works).
+- **Tests:** round-trip unit tests on payload build/normalize; a manual save/load/edit/swipe pass.
+- **Notes:** ships before the backend heal on purpose — current bundles must *preserve* ids before any exist to destroy, shrinking the stale-tab churn window. Incidentally fixes branchStore/translateStore cross-reload keying.
+
+### Phase 2 — Message UUIDs, backend heal + backfill (ggbc-backend, S)
+
+- **Work:** pure `_ensure_message_ids(messages)` in `app/routers/chats.py`, called in `save_chat` on both create and update branches (covers frontend saves, transcript import, beacon flush, any third-party writer): keep valid unseen `extra.ggbc_id`, mint otherwise, dedup keep-first, never touch index 0, leave malformed elements alone. **Migration `0013_backfill_message_ids`** (down_revision 0012): idempotent raw-SQL `jsonb_agg ... WITH ORDINALITY` rewrite, `gen_random_uuid()` (core in PG13+; prod is postgres:16), guarded `WHERE messages IS DISTINCT FROM`; lossy downgrade strips the key, documented like 0012's. This is the **first per-row rewrite of a large JSONB document column in the chain** — 0011's raw SQL is a permissions backfill on `groups`, not a precedent — so the migration itself gets proportional test attention rather than a pattern wave-through.
+- **Tests:** extend `tests/test_chats.py` — id-less save gains ids, header untouched; existing ids preserved byte-for-byte; intra-payload duplicates re-minted; `extra` merged not clobbered (a server-side property; the client round-trip is narrower, per Phase 1); truncating saves keep surviving ids. Migration tests: re-run is a no-op (idempotency guard), index-0 header skipped, malformed elements left alone, group-chat headers unharmed.
+- **Notes:** whole-table rewrite on boot is seconds at beta scale; batch by user_id if the table grows past ~10⁵ rows before shipping. No API shape change.
+
+### Phase 3a — Story schema models + docs patch (ggbc-backend, S–M)
+
+- **Work:** the design-review PR — every contested schema decision, with no router noise. `app/schemas/story.py` with per-section Pydantic models (`extra="forbid"`), the `SourceRef` discriminated union (Decision 4, reusing `ProjectChatRef` for the chat shape; shape-only validation — dangling refs legal), structured message refs with fingerprints, and the resolved enums (`FactCategory`, `PovTarget`, `Confidence`); server accepts schema_version major "1" only. **Docs:** patch `story-state-schema-v1.md` with the SourceRef/MsgRef spec, drift rules, `meta.source` respec, enum resolutions (D2–D6, D9), size budgets (D10), and the annotate-pass deferral.
+- **Tests:** schema unit tests — accept/reject fixtures per section, enum coverage, ref-shape validation.
+
+### Phase 3b — Story tables + sections API (ggbc-backend, M)
+
+- **Work:** mechanical once 3a's schemas are agreed. **Migration `0014_add_story_tables`** (down_revision 0013 — see merge-order note above) creating `story_sections` (PK `(project_id, section)`, section CHECK including `ingestion`, `data` JSONB, `server_ts`), `story_scenes`, `story_facts`, `story_edits` (identity `ord` append cursors; facts/edits have no update/delete anywhere). Models in `app/models/story.py`. Router `app/routers/story.py` under `/projects/{project_id}/story`: `GET /story` manifest, `GET/PUT /story/sections/{name}` with **mandatory** `base_ts` (0 = create; 409 `{current_ts, current}` otherwise), byte caps → 413 naming the cap and overage. Freeze guard: non-empty `story_state` on project PATCH → 422 pointing at the story API.
+- **Tests:** `tests/test_story_sections.py` — create/update/409 shapes, mandatory-base_ts enforcement, byte caps, cross-user 404, freeze-guard 422, section-name validation.
+- **Reads gated `project:view`, writes `project:manage`,** owner-scoped via the existing `_get_owned_project` pattern.
+
+### Phase 4 — Scenes, logs, reset (ggbc-backend, M)
+
+- **Work:** scene GET (paginated projections + full-by-id) / PUT / DELETE with mandatory base_ts; `POST /story/scenes/bulk` (≤200 rows, all-or-nothing, 409 lists per-row conflicts); `POST/GET /story/facts` and `/story/edits` (append-only, `ON CONFLICT DO NOTHING` for idempotent pass retries, `after_ord` cursor pagination, `scene_id` filter on facts, `FactIn.supersedes` for soft retraction); `POST /story/reset {confirm: true}`. Referential integrity is never checked server-side — the backend validates shape only (Decision 4); the cross-section referential check runs client-side at lock canon (Phase 9).
+- **Tests:** `tests/test_story_scenes.py` + `tests/test_story_logs.py` — bulk conflict rollback, append idempotency, pagination, and an explicit assertion that no update path exists on logs.
+
+### Phase 5 — Frontend read plumbing + source-chat designation (goodgirlsbotclub, M)
+
+- **Work:** `storyApi` + `StoryConflictError` in `src/api/client.ts` next to `projectsApi`; `src/types/storyBible.ts` (SourceRef union, meta types, RefState); `src/utils/storyBible/sourceRefs.ts` (ref/snapshot constructors, `hashText` via crypto.subtle with djb2 fallback and recorded `hash_alg`, `resolveRefState`); `src/stores/storyStore.ts` (lazy-import hazard applies); `src/components/works/StoryTab.tsx` in WorkDetail — empty state, **SourceChatPickerModal** (0 chats → "attach a chat first"; 1 → one-click; N≥2 → explicit radio picker, no default), designation writing the `meta` section (bible id, schema_version, full source block with refs + snapshots, zeroed ingest_watermark) via the base_ts retry-once-adopt-winner pattern; read-only section viewers + paginated fact log (consumes Phase 4's `GET /story/facts` — hence the strict dependency); non-source chats labeled "Not in bible." Group-chat sources allowed, with their selective lorebook entries destined for `confidence: inferred`.
+- **Tests:** store/unit tests on ref construction, hash fallback, conflict retry; manual panel pass.
+- **Delivers visible value pre-ingestion:** the Story tab exists and designation works.
+
+### Phase 6 — Cold-start + WI replay + checkpoint machinery (goodgirlsbotclub, M–L)
+
+- **Work:** `storyIngestStore` + `storyIngest/` (`prompts.ts` with exported `PROMPT_VERSION`, `types.ts`, `coldStart.ts`, `wiReplay.ts`): pass 1 (mechanical card/lorebook/persona mapping per the schema doc's ingestion table; LLM only for attribute extraction and voice register; writes meta/entities/world/rendering_hints, all objects stamped with `agent_inference` provenance) and pass 1.5 (zero-LLM replay of `scanMessagesForEntries` over history, `replay_approx: true`, unioned with captured `header.wi_fired` — read via the Phase-0 raw chat fetch, since the default `api.getChatMessages` strips the header; group chats noted as never-scanned). Checkpoint object in the `ingestion` section (`status/pass/chunk_index/chunk_plan/last_ingested/open_scene/lock{client_id, heartbeat_at}/token_usage/prompt_version/model`); IngestProgressCard (pass checklist, progress bar, live token subtotal, abort/resume); start modal with connection-profile dropdown, preflight token/cost estimate ("estimated" framing), content-rating notice; **"reset ingestion state" escape hatch ships here, not later**; every call recorded via `usageStore.recordGeneration`.
+- **Tests:** unit tests on the mechanical mappings and replay; fixture-driven checkpoint round-trips.
+
+### Phase 7 — Transcript walk (goodgirlsbotclub, L — the risk hotspot)
+
+- **Gate:** Phase 1 deployed long enough for open tabs to cycle (days) before this merges — quiets the id-churn window before provenance exists to poison.
+- **Work:** `transcriptChunker.ts` — named to avoid colliding with the existing `src/utils/chunker.ts` (the Phase-8.5 Data Bank `chunkText`, character-budgeted and unrelated); the chunking actually being reused is `lorebookFromTranscript`'s message-grain planning. Token-budgeted ~6000/chunk, boundaries never split a message, plan pinned into `ingestion.chunk_plan` for deterministic resume, soft cap 200 chunks with explicit confirm. Plus `transcriptWalk.ts`: one call per chunk with rolling context and mechanical boundary hints; strict-JSON output recovered via brace-matching with one repair-retry; mechanical swipe resolution (`swipes[swipe_id]` canonical, resolution recorded with swipe fingerprint); force-split at 60 messages; cross-chunk scenes via `open_scene` carry. Per chunk: bulk scene upsert + fact append + section PUTs + cursor advance + heartbeat. Resume verifies chunk-plan ids still exist, offers restart-from-divergence; soft lock enforced. Post-walk synthesis call for `user_voice` (sentence stats computed mechanically in TS). Messages fetched via `api.getChatMessages`, not chatStore (the walk needs no header).
+- **Tests:** chunker unit tests (fixtures incl. pathological transcripts), resume/lock state-machine tests, JSON-recovery tests.
+
+### Phase 8 — Reconcile (goodgirlsbotclub, S–M)
+
+- **Work:** `reconcile.ts` — mechanical fact grouping by entity/category with alias matching; LLM judge only for multi-fact groups + one card-vs-transcript call per character; emits `continuity.contradictions` with `detected_by: "agent"`, `resolution.status: "unresolved"`, `contradicts` back-refs. (The annotate pass is deferred to step 3 per scope — no step-2 consumer.)
+- **Tests:** grouping unit tests; fixture-based prompt-output parsing.
+
+### Phase 9 — Review checkpoint + provenance UX + lock canon (goodgirlsbotclub, M–L)
+
+- **Work:** review state of the Story tab — ContradictionCard (competing facts with lazily fetched quoted evidence; Keep A / Keep B / Write my own / Defer → continuity PUT + edit append), low-confidence fact accordion, user_voice confidence meter with the schema doc's paste-your-own-prose fallback (appends `sample_passages` with `user_annotation` source), scene list with editable titles + merge-with-previous, **Lock canon** footer (runs the client-side cross-section referential check — the only place integrity is validated, per Decision 4 — then sets `meta.canon_locked_at`; unresolved contradictions may be deferred, per the doc). Plus the Decision-4 provenance surface: `resolveRefState` badges (live/drifted/dangling), relink action (keeps snapshot, appends edit), and the `chatStore.renameChat` healing hook (lazy import) rewriting `project.chats` entries and the bible's source-chat ref. "Change source chat" = typed-confirm discard + `/story/reset`.
+- **Tests:** resolution-write round-trips; ref-state unit tests across edit/delete/rename fixtures; referential-check fixtures.
+- **Locking canon is what unblocks the step-3 renderer workstream.**
+
+### Phase 10 — Incremental re-ingestion + drift handling (goodgirlsbotclub, M)
+
+- **Work:** watermark comparison against the live chat: new-messages-only walk (re-opening the last scene), reconcile restricted to new facts; upstream-edit detection (id set / fingerprints diverge) → "chat history changed" banner, re-walk-from-divergence, downstream scenes flagged `stale_source`; full re-ingest always available.
+- **Deliberately last:** correctness depends on Phase 7's checkpoint semantics having soaked.
+- **Tests:** watermark/divergence unit tests over edited-history fixtures.
+
+**Dependency summary:** 0 independent (but its raw-read variant feeds Phase 6's pass 1.5, and every week it runs improves ingest fidelity); 1→2 strict; 3a→3b strict; 2 before 3b **at merge time** (linear Alembic chain, 0013→0014); 4 needs 3b; 5 needs 3b **and** 4 (fact-log viewer); 6 needs 5; 7 needs 4+6 and the Phase-1 soak gate; 8 needs 7; 9 needs 8; 10 needs 7 soaked. Phases 1–2 and 3a–4 can be developed in parallel, with backend merges serialized in migration order.
+
+---
+
+## 4. Open questions for Sammy
+
+1. **Tiering.** Is the story bible a tiered feature under the features-not-compute model, and at which tier? (Compute is the user's key either way; the question is who sees the Story tab.) Affects Phase 5's gating.
+2. **True fact deletion.** Facts are server-enforced append-only; removal is `supersedes` or full `/story/reset`. Given the NSFW context, is "can't delete a single embarrassing fact without resetting" acceptable for v1, or do we need an owner-scoped hard-delete that deliberately breaks the append-only invariant?
+3. **Discard-on-rebuild.** "Change source chat" and "re-ingest from scratch" discard the existing bible — including user annotations and resolved contradictions — behind a typed confirm, with no archive in v1 (edit-log byte caps rule out archiving there). Ship as-is and accept early undo demand, or spend a small phase on a bible-snapshot archive first?
+4. **Group chats as bible sources.** Currently allowed, with lorebook confidence degraded to `inferred` (group chats never scan world info) and weaker voice attribution. Keep, or restrict designation to solo chats for v1?
+5. **Model floor messaging.** Weak BYO models will produce degraded walk output. Do we show a soft recommendation ("best results with ≥ X-class models"), a hard warning, or nothing? Pure positioning call.
+6. **`content_rating` × `derivative_flags`** (audit D8): pass 1 auto-detects both into `meta`. Should `explicit` + `derived_from_known_ip` gate anything in step 3 rendering/publishing-assist? No step-2 behavior depends on the answer, but the fields ship now and the policy line is yours.
+
+---
+
+## 5. Risks
+
+- **Stale cached bundles vs. message ids.** Tabs open from before Phase 1 rebuild payloads without ids; the server heal then re-mints, churning every id in that chat per save. Harmless before ingestion exists, poisonous after — hence the hard soak gate before Phase 7, plus fingerprints to detect residue.
+- **Stale cached bundles vs. wi_fired.** The same stale-tab mechanism applies to Phase 0: a pre-Phase-0 bundle rebuilds the header without `wi_fired` and clobbers it. Self-healing (telemetry resumes on the next up-to-date save) but shortens the exact-capture window; nothing to do beyond knowing it.
+- **Version skew under `extra="forbid"`.** Separate repos on a pull-only droplet mean a newer frontend's added field can 422 against an older backend. Mitigation: additive fields are schema-minor bumps deployed backend-first; relax leaf models to `extra="allow"` if it bites in practice.
+- **Backfill is a boot-time whole-table rewrite** of `chats.messages` (blocks the deploy for its duration, briefly bloats WAL) — and the first migration of its kind in this codebase, hence the expanded migration test list in Phase 2. Seconds at beta scale; batch by user_id if the table grows before Phase 2 ships.
+- **Soft lock is advisory.** A force-resume on a second device can double-spend the user's key and interleave writes; mandatory base_ts bounds the damage to one lost chunk but is not a hard guarantee.
+- **BYO-model JSON reliability.** Malformed walk output from weaker models is mitigated by brace-matching recovery + one repair retry, but extraction quality genuinely varies by model (see open question 5).
+- **WI replay is approximate by construction** (probability rolls, sticky/cooldown never recorded historically; group chats never scanned). Flagged via `replay_approx`, but users may over-trust it; Phase 0 shipping early — with capture covering the regenerate/continue/impersonate paths, not just the three persist sites — shrinks the approximate window going forward.
+- **Cost-estimate error.** Preflight numbers come from estimated tokenizer profiles; a 30–40% miss on an expensive provider is possible. Labels must say "estimated" and abort must always work mid-run.
+- **Byte caps are educated guesses** (256KB section / 64KB scene / 8KB fact / 16KB edit). A 10-character group-chat entities section could brush the cap; expect a tuning pass, and 413s must say which cap and by how much.
+- **Section-granularity collisions.** `entities` is one row — two devices editing different characters still conflict at section grain. Acceptable under the v1 single-author cut; the escape hatch (per-entity rows, like scenes) should be decided before multi-author lands.
+- **Edit-and-regenerate keeps a stable msg_id while replacing content and resetting swipes** — swipe references silently point at new text. The swipe-fingerprint drift rule is mandatory in every consumer, not optional.
+- **Very long RPs** (5k+ messages) hit the 200-chunk soft cap and multi-hour tab-open sessions. Acceptable for v1 given resume; this is the concrete trigger for graduating to the backend-orchestrated option the checkpoint format was designed to permit.
+- **Frozen `story_state` is a soft API behavior change**: any out-of-band client that wrote a non-empty blob keeps read access but gets a 422 on write. One release-note line, alongside the note that `extra` is now always present on saved messages.
+- **Cross-device rename still dangles the source ref** (healing runs only on the renaming device); relink UX is the backstop, but a user may perceive the bible as having "lost" its chat.
+- **Ids are unique per chat file only** (branch restores copy them into new files by design). Any future global consumer — including the deferred embeddings table — must key on `(character_avatar, file_name, msg_id)`, never bare `msg_id`.
