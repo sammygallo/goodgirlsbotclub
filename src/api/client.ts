@@ -771,6 +771,25 @@ export const api = {
     avatarUrl: string,
     fileName: string
   ): Promise<{ messages: ChatMessage[]; server_ts: number }> {
+    const { messages, server_ts } = await api.getChatWithHeader(avatarUrl, fileName);
+    return { messages, server_ts };
+  },
+
+  // Header-preserving variant of getChatMessages. The header element
+  // ({ user_name, character_name, create_date, ... } at index 0) isn't a
+  // displayed message and is skipped by getChatMessages to match legacy ST
+  // behavior — but it also carries chat-level metadata (author_note,
+  // wi_fired telemetry) that some callers need to read back rather than
+  // rebuild from scratch. server_ts is the optimistic-concurrency token the
+  // caller must echo back as base_ts on the next save.
+  async getChatWithHeader(
+    avatarUrl: string,
+    fileName: string
+  ): Promise<{
+    header: Record<string, unknown> | null;
+    messages: ChatMessage[];
+    server_ts: number;
+  }> {
     const response = await apiRequest<{ messages: ChatMessage[]; server_ts: number }>(
       '/chats/get',
       {
@@ -781,13 +800,15 @@ export const api = {
         }),
       }
     );
-    // Skip the header element to match the legacy ST behavior — header
-    // is { user_name, character_name, create_date, ... } and isn't a
-    // displayed message. server_ts is the optimistic-concurrency token the
-    // caller must echo back as base_ts on the next save.
-    const messages = response?.messages;
+    const raw = response?.messages;
+    const arr = Array.isArray(raw) ? raw : [];
+    const head = arr[0];
     return {
-      messages: Array.isArray(messages) ? messages.slice(1) : [],
+      header:
+        head && typeof head === 'object' && !Array.isArray(head)
+          ? (head as unknown as Record<string, unknown>)
+          : null,
+      messages: arr.slice(1),
       server_ts: typeof response?.server_ts === 'number' ? response.server_ts : 0,
     };
   },

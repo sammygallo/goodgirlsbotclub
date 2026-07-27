@@ -29,6 +29,12 @@ import { parseEmotion, stripEmotionTag, type Emotion } from '../utils/emotions';
 import { dataUrlToPart, supportsVision } from '../utils/images';
 import { processMacros, type MacroContext } from '../utils/macros';
 import {
+  recordWiFired,
+  sanitizeWiFired,
+  mergeWiFiredMaps,
+  type WiFiredMap,
+} from '../utils/wiFired';
+import {
   estimateConversationTokens,
   estimateTokens,
   profileForProvider,
@@ -862,12 +868,26 @@ async function resolveRagContext(
   return parts.join('\n\n---\n\n');
 }
 
+// In/out parameter for the world-info scan inside buildConversationContext:
+// the caller supplies turn/timer state for timed effects and receives back
+// the freshly activated entry ids (for saveWiTimers) and, in `fired`, the
+// entries whose content actually survived into the assembled prompt — after
+// WI token budgeting, promptOrder section-enable filtering, macro-empty
+// drops, and token-aware history trimming; sticky carry-overs included.
+// Consumed by the WI fired-state telemetry via captureWiFired.
+interface WiScanOut {
+  currentTurn: number;
+  timers: Record<string, number>;
+  activated: Set<string>;
+  fired?: MatchedEntry[];
+}
+
 // Build conversation context for AI
 function buildConversationContext(
   messages: ChatMessage[],
   character: CharacterInfo,
   availableEmotions?: string[],
-  wiTimerOut?: { currentTurn: number; timers: Record<string, number>; activated: Set<string> },
+  wiTimerOut?: WiScanOut,
   ragContext?: string
 ): {
   context: { role: 'user' | 'assistant' | 'system'; content: string }[];
@@ -948,6 +968,10 @@ function buildConversationContext(
     },
     wiTimerOut?.activated
   );
+  // NOTE: wiTimerOut.fired is assigned at the END of this function, from the
+  // entries that actually survive into the prompt — the raw scan result here
+  // still faces section-enable filtering, macro-empty drops, and token-aware
+  // history trimming below.
   const wiByPosition: Record<WorldInfoPosition, MatchedEntry[]> = {
     before_char: [],
     after_char: [],
@@ -972,10 +996,21 @@ function buildConversationContext(
     }
     return content;
   };
+  // Entries whose wrapped content was non-empty at render time. Tracked here
+  // (inside the single joinWi pass) rather than by re-wrapping later, because
+  // wrapWiContent runs macros and {{setvar}}-style writes must not execute
+  // twice. Feeds the fired-state telemetry: an entry whose macros expand to
+  // nothing never reaches the prompt and must not be recorded as fired.
+  const wiRendered = new Set<MatchedEntry>();
   const joinWi = (list: MatchedEntry[]): string =>
     list
-      .map(wrapWiContent)
-      .filter((c) => c.trim().length > 0)
+      .map((m) => ({ m, c: wrapWiContent(m) }))
+      .filter(({ m, c }) => {
+        const ok = c.trim().length > 0;
+        if (ok) wiRendered.add(m);
+        return ok;
+      })
+      .map(({ c }) => c)
       .join('\n\n');
 
   // Phase 7.1: Extension context contributions
@@ -1255,6 +1290,10 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     role: 'user' | 'assistant' | 'system';
     content: string;
   }[] = [];
+  // Maps each WI at-depth insertion (by message object identity, which
+  // trimHistoryToBudget preserves) to the entries it carries, so the
+  // fired-state telemetry can tell which at-depth entries survived trimming.
+  const wiAtDepthByMessage = new Map<object, MatchedEntry[]>();
 
   // Group WI at-depth entries by their depth value for interleaved injection.
   const wiAtDepthByDepth: Record<number, MatchedEntry[]> = {};
@@ -1301,7 +1340,9 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     if (wiHere && wiHere.length > 0) {
       const content = joinWi(wiHere);
       if (content) {
-        historyWithInsertions.push({ role: 'system', content });
+        const insertion = { role: 'system' as const, content };
+        historyWithInsertions.push(insertion);
+        wiAtDepthByMessage.set(insertion, wiHere.filter((m) => wiRendered.has(m)));
       }
     }
     // Phase 7.1: Extension at-depth contributions
@@ -1359,7 +1400,12 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     if (d > recentMessages.length) {
       const content = joinWi(wiAtDepthByDepth[d]);
       if (content) {
-        historyWithInsertions.unshift({ role: 'system', content });
+        const insertion = { role: 'system' as const, content };
+        historyWithInsertions.unshift(insertion);
+        wiAtDepthByMessage.set(
+          insertion,
+          wiAtDepthByDepth[d].filter((m) => wiRendered.has(m))
+        );
       }
     }
   }
@@ -1377,6 +1423,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
 
   // Token-aware trimming: keep system prompts, drop oldest history that exceeds budget
   let overBudget = false;
+  let keptHistory = historyWithInsertions;
   if (ctxConfig.tokenAware) {
     const systemPrompts = context.slice(); // system prompt we already pushed
     const trimmed = trimHistoryToBudget(
@@ -1389,6 +1436,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     context.push(...trimmed.kept);
     genState.setLastTokenEstimate(trimmed.usedTokens);
     overBudget = trimmed.overBudget;
+    keptHistory = trimmed.kept;
   } else {
     context.push(...historyWithInsertions);
   }
@@ -1414,6 +1462,35 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   // writes that happened during macro processing back to the chat's store.
   if (ctxChatFile) {
     chatStoreState.setChatVariables(ctxChatFile, variables);
+  }
+
+  // Report the WI entries that actually made it into the assembled prompt —
+  // NOT the raw scan result. Three filters separate the two: positional
+  // sections can be disabled (or absent) in promptOrder, macro-empty content
+  // is dropped at render (wiRendered), and at-depth insertions can be
+  // trimmed away by the token budget (wiAtDepthByMessage ∩ keptHistory).
+  if (wiTimerOut) {
+    const injected: MatchedEntry[] = [];
+    const enabledSections = new Set(
+      promptOrder.filter((e) => e.enabled).map((e) => e.id)
+    );
+    const positionBySection: Array<[PromptSectionId, WorldInfoPosition]> = [
+      ['wi_before_char', 'before_char'],
+      ['wi_after_char', 'after_char'],
+      ['wi_before_an', 'before_an'],
+      ['wi_after_an', 'after_an'],
+    ];
+    for (const [sectionId, position] of positionBySection) {
+      if (!enabledSections.has(sectionId)) continue;
+      for (const m of wiByPosition[position]) {
+        if (wiRendered.has(m)) injected.push(m);
+      }
+    }
+    for (const msg of keptHistory) {
+      const atDepth = wiAtDepthByMessage.get(msg);
+      if (atDepth) injected.push(...atDepth);
+    }
+    wiTimerOut.fired = injected;
   }
 
   return { context, overBudget };
@@ -1861,6 +1938,10 @@ function buildChatPayload(
 ): { avatarUrl: string; fileName: string; chatData: unknown[] } {
   // Phase 8.1: include author's note in chat header metadata
   const authorNote = useChatStore.getState().getAuthorNote(currentChatFile);
+  // Story-state phase 0: round-trip the accumulated WI fired-state. The
+  // header is rebuilt from scratch on every save, so anything not re-emitted
+  // here is lost — the map was hydrated from the previous header at load.
+  const wiFired = wiFiredByFile.get(currentChatFile);
 
   const chatData: unknown[] = [
     {
@@ -1877,6 +1958,7 @@ function buildChatPayload(
           role: authorNote.role,
         },
       } : {}),
+      ...(wiFired && Object.keys(wiFired).length > 0 ? { wi_fired: wiFired } : {}),
     },
     ...messages.map((msg) => ({
       name: msg.name,
@@ -1935,6 +2017,33 @@ if (typeof window !== 'undefined') {
 // can't clobber a newer message tail. Keyed by file name (unique per chat).
 const chatServerTsByFile = new Map<string, number>();
 
+// Per-chat WI fired-state telemetry (story-state phase 0). Hydrated from
+// `header.wi_fired` on chat load and re-serialized into the header on every
+// save — without the hydrate step, buildChatPayload's from-scratch header
+// rebuild would clobber previously captured state on the first save after a
+// reload. Keyed by file name, like chatServerTsByFile.
+const wiFiredByFile = new Map<string, WiFiredMap>();
+
+export function getWiFiredForChat(fileName: string): WiFiredMap | undefined {
+  return wiFiredByFile.get(fileName);
+}
+
+/** Fold one generation's injected WI entries into the chat's telemetry. */
+function captureWiFired(
+  chatFile: string | null | undefined,
+  wiOut: WiScanOut,
+  currentTurn: number
+) {
+  if (!chatFile || !wiOut.fired || wiOut.fired.length === 0) return;
+  const map = wiFiredByFile.get(chatFile) ?? {};
+  recordWiFired(
+    map,
+    wiOut.fired.map((m) => ({ bookId: m.bookId, entryId: m.entry.id })),
+    currentTurn
+  );
+  wiFiredByFile.set(chatFile, map);
+}
+
 export function getChatServerTs(fileName: string): number | undefined {
   return chatServerTsByFile.get(fileName);
 }
@@ -1943,6 +2052,23 @@ export function getChatServerTs(fileName: string): number | undefined {
 // (the server is ahead of us). If it's the active chat, refresh the in-memory
 // messages so the user sees the newer tail instead of losing it.
 function reconcileServerState(fileName: string, serverMessages: unknown[]) {
+  // Adopt the winner's WI fired-state too (conservative union with ours) —
+  // both maps describe the same chat, and dropping the server's copy here
+  // would clobber it on our next save. Runs even for a non-active chat,
+  // since the telemetry map is keyed per file.
+  const header = Array.isArray(serverMessages) ? serverMessages[0] : undefined;
+  const serverFired = sanitizeWiFired(
+    header && typeof header === 'object'
+      ? (header as Record<string, unknown>).wi_fired
+      : undefined
+  );
+  if (Object.keys(serverFired).length > 0) {
+    wiFiredByFile.set(
+      fileName,
+      mergeWiFiredMaps(wiFiredByFile.get(fileName) ?? {}, serverFired)
+    );
+  }
+
   const state = useChatStore.getState();
   if (state.currentChatFile !== fileName) return;
   const rest = Array.isArray(serverMessages) ? serverMessages.slice(1) : [];
@@ -2007,6 +2133,24 @@ async function saveChatToBackend(
         // and keep our messages.
         const serverLen = Array.isArray(current_messages) ? current_messages.length : 0;
         if (chatData.length >= serverLen && attempt < MAX_ATTEMPTS) {
+          // The payload we're about to resend was built BEFORE the conflict,
+          // so its header's wi_fired snapshot may predate telemetry another
+          // tab persisted meanwhile. Merge the server's copy into ours and
+          // refresh the outgoing header so the retry doesn't clobber it.
+          const serverHeader = Array.isArray(current_messages) ? current_messages[0] : undefined;
+          const serverFired = sanitizeWiFired(
+            serverHeader && typeof serverHeader === 'object'
+              ? (serverHeader as Record<string, unknown>).wi_fired
+              : undefined
+          );
+          if (Object.keys(serverFired).length > 0) {
+            const merged = mergeWiFiredMaps(wiFiredByFile.get(fileName) ?? {}, serverFired);
+            wiFiredByFile.set(fileName, merged);
+            const ourHeader = chatData[0];
+            if (ourHeader && typeof ourHeader === 'object') {
+              (ourHeader as Record<string, unknown>).wi_fired = merged;
+            }
+          }
           baseTs = current_ts;
           continue;
         }
@@ -2608,10 +2752,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadChat: async (avatarUrl: string, fileName: string) => {
     set({ isLoading: true, error: null, currentChatFile: fileName });
     try {
-      const { messages: rawMessages, server_ts } = await api.getChatMessages(avatarUrl, fileName);
+      const { header, messages: rawMessages, server_ts } = await api.getChatWithHeader(avatarUrl, fileName);
       const messages = rawMessages.map(normalizeMessage);
       // Record the concurrency token so the next save echoes it as base_ts.
       chatServerTsByFile.set(fileName, server_ts);
+      // Hydrate WI fired-state telemetry so it accretes across sessions
+      // instead of being clobbered by the next header rebuild. Merged (not
+      // replaced) so captures that never reached the server — e.g. a failed
+      // save before a reload — survive a re-load of the same chat.
+      wiFiredByFile.set(
+        fileName,
+        mergeWiFiredMaps(wiFiredByFile.get(fileName) ?? {}, sanitizeWiFired(header?.wi_fired))
+      );
       set({ messages, isLoading: false });
     } catch (error) {
       set({
@@ -2625,9 +2777,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoading: true, error: null, currentChatFile: groupChat.fileName });
     try {
       const avatarUrl = groupChat.characterAvatars[0];
-      const { messages: rawMessages, server_ts } = await api.getChatMessages(avatarUrl, groupChat.fileName);
+      const { header, messages: rawMessages, server_ts } = await api.getChatWithHeader(avatarUrl, groupChat.fileName);
       const messages = rawMessages.map(normalizeMessage);
       chatServerTsByFile.set(groupChat.fileName, server_ts);
+      // Group generations don't scan WI today, but hydrate anyway so any
+      // previously captured state survives the header rebuild on save.
+      // Merged for the same failed-save-then-reload reason as loadChat.
+      wiFiredByFile.set(
+        groupChat.fileName,
+        mergeWiFiredMaps(wiFiredByFile.get(groupChat.fileName) ?? {}, sanitizeWiFired(header?.wi_fired))
+      );
       set({ messages, isLoading: false });
     } catch (error) {
       set({
@@ -2815,11 +2974,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = contextMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(contextMessages, character.avatar || '', currentChatFile || undefined);
-      const { context, overBudget } = buildConversationContext(contextMessages, character, availableEmotions, {
+      const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
-      }, ragCtx ?? undefined);
+      };
+      const { context, overBudget } = buildConversationContext(contextMessages, character, availableEmotions, wiOut, ragCtx ?? undefined);
       const { provider, model } = getProviderAndModel();
       const generationOptions = getGenerationOptions();
 
@@ -2838,6 +2998,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isTextCompletionMode()
       );
       if (!stream) return;
+      // Record fired WI only once the request actually dispatched — a thrown
+      // send or null stream is not a generation (mirrors saveWiTimers gating).
+      captureWiFired(currentChatFile, wiOut, currentTurn);
 
       // Add new empty swipe
       const newSwipeIndex = msg.swipes.length;
@@ -2934,8 +3097,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       // Build context including the current AI message
-      const ragCtx = await resolveRagContext(messages, character.avatar || '', get().currentChatFile || undefined);
-      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
+      const { currentChatFile } = get();
+      // The continuation re-touches the last AI turn, so its turn index is
+      // the count of AI messages BEFORE that message — mirrors swipeRight,
+      // which excludes the regenerated message from the count.
+      const currentTurn = Math.max(
+        0,
+        messages.filter((m) => !m.isUser && !m.isSystem).length - 1
+      );
+      // Wire the WI out-param through (was undefined): timed effects now see
+      // real turn/timer state on this path, and fired entries get captured.
+      // Timers are NOT persisted here — only send/swipe record activations.
+      const wiOut = {
+        currentTurn,
+        timers: loadWiTimers(currentChatFile || ''),
+        activated: new Set<string>(),
+      };
+      const ragCtx = await resolveRagContext(messages, character.avatar || '', currentChatFile || undefined);
+      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined);
       // Append the continue instruction as a user turn, not a system one.
       // Gemini extracts system messages into its separate systemInstruction
       // field, which would leave contents[] ending with an assistant ('model')
@@ -2964,6 +3143,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isTextCompletionMode()
       );
       if (!stream) return;
+      // Post-dispatch capture — see swipeRight for the rationale.
+      captureWiFired(currentChatFile, wiOut, currentTurn);
 
       const existingContent = lastAiMsg.content;
       let newTokens = '';
@@ -3037,8 +3218,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isSending: true, isStreaming: false, error: null, abortController });
 
     try {
-      const ragCtx = await resolveRagContext(messages, character.avatar || '', get().currentChatFile || undefined);
-      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, undefined, ragCtx ?? undefined);
+      const { currentChatFile } = get();
+      // Impersonation writes the user turn that precedes the NEXT AI turn,
+      // so its turn index counts all existing AI messages — like sendMessage.
+      const currentTurn = messages.filter((m) => !m.isUser && !m.isSystem).length;
+      // Wire the WI out-param through (was undefined) — see continueMessage.
+      const wiOut = {
+        currentTurn,
+        timers: loadWiTimers(currentChatFile || ''),
+        activated: new Set<string>(),
+      };
+      const ragCtx = await resolveRagContext(messages, character.avatar || '', currentChatFile || undefined);
+      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined);
       // User-role instruction so Gemini (which extracts system into a
       // separate systemInstruction field) doesn't leave contents[] ending
       // with an assistant turn and trip its 400. See continueMessage above
@@ -3056,6 +3247,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const generationOptions = getGenerationOptions();
       const stream = await api.generateMessage(finalContext, character.name, provider, model, abortController.signal, generationOptions, undefined, isTextCompletionMode());
       if (!stream) return '';
+      // Post-dispatch capture — see swipeRight for the rationale.
+      captureWiFired(currentChatFile, wiOut, currentTurn);
 
       let responseText = '';
       const sseMeta: SSEStreamMeta = { finishReason: null };
@@ -3095,6 +3288,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // ST path overwrote with an empty array because /api/chats/delete
       // was finicky; the DB-backed delete removes the row cleanly.
       await api.deleteChat(avatarUrl, fileName);
+      // Drop the dead chat's WI telemetry — a chat later renamed to this
+      // name must not inherit it.
+      wiFiredByFile.delete(fileName);
       const { fetchChatFiles } = get();
       await fetchChatFiles(avatarUrl);
     } catch (error) {
@@ -3106,6 +3302,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   renameChat: async (avatarUrl: string, originalFile: string, renamedFile: string) => {
     try {
       const sanitized = await api.renameChat(avatarUrl, originalFile, renamedFile);
+      // Carry the WI fired-state over to the new key — the next save targets
+      // the new filename, and without this the rebuilt header would emit no
+      // wi_fired and clobber the telemetry persisted in the renamed row.
+      const fired = wiFiredByFile.get(originalFile);
+      if (fired) {
+        wiFiredByFile.set(sanitized, fired);
+        wiFiredByFile.delete(originalFile);
+      }
       // If the renamed chat is the one currently loaded, update the
       // in-memory pointer so subsequent saves target the new filename
       // instead of the (now non-existent) original file.
@@ -3236,11 +3440,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
-      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, {
+      const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
-      }, ragCtx ?? undefined);
+      };
+      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined);
       const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
@@ -3260,6 +3465,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (usedFallback) showToastGlobal('Primary provider failed — using fallback', 'warning');
 
       if (stream) {
+        // Post-dispatch capture — see swipeRight for the rationale.
+        captureWiFired(currentChatFile, wiOut, currentTurn);
         const aiMessageId = generateId();
         set((state) => ({
           messages: [
@@ -3596,11 +3803,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
-      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, {
+      const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
-      }, ragCtx ?? undefined);
+      };
+      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined);
       const { provider, model } = getProviderAndModel();
       const generationOptions = getGenerationOptions();
 
@@ -3620,6 +3828,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
 
       if (stream) {
+        // Post-dispatch capture — see swipeRight for the rationale.
+        captureWiFired(currentChatFile, wiOut, currentTurn);
         const aiMessageId = generateId();
         set((state) => ({
           messages: [
