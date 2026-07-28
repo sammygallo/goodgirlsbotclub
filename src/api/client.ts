@@ -1116,6 +1116,9 @@ interface ChatMessage {
   mes: string;
   send_date: number;
   character_avatar?: string; // For group chats
+  /** ST extension bag; carries extra.ggbc_id (permanent message identity)
+   *  plus images/videos/usage. Passed through opaquely by this client. */
+  extra?: Record<string, unknown>;
 }
 
 // Admin user management types

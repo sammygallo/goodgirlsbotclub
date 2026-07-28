@@ -35,6 +35,12 @@ import {
   type WiFiredMap,
 } from '../utils/wiFired';
 import {
+  generateMessageId,
+  takeWireMessageId,
+  ensureUniqueMessageIds,
+  rekeyRestoredMessages,
+} from '../utils/messageIdentity';
+import {
   estimateConversationTokens,
   estimateTokens,
   profileForProvider,
@@ -577,8 +583,10 @@ interface ChatState {
   resetUser: () => void;
 }
 
-let messageIdCounter = 0;
-const generateId = () => `msg_${++messageIdCounter}_${Date.now()}`;
+// Story-state phase 1: message ids are permanent UUIDs persisted at
+// extra.ggbc_id (see utils/messageIdentity.ts). Every create path mints
+// through this single alias.
+const generateId = generateMessageId;
 
 // Optional out-param populated with the upstream provider's finish/stop
 // reason (e.g. "length", "content_filter", "stop") as it's observed in the
@@ -1969,24 +1977,21 @@ function buildChatPayload(
       swipes: msg.swipes,
       swipe_id: msg.swipeId,
       ...(msg.characterAvatar ? { character_avatar: msg.characterAvatar } : {}),
-      // Phase 6.1: persist image attachments into extra.images (array) and
+      // Story-state phase 1: extra is now ALWAYS present — ggbc_id is the
+      // message's permanent identity and must survive every save.
+      // Phase 6.1: image attachments ride in extra.images (array) and
       // extra.image (first element, SillyTavern-compat fallback for any
       // code path that still reads the scalar form). Scene videos ride
       // along in extra.videos.
-      ...((msg.images && msg.images.length > 0) ||
-      (msg.videos && msg.videos.length > 0) ||
-      msg.usage
-        ? {
-            extra: {
-              ...(msg.images && msg.images.length > 0
-                ? { images: msg.images, image: msg.images[0] }
-                : {}),
-              ...(msg.videos && msg.videos.length > 0 ? { videos: msg.videos } : {}),
-              // Per-turn token usage (estimated). Opaque to the backend.
-              ...(msg.usage ? { usage: msg.usage } : {}),
-            },
-          }
-        : {}),
+      extra: {
+        ggbc_id: msg.id,
+        ...(msg.images && msg.images.length > 0
+          ? { images: msg.images, image: msg.images[0] }
+          : {}),
+        ...(msg.videos && msg.videos.length > 0 ? { videos: msg.videos } : {}),
+        // Per-turn token usage (estimated). Opaque to the backend.
+        ...(msg.usage ? { usage: msg.usage } : {}),
+      },
     })),
   ];
 
@@ -2073,7 +2078,7 @@ function reconcileServerState(fileName: string, serverMessages: unknown[]) {
   if (state.currentChatFile !== fileName) return;
   const rest = Array.isArray(serverMessages) ? serverMessages.slice(1) : [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const normalized = rest.map((m) => normalizeMessage(m as any));
+  const normalized = ensureUniqueMessageIds(rest.map((m) => normalizeMessage(m as any)));
   useChatStore.setState({ messages: normalized });
 }
 
@@ -2362,7 +2367,9 @@ function normalizeMessage(msg: {
   character_avatar?: string;
   // Phase 6.1: vision attachments persisted via extra.images (our field)
   // with a fallback to extra.image (single-item, SillyTavern-compat).
+  // Story-state phase 1: extra.ggbc_id is the message's permanent identity.
   extra?: {
+    ggbc_id?: unknown;
     images?: unknown;
     image?: unknown;
     videos?: unknown;
@@ -2419,7 +2426,11 @@ function normalizeMessage(msg: {
   }
 
   return {
-    id: generateId(),
+    // Story-state phase 1: adopt the persisted permanent id; mint only for
+    // messages that predate ids (backfilled server-side in phase 2).
+    // Cross-message duplicates are re-minted by ensureUniqueMessageIds at
+    // the load sites — this function only sees one message at a time.
+    id: takeWireMessageId(msg.extra) ?? generateId(),
     name: msg.name,
     isUser: msg.is_user,
     isSystem: msg.is_system,
@@ -2753,7 +2764,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoading: true, error: null, currentChatFile: fileName });
     try {
       const { header, messages: rawMessages, server_ts } = await api.getChatWithHeader(avatarUrl, fileName);
-      const messages = rawMessages.map(normalizeMessage);
+      const messages = ensureUniqueMessageIds(rawMessages.map(normalizeMessage));
       // Record the concurrency token so the next save echoes it as base_ts.
       chatServerTsByFile.set(fileName, server_ts);
       // Hydrate WI fired-state telemetry so it accretes across sessions
@@ -2778,7 +2789,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const avatarUrl = groupChat.characterAvatars[0];
       const { header, messages: rawMessages, server_ts } = await api.getChatWithHeader(avatarUrl, groupChat.fileName);
-      const messages = rawMessages.map(normalizeMessage);
+      const messages = ensureUniqueMessageIds(rawMessages.map(normalizeMessage));
       chatServerTsByFile.set(groupChat.fileName, server_ts);
       // Group generations don't scan WI today, but hydrate anyway so any
       // previously captured state survives the header rebuild on save.
@@ -2920,7 +2931,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ---- Phase 8.6: Load Branch Messages (in-memory only, no disk write) ----
   loadBranchMessages: (branchMessages: ChatMessage[]) => {
-    set({ messages: branchMessages });
+    // Re-key the snapshot against the live chat before swapping it in:
+    // checkpoint ids may predate permanent UUIDs (or hold UUIDs that never
+    // reached disk), and restoring them verbatim would persist stale ids
+    // over the chat's real ones on the next truncating save. Cloning also
+    // stops the branch store's stored snapshot from aliasing live state.
+    set({
+      messages: ensureUniqueMessageIds(
+        rekeyRestoredMessages(branchMessages, get().messages)
+      ),
+    });
   },
 
   // ---- Delete Message ----

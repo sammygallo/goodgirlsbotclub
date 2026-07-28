@@ -57,6 +57,9 @@ export interface ChatMessage {
   swipes?: string[];
   swipe_id?: number;
   extra?: {
+    /** Story-state phase 1: permanent message identity (UUID), minted
+     *  client-side and healed/backfilled server-side from phase 2 on. */
+    ggbc_id?: string;
     gen_id?: string;
     api?: string;
     model?: string;
