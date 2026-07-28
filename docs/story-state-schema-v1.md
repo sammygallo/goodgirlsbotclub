@@ -495,3 +495,133 @@ Worth a separate doc.
 ## Schema validation note
 
 Treat this YAML as conceptual. The implementation should be a JSON Schema (or Zod / Pydantic / TypeBox depending on stack) that enforces required fields, enum values, and reference integrity (e.g., `pov_character` must reference a valid `char_uuid`). Schema validation is the first quality gate; without it, agents will produce structurally invalid bibles and downstream renderers will fail in confusing ways.
+
+---
+
+## Amendments — v1.1 (2026-07-27, step-2 phase 3a)
+
+The sections above are the original conceptual schema. The normative
+implementation is **`app/schemas/story.py` in ggbc-backend** (Pydantic,
+`extra="forbid"`); where this document and that module disagree, the module
+wins. These amendments record every resolution, per the
+[step-2 plan](story-state-step2-plan.md) and
+[compatibility audit](story-state-schema-v1-audit.md).
+
+### Storage shape (plan Decision 2)
+
+The bible is **not** one document. It is decomposed into:
+
+- `story_sections` — one row per section: `meta`, `world`, `entities`,
+  `user_voice`, `narrative`, `continuity`, `rendering_hints`, plus a new
+  **`ingestion`** section (pipeline checkpoint state; not part of the
+  original schema). The top-level `story_bible:` envelope is gone — the
+  section name is the envelope; `schema_version` lives in `meta`.
+- `story_scenes` — one row per scene.
+- `story_facts` / `story_edits` — append-only tables. **`continuity.fact_log`
+  is no longer a section field**: fact rows are the single source of truth,
+  and `scenes[].continuity_facts_established` holds fact-id refs only (D4).
+  `edit_log` likewise becomes rows; ordering is the server's insert cursor,
+  and the entry's `timestamp` field is renamed `occurred_at` (client wall
+  clock, informational).
+
+Size budgets (D10): section ≤256KB, scene ≤64KB, fact ≤8KB, edit ≤16KB —
+enforced at the API with 413s naming the cap.
+
+### Identity & provenance (plan Decision 4; audit C1/C2/C6/D2)
+
+- Every `*_uuid` in this doc is a **bible-local UUID**, minted client-side,
+  never resolved against backend tables. Server validation is shape-only;
+  referential integrity is checked client-side at **lock canon**.
+- Every link back to source material is a **`SourceRef`** envelope:
+  `{kind, ref, snapshot, captured_at}`, a discriminated union over
+  `character | card_field | chat | chat_message | persona | lorebook_entry |
+  user_annotation | agent_inference`. `ref` uses platform string identity
+  (avatar filename; `{character_avatar, file_name}` for chats) and **may
+  dangle** after rename/delete; `snapshot` (name/excerpt/hash) keeps the
+  bible self-sufficient. Ref state (live/drifted/dangling) is computed
+  client-side at display time, never persisted.
+- **`msg_id` is now defined** (resolving D2): the permanent
+  `extra.ggbc_id` UUID minted by phases 1–2. Message references are
+  `MsgRef = {msg_id, swipe_idx, fingerprint {sha, hash_alg, send_date}}`.
+  Drift rule: edit-and-regenerate keeps a stable `msg_id` while replacing
+  content and resetting swipes, so every consumer must check the swipe
+  fingerprint, not just the id. `scenes[].source.message_range`,
+  `swipe_resolutions`, `excluded_segments`, and fact sources all use
+  `MsgRef`.
+- **`meta.source` is respecified** (C6/D1): scalar `chat` SourceRef (one
+  bible = one source chat, honoring the v1 single-session cut inside the
+  multi-chat Work container), `characters` as avatar-string refs with
+  snapshots, `persona` by name + snapshot (personas have no backend
+  identity), and `lorebook_ids`. `source.platform` narrows to the literal
+  `"ggbc"` (imports arrive as GGBC chats before ingestion ever sees
+  them). `session_ids` (plural) and `character_card_ids`/`persona_id`
+  are gone. The `ingest_watermark` `{message_count, last_msg}` for
+  incremental re-ingestion sits on **`meta` itself, not `meta.source`**.
+
+### Enum & type resolutions (D3–D6, D9)
+
+- **D3 — one fact enum.** `FactCategory = reveal | introduction | change |
+  world_rule` lives on fact rows only — scenes reference facts by bare id
+  (per D4), so the doc's second category vocabulary is removed rather
+  than unified. `narrative.acts[].beat_function` stays free text
+  (annotate-pass output, step 3).
+- **D5 — two POV vocabularies, not three.** `ChatPov` (`second-present |
+  first-past | third-mixed`) describes observed chat style
+  (`user_voice.pov_preferences.in_chat`); `RenderPov` (`first |
+  third_limited | third_omniscient`) is the render target
+  (`narrative.pov_default`, `rendering_hints.novel.pov`,
+  `pov_preferences.likely_target_for_prose`). `pov_default`'s enum is
+  `RenderPov`.
+- **D4 — no duplicated canon.** Facts: rows are canonical (above).
+  POV/tense: `narrative.pov_default`/`tense_default` are canonical;
+  `rendering_hints.novel.pov`/`tense` are nullable overrides (None =
+  inherit). Relationship `arc_beats` remain scene-id refs (an index, not a
+  copy of `arc.beats`).
+- **D6 — confidence is both, by role.** Discrete
+  `explicit | inferred | contested` on canon claims (facts, world rules);
+  floats 0–1 only on model self-assessments (`user_voice.confidence`,
+  `narrative.structure.detection_confidence`). Open decision 4 is closed.
+- **D9 — no UUID-keyed JSON maps.** `chapter_titles` is
+  `[{scene_id, title}]`; `character_consistency_refs` is
+  `[{character_ref, asset_ref}]` where `asset_ref` is a self-hosted asset
+  path, not an external URL.
+- `content_rating`, `derivative_flags` ship in `meta` as specified; policy
+  interplay with rendering/publishing (D8) remains an open product
+  question for step 3.
+
+### Field renames, moves, and strictness (vs the v1.0 text above)
+
+- `meta.id` → **`bible_id`**; `world.rules[].established_in_scene` →
+  **`established_in`** (matching the fact rows' field name).
+- **`geography` is hoisted** out of `world.setting_attributes` to
+  `world.geography`. Entity "locations" live there too: the `entities`
+  section carries `characters`, `objects`, `factions` only.
+- `detected_type` uses the ASCII value **`kishotenketsu`** (enum values
+  stay ASCII; display strings may differ).
+- `swipe_resolutions[]` drops `chosen_swipe_idx`: **`msg.swipe_idx` IS
+  the chosen swipe** and the fingerprint hashes that swipe's text — a
+  second index invited the two to disagree.
+- Every timestamp is **timezone-aware** (naive datetimes are rejected);
+  `edit_log`'s `timestamp` is renamed `occurred_at` (client wall clock,
+  informational — row order is the server cursor).
+- `Infinity`/`NaN` are rejected on all float fields (JSON that Postgres
+  jsonb would refuse anyway); message ids are counted in **UTF-16 code
+  units** (1..128), matching the phases-1/2 predicate exactly;
+  `snapshot.sha` and `snapshot.hash_alg` must travel together;
+  `asset_ref` must be a self-hosted absolute path (`/...`), enforced;
+  `Fact.confidence` is required, never defaulted — an extraction that
+  lost the field must not silently canonize at "explicit".
+
+### Deferred to step 3 (annotate pass has no step-2 consumer)
+
+`narrative.structure` detection, `scenes[].function` (beat/tension/mood/
+stakes), and `scenes[].transformations` are **optional and empty in v1.1**
+— the ingestion pipeline does not populate them; the first renderer's
+annotate pass does. The `ingestion` section's pass enum deliberately
+excludes `annotate`.
+
+### Version gate
+
+Servers accept `schema_version` major `1` only (`1.x` / `1.x.y`). Additive
+changes bump the minor and deploy backend-first (`extra="forbid"` rejects
+unknown fields from newer clients).
