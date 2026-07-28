@@ -552,15 +552,19 @@ enforced at the API with 413s naming the cap.
   bible = one source chat, honoring the v1 single-session cut inside the
   multi-chat Work container), `characters` as avatar-string refs with
   snapshots, `persona` by name + snapshot (personas have no backend
-  identity), `lorebook_ids`, and an `ingest_watermark`
-  `{message_count, last_msg}` for incremental re-ingestion. `session_ids`
-  (plural) and `character_card_ids`/`persona_id` are gone.
+  identity), and `lorebook_ids`. `source.platform` narrows to the literal
+  `"ggbc"` (imports arrive as GGBC chats before ingestion ever sees
+  them). `session_ids` (plural) and `character_card_ids`/`persona_id`
+  are gone. The `ingest_watermark` `{message_count, last_msg}` for
+  incremental re-ingestion sits on **`meta` itself, not `meta.source`**.
 
 ### Enum & type resolutions (D3–D6, D9)
 
 - **D3 — one fact enum.** `FactCategory = reveal | introduction | change |
-  world_rule` serves both fact rows and scene refs. `narrative.acts[]
-  .beat_function` stays free text (annotate-pass output, step 3).
+  world_rule` lives on fact rows only — scenes reference facts by bare id
+  (per D4), so the doc's second category vocabulary is removed rather
+  than unified. `narrative.acts[].beat_function` stays free text
+  (annotate-pass output, step 3).
 - **D5 — two POV vocabularies, not three.** `ChatPov` (`second-present |
   first-past | third-mixed`) describes observed chat style
   (`user_voice.pov_preferences.in_chat`); `RenderPov` (`first |
@@ -584,6 +588,29 @@ enforced at the API with 413s naming the cap.
 - `content_rating`, `derivative_flags` ship in `meta` as specified; policy
   interplay with rendering/publishing (D8) remains an open product
   question for step 3.
+
+### Field renames, moves, and strictness (vs the v1.0 text above)
+
+- `meta.id` → **`bible_id`**; `world.rules[].established_in_scene` →
+  **`established_in`** (matching the fact rows' field name).
+- **`geography` is hoisted** out of `world.setting_attributes` to
+  `world.geography`. Entity "locations" live there too: the `entities`
+  section carries `characters`, `objects`, `factions` only.
+- `detected_type` uses the ASCII value **`kishotenketsu`** (enum values
+  stay ASCII; display strings may differ).
+- `swipe_resolutions[]` drops `chosen_swipe_idx`: **`msg.swipe_idx` IS
+  the chosen swipe** and the fingerprint hashes that swipe's text — a
+  second index invited the two to disagree.
+- Every timestamp is **timezone-aware** (naive datetimes are rejected);
+  `edit_log`'s `timestamp` is renamed `occurred_at` (client wall clock,
+  informational — row order is the server cursor).
+- `Infinity`/`NaN` are rejected on all float fields (JSON that Postgres
+  jsonb would refuse anyway); message ids are counted in **UTF-16 code
+  units** (1..128), matching the phases-1/2 predicate exactly;
+  `snapshot.sha` and `snapshot.hash_alg` must travel together;
+  `asset_ref` must be a self-hosted absolute path (`/...`), enforced;
+  `Fact.confidence` is required, never defaulted — an extraction that
+  lost the field must not silently canonize at "explicit".
 
 ### Deferred to step 3 (annotate pass has no step-2 consumer)
 
