@@ -27,7 +27,7 @@ Step 2 turns the reserved `story_state` slot on a Work into a real, server-autho
 - Multi-session merging, branched threads, collaborative editing, bible export (per the schema doc's own v1 cuts).
 - Backend-orchestrated ingestion. The checkpoint format is designed so a later jobs-table orchestrator can adopt it unchanged, but v1 ingestion runs only while a tab is open.
 
-**Platform constraints honored throughout:** all LLM calls go through the existing generation proxy on the user's BYO key from the frontend; public identity stays string-based (avatar filename, `(character_avatar, file_name)`) with dangle-and-reconcile semantics; all server writes use per-row `server_ts` optimistic concurrency mirroring `/chats/save`; every phase is a single reviewable PR; migrations apply on container boot.
+**Platform constraints honored throughout:** all LLM calls go through the existing generation proxy on the user's BYO key from the frontend; public identity stays string-based (avatar filename, `(character_avatar, file_name)`) with dangle-and-reconcile semantics; all server writes use per-row `server_ts` optimistic concurrency mirroring `/chats/save`; every phase is a single reviewable PR.
 
 ---
 
@@ -57,7 +57,7 @@ Every `*_uuid` in the schema doc (character, scene, fact, rule, place, act, cont
 
 ## 3. Phased delivery plan
 
-Each phase is one PR, human-reviewed, independently deployable. Backend tests run in disposable Docker per repo convention; migrations apply on container boot. Backend migrations form a **linear Alembic chain** (0001–0012 have no branch points), which forces a merge order: Phase 2's 0013 must merge before Phase 3b's 0014, whatever order they're developed in — "parallel tracks" below always means parallel development with backend merges serialized in migration order. New frontend stores must **not** statically import `chatStore` (module-init cycle → TDZ crash) — lazy `import()` per the `projectStore.openChatRef` precedent.
+Each phase is one PR, human-reviewed, independently deployable. Backend tests run in disposable Docker per repo convention. **Migrations do NOT auto-apply** — the backend image's entrypoint is plain uvicorn, and an unmigrated database fails startup with `relation ... does not exist` (verified 2026-07-28 against the real image). `alembic upgrade head` is a deliberate deploy step; phases 2/3b/4 land 0013, 0014 and 0015, so a deploy that skips it breaks the API, not just the new endpoints. Backend migrations form a **linear Alembic chain** (0001–0012 have no branch points), which forces a merge order: Phase 2's 0013 must merge before Phase 3b's 0014, whatever order they're developed in — "parallel tracks" below always means parallel development with backend merges serialized in migration order. New frontend stores must **not** statically import `chatStore` (module-init cycle → TDZ crash) — lazy `import()` per the `projectStore.openChatRef` precedent.
 
 ### Phase 0 — WI fired-state capture + header read path (frontend, S) — ship immediately
 
