@@ -1723,3 +1723,237 @@ export const projectsApi = {
     await apiRequest<Record<string, never>>(`/projects/${id}`, { method: 'DELETE' });
   },
 };
+
+// ---------------------------------------------------------------------------
+// Story bible — productization step 2 (sub-resource of a Project)
+//
+// The bible is stored decomposed server-side (sections / scenes /
+// append-only fact + edit logs), NOT in the legacy `story_state` blob,
+// which is now frozen at `{}` and 422s on a non-empty write.
+//
+// Two contracts differ from the rest of this client and matter to every
+// caller: section writes REQUIRE `base_ts` (0 = "should not exist yet";
+// there is no unconditional-overwrite path, because five ingestion
+// passes and the user write concurrently), and the log endpoints are
+// append-only — re-posting a known id returns the stored row rather than
+// updating it.
+// ---------------------------------------------------------------------------
+
+export interface StorySectionSummary {
+  section: string;
+  server_ts: number;
+  bytes: number;
+  updated_at: string;
+}
+
+export interface StoryManifest {
+  project_id: string;
+  sections: StorySectionSummary[];
+  scene_count: number;
+  fact_count: number;
+  edit_count: number;
+}
+
+export interface StorySectionOut {
+  section: string;
+  data: Record<string, unknown>;
+  server_ts: number;
+  updated_at: string;
+}
+
+export interface StorySceneSummary {
+  id: string;
+  sequence: number;
+  title: string;
+  summary: string;
+  server_ts: number;
+  updated_at: string;
+}
+
+export interface StoryScenePage {
+  items: StorySceneSummary[];
+  /** Keyset cursor: BOTH halves must be echoed back. `sequence` alone is
+   *  not unique and paging on it silently drops tied scenes. */
+  next_after_sequence: number | null;
+  next_after_id: string | null;
+  has_more: boolean;
+}
+
+export interface StoryLogEntry {
+  /** Per-project cursor, dense and commit-ordered. */
+  seq: number;
+  id: string;
+  data: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface StoryLogPage {
+  items: StoryLogEntry[];
+  next_after_seq: number | null;
+  has_more: boolean;
+}
+
+/** 409 from a story write — carries the winning row so the caller can
+ *  adopt it and retry, mirroring ProjectConflictError. `current` is null
+ *  when the loser tried to create something that doesn't exist yet. */
+export class StoryConflictError extends Error {
+  currentTs: number;
+  current: StorySectionOut | null;
+
+  constructor(currentTs: number, current: StorySectionOut | null) {
+    super('story write conflict');
+    this.name = 'StoryConflictError';
+    this.currentTs = currentTs;
+    this.current = current;
+  }
+}
+
+/** 413 from a story write. Names the cap AND the overage, because "too
+ *  big" without a number can't tell a client what to drop. */
+export class StoryTooLargeError extends Error {
+  capBytes: number;
+  actualBytes: number;
+  overBy: number;
+
+  constructor(capBytes: number, actualBytes: number, overBy: number) {
+    super(`story payload exceeds ${capBytes} bytes by ${overBy}`);
+    this.name = 'StoryTooLargeError';
+    this.capBytes = capBytes;
+    this.actualBytes = actualBytes;
+    this.overBy = overBy;
+  }
+}
+
+async function storyWrite<T>(
+  path: string,
+  method: 'PUT' | 'POST',
+  body: unknown
+): Promise<T> {
+  const token = await getCsrfToken();
+  const response = await fetch(path, {
+    method,
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+    body: JSON.stringify(body),
+  });
+
+  if (response.status === 409) {
+    const parsed = await response.json().catch(() => ({}));
+    const detail = (parsed?.detail ?? parsed) as {
+      current_ts?: number;
+      current?: StorySectionOut | null;
+    };
+    throw new StoryConflictError(
+      typeof detail?.current_ts === 'number' ? detail.current_ts : 0,
+      detail?.current ?? null
+    );
+  }
+  if (response.status === 413) {
+    const parsed = await response.json().catch(() => ({}));
+    const detail = (parsed?.detail ?? parsed) as {
+      cap_bytes?: number;
+      actual_bytes?: number;
+      over_by?: number;
+    };
+    throw new StoryTooLargeError(
+      detail?.cap_bytes ?? 0,
+      detail?.actual_bytes ?? 0,
+      detail?.over_by ?? 0
+    );
+  }
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    // A 422 body carries pydantic's field errors; surface the first one
+    // rather than a bare "HTTP 422" an ingestion agent can't act on.
+    const fieldError = Array.isArray(err?.detail?.errors)
+      ? err.detail.errors[0]?.msg
+      : null;
+    throw new Error(
+      fieldError || err?.detail?.error || err?.detail || err?.message ||
+      `HTTP ${response.status}`
+    );
+  }
+  return response.json();
+}
+
+export const storyApi = {
+  /** What the bible contains — sizes and counts, no payloads. Cheap
+   *  enough to call on every Story-tab open. */
+  async manifest(projectId: string): Promise<StoryManifest> {
+    return apiRequest<StoryManifest>(`/projects/${projectId}/story`);
+  },
+
+  /** Throws (404) when the section hasn't been written yet — an empty
+   *  bible is an absence of rows, not a row full of defaults. */
+  async getSection(projectId: string, name: string): Promise<StorySectionOut> {
+    return apiRequest<StorySectionOut>(
+      `/projects/${projectId}/story/sections/${name}`
+    );
+  },
+
+  async putSection(
+    projectId: string,
+    name: string,
+    data: Record<string, unknown>,
+    baseTs: number
+  ): Promise<StorySectionOut> {
+    return storyWrite<StorySectionOut>(
+      `/projects/${projectId}/story/sections/${name}`,
+      'PUT',
+      { data, base_ts: baseTs }
+    );
+  },
+
+  async listScenes(
+    projectId: string,
+    opts: { afterSequence?: number; afterId?: string; limit?: number } = {}
+  ): Promise<StoryScenePage> {
+    const q = new URLSearchParams();
+    if (opts.afterSequence !== undefined) {
+      q.set('after_sequence', String(opts.afterSequence));
+    }
+    if (opts.afterId) q.set('after_id', opts.afterId);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return apiRequest<StoryScenePage>(
+      `/projects/${projectId}/story/scenes${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  async listFacts(
+    projectId: string,
+    opts: { afterSeq?: number; limit?: number; sceneId?: string } = {}
+  ): Promise<StoryLogPage> {
+    const q = new URLSearchParams();
+    if (opts.afterSeq !== undefined) q.set('after_seq', String(opts.afterSeq));
+    if (opts.limit) q.set('limit', String(opts.limit));
+    if (opts.sceneId) q.set('scene_id', opts.sceneId);
+    const qs = q.toString();
+    return apiRequest<StoryLogPage>(
+      `/projects/${projectId}/story/facts${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  async listEdits(
+    projectId: string,
+    opts: { afterSeq?: number; limit?: number } = {}
+  ): Promise<StoryLogPage> {
+    const q = new URLSearchParams();
+    if (opts.afterSeq !== undefined) q.set('after_seq', String(opts.afterSeq));
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return apiRequest<StoryLogPage>(
+      `/projects/${projectId}/story/edits${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  /** Irreversible: drops every section, scene, fact and edit for this
+   *  Work. There is no archive in v1 — callers must confirm first. */
+  async reset(projectId: string): Promise<void> {
+    await storyWrite<Record<string, number>>(
+      `/projects/${projectId}/story/reset`,
+      'POST',
+      { confirm: true }
+    );
+  },
+};

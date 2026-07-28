@@ -15,6 +15,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
 import { hasPermission } from '../../utils/permissions';
 import { Button, ConfirmDialog, Input, TextArea } from '../ui';
+import { StoryTab } from './StoryTab';
 import type { ProjectDeliverableType } from '../../api/client';
 
 const DELIVERABLE_LABELS: Record<ProjectDeliverableType, string> = {
@@ -330,6 +331,7 @@ function WorkDetail({
   const [description, setDescription] = useState(selected?.description ?? '');
   const [addAvatar, setAddAvatar] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [tab, setTab] = useState<'details' | 'story'>('details');
 
   const characterName = useMemo(() => {
     const byAvatar = new Map(characters.map((c) => [c.avatar, c.name]));
@@ -357,6 +359,57 @@ function WorkDetail({
 
   return (
     <div className="space-y-6">
+      {/* Details / Story */}
+      <div
+        role="tablist"
+        aria-label="Work sections"
+        className="flex gap-1 p-1 rounded-lg bg-[var(--color-bg-secondary)]"
+      >
+        {(['details', 'story'] as const).map((id, i, all) => (
+          <button
+            key={id}
+            role="tab"
+            id={`work-tab-${id}`}
+            aria-selected={tab === id}
+            aria-controls={`work-tabpanel-${id}`}
+            // Roving tabindex + arrow keys: role="tablist" promises this
+            // keyboard contract, and claiming the role without it is
+            // worse for a screen-reader user than plain buttons.
+            tabIndex={tab === id ? 0 : -1}
+            onKeyDown={(e) => {
+              const delta =
+                e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+              if (!delta) return;
+              e.preventDefault();
+              const next = all[(i + delta + all.length) % all.length];
+              setTab(next);
+              document.getElementById(`work-tab-${next}`)?.focus();
+            }}
+            onClick={() => setTab(id)}
+            className={`flex-1 px-3 py-1.5 rounded-md text-sm capitalize transition-colors ${
+              tab === id
+                ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)]'
+                : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+            }`}
+          >
+            {id}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'story' && (
+        <div role="tabpanel" id="work-tabpanel-story" aria-labelledby="work-tab-story">
+          <StoryTab project={selected} canManage={canManage} />
+        </div>
+      )}
+
+      {tab === 'details' && (
+        <div
+          role="tabpanel"
+          id="work-tabpanel-details"
+          aria-labelledby="work-tab-details"
+          className="space-y-6"
+        >
       {/* Metadata */}
       <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-3">
         <Input
@@ -540,6 +593,8 @@ function WorkDetail({
             Delete
           </Button>
         </section>
+      )}
+        </div>
       )}
 
       <ConfirmDialog
