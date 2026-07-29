@@ -449,6 +449,12 @@ export interface GenerationOptions {
   presencePenalty?: number;
   repetitionPenalty?: number;
   stopStrings?: string[];
+  /** Overrides the settings-store custom endpoint for THIS call only.
+   *  Needed by callers that run against a saved connection profile
+   *  (e.g. story ingestion), whose custom URL is the profile's, not the
+   *  one currently selected in settings. Ignored unless provider is
+   *  'custom'. */
+  customUrl?: string;
 }
 
 /**
@@ -898,7 +904,11 @@ export const api = {
         // Lazy import keeps a circular dependency from forming between
         // api/client.ts and stores/settingsStore.ts at module load.
         const { useSettingsStore } = await import('../stores/settingsStore');
-        const customUrl = useSettingsStore.getState().customUrl;
+        // A per-call override wins: a saved profile carries its own
+        // endpoint, and falling through to the store would send the
+        // request to whatever the user last selected instead.
+        const customUrl =
+          generationOptions?.customUrl || useSettingsStore.getState().customUrl;
         if (customUrl) body.custom_url = customUrl;
       } catch {
         // Best effort; the backend will surface a clear 400 if missing.
