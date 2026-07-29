@@ -183,3 +183,145 @@ export interface BibleFact {
   contradicts?: string[];
   supersedes?: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Sections the cold-start pass writes (phase 6). Field-for-field mirrors of
+// WorldSection / EntitiesSection / RenderingHintsSection in the backend's
+// app/schemas/story.py — which forbids unknown keys, so an extra field here
+// is a 422, not a type error.
+// ---------------------------------------------------------------------------
+
+export type VoiceRegister = 'formal' | 'casual' | 'vulgar' | 'archaic' | 'mixed';
+
+export interface HairAttributes {
+  color: string;
+  length: string;
+  style: string;
+}
+
+export interface EyeAttributes {
+  color: string;
+  shape: string;
+}
+
+export interface PhysicalAttributes {
+  age_apparent: string;
+  gender_presentation: string;
+  hair: HairAttributes;
+  eyes: EyeAttributes;
+  skin: string;
+  build: string;
+  height: string;
+  distinguishing_features: string[];
+  typical_attire: string;
+}
+
+export interface PhysicalDescription {
+  summary: string;
+  attributes: PhysicalAttributes;
+}
+
+export interface CharacterTrait {
+  trait: string;
+  evidence?: SourceRef | null;
+}
+
+export interface DialogueExample {
+  text: string;
+  source?: SourceRef | null;
+}
+
+export interface VoiceProfile {
+  register: VoiceRegister;
+  speech_patterns: string;
+  verbal_tics: string[];
+  dialogue_examples: DialogueExample[];
+  vocabulary_signals: { favored: string[]; avoided: string[] };
+}
+
+export interface Personality {
+  traits: CharacterTrait[];
+  voice_profile?: VoiceProfile;
+  motivations: string[];
+  fears: string[];
+  values: string[];
+}
+
+export interface CharacterArc {
+  starting_state: string;
+  current_state: string;
+  target_state: string | null;
+  beats: { scene_ref: string; change: string }[];
+}
+
+export interface BibleCharacter {
+  id: string;
+  canonical_name: string;
+  aliases: string[];
+  role: 'protagonist' | 'antagonist' | 'supporting' | 'mentioned' | 'user_persona';
+  is_user_persona: boolean;
+  source?: SourceRef | null;
+  physical_description?: PhysicalDescription;
+  personality?: Personality;
+  background: string;
+  relationships: unknown[];
+  arc: CharacterArc;
+  provenance?: SourceRef[];
+}
+
+export interface EntitiesSection {
+  characters: BibleCharacter[];
+  objects: unknown[];
+  factions: unknown[];
+}
+
+export interface WorldRule {
+  id: string;
+  text: string;
+  category: 'magic' | 'tech' | 'social' | 'physics' | 'other';
+  source: SourceRef;
+  confidence: Confidence;
+  established_in: string | null;
+}
+
+export interface WorldSection {
+  name: string;
+  setting_summary: string;
+  setting_attributes: {
+    time_period: string;
+    technology_level: string;
+    magic_or_supernatural: string;
+    society: { political: string; cultural: string; economic: string };
+  };
+  geography: unknown[];
+  rules?: WorldRule[];
+  timeline: { anchors: unknown[] };
+}
+
+export interface RenderingHintsSection {
+  novel: {
+    pov: RenderPov | null;
+    pov_character: string | null;
+    tense: 'past' | 'present' | null;
+    chapter_breaks: string[];
+    chapter_titles: { scene_id: string; title: string }[];
+    compression_level: 'tight' | 'balanced' | 'loose';
+    target_word_count: number | null;
+    style_anchors: string[];
+  };
+  screenplay: {
+    format: 'fountain' | 'final_draft';
+    sluglines_inferred: boolean;
+    page_target: number | null;
+  };
+  graphic_novel: {
+    pages_per_scene: number;
+    panel_density: 'sparse' | 'standard' | 'dense';
+    art_style_brief: string;
+    character_consistency_refs: { character_ref: string; asset_ref: string }[];
+  };
+  storyboard: {
+    aspect_ratio: '2.39:1' | '16:9' | '4:3';
+    panels_per_scene: number;
+  };
+}

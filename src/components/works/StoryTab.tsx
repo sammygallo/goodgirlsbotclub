@@ -1,8 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
-import { BookOpen, CircleAlert, Link2Off, RotateCcw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { BookOpen, CircleAlert, Link2Off, RotateCcw, Sparkles } from 'lucide-react';
 import { useStoryStore, hasBible } from '../../stores/storyStore';
+import {
+  estimateColdStartTokens,
+  useStoryIngestStore,
+} from '../../stores/storyIngestStore';
 import { useCharacterStore } from '../../stores/characterStore';
+import { usePersonaStore } from '../../stores/personaStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { useConnectionProfileStore } from '../../stores/connectionProfileStore';
+import { useWorldInfoStore } from '../../stores/worldInfoStore';
+import { IngestProgressCard } from './IngestProgressCard';
+import { StartIngestModal } from './StartIngestModal';
+import {
+  gatherColdStartSources,
+  gatherIngestInputs,
+  replayEntriesFrom,
+} from './ingestSources';
+import { makeLlmCall } from '../../utils/storyIngest/llmBridge';
 import { Button, ConfirmDialog, Modal } from '../ui';
+import { showToastGlobal } from '../ui/Toast';
 import type { Project, ProjectChatRef } from '../../api/client';
 import type { MetaSection } from '../../types/storyBible';
 import { describeRef, resolveRefState } from '../../utils/storyBible/sourceRefs';
@@ -15,6 +32,13 @@ import { describeRef, resolveRefState } from '../../utils/storyBible/sourceRefs'
  * 6–8) fills everything else; until then this tab shows what exists and
  * lets the user designate (or re-designate) the source chat.
  */
+
+function showIngestError(err: unknown): void {
+  showToastGlobal(
+    err instanceof Error ? err.message : 'Failed to start the build',
+    'error'
+  );
+}
 
 function sameChat(a: ProjectChatRef, b: ProjectChatRef): boolean {
   return a.character_avatar === b.character_avatar && a.file_name === b.file_name;
@@ -117,17 +141,31 @@ export function StoryTab({
     resetBible,
   } = useStoryStore();
   const characters = useCharacterStore((s) => s.characters);
+  const personas = usePersonaStore((s) => s.personas);
+  const wiScanDepth = useWorldInfoStore((s) => s.scanDepth);
+  const runIngest = useStoryIngestStore((s) => s.run);
+  const ingestRunning = useStoryIngestStore((s) => s.isRunning);
+  const loadCheckpoint = useStoryIngestStore((s) => s.loadCheckpoint);
+  const clearIngest = useStoryIngestStore((s) => s.clear);
+  const resetIngestState = useStoryIngestStore((s) => s.resetIngestState);
+  const checkpoint = useStoryIngestStore((s) => s.checkpoint);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   /** A chat chosen in the picker that would REPLACE an existing source,
    *  held until the user confirms the discard it implies. */
   const [pendingChange, setPendingChange] = useState<ProjectChatRef | null>(null);
+  const [startOpen, setStartOpen] = useState(false);
+  const [preparing, setPreparing] = useState(false);
 
   useEffect(() => {
     void load(project.id);
-    return () => clear();
-  }, [project.id, load, clear]);
+    void loadCheckpoint(project.id);
+    return () => {
+      clear();
+      clearIngest();
+    };
+  }, [project.id, load, clear, loadCheckpoint, clearIngest]);
 
   const meta = sections.meta?.data as unknown as MetaSection | undefined;
   const sourceChat = meta?.source?.chat ?? null;
@@ -179,6 +217,91 @@ export function StoryTab({
     // Reset first: if designation then fails, an empty bible is honest,
     // whereas new meta over old scenes is silently wrong.
     if (await resetBible()) await designate(chat);
+  };
+
+  // The scanner's own book set: globally active + the character's
+  // embedded/linked + persona-linked + chat-linked. Ingesting every book
+  // in the library instead would write lore from unrelated stories into
+  // this bible as canon.
+  const booksForChat = useCallback(
+    (avatar: string, fileName: string) => {
+      const wi = useWorldInfoStore.getState();
+      const chars = useCharacterStore.getState();
+      const persona = usePersonaStore
+        .getState()
+        .getPersonaForContext(avatar, fileName);
+      const ids = new Set<string>([
+        ...wi.activeBookIds,
+        ...chars.getActiveBookIdsForCharacter(avatar),
+        ...(persona?.linkedBookIds ?? []),
+        ...(wi.chatLinkedBookIds[fileName] ?? []),
+      ]);
+      return wi.books.filter((b) => ids.has(b.id));
+    },
+    []
+  );
+
+  const coldStartSources = useMemo(() => {
+    if (!sourceChat) return null;
+    const avatar = sourceChat.ref.character_avatar;
+    const character = characters.find((c) => c.avatar === avatar) ?? null;
+    const relevant = booksForChat(avatar, sourceChat.ref.file_name);
+    // The persona the app itself would resolve for THIS chat — chat lock,
+    // then character lock, then the active one. Picking `isDefault`
+    // instead writes the wrong protagonist into the bible for anyone who
+    // switched persona in the chat but never changed their default.
+    const persona = usePersonaStore
+      .getState()
+      .getPersonaForContext(avatar, sourceChat.ref.file_name);
+    return gatherColdStartSources(character, avatar, persona ?? null, relevant);
+  }, [sourceChat, characters, booksForChat, personas]);
+
+  const startIngest = async (profileId: string | null) => {
+    if (!sourceChat || !coldStartSources) return;
+    setPreparing(true);
+    try {
+      const { messages, capturedWiFired } = await gatherIngestInputs(
+        sourceChat.ref
+      );
+      const profile = profileId
+        ? useConnectionProfileStore.getState().getProfile(profileId)
+        : null;
+      const settings = useSettingsStore.getState();
+      const provider = profile?.provider ?? settings.activeProvider;
+      const model = profile?.model ?? settings.activeModel;
+      // A saved custom profile points at its OWN endpoint; falling back
+      // to the settings URL would send this run somewhere else entirely.
+      const customUrl = profile
+        ? profile.customUrl
+        : (settings as unknown as { customEndpointUrl?: string }).customEndpointUrl;
+
+      setStartOpen(false);
+      await runIngest({
+        projectId: project.id,
+        sources: coldStartSources,
+        messages,
+        capturedWiFired,
+        wiEntries: replayEntriesFrom(
+          booksForChat(sourceChat.ref.character_avatar, sourceChat.ref.file_name)
+        ),
+        wiScanDepth,
+        // A group chat's source would be a group file; solo is the v1
+        // cut, and the replay pass skips group chats regardless.
+        isGroupChat: false,
+        llm: makeLlmCall({
+          provider,
+          model,
+          customUrl,
+          characterName: coldStartSources.characterName,
+        }),
+        model,
+      });
+      await load(project.id);
+    } catch (err) {
+      showIngestError(err);
+    } finally {
+      setPreparing(false);
+    }
   };
 
   if (isLoading && !manifest) {
@@ -304,6 +427,52 @@ export function StoryTab({
         </section>
       )}
 
+      <IngestProgressCard />
+
+      {/* Build the groundwork */}
+      {canManage && !ingestRunning && (
+        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-sm text-[var(--color-text-primary)]">
+                {(manifest?.scene_count ?? 0) > 0 || checkpoint?.status === 'complete'
+                  ? 'Rebuild the groundwork'
+                  : 'Build the groundwork'}
+              </h3>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                Reads the character, your persona and any lorebooks. Runs
+                on your API key.
+              </p>
+            </div>
+            <Button
+              variant="primary"
+              onClick={() => setStartOpen(true)}
+              disabled={preparing || !coldStartSources}
+            >
+              <Sparkles size={16} />
+              {preparing ? 'Starting…' : 'Build'}
+            </Button>
+          </div>
+          {checkpoint?.replay_approx && (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Lorebook usage was reconstructed from the chat rather than
+              measured, so treat it as approximate.
+            </p>
+          )}
+          {(checkpoint?.status === 'running' ||
+            checkpoint?.status === 'error' ||
+            checkpoint?.status === 'paused') && (
+            <button
+              type="button"
+              onClick={() => void resetIngestState()}
+              className="text-xs text-[var(--color-text-secondary)] underline"
+            >
+              Build state looks stuck? Clear it
+            </button>
+          )}
+        </section>
+      )}
+
       {/* What the bible holds so far */}
       <section>
         <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)] mb-2">
@@ -409,6 +578,15 @@ export function StoryTab({
             untouched.
           </p>
         </section>
+      )}
+
+      {startOpen && coldStartSources && (
+        <StartIngestModal
+          estimatedTokens={estimateColdStartTokens(coldStartSources)}
+          onStart={(profileId) => void startIngest(profileId)}
+          onClose={() => setStartOpen(false)}
+          busy={preparing}
+        />
       )}
 
       {pickerOpen && (
