@@ -10,8 +10,10 @@
 import type { ProjectChatRef } from '../../api/client';
 import type {
   CharacterSourceRef,
+  ChatMessageSourceRef,
   ChatSourceRef,
   HashAlg,
+  MsgRef,
   PersonaSourceRef,
   RefState,
   SourceRef,
@@ -83,6 +85,36 @@ export function characterSourceRef(
     kind: 'character',
     ref: avatar,
     snapshot: { name: displayName ?? avatar },
+    captured_at: capturedAt(),
+  };
+}
+
+/** Build a MsgRef for a message the ingestion walk is about to reference —
+ *  hashes the message's OWN active-swipe text (`swipe_idx` IS the chosen
+ *  swipe; there is no separate index to disagree with it, v1.1 amendment). */
+export async function buildMsgRef(msg: {
+  id: string;
+  content: string;
+  swipeIdx: number;
+  timestamp: number;
+}): Promise<MsgRef> {
+  const { sha, hash_alg } = await hashText(msg.content);
+  return {
+    msg_id: msg.id,
+    swipe_idx: msg.swipeIdx,
+    fingerprint: { sha, hash_alg, send_date: msg.timestamp },
+  };
+}
+
+export function chatMessageSourceRef(
+  chat: ProjectChatRef,
+  msg: MsgRef,
+  excerpt?: string
+): ChatMessageSourceRef {
+  return {
+    kind: 'chat_message',
+    ref: { chat, msg },
+    snapshot: excerpt ? { excerpt: excerpt.slice(0, 500) } : {},
     captured_at: capturedAt(),
   };
 }

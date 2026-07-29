@@ -8,7 +8,16 @@ function msg(
   isUser = false,
   isSystem = false
 ): IngestMessage {
-  return { id, name: isUser ? 'You' : 'Ivy', isUser, isSystem, content, timestamp: 0, swipeIdx: 0 };
+  return {
+    id,
+    name: isUser ? 'You' : 'Ivy',
+    isUser,
+    isSystem,
+    content,
+    timestamp: 0,
+    swipeIdx: 0,
+    swipesCount: 1,
+  };
 }
 
 function entry(over: Partial<ReplayEntry> = {}): ReplayEntry {

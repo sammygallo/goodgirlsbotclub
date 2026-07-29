@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getSection = vi.fn();
 const putSection = vi.fn();
+const getScene = vi.fn();
+const bulkWriteScenes = vi.fn();
+const appendFact = vi.fn();
+const manifest = vi.fn();
 
 class FakeConflict extends Error {
   currentTs: number;
@@ -14,12 +18,26 @@ class FakeConflict extends Error {
   }
 }
 
+class FakeBulkConflict extends Error {
+  conflicts: { id: string; currentTs: number }[];
+  constructor(conflicts: { id: string; currentTs: number }[]) {
+    super('bulk conflict');
+    this.name = 'SceneBulkConflictError';
+    this.conflicts = conflicts;
+  }
+}
+
 vi.mock('../api/client', () => ({
   storyApi: {
     getSection: (...a: unknown[]) => getSection(...a),
     putSection: (...a: unknown[]) => putSection(...a),
+    getScene: (...a: unknown[]) => getScene(...a),
+    bulkWriteScenes: (...a: unknown[]) => bulkWriteScenes(...a),
+    appendFact: (...a: unknown[]) => appendFact(...a),
+    manifest: (...a: unknown[]) => manifest(...a),
   },
   StoryConflictError: FakeConflict,
+  SceneBulkConflictError: FakeBulkConflict,
 }));
 vi.mock('../components/ui/Toast', () => ({ showToastGlobal: vi.fn() }));
 vi.mock('./usageStore', () => ({
@@ -49,6 +67,7 @@ function runInput(over: Record<string, unknown> = {}) {
     messages: [],
     wiEntries: [],
     isGroupChat: false,
+    chat: { character_avatar: 'Ivy.png', file_name: 'chat1.jsonl' },
     ...over,
   } as Parameters<ReturnType<typeof useStoryIngestStore.getState>['run']>[0];
 }
@@ -62,6 +81,45 @@ function wireHappyPath() {
     data,
     server_ts: ++ts,
     updated_at: 'x',
+  }));
+}
+
+/** A transcript long enough to matter for chunking: alternating user/AI
+ *  turns, each with enough content to be a plausible message. */
+function longMessages(n: number, contentLength = 20) {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `m${i}`,
+    name: i % 2 === 0 ? 'Sam' : 'Ivy',
+    isUser: i % 2 === 0,
+    isSystem: false,
+    content:
+      i % 2 === 0
+        ? `User line ${i} ${'padding '.repeat(contentLength)}`
+        : `Ivy line ${i} ${'padding '.repeat(contentLength)}`,
+    timestamp: i,
+    swipeIdx: 0,
+    swipesCount: 1,
+  }));
+}
+
+function wireScenesAndFacts() {
+  let sceneTs = 0;
+  bulkWriteScenes.mockImplementation(async (_p: string, scenes: { id: string; data: { sequence: number } }[]) => ({
+    written: scenes.length,
+    scenes: scenes.map((s) => ({
+      id: s.id,
+      sequence: s.data.sequence,
+      data: s.data,
+      server_ts: ++sceneTs,
+      updated_at: 'x',
+    })),
+  }));
+  let factSeq = 0;
+  appendFact.mockImplementation(async (_p: string, data: { id: string }) => ({
+    seq: ++factSeq,
+    id: data.id,
+    data,
+    created_at: 'x',
   }));
 }
 
@@ -362,5 +420,303 @@ describe('review regressions', () => {
     expect(ok).toBe(false);
     expect(putSection).not.toHaveBeenCalled();
     expect(useStoryIngestStore.getState().isRunning).toBe(false);
+  });
+});
+
+describe('transcript walk (phase 7)', () => {
+  it('walks a multi-chunk transcript, writing scenes and facts per chunk', async () => {
+    wireHappyPath();
+    wireScenesAndFacts();
+
+    // 65 messages forces a force-split at WALK_FORCE_SPLIT_MESSAGES=60:
+    // chunk 1 = messages 0-59, chunk 2 = messages 60-64.
+    const messages = longMessages(65);
+    const chunk1Json = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title: 'Scene A',
+          summary: 'a',
+          detailed_summary: '',
+          participants: ['Ivy'],
+          start_local_idx: 0,
+          end_local_idx: 59,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [{ text: 'A fact was established.', category: 'reveal', local_idx: 30 }],
+        },
+      ],
+    });
+    const chunk2Json = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title: 'Scene B',
+          summary: 'b',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 4,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const voiceJson = JSON.stringify({
+      style_summary: 'terse',
+      register: 'pulp',
+      rhetorical_devices: [],
+      tendency: 'directive',
+    });
+    // Cold-start's 2 calls (attributes, voice) get trivial responses;
+    // then one call per chunk, then the user_voice synthesis call.
+    const responses = ['{}', '{}', chunk1Json, chunk2Json, voiceJson];
+    let callIdx = 0;
+    const llm = vi.fn(async () => responses[Math.min(callIdx++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
+    expect(ok).toBe(true);
+    expect(bulkWriteScenes).toHaveBeenCalledTimes(2);
+    expect(appendFact).toHaveBeenCalledTimes(1);
+
+    const ingestWrites = putSection.mock.calls.filter((c) => c[1] === 'ingestion');
+    const last = ingestWrites[ingestWrites.length - 1][2];
+    expect(last.status).toBe('complete');
+    expect(last.chunk_index).toBe(2);
+    expect(last.chunk_plan).toHaveLength(2);
+
+    const userVoiceWrite = putSection.mock.calls.find((c) => c[1] === 'user_voice');
+    expect(userVoiceWrite).toBeTruthy();
+    expect(userVoiceWrite![2].register).toBe('pulp');
+  });
+
+  it('resumes from chunk_index without rerunning cold_start', async () => {
+    const messages = longMessages(65);
+    const chunkPlan = [
+      { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },
+      { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+    ];
+    getSection.mockImplementation(async (_p: string, name: string) => {
+      if (name === 'ingestion') {
+        return {
+          section: 'ingestion',
+          server_ts: 10,
+          updated_at: 'x',
+          data: {
+            status: 'error', // an earlier attempt was interrupted
+            current_pass: 'transcript_walk',
+            prompt_version: PROMPT_VERSION,
+            chunk_index: 1,
+            chunk_plan: chunkPlan,
+            last_ingested: {
+              msg_id: 'm59',
+              swipe_idx: 0,
+              fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+            },
+            open_scene: null,
+            lock: null,
+            token_usage: { input_tokens: 5, output_tokens: 5 },
+            replay_approx: false,
+            error: '',
+          },
+        };
+      }
+      if (name === 'entities') {
+        return {
+          section: 'entities',
+          server_ts: 1,
+          updated_at: 'x',
+          data: {
+            characters: [{ id: 'char-ivy', canonical_name: 'Ivy', aliases: [] }],
+            objects: [],
+            factions: [],
+          },
+        };
+      }
+      throw new Error('404');
+    });
+    let ts = 10;
+    putSection.mockImplementation(async (_p, section, data) => ({
+      section,
+      data,
+      server_ts: ++ts,
+      updated_at: 'x',
+    }));
+    manifest.mockResolvedValue({
+      project_id: 'p1',
+      sections: [],
+      scene_count: 1,
+      fact_count: 0,
+      edit_count: 0,
+    });
+    wireScenesAndFacts();
+
+    const chunk2Json = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title: 'Scene B',
+          summary: 'b',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 4,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const voiceJson = JSON.stringify({
+      style_summary: '',
+      register: 'mixed',
+      rhetorical_devices: [],
+      tendency: 'reactive',
+    });
+    // NO cold-start calls expected — only the remaining chunk + voice.
+    const responses = [chunk2Json, voiceJson];
+    let callIdx = 0;
+    const llm = vi.fn(async () => responses[Math.min(callIdx++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
+    expect(ok).toBe(true);
+    // Only chunk 1 (the unfinished one) is walked — chunk 0 already done.
+    expect(bulkWriteScenes).toHaveBeenCalledTimes(1);
+    expect(llm).toHaveBeenCalledTimes(2);
+
+    const ingestWrites = putSection.mock.calls.filter((c) => c[1] === 'ingestion');
+    const last = ingestWrites[ingestWrites.length - 1][2];
+    expect(last.chunk_index).toBe(2);
+  });
+
+  it('reports divergence and does not touch scenes/facts when a resumed plan boundary is gone', async () => {
+    const chunkPlan = [
+      { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },
+      { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+    ];
+    getSection.mockImplementation(async (_p: string, name: string) => {
+      if (name === 'ingestion') {
+        return {
+          section: 'ingestion',
+          server_ts: 10,
+          updated_at: 'x',
+          data: {
+            status: 'error',
+            current_pass: 'transcript_walk',
+            prompt_version: PROMPT_VERSION,
+            chunk_index: 1,
+            chunk_plan: chunkPlan,
+            last_ingested: {
+              msg_id: 'm59',
+              swipe_idx: 0,
+              fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+            },
+            open_scene: null,
+            lock: null,
+            token_usage: { input_tokens: 0, output_tokens: 0 },
+            replay_approx: false,
+            error: '',
+          },
+        };
+      }
+      throw new Error('404');
+    });
+    let ts = 10;
+    putSection.mockImplementation(async (_p, section, data) => ({
+      section,
+      data,
+      server_ts: ++ts,
+      updated_at: 'x',
+    }));
+
+    // m59 (the checkpoint's last_ingested) no longer exists in the
+    // current transcript — simulates history changing under the walk.
+    const messages = longMessages(65).filter((m) => m.id !== 'm59');
+    const llm = vi.fn(async () => '{}');
+
+    const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
+    expect(ok).toBe(false);
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+    expect(appendFact).not.toHaveBeenCalled();
+
+    const ingestWrites = putSection.mock.calls.filter((c) => c[1] === 'ingestion');
+    const last = ingestWrites[ingestWrites.length - 1][2];
+    expect(last.status).toBe('error');
+    expect(last.error).toContain('Reset story');
+  });
+
+  it('refuses a walk exceeding the soft cap before any chunk model call, without confirmation', async () => {
+    wireHappyPath();
+    wireScenesAndFacts();
+
+    // Long enough per-message content that each message alone blows the
+    // per-chunk token budget, forcing > WALK_CHUNK_SOFT_CAP (200) chunks.
+    const messages = longMessages(201, 3000);
+    const llm = vi.fn(async () => '{}');
+
+    const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
+    expect(ok).toBe(false);
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+
+    const ingestWrites = putSection.mock.calls.filter((c) => c[1] === 'ingestion');
+    const last = ingestWrites[ingestWrites.length - 1][2];
+    expect(last.status).toBe('paused');
+    expect(last.error).toContain('chunks');
+  });
+
+  it('bulkWriteScenesWithRetry adopts a 409 conflict and retries once', async () => {
+    wireHappyPath();
+    let attempt = 0;
+    bulkWriteScenes.mockImplementation(
+      async (_p: string, scenes: { id: string; data: { sequence: number } }[]) => {
+        attempt++;
+        if (attempt === 1) {
+          throw new FakeBulkConflict(scenes.map((s) => ({ id: s.id, currentTs: 5 })));
+        }
+        return {
+          written: scenes.length,
+          scenes: scenes.map((s) => ({
+            id: s.id,
+            sequence: s.data.sequence,
+            data: s.data,
+            server_ts: 6,
+            updated_at: 'x',
+          })),
+        };
+      }
+    );
+    appendFact.mockResolvedValue({ seq: 1, id: 'f1', data: {}, created_at: 'x' });
+
+    const messages = longMessages(2);
+    const sceneJson = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title: 'A',
+          summary: 's',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 1,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const voiceJson = JSON.stringify({
+      style_summary: '',
+      register: 'mixed',
+      rhetorical_devices: [],
+      tendency: 'reactive',
+    });
+    const responses = ['{}', '{}', sceneJson, voiceJson];
+    let callIdx = 0;
+    const llm = vi.fn(async () => responses[Math.min(callIdx++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
+    expect(ok).toBe(true);
+    expect(attempt).toBe(2);
   });
 });

@@ -298,6 +298,135 @@ export interface WorldSection {
   timeline: { anchors: unknown[] };
 }
 
+// ---------------------------------------------------------------------------
+// user_voice section (story-state phase 7). Field-for-field mirror of
+// UserVoiceSection in app/schemas/story.py.
+// ---------------------------------------------------------------------------
+
+export interface SentenceLength {
+  mean: number;
+  distribution: 'short-dominant' | 'balanced' | 'long-dominant' | 'varied';
+}
+
+export interface Diction {
+  preferred_vocabulary: string[];
+  avoided_vocabulary: string[];
+  sentence_length: SentenceLength;
+  paragraph_density: 'tight' | 'medium' | 'loose';
+}
+
+export interface PovPreferences {
+  in_chat: ChatPov | null;
+  likely_target_for_prose: RenderPov | null;
+}
+
+export interface InteractionStyle {
+  tendency: 'directive' | 'collaborative' | 'reactive';
+  direction_to_narration_ratio: number;
+  typical_input_length: number;
+}
+
+export interface SamplePassage {
+  text: string;
+  source?: SourceRef | null;
+}
+
+export interface UserVoiceSection {
+  style_summary: string;
+  register: 'literary' | 'commercial' | 'pulp' | 'experimental' | 'mixed';
+  diction: Diction;
+  rhetorical_devices: string[];
+  pov_preferences: PovPreferences;
+  interaction_style: InteractionStyle;
+  sample_passages: SamplePassage[];
+  /** Model self-assessment (float, not Confidence — D6). Low values mean
+   *  "don't fabricate voice — ask the user for prose instead". */
+  confidence: number;
+}
+
+// ---------------------------------------------------------------------------
+// scenes (story_scenes rows — the workhorse object, story-state phase 7).
+// Field-for-field mirror of Scene in app/schemas/story.py.
+// ---------------------------------------------------------------------------
+
+export interface SceneSetting {
+  location_ref?: string | null;
+  time_ref?: string | null;
+  atmosphere: string;
+}
+
+/** Filled by the deferred step-3 annotate pass — always null in v1. */
+export interface SceneFunction {
+  beat:
+    | 'inciting'
+    | 'rising'
+    | 'midpoint'
+    | 'crisis'
+    | 'climax'
+    | 'denouement'
+    | 'interlude';
+  tension: number;
+  mood: string;
+  stakes: string;
+}
+
+export interface MessageRange {
+  start: MsgRef;
+  end: MsgRef;
+}
+
+/** `msg.swipe_idx` IS the chosen swipe — there is no separate
+ *  `chosen_swipe_idx` (v1.1 amendment, drops the doc's original field). */
+export interface SwipeResolution {
+  msg: MsgRef;
+  alternate_swipes_available: number;
+}
+
+export interface ExcludedSegment {
+  range: MessageRange;
+  reason: 'ooc' | 'system' | 'regen_artifact' | 'user_marked';
+}
+
+export interface SceneSource {
+  message_range: MessageRange;
+  total_messages: number;
+  swipe_resolutions: SwipeResolution[];
+  excluded_segments: ExcludedSegment[];
+}
+
+/** Filled by the deferred step-3 annotate pass — always null in v1. */
+export interface SceneTransformations {
+  compression_recommendation: 'cut' | 'compress' | 'preserve' | 'expand';
+  compression_ratio_target: number;
+  pacing_notes: string;
+  dialogue_density: number;
+}
+
+export interface SceneAnnotations {
+  user_notes: string;
+  author_intent: string;
+  flagged_issues: string[];
+  /** Set when upstream history diverged (phase 10). */
+  stale_source: boolean;
+}
+
+export interface Scene {
+  id: string;
+  sequence: number;
+  title: string;
+  summary: string;
+  detailed_summary: string;
+  setting: SceneSetting;
+  participants: string[];
+  pov_character?: string | null;
+  function?: SceneFunction | null;
+  source: SceneSource;
+  /** Derived index into the canonical story_facts rows (D4). */
+  continuity_facts_established: string[];
+  transformations?: SceneTransformations | null;
+  annotations: SceneAnnotations;
+}
+
 export interface RenderingHintsSection {
   novel: {
     pov: RenderPov | null;

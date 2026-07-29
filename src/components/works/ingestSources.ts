@@ -126,6 +126,7 @@ export async function gatherIngestInputs(
       content: content ?? '',
       timestamp: typeof m.send_date === 'number' ? m.send_date : 0,
       swipeIdx,
+      swipesCount: Array.isArray(m.swipes) ? Math.max(1, m.swipes.length) : 1,
     });
   }
 
