@@ -1803,6 +1803,43 @@ export interface StoryLogPage {
   has_more: boolean;
 }
 
+/** What triggered an archive snapshot (phase 9) — informational only,
+ *  shown in the archive list so a reset and a source-chat change are
+ *  distinguishable. `restore_backup` is the safety snapshot a restore
+ *  takes of whatever it's about to overwrite. */
+export type StoryArchiveReason =
+  | 'reset'
+  | 'change_source_chat'
+  | 'reingest'
+  | 'restore_backup';
+
+/** One row of GET /story/archives — never the snapshot payload itself,
+ *  same "list is a projection" principle as StorySectionSummary. */
+export interface StoryArchiveSummary {
+  id: string;
+  reason: StoryArchiveReason;
+  source_label: string | null;
+  scene_count: number;
+  fact_count: number;
+  edit_count: number;
+  size_bytes: number;
+  created_at: string;
+}
+
+export interface StoryArchiveListOut {
+  archives: StoryArchiveSummary[];
+}
+
+export interface StoryRestoreOut {
+  sections_restored: number;
+  scenes_restored: number;
+  facts_restored: number;
+  edits_restored: number;
+  /** The safety snapshot restore took of whatever it just overwrote —
+   *  null when there was nothing to protect (the bible was empty). */
+  pre_restore_archive_id: string | null;
+}
+
 /** 409 from a story write — carries the winning row so the caller can
  *  adopt it and retry, mirroring ProjectConflictError. `current` is null
  *  when the loser tried to create something that doesn't exist yet. */
@@ -1814,6 +1851,19 @@ export class StoryConflictError extends Error {
     super('story write conflict');
     this.name = 'StoryConflictError';
     this.currentTs = currentTs;
+    this.current = current;
+  }
+}
+
+/** 409 from a restore — the bible changed since the client's last
+ *  manifest. Carries a FRESH manifest (not a section) since restore's
+ *  guard spans the whole bible, not one row. */
+export class StoryRestoreConflictError extends Error {
+  current: StoryManifest | null;
+
+  constructor(current: StoryManifest | null) {
+    super('story restore conflict — the bible changed since your last view');
+    this.name = 'StoryRestoreConflictError';
     this.current = current;
   }
 }
@@ -1875,6 +1925,36 @@ async function storyWrite<T>(
     const err = await response.json().catch(() => ({}));
     // A 422 body carries pydantic's field errors; surface the first one
     // rather than a bare "HTTP 422" an ingestion agent can't act on.
+    const fieldError = Array.isArray(err?.detail?.errors)
+      ? err.detail.errors[0]?.msg
+      : null;
+    throw new Error(
+      fieldError || err?.detail?.error || err?.detail || err?.message ||
+      `HTTP ${response.status}`
+    );
+  }
+  return response.json();
+}
+
+/** Restore's 409 body shape (`{error, current: StoryManifest}`) has no
+ *  `current_ts`, so it can't reuse storyWrite's StoryConflictError path
+ *  without lying about what "current" means. */
+async function storyRestoreCall(path: string, body: unknown): Promise<StoryRestoreOut> {
+  const token = await getCsrfToken();
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+    body: JSON.stringify(body),
+  });
+
+  if (response.status === 409) {
+    const parsed = await response.json().catch(() => ({}));
+    const detail = (parsed?.detail ?? parsed) as { current?: StoryManifest | null };
+    throw new StoryRestoreConflictError(detail?.current ?? null);
+  }
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
     const fieldError = Array.isArray(err?.detail?.errors)
       ? err.detail.errors[0]?.msg
       : null;
@@ -1957,13 +2037,52 @@ export const storyApi = {
     );
   },
 
-  /** Irreversible: drops every section, scene, fact and edit for this
-   *  Work. There is no archive in v1 — callers must confirm first. */
-  async reset(projectId: string): Promise<void> {
-    await storyWrite<Record<string, number>>(
+  /** Drops every section, scene, fact and edit for this Work — but a
+   *  snapshot is taken first (phase 9), addressable via listArchives /
+   *  restoreArchive. `reason` distinguishes a raw reset from a
+   *  change-source-chat discard in the archive list; callers must
+   *  confirm first regardless. */
+  async reset(
+    projectId: string,
+    reason: StoryArchiveReason = 'reset'
+  ): Promise<void> {
+    await storyWrite<Record<string, unknown>>(
       `/projects/${projectId}/story/reset`,
       'POST',
-      { confirm: true }
+      { confirm: true, reason }
+    );
+  },
+
+  /** Newest first — never the snapshot payload (see StoryArchiveSummary). */
+  async listArchives(projectId: string): Promise<StoryArchiveListOut> {
+    return apiRequest<StoryArchiveListOut>(`/projects/${projectId}/story/archives`);
+  },
+
+  /** Replaces the live bible with a past snapshot. `expected` must be
+   *  built from the manifest the caller last fetched — a stale value
+   *  throws StoryRestoreConflictError rather than silently clobbering a
+   *  fresher write (base_ts-guarded at bible granularity; see the
+   *  backend's StoryRestoreIn docstring). A safety snapshot of whatever
+   *  gets overwritten is taken automatically first. */
+  async restoreArchive(
+    projectId: string,
+    archiveId: string,
+    expected: {
+      sections: Record<string, number>;
+      sceneCount: number;
+      factCount: number;
+      editCount: number;
+    }
+  ): Promise<StoryRestoreOut> {
+    return storyRestoreCall(
+      `/projects/${projectId}/story/archives/${archiveId}/restore`,
+      {
+        confirm: true,
+        expected_sections: expected.sections,
+        expected_scene_count: expected.sceneCount,
+        expected_fact_count: expected.factCount,
+        expected_edit_count: expected.editCount,
+      }
     );
   },
 };

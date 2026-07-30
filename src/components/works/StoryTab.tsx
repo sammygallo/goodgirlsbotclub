@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BookOpen, CircleAlert, Link2Off, RotateCcw, Sparkles } from 'lucide-react';
+import {
+  BookOpen,
+  CircleAlert,
+  History,
+  Link2Off,
+  RotateCcw,
+  Sparkles,
+} from 'lucide-react';
 import { useStoryStore, hasBible } from '../../stores/storyStore';
 import {
   estimateColdStartTokens,
@@ -20,7 +27,7 @@ import {
 import { makeLlmCall } from '../../utils/storyIngest/llmBridge';
 import { Button, ConfirmDialog, Modal } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
-import type { Project, ProjectChatRef } from '../../api/client';
+import type { Project, ProjectChatRef, StoryArchiveReason } from '../../api/client';
 import type { MetaSection } from '../../types/storyBible';
 import { describeRef, resolveRefState } from '../../utils/storyBible/sourceRefs';
 
@@ -43,6 +50,13 @@ function showIngestError(err: unknown): void {
 function sameChat(a: ProjectChatRef, b: ProjectChatRef): boolean {
   return a.character_avatar === b.character_avatar && a.file_name === b.file_name;
 }
+
+const ARCHIVE_REASON_LABEL: Record<StoryArchiveReason, string> = {
+  reset: 'before a reset',
+  change_source_chat: 'before changing the source chat',
+  reingest: 'before re-ingesting',
+  restore_backup: 'before a restore',
+};
 
 function SourceChatPickerModal({
   chats,
@@ -130,6 +144,8 @@ export function StoryTab({
     scenesHasMore,
     facts,
     factsHasMore,
+    archives,
+    archivesLoaded,
     isLoading,
     isSaving,
     error,
@@ -139,6 +155,8 @@ export function StoryTab({
     loadMoreScenes,
     designateSourceChat,
     resetBible,
+    loadArchives,
+    restoreArchive,
   } = useStoryStore();
   const characters = useCharacterStore((s) => s.characters);
   const personas = usePersonaStore((s) => s.personas);
@@ -157,6 +175,8 @@ export function StoryTab({
   const [pendingChange, setPendingChange] = useState<ProjectChatRef | null>(null);
   const [startOpen, setStartOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [archivesOpen, setArchivesOpen] = useState(false);
+  const [pendingRestore, setPendingRestore] = useState<string | null>(null);
 
   useEffect(() => {
     void load(project.id);
@@ -215,8 +235,15 @@ export function StoryTab({
     setPendingChange(null);
     if (!chat) return;
     // Reset first: if designation then fails, an empty bible is honest,
-    // whereas new meta over old scenes is silently wrong.
-    if (await resetBible()) await designate(chat);
+    // whereas new meta over old scenes is silently wrong. Tagged so the
+    // archive list can tell this apart from a raw "Reset story" click.
+    if (await resetBible('change_source_chat')) await designate(chat);
+  };
+
+  const toggleArchives = () => {
+    const next = !archivesOpen;
+    setArchivesOpen(next);
+    if (next && !archivesLoaded) void loadArchives();
   };
 
   // The scanner's own book set: globally active + the character's
@@ -327,6 +354,71 @@ export function StoryTab({
     );
   }
 
+  // Shared between the empty state below and the full view further down:
+  // a reset (or a project that never had a bible) must not strand the
+  // user without a way to see or restore past snapshots — the whole
+  // point of phase 9 is that a reset stops being a dead end.
+  const archivesSection = canManage && (
+    <section className="pt-2 border-t border-[var(--color-border)]">
+      <Button variant="secondary" onClick={toggleArchives}>
+        <History size={16} />
+        {archivesOpen ? 'Hide' : 'Show'} snapshots
+      </Button>
+      {archivesOpen && (
+        <div className="mt-2 space-y-1">
+          {archives.length === 0 && (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              No snapshots yet — one is taken automatically before a
+              reset or a source-chat change.
+            </p>
+          )}
+          {archives.map((a) => (
+            <div
+              key={a.id}
+              className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)]"
+            >
+              <div className="min-w-0">
+                <p className="text-sm text-[var(--color-text-primary)] truncate">
+                  {a.source_label || 'Untitled'} ·{' '}
+                  {ARCHIVE_REASON_LABEL[a.reason]}
+                </p>
+                <p className="text-xs text-[var(--color-text-secondary)]">
+                  {new Date(a.created_at).toLocaleString()} ·{' '}
+                  {a.scene_count} scenes · {a.fact_count} facts
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                onClick={() => setPendingRestore(a.id)}
+                disabled={isSaving}
+              >
+                Restore
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+
+  const restoreConfirmDialog = (
+    <ConfirmDialog
+      isOpen={pendingRestore !== null}
+      title="Restore this snapshot?"
+      message="The current story is replaced with this snapshot. Whatever's here now is itself snapshotted first, so this can be undone too."
+      confirmLabel="Restore"
+      danger
+      busy={isSaving}
+      onConfirm={() => {
+        // ConfirmDialog calls onClose right after onConfirm, which also
+        // clears pendingRestore — only the id capture here is load-bearing.
+        const id = pendingRestore;
+        if (id) void restoreArchive(id);
+      }}
+      onClose={() => setPendingRestore(null)}
+    />
+  );
+
   // Empty state: no bible yet.
   if (!hasBible(manifest)) {
     return (
@@ -358,6 +450,8 @@ export function StoryTab({
             busy={isSaving}
           />
         )}
+        {archivesSection}
+        {restoreConfirmDialog}
       </div>
     );
   }
@@ -569,16 +663,22 @@ export function StoryTab({
 
       {canManage && (
         <section className="pt-2 border-t border-[var(--color-border)]">
-          <Button variant="danger" onClick={() => setConfirmReset(true)}>
+          <Button
+            variant="danger"
+            onClick={() => setConfirmReset(true)}
+            disabled={isSaving}
+          >
             <RotateCcw size={16} />
             Reset story
           </Button>
           <p className="text-xs text-[var(--color-text-secondary)] mt-1">
             Deletes everything built from this chat. The chat itself is
-            untouched.
+            untouched, and a snapshot is kept below — this can be undone.
           </p>
         </section>
       )}
+
+      {archivesSection}
 
       {startOpen && coldStartSources && (
         <StartIngestModal
@@ -605,6 +705,7 @@ export function StoryTab({
         message="The story so far was built from the current chat, so changing it deletes every scene, fact and note first. The chats themselves are untouched."
         confirmLabel="Change and start over"
         danger
+        busy={isSaving}
         onConfirm={() => void confirmChange()}
         onClose={() => setPendingChange(null)}
       />
@@ -612,15 +713,18 @@ export function StoryTab({
       <ConfirmDialog
         isOpen={confirmReset}
         title="Reset this story?"
-        message="Every scene, fact and note built from this chat is deleted. This can't be undone, and the story has to be built again from scratch."
+        message="Every scene, fact and note built from this chat is deleted, and the story has to be built again from scratch. A snapshot is kept, so this can be undone from the snapshots list below."
         confirmLabel="Reset story"
         danger
+        busy={isSaving}
         onConfirm={() => {
           setConfirmReset(false);
           void resetBible();
         }}
         onClose={() => setConfirmReset(false)}
       />
+
+      {restoreConfirmDialog}
     </div>
   );
 }

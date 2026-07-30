@@ -2,7 +2,10 @@ import { create } from 'zustand';
 import {
   storyApi,
   StoryConflictError,
+  StoryRestoreConflictError,
   type ProjectChatRef,
+  type StoryArchiveReason,
+  type StoryArchiveSummary,
   type StoryLogEntry,
   type StoryManifest,
   type StorySceneSummary,
@@ -46,6 +49,10 @@ interface StoryState {
   facts: StoryLogEntry[];
   factsCursor: number | null;
   factsHasMore: boolean;
+  /** Archive summaries (phase 9) — loaded lazily, only when the Story
+   *  tab's archive panel is actually opened, not on every load(). */
+  archives: StoryArchiveSummary[];
+  archivesLoaded: boolean;
 
   isLoading: boolean;
   isSaving: boolean;
@@ -62,7 +69,13 @@ interface StoryState {
     chat: ProjectChatRef,
     opts?: { characters?: { avatar: string; name?: string }[]; title?: string }
   ) => Promise<boolean>;
-  resetBible: () => Promise<boolean>;
+  resetBible: (reason?: StoryArchiveReason) => Promise<boolean>;
+  /** Fetch the archive list — safe to call repeatedly, just re-fetches. */
+  loadArchives: () => Promise<void>;
+  /** Replace the live bible with a past snapshot. Builds its guard from
+   *  the manifest already in state, so callers must have a fresh one
+   *  (the Story tab always does — it's loaded on open). */
+  restoreArchive: (archiveId: string) => Promise<boolean>;
 }
 
 /** Reload only while the store is still pointed at this project.
@@ -88,7 +101,15 @@ export function hasBible(manifest: StoryManifest | null): boolean {
   return !!manifest?.sections.some((s) => s.section === 'meta');
 }
 
-export const useStoryStore = create<StoryState>((set, get) => ({
+export const useStoryStore = create<StoryState>((set, get) => {
+  // Closure-private, not store state: loadArchives() bumps this on every
+  // call and only applies its response if it's still the latest one in
+  // flight, so an overlapping earlier call resolving late can't revert a
+  // fresher archive list (review finding — the projectId guard alone
+  // doesn't order two calls for the SAME project against each other).
+  let archivesFetchSeq = 0;
+
+  return {
   projectId: null,
   manifest: null,
   sections: {},
@@ -97,6 +118,8 @@ export const useStoryStore = create<StoryState>((set, get) => ({
   facts: [],
   factsCursor: null,
   factsHasMore: false,
+  archives: [],
+  archivesLoaded: false,
   isLoading: false,
   isSaving: false,
   error: null,
@@ -108,12 +131,19 @@ export const useStoryStore = create<StoryState>((set, get) => ({
       // Cleared here too: an in-flight load() returns early once the
       // project changes, so whoever cancels it owns resetting this.
       isLoading: false,
+      // Same reasoning: leaving a Work while a save/reset/restore is
+      // still in flight must not strand the NEXT Work's tab thinking a
+      // mutation is permanently in progress (resetBible/restoreArchive's
+      // re-entrancy guard would otherwise refuse to ever run again).
+      isSaving: false,
       sections: {},
       scenes: [],
       scenesHasMore: false,
       facts: [],
       factsCursor: null,
       factsHasMore: false,
+      archives: [],
+      archivesLoaded: false,
       error: null,
     }),
 
@@ -322,26 +352,38 @@ export const useStoryStore = create<StoryState>((set, get) => ({
     }
   },
 
-  resetBible: async () => {
-    const { projectId } = get();
-    if (!projectId) return false;
+  resetBible: async (reason) => {
+    const { projectId, isSaving } = get();
+    if (!projectId || isSaving) return false;
     set({ isSaving: true });
     try {
-      await storyApi.reset(projectId);
-      set({
-        sections: {},
-        scenes: [],
-        scenesHasMore: false,
-        facts: [],
-        factsCursor: null,
-        factsHasMore: false,
-        isSaving: false,
-      });
+      await storyApi.reset(projectId, reason);
+      // The user may have switched to a different Work while the reset
+      // was in flight — every field below (including isSaving) belongs
+      // to whichever project is CURRENT, so clearing it unconditionally
+      // would wipe a different Work's live state and stomp its own
+      // isSaving flag out from under it.
+      if (get().projectId === projectId) {
+        set({
+          sections: {},
+          scenes: [],
+          scenesHasMore: false,
+          facts: [],
+          factsCursor: null,
+          factsHasMore: false,
+          isSaving: false,
+        });
+      }
       await reloadIfStillCurrent(get, projectId);
+      // Reset just took a snapshot — refresh an already-open archive list
+      // so it shows up without the user having to close and reopen it.
+      if (get().projectId === projectId && get().archivesLoaded) {
+        await get().loadArchives();
+      }
       showToastGlobal('Story reset', 'success');
       return true;
     } catch (error) {
-      set({ isSaving: false });
+      if (get().projectId === projectId) set({ isSaving: false });
       showToastGlobal(
         error instanceof Error ? error.message : 'Failed to reset the story',
         'error'
@@ -349,4 +391,84 @@ export const useStoryStore = create<StoryState>((set, get) => ({
       return false;
     }
   },
-}));
+
+  loadArchives: async () => {
+    const { projectId } = get();
+    if (!projectId) return;
+    // A slower earlier call resolving after a faster later one (e.g. two
+    // reset/restore success hooks firing close together) must not revert
+    // the list to stale data — the projectId check alone only guards
+    // against a DIFFERENT project, not two calls for the SAME one.
+    const seq = ++archivesFetchSeq;
+    try {
+      const { archives } = await storyApi.listArchives(projectId);
+      if (get().projectId !== projectId || seq !== archivesFetchSeq) return;
+      set({ archives, archivesLoaded: true });
+    } catch (error) {
+      showToastGlobal(
+        error instanceof Error ? error.message : 'Failed to load archives',
+        'error'
+      );
+    }
+  },
+
+  restoreArchive: async (archiveId) => {
+    const { projectId, manifest, isSaving } = get();
+    // No manifest means the Story tab hasn't loaded this project yet —
+    // there is nothing to build the staleness guard from.
+    if (!projectId || !manifest || isSaving) return false;
+    set({ isSaving: true });
+    const expected = {
+      sections: Object.fromEntries(
+        manifest.sections.map((s) => [s.section, s.server_ts])
+      ),
+      sceneCount: manifest.scene_count,
+      factCount: manifest.fact_count,
+      editCount: manifest.edit_count,
+    };
+    try {
+      await storyApi.restoreArchive(projectId, archiveId, expected);
+      // See resetBible: a switched-away project's state (including its
+      // OWN isSaving) must not be clobbered by this call's cleanup.
+      if (get().projectId === projectId) {
+        set({
+          sections: {},
+          scenes: [],
+          scenesHasMore: false,
+          facts: [],
+          factsCursor: null,
+          factsHasMore: false,
+          isSaving: false,
+        });
+      }
+      await reloadIfStillCurrent(get, projectId);
+      // Restore itself took a safety snapshot — refresh the list.
+      if (get().projectId === projectId && get().archivesLoaded) {
+        await get().loadArchives();
+      }
+      showToastGlobal('Story restored', 'success');
+      return true;
+    } catch (error) {
+      if (get().projectId === projectId) set({ isSaving: false });
+      if (error instanceof StoryRestoreConflictError) {
+        // Adopt the fresh manifest the 409 carried so the next attempt's
+        // guard is built from current state, not the stale one that just
+        // got rejected.
+        if (error.current && get().projectId === projectId) {
+          set({ manifest: error.current });
+        }
+        showToastGlobal(
+          'The story changed since this list was loaded — try again',
+          'warning'
+        );
+        return false;
+      }
+      showToastGlobal(
+        error instanceof Error ? error.message : 'Failed to restore the story',
+        'error'
+      );
+      return false;
+    }
+  },
+  };
+});
