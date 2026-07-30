@@ -1,5 +1,8 @@
 import { useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { useConnectionProfileStore } from '../../stores/connectionProfileStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { isWeakModel } from '../../utils/storyIngest/modelStrength';
 import { Button, Modal } from '../ui';
 
 /**
@@ -25,6 +28,14 @@ export function StartIngestModal({
 }) {
   const { profiles, activeProfileId } = useConnectionProfileStore();
   const [profileId, setProfileId] = useState<string | null>(activeProfileId);
+  const settingsActiveModel = useSettingsStore((s) => s.activeModel);
+
+  // The model this build will actually run on: the chosen profile's, or
+  // the app's current connection when "Current connection" is selected.
+  const selectedModel = profileId
+    ? (profiles.find((p) => p.id === profileId)?.model ?? null)
+    : settingsActiveModel;
+  const weakModel = isWeakModel(selectedModel);
 
   return (
     <Modal isOpen onClose={onClose} title="Build the story groundwork">
@@ -52,6 +63,18 @@ export function StartIngestModal({
               ))}
             </select>
           </label>
+        )}
+
+        {weakModel && (
+          <p className="flex items-start gap-1.5 text-xs text-[var(--color-warning)]">
+            <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+            <span>
+              This looks like a smaller/cheaper model. Building the story
+              relies on the model consistently returning structured
+              output — a stronger model will generally give more reliable
+              results, but this one can still build now.
+            </span>
+          </p>
         )}
 
         <div className="rounded-lg bg-[var(--color-bg-secondary)] p-3 space-y-1">
