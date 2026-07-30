@@ -443,6 +443,44 @@ describe('stale-project safety', () => {
   });
 });
 
+describe('success is reported against the work that is still current', () => {
+  it('resetBible does not report success when the user leaves during the reload', async () => {
+    // The window the epoch guard alone misses: `stillCurrent` is sampled
+    // right after the reset call, but reloadIfStillOn and loadArchives are
+    // two more awaits during which the user can switch Works. A stale
+    // `true` here is what lets confirmChange chain designate() into the
+    // wrong bible.
+    useStoryStore.setState({ projectId: 'p1' });
+    manifest.mockImplementation(async () => {
+      useStoryStore.getState().clear();
+      useStoryStore.setState({ projectId: 'p2' });
+      return emptyManifest;
+    });
+
+    const ok = await useStoryStore.getState().resetBible();
+
+    expect(ok).toBe(false);
+    expect(showToastGlobal).not.toHaveBeenCalledWith('Story reset', 'success');
+  });
+
+  it('designateSourceChat refuses to write into a work it was not asked for', async () => {
+    putSection.mockResolvedValue(metaSection(1));
+    useStoryStore.setState({ projectId: 'p2' });
+
+    // The caller decided this designation was for p1 (confirmChange picked
+    // the chat there), but the store is on p2 by the time it runs.
+    const ok = await useStoryStore
+      .getState()
+      .designateSourceChat(CHAT, { projectId: 'p1' });
+
+    expect(ok).toBe(false);
+    expect(putSection).not.toHaveBeenCalled();
+    // And p2's own saving flag is untouched — the bail happens before the
+    // claim.
+    expect(useStoryStore.getState().isSaving).toBe(false);
+  });
+});
+
 describe('same-work revisit safety (store epoch)', () => {
   // The projectId guard alone can't see a leave-and-return: navigate away
   // from Work A and back to Work A while a mutation is in flight, and by

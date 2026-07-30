@@ -71,7 +71,15 @@ interface StoryState {
   /** Designate the bible's single source chat, creating `meta`. */
   designateSourceChat: (
     chat: ProjectChatRef,
-    opts?: { characters?: { avatar: string; name?: string }[]; title?: string }
+    opts?: {
+      characters?: { avatar: string; name?: string }[];
+      title?: string;
+      /** The Work this designation is FOR. Any caller with an await
+       *  between deciding and calling — confirmChange resets first, then
+       *  designates — must pass it: a mismatch aborts instead of writing
+       *  into whatever Work happens to be current by then. */
+      projectId?: string;
+    }
   ) => Promise<boolean>;
   resetBible: (reason?: StoryResetReason) => Promise<boolean>;
   /** Fetch the FIRST archive page — safe to call repeatedly, just
@@ -304,6 +312,9 @@ export const useStoryStore = create<StoryState>((set, get) => {
   designateSourceChat: async (chat, opts = {}) => {
     const { projectId } = get();
     if (!projectId) return false;
+    // Checked BEFORE claiming isSaving — bailing after would strand the
+    // flag on a Work this call has no business touching.
+    if (opts.projectId && opts.projectId !== projectId) return false;
     set({ isSaving: true });
     const epoch = storeEpoch;
 
@@ -442,8 +453,21 @@ export const useStoryStore = create<StoryState>((set, get) => {
       if (stillOn(projectId, epoch) && get().archivesLoaded) {
         await get().loadArchives();
       }
-      if (stillCurrent) showToastGlobal('Story reset', 'success');
-      return stillCurrent;
+      // Recomputed AFTER the two trailing awaits. `stillCurrent` above is
+      // sampled right after the network call, which is correct for the
+      // state writes it guards — but the user can switch Works during
+      // reloadIfStillOn or loadArchives, and a stale `true` returned here
+      // is exactly what lets confirmChange's
+      // `if (await resetBible(...)) await designate(chat)` write the OLD
+      // Work's chat into the NEW Work's bible.
+      //
+      // Deliberate consequence: switching away during the reload
+      // suppresses the success toast for a reset that DID succeed
+      // remotely. That is right — the toast would otherwise pop over the
+      // wrong Work's tab.
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) showToastGlobal('Story reset', 'success');
+      return stillCurrentNow;
     } catch (error) {
       const stillCurrent = stillOn(projectId, epoch);
       if (stillCurrent) {
@@ -567,8 +591,12 @@ export const useStoryStore = create<StoryState>((set, get) => {
       if (stillOn(projectId, epoch) && get().archivesLoaded) {
         await get().loadArchives();
       }
-      if (stillCurrent) showToastGlobal('Story restored', 'success');
-      return stillCurrent;
+      // See resetBible: recomputed after the trailing awaits, because the
+      // sample taken before them can report success for a Work the user
+      // has since left.
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) showToastGlobal('Story restored', 'success');
+      return stillCurrentNow;
     } catch (error) {
       const stillCurrent = stillOn(projectId, epoch);
       if (stillCurrent) set({ isSaving: false });

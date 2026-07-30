@@ -213,6 +213,10 @@ export function StoryTab({
         name: characterNameByAvatar.get(avatar),
       })),
       title: project.name,
+      // Belt and braces alongside resetBible's return value: confirmChange
+      // awaits a reset before getting here, and this pins the write to the
+      // Work the user actually picked the chat for.
+      projectId: project.id,
     });
     if (ok) setPickerOpen(false);
     return ok;
