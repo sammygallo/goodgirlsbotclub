@@ -146,6 +146,7 @@ export function StoryTab({
     factsHasMore,
     archives,
     archivesLoaded,
+    archivesHasMore,
     isLoading,
     isSaving,
     error,
@@ -156,6 +157,7 @@ export function StoryTab({
     designateSourceChat,
     resetBible,
     loadArchives,
+    loadMoreArchives,
     restoreArchive,
   } = useStoryStore();
   const characters = useCharacterStore((s) => s.characters);
@@ -396,6 +398,15 @@ export function StoryTab({
               </Button>
             </div>
           ))}
+          {archivesHasMore && (
+            <Button
+              variant="secondary"
+              onClick={() => void loadMoreArchives()}
+              className="mt-2"
+            >
+              Load more
+            </Button>
+          )}
         </div>
       )}
     </section>

@@ -53,6 +53,10 @@ interface StoryState {
    *  tab's archive panel is actually opened, not on every load(). */
   archives: StoryArchiveSummary[];
   archivesLoaded: boolean;
+  /** Keyset cursor for the next archive page — the (created_at, id) pair
+   *  the last page ended on. Null when there is no further page. */
+  archivesCursor: { createdAt: string; id: string } | null;
+  archivesHasMore: boolean;
 
   isLoading: boolean;
   isSaving: boolean;
@@ -70,8 +74,11 @@ interface StoryState {
     opts?: { characters?: { avatar: string; name?: string }[]; title?: string }
   ) => Promise<boolean>;
   resetBible: (reason?: StoryResetReason) => Promise<boolean>;
-  /** Fetch the archive list — safe to call repeatedly, just re-fetches. */
+  /** Fetch the FIRST archive page — safe to call repeatedly, just
+   *  re-fetches from the top (and resets any paging in progress). */
   loadArchives: () => Promise<void>;
+  /** Append the next archive page. */
+  loadMoreArchives: () => Promise<void>;
   /** Replace the live bible with a past snapshot. Builds its guard from
    *  the manifest already in state, so callers must have a fresh one
    *  (the Story tab always does — it's loaded on open). */
@@ -80,6 +87,7 @@ interface StoryState {
 
 const FACT_PAGE = 50;
 const SCENE_PAGE = 100;
+const ARCHIVE_PAGE = 25;
 
 /** True when the manifest says `meta` exists — i.e. a source chat has
  *  been designated and the bible has begun. */
@@ -136,6 +144,8 @@ export const useStoryStore = create<StoryState>((set, get) => {
   factsHasMore: false,
   archives: [],
   archivesLoaded: false,
+  archivesCursor: null,
+  archivesHasMore: false,
   isLoading: false,
   isSaving: false,
   error: null,
@@ -164,6 +174,8 @@ export const useStoryStore = create<StoryState>((set, get) => {
       factsHasMore: false,
       archives: [],
       archivesLoaded: false,
+      archivesCursor: null,
+      archivesHasMore: false,
       error: null,
     });
   },
@@ -455,14 +467,59 @@ export const useStoryStore = create<StoryState>((set, get) => {
     const seq = ++archivesFetchSeq;
     const epoch = storeEpoch;
     try {
-      const { archives } = await storyApi.listArchives(projectId);
+      const page = await storyApi.listArchives(projectId, { limit: ARCHIVE_PAGE });
       if (!stillOn(projectId, epoch) || seq !== archivesFetchSeq) return;
-      set({ archives, archivesLoaded: true });
+      set({
+        archives: page.archives,
+        archivesLoaded: true,
+        archivesCursor:
+          page.has_more && page.next_after_created_at && page.next_after_id
+            ? { createdAt: page.next_after_created_at, id: page.next_after_id }
+            : null,
+        archivesHasMore: page.has_more,
+      });
     } catch (error) {
       // A stale/superseded call (wrong project, or an older call whose
       // result a newer one already replaced) failing must not pop an
       // error toast over a list that's already showing correct, fresher
       // data — same staleness check as the success path above.
+      if (!stillOn(projectId, epoch) || seq !== archivesFetchSeq) return;
+      showToastGlobal(
+        error instanceof Error ? error.message : 'Failed to load archives',
+        'error'
+      );
+    }
+  },
+
+  loadMoreArchives: async () => {
+    const { projectId, archivesCursor, archivesHasMore } = get();
+    if (!projectId || !archivesHasMore || !archivesCursor) return;
+    // Shares archivesFetchSeq with loadArchives on purpose: a reset or
+    // restore firing loadArchives() mid-page must win, and this appended
+    // page must not land on top of that fresh first page.
+    const seq = ++archivesFetchSeq;
+    const epoch = storeEpoch;
+    try {
+      const page = await storyApi.listArchives(projectId, {
+        afterCreatedAt: archivesCursor.createdAt,
+        afterId: archivesCursor.id,
+        limit: ARCHIVE_PAGE,
+      });
+      // Post-await re-read, same reasoning as loadMoreFacts: appending
+      // onto the pre-await snapshot would resurrect rows a concurrent
+      // reload just replaced.
+      const live = get();
+      if (!stillOn(projectId, epoch) || seq !== archivesFetchSeq) return;
+      if (live.archivesCursor?.id !== archivesCursor.id) return;
+      set({
+        archives: [...live.archives, ...page.archives],
+        archivesCursor:
+          page.has_more && page.next_after_created_at && page.next_after_id
+            ? { createdAt: page.next_after_created_at, id: page.next_after_id }
+            : null,
+        archivesHasMore: page.has_more,
+      });
+    } catch (error) {
       if (!stillOn(projectId, epoch) || seq !== archivesFetchSeq) return;
       showToastGlobal(
         error instanceof Error ? error.message : 'Failed to load archives',

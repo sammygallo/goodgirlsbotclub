@@ -82,7 +82,12 @@ beforeEach(() => {
   manifest.mockResolvedValue(emptyManifest);
   listScenes.mockResolvedValue({ items: [], next_after_sequence: null, next_after_id: null, has_more: false });
   listFacts.mockResolvedValue({ items: [], next_after_seq: null, has_more: false });
-  listArchives.mockResolvedValue({ archives: [] });
+  listArchives.mockResolvedValue({
+    archives: [],
+    next_after_created_at: null,
+    next_after_id: null,
+    has_more: false,
+  });
 });
 
 describe('hasBible', () => {
@@ -666,7 +671,7 @@ describe('resetBible reason', () => {
   it('refreshes an already-open archive list after a reset', async () => {
     useStoryStore.setState({ projectId: 'p1', archivesLoaded: true });
     await useStoryStore.getState().resetBible();
-    expect(listArchives).toHaveBeenCalledWith('p1');
+    expect(listArchives).toHaveBeenCalledWith('p1', { limit: 25 });
   });
 
   it('does not fetch archives when the panel was never opened', async () => {
@@ -716,6 +721,95 @@ describe('loadArchives', () => {
     await slow;
 
     expect(useStoryStore.getState().archives).toEqual([]);
+  });
+});
+
+describe('loadMoreArchives', () => {
+  const archive = (id: string, createdAt: string) => ({
+    id,
+    reason: 'reset' as const,
+    source_label: null,
+    scene_count: 0,
+    fact_count: 0,
+    edit_count: 0,
+    size_bytes: 1,
+    created_at: createdAt,
+  });
+
+  it('appends the next page and carries the keyset cursor forward', async () => {
+    listArchives.mockResolvedValueOnce({
+      archives: [archive('a1', 't1')],
+      next_after_created_at: 't1',
+      next_after_id: 'a1',
+      has_more: true,
+    });
+    useStoryStore.setState({ projectId: 'p1' });
+    await useStoryStore.getState().loadArchives();
+
+    expect(useStoryStore.getState().archivesHasMore).toBe(true);
+    expect(useStoryStore.getState().archivesCursor).toEqual({
+      createdAt: 't1',
+      id: 'a1',
+    });
+
+    listArchives.mockResolvedValueOnce({
+      archives: [archive('a2', 't2')],
+      next_after_created_at: null,
+      next_after_id: null,
+      has_more: false,
+    });
+    await useStoryStore.getState().loadMoreArchives();
+
+    // The cursor is the (created_at, id) PAIR — a cursor on created_at
+    // alone drops rows tied at a page boundary.
+    expect(listArchives).toHaveBeenLastCalledWith('p1', {
+      afterCreatedAt: 't1',
+      afterId: 'a1',
+      limit: 25,
+    });
+    expect(useStoryStore.getState().archives.map((a) => a.id)).toEqual(['a1', 'a2']);
+    expect(useStoryStore.getState().archivesHasMore).toBe(false);
+    expect(useStoryStore.getState().archivesCursor).toBeNull();
+  });
+
+  it('is a no-op when there is no further page', async () => {
+    useStoryStore.setState({ projectId: 'p1', archivesHasMore: false });
+    await useStoryStore.getState().loadMoreArchives();
+    expect(listArchives).not.toHaveBeenCalled();
+  });
+
+  it('a page landing after a reload does not resurrect replaced rows', async () => {
+    // resetBible/restoreArchive call loadArchives() on success. A page
+    // still in flight from before that must not append onto the fresh
+    // first page — both share archivesFetchSeq so the newer call wins.
+    useStoryStore.setState({
+      projectId: 'p1',
+      archives: [archive('old', 't1')],
+      archivesCursor: { createdAt: 't1', id: 'old' },
+      archivesHasMore: true,
+    });
+    let release: (v: unknown) => void = () => {};
+    listArchives.mockImplementationOnce(
+      () => new Promise((r) => { release = r as (v: unknown) => void; })
+    );
+
+    const slow = useStoryStore.getState().loadMoreArchives();
+    listArchives.mockResolvedValueOnce({
+      archives: [archive('fresh', 't9')],
+      next_after_created_at: null,
+      next_after_id: null,
+      has_more: false,
+    });
+    await useStoryStore.getState().loadArchives();
+    release({
+      archives: [archive('stale', 't0')],
+      next_after_created_at: null,
+      next_after_id: null,
+      has_more: false,
+    });
+    await slow;
+
+    expect(useStoryStore.getState().archives.map((a) => a.id)).toEqual(['fresh']);
   });
 });
 
@@ -818,6 +912,6 @@ describe('restoreArchive', () => {
 
     await useStoryStore.getState().restoreArchive('archive-1');
 
-    expect(listArchives).toHaveBeenCalledWith('p1');
+    expect(listArchives).toHaveBeenCalledWith('p1', { limit: 25 });
   });
 });

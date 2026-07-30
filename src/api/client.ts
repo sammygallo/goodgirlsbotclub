@@ -1833,8 +1833,15 @@ export interface StoryArchiveSummary {
   created_at: string;
 }
 
+/** Keyset page, newest first. The cursor is the (created_at, id) PAIR —
+ *  `created_at` is not unique (a coarse clock, or two archive-producing
+ *  calls in one tick), and a cursor on the non-unique half alone drops
+ *  every archive tied with the one that ended the previous page. */
 export interface StoryArchiveListOut {
   archives: StoryArchiveSummary[];
+  next_after_created_at: string | null;
+  next_after_id: string | null;
+  has_more: boolean;
 }
 
 export interface StoryRestoreOut {
@@ -2078,9 +2085,22 @@ export const storyApi = {
     );
   },
 
-  /** Newest first — never the snapshot payload (see StoryArchiveSummary). */
-  async listArchives(projectId: string): Promise<StoryArchiveListOut> {
-    return apiRequest<StoryArchiveListOut>(`/projects/${projectId}/story/archives`);
+  /** Newest first — never the snapshot payload (see StoryArchiveSummary).
+   *  Paged like listScenes/listFacts: one archive is minted per reset,
+   *  source-chat change and restore, so a long-lived Work accumulates
+   *  them without bound. */
+  async listArchives(
+    projectId: string,
+    opts: { afterCreatedAt?: string; afterId?: string; limit?: number } = {}
+  ): Promise<StoryArchiveListOut> {
+    const q = new URLSearchParams();
+    if (opts.afterCreatedAt) q.set('after_created_at', opts.afterCreatedAt);
+    if (opts.afterId) q.set('after_id', opts.afterId);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return apiRequest<StoryArchiveListOut>(
+      `/projects/${projectId}/story/archives${qs ? `?${qs}` : ''}`
+    );
   },
 
   /** Replaces the live bible with a past snapshot. `expected` must be
