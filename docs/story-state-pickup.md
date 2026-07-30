@@ -7,8 +7,12 @@ anything); the schema is [story-state-schema-v1.md](story-state-schema-v1.md)
 (read its **v1.1 amendments** section — the original YAML above it is
 superseded in places) and its [compatibility audit](story-state-schema-v1-audit.md).
 
-Last updated: 2026-07-30, after Phase 7 was built + reviewed (still
-gated, unmerged) and the plan's six open questions were resolved.
+Last updated: 2026-07-30, after Phase 9 (bible snapshot archive) was
+built, adversarially reviewed twice over (backend + frontend, 17
+findings between them, all fixed), verified live end-to-end, and both
+PRs opened — ggbc-backend **#47**, goodgirlsbotclub **#343**, CI green
+on both, **awaiting Sammy's review/merge**. Phase 7 is still built +
+reviewed but gated, unmerged (see below), unaffected by Phase 9.
 
 ---
 
@@ -30,16 +34,21 @@ in draft, gated on the Phase-1 soak** (see below — do not merge yet).
 | 5 | Story tab, source-chat designation, read plumbing | goodgirlsbotclub #336 | merged, deployed |
 | 6 | Cold-start ingestion, WI replay, checkpoints | goodgirlsbotclub #337 | merged, deployed |
 | 7 | Transcript walk (chunker, walk, resume, user_voice) | goodgirlsbotclub **#339** | **draft, gated on soak — see below** |
+| 9 | Bible snapshot archive (snapshot+restore, both repos) | ggbc-backend **#47** + goodgirlsbotclub **#343** | **open, adversarially reviewed, CI green, awaiting merge** |
 
 Plus docs: schema + audit (#330), the plan (#332), v1.1 amendments
 (#335), the previous pickup doc (#338), **the plan's six open questions
 resolved** (#340, merged — new Phase 9, Phase 10 gains fact hard-delete).
 
-Also shipped, independent of phase order and **not gated on anything**:
+Also shipped and merged, independent of phase order:
 **weak/cheap-model warning** in `StartIngestModal` — goodgirlsbotclub
-**#341** (open, ungated, merge whenever reviewed).
+**#341** (merged 2026-07-30).
 
-**Backend migration head: `0015_story_log_seq`** (applied in production).
+**Backend migration head in PRODUCTION: `0015_story_log_seq`.**
+ggbc-backend#47 adds `0016_add_story_archives` but is NOT merged yet —
+don't assume 0016 is live until that PR actually merges and gets
+deployed; check `alembic current` against the running container if it
+matters, not this doc.
 
 ### What a user can do today (in production)
 
@@ -47,7 +56,10 @@ Open a Work → **Story** tab → designate a source chat → **Build the
 groundwork**. That runs cold start (card/persona/lorebooks → bible, two
 model calls on their own key) and the world-info replay. Scenes and facts
 are still empty in production: the transcript walk (Phase 7) is built
-and reviewed but not merged yet.
+and reviewed but not merged yet. "Reset story" is still the only escape
+hatch and is still irreversible in production — Phase 9's snapshot +
+restore (auto-snapshot before reset, a snapshot list, a restore action)
+is built, reviewed, and PR'd (#47 + #343) but not merged/deployed yet.
 
 ---
 
@@ -70,37 +82,35 @@ just trust the date on this doc. As of this doc's last update the soak
 was only ~10 hours old — nowhere close.
 
 **Do not merge PR #339 until this has run for multiple days.** Building
-on top of it, reviewing it further, or working on Phase 8/9 in the
+on top of it, reviewing it further, or working on Phase 8 in the
 meantime is all fine — only the *merge* is gated.
 
 ---
 
 ## Next up
 
-Three independent threads, none blocking each other:
+Two independent threads, neither blocking the other:
 
 1. **Wait out the soak, then merge #339.** Nothing to do here but watch
    the clock (see above) and merge when it's actually been days, not
    hours.
-2. **Phase 9 — bible snapshot archive** (new phase, plan §3). Per the
-   plan's own dependency note it's independent of Phase 7/8 (only needs
-   Phase 4's tables) — **can be started now**, doesn't need to wait on
-   the soak. Design a `story_archives` table (ggbc-backend, its own
-   migration) storing a full snapshot of everything a discard would
-   destroy, auto-taken before "change source chat" / `/story/reset` /
-   re-ingest-from-scratch, plus a restore action. See the plan's Phase 9
-   bullet for the full spec.
-3. **Review/merge #341** (weak-model warning) — small, already tested
-   and manually verified, no dependencies.
+2. **Review/merge Phase 9's two PRs** — ggbc-backend **#47** and
+   goodgirlsbotclub **#343**. Both built, adversarially reviewed (see
+   below), verified live end-to-end, CI green. Backend should merge
+   first (or alongside — the frontend degrades gracefully against an
+   older backend since these are all new endpoints, but restore
+   obviously needs them to exist). Nothing else is gated on this
+   merging except Phase 10 (see below).
 
 Once #339 actually merges: **Phase 8 (Reconcile)** is next in strict
-sequence (needs 7), then **Phase 10** (review checkpoint + lock canon +
-the new fact hard-delete work — plan resolved this: a real owner-scoped
-delete, not append-only-only, since it breaks the deliberately-built
-no-update/delete invariant it needs its own migration + review pass),
-then **Phase 11** (incremental re-ingestion — also where Phase 7's
-"trailing messages added after a resumed plan was pinned" gap gets a
-real fix instead of just a surfaced warning).
+sequence (needs 7). Once Phase 9's PRs merge too: **Phase 10** (review
+checkpoint + lock canon + the new fact hard-delete work — plan resolved
+this: a real owner-scoped delete, not append-only-only, since it breaks
+the deliberately-built no-update/delete invariant it needs its own
+migration + review pass) needs BOTH 8 and 9. Then **Phase 11**
+(incremental re-ingestion — also where Phase 7's "trailing messages
+added after a resumed plan was pinned" gap gets a real fix instead of
+just a surfaced warning).
 
 ---
 
@@ -129,6 +139,41 @@ seeding scene ids from the scene's own first real message id, and fact
 ids from `(source message id, fact text)` — so only a genuine
 re-derivation of the *same* content can collide. Keep this pattern for
 any future pass that mints ids from model output.
+
+**A per-project advisory lock (`pg_advisory_xact_lock`) must be
+acquired immediately before the DB write it protects, never before
+reading/validating the request body.** Phase 9 added the lock to three
+single-row write endpoints (section/scene PUT, scene DELETE) so they'd
+serialize against the new restore endpoint's whole-bible staleness
+check + wipe — but placed the lock call *before* the body was read.
+Reviewed as a **blocker**: a slow or deliberately-trickled request body
+held the project's lock for its entire transfer time, blocking every
+other write to the project — an unbounded, self-inflicted DoS with no
+request timeout anywhere in the app to bound it. Every *other* locked
+path in this router (bulk scene writes, fact/edit append, reset,
+restore) already validated the body first and locked only right before
+the critical section; the three new ones didn't match that pattern.
+Fixed by moving the lock to immediately before the write. Lesson: when
+adding a lock to an existing endpoint, lock last, not first.
+
+**A row recreated after being deleted (same id, brought back by a
+restore or similar) must get a version/CAS token that cannot coincide
+with a token a client cached from before the deletion.** Phase 9's
+restore endpoint recreated every section/scene at the hardcoded
+`server_ts=1` — the same value a brand-new row always starts at.
+Reviewed as a **major ABA hazard**: a client holding a `base_ts` from
+*before* the reset-that-preceded-the-restore (e.g. `1`, from when the
+row was first created) would have its now-stale token coincidentally
+match the freshly-restored row's version, and its write/delete would
+silently succeed against content it never actually saw. Reproduced
+live: a `base_ts=1` DELETE that had just been correctly rejected as
+stale pre-reset was accepted post-restore, purely by coincidence of the
+version number. Fixed by seeding restored rows' version from the
+current epoch in milliseconds instead of a constant — a scale no real
+`base_ts` counter (which increments by 1 per write) will ever reach.
+Keep this pattern for any future pass that resurrects an id after
+deletion: never restart a version counter at a fixed low value the old
+incarnation could also have held.
 
 **A resumable pass must be detected *before* re-running anything
 upstream of it, not just before the pass itself.** Phase 7's `run()`
@@ -245,9 +290,18 @@ state completely and reliably works).
 
 Every phase has been reviewed by a multi-lens adversarial workflow before
 commit, and **every single phase had a defect the green test suite
-missed**. Phase 7 was the starkest case yet: **11 findings, all 11
-confirmed on independent adversarial re-verification, 3 of them
-blockers** — the highest hit rate of any phase so far. Worth continuing:
+missed**. Phase 7 was the starkest case yet at the time: **11 findings,
+all 11 confirmed on independent adversarial re-verification, 3 of them
+blockers.** Phase 9 matched that hit rate exactly on the backend side —
+**9 findings raised, all 9 confirmed, 0 refuted**, including a blocker
+(the lock-before-body-validation DoS) and a major concurrency defect
+(the restore ABA hazard) neither the shipped test suite nor a first
+read-through caught — plus a **separate** frontend-side review, **8 of
+10 findings confirmed** (2 refuted as non-issues), including two
+blockers in `storyStore.ts` (unconditional cross-project state
+clobbering in `resetBible`/`restoreArchive`, caught by the same "did
+you check `get().projectId` is still current" pattern as prior phases,
+just in two NEW functions). Worth continuing:
 
 - Lenses per phase: wire-contract (against the backend's real Pydantic
   models — `extra="forbid"` means a wrong field name is a runtime 422 no
@@ -260,9 +314,11 @@ blockers** — the highest hit rate of any phase so far. Worth continuing:
   Postgres deadlocks surfacing as 500s, a cursor that skipped rows
   forever, a scene-pagination cursor on a non-unique column, a blocker
   that started a second concurrent **paid** model run, cold_start
-  reminting character ids on every resume, and scene/fact ids collidable
-  across a differently-shaped retry (see the hazards above for the last
-  two — they're the newest and least obvious).
+  reminting character ids on every resume, scene/fact ids collidable
+  across a differently-shaped retry, an advisory lock held across a
+  request body's transfer time (unbounded DoS), and an ABA version-token
+  hazard on rows recreated by a restore (see the hazards above for the
+  newest three — they're the least obvious).
 
 **Standing lessons:**
 - Any read-check-write in an async handler needs the check *in the SQL*.
@@ -275,6 +331,16 @@ blockers** — the highest hit rate of any phase so far. Worth continuing:
   ordinal position — the model's non-determinism can reshuffle that.
 - A resume path must be detected *before* anything upstream of it runs,
   not just guarded at its own entry point.
+- On the frontend store side: EVERY `set()` that runs after an `await`
+  needs its own `get().projectId === projectId` check, not just the
+  `reloadIfStillCurrent` call that typically follows it. Phase 9's
+  `resetBible`/`restoreArchive` both cleared `sections`/`scenes`/
+  `isSaving` unconditionally right after their API call resolved —
+  correct for the common case, but wrong the instant the user had
+  switched Works while the call was in flight, since it would clobber
+  the NEW Work's live state (including stomping its own `isSaving`
+  flag). The `reloadIfStillCurrent` guard downstream doesn't retroactively
+  protect an unconditional `set()` that already ran before it.
 
 ---
 
@@ -291,10 +357,10 @@ the plan's §4:
    plan text, i.e. **still an open design detail**, just not an open
    *policy* question anymore.
 3. **Build the snapshot archive first** — new Phase 9, snapshot +
-   restore (not export-only). Table schema and restore-conflict handling
-   are not designed yet — that's the actual work of Phase 9.
+   restore (not export-only). Built, reviewed, and PR'd (ggbc-backend
+   #47 + goodgirlsbotclub #343) — see "Where things stand" above.
 4. **Group chats stay allowed** as bible sources, unchanged.
-5. **Warn about weak/cheap models, informational only** — shipped, PR
-   #341.
+5. **Warn about weak/cheap models, informational only** — shipped and
+   merged, PR #341.
 6. **No gating** from `content_rating` × `derivative_flags` on anything
    downstream.
