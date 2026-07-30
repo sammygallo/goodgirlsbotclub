@@ -48,6 +48,7 @@ vi.mock('../api/client', () => ({
 vi.mock('../components/ui/Toast', () => ({ showToastGlobal: vi.fn() }));
 
 const { useStoryStore, hasBible } = await import('./storyStore');
+const { showToastGlobal } = await import('../components/ui/Toast');
 
 const CHAT = { character_avatar: 'Ivy.png', file_name: 'Ivy - 1' };
 
@@ -333,10 +334,35 @@ describe('stale-project safety', () => {
     });
     useStoryStore.setState({ projectId: 'p1' });
 
-    await useStoryStore.getState().designateSourceChat(CHAT);
+    const ok = await useStoryStore.getState().designateSourceChat(CHAT);
 
+    // A remotely-successful write against a Work the caller already left
+    // is not "success" from that caller's point of view — a caller like
+    // confirmChange() must not chain further action off this.
+    expect(ok).toBe(false);
     expect(useStoryStore.getState().projectId).toBe('p2');
     expect(manifest).not.toHaveBeenCalled();
+  });
+
+  it('does not clobber a different projects meta section', async () => {
+    // p2 has its own real meta AND its own save genuinely in flight — p1's
+    // designateSourceChat resolving late must not touch any of it.
+    putSection.mockImplementation(async () => {
+      useStoryStore.setState({
+        projectId: 'p2',
+        sections: { meta: metaSection(5) },
+        isSaving: true,
+      });
+      return metaSection(1);
+    });
+    useStoryStore.setState({ projectId: 'p1' });
+
+    await useStoryStore.getState().designateSourceChat(CHAT);
+
+    const state = useStoryStore.getState();
+    expect(state.projectId).toBe('p2');
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
   });
 
   it('resetBible does not re-point a switched-away store either', async () => {
@@ -345,8 +371,13 @@ describe('stale-project safety', () => {
     });
     useStoryStore.setState({ projectId: 'p1' });
 
-    await useStoryStore.getState().resetBible();
+    const ok = await useStoryStore.getState().resetBible();
 
+    // Same reasoning as designateSourceChat above: confirmChange chains
+    // `if (await resetBible(...)) await designate(chat)` off this exact
+    // return value, so a stale `true` here would write Work A's newly
+    // picked chat into whatever Work is current by the time this resolves.
+    expect(ok).toBe(false);
     expect(useStoryStore.getState().projectId).toBe('p2');
     expect(manifest).not.toHaveBeenCalled();
   });
@@ -397,8 +428,9 @@ describe('stale-project safety', () => {
       };
     });
 
-    await useStoryStore.getState().restoreArchive('archive-1');
+    const ok = await useStoryStore.getState().restoreArchive('archive-1');
 
+    expect(ok).toBe(false);
     const state = useStoryStore.getState();
     expect(state.projectId).toBe('p2');
     expect(state.sections.meta?.server_ts).toBe(5);
@@ -477,6 +509,25 @@ describe('loadArchives sequencing', () => {
     // The stale first call resolving after the fresh one must not revert
     // the list back to what it saw.
     expect(useStoryStore.getState().archives.map((a) => a.id)).toEqual(['fresh']);
+  });
+
+  it('a stale calls failure does not toast an error over an already-fresh list', async () => {
+    useStoryStore.setState({ projectId: 'p1' });
+    let rejectFirst: (e: unknown) => void = () => {};
+    listArchives
+      .mockImplementationOnce(() => new Promise((_r, rej) => { rejectFirst = rej; }))
+      .mockResolvedValueOnce({ archives: [] });
+
+    const firstCall = useStoryStore.getState().loadArchives();
+    await useStoryStore.getState().loadArchives();
+
+    rejectFirst(new Error('stale network blip'));
+    await firstCall.catch(() => {});
+
+    // The newer call already succeeded and populated the list correctly —
+    // the older, superseded call failing afterward must not pop a
+    // misleading error toast over data the user already sees is fine.
+    expect(showToastGlobal).not.toHaveBeenCalled();
   });
 });
 

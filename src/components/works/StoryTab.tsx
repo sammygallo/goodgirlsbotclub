@@ -380,7 +380,7 @@ export function StoryTab({
               <div className="min-w-0">
                 <p className="text-sm text-[var(--color-text-primary)] truncate">
                   {a.source_label || 'Untitled'} ·{' '}
-                  {ARCHIVE_REASON_LABEL[a.reason]}
+                  {ARCHIVE_REASON_LABEL[a.reason] ?? 'a snapshot'}
                 </p>
                 <p className="text-xs text-[var(--color-text-secondary)]">
                   {new Date(a.created_at).toLocaleString()} ·{' '}

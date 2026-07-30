@@ -1813,6 +1813,13 @@ export type StoryArchiveReason =
   | 'reingest'
   | 'restore_backup';
 
+/** The subset of StoryArchiveReason a client is allowed to pass to
+ *  POST /story/reset. `restore_backup` is reserved for the tag a restore
+ *  applies to its own safety snapshot — the backend rejects it here with
+ *  a 422 (`StoryResetIn.reason` uses this same narrowed type), so this
+ *  keeps a caller from mislabeling an ordinary reset that way. */
+export type StoryResetReason = Exclude<StoryArchiveReason, 'restore_backup'>;
+
 /** One row of GET /story/archives — never the snapshot payload itself,
  *  same "list is a projection" principle as StorySectionSummary. */
 export interface StoryArchiveSummary {
@@ -1936,6 +1943,23 @@ async function storyWrite<T>(
   return response.json();
 }
 
+/** Runtime check for a 409 body's `current` — it crosses the network
+ *  boundary as `unknown`, and a TS cast alone doesn't stop a malformed or
+ *  differently-shaped error body (version skew, a proxy rewrite) from
+ *  being adopted straight into store state and crashing on the next
+ *  `hasBible()`/`.sections` access. Treat anything that doesn't look like
+ *  a real manifest as absent rather than trusting it. */
+export function isStoryManifestShape(value: unknown): value is StoryManifest {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Array.isArray(v.sections) &&
+    typeof v.scene_count === 'number' &&
+    typeof v.fact_count === 'number' &&
+    typeof v.edit_count === 'number'
+  );
+}
+
 /** Restore's 409 body shape (`{error, current: StoryManifest}`) has no
  *  `current_ts`, so it can't reuse storyWrite's StoryConflictError path
  *  without lying about what "current" means. */
@@ -1950,8 +1974,9 @@ async function storyRestoreCall(path: string, body: unknown): Promise<StoryResto
 
   if (response.status === 409) {
     const parsed = await response.json().catch(() => ({}));
-    const detail = (parsed?.detail ?? parsed) as { current?: StoryManifest | null };
-    throw new StoryRestoreConflictError(detail?.current ?? null);
+    const detail = (parsed?.detail ?? parsed) as { current?: unknown };
+    const current = detail?.current;
+    throw new StoryRestoreConflictError(isStoryManifestShape(current) ? current : null);
   }
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
@@ -2044,7 +2069,7 @@ export const storyApi = {
    *  confirm first regardless. */
   async reset(
     projectId: string,
-    reason: StoryArchiveReason = 'reset'
+    reason: StoryResetReason = 'reset'
   ): Promise<void> {
     await storyWrite<Record<string, unknown>>(
       `/projects/${projectId}/story/reset`,

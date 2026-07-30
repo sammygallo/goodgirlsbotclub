@@ -4,8 +4,8 @@ import {
   StoryConflictError,
   StoryRestoreConflictError,
   type ProjectChatRef,
-  type StoryArchiveReason,
   type StoryArchiveSummary,
+  type StoryResetReason,
   type StoryLogEntry,
   type StoryManifest,
   type StorySceneSummary,
@@ -69,7 +69,7 @@ interface StoryState {
     chat: ProjectChatRef,
     opts?: { characters?: { avatar: string; name?: string }[]; title?: string }
   ) => Promise<boolean>;
-  resetBible: (reason?: StoryArchiveReason) => Promise<boolean>;
+  resetBible: (reason?: StoryResetReason) => Promise<boolean>;
   /** Fetch the archive list — safe to call repeatedly, just re-fetches. */
   loadArchives: () => Promise<void>;
   /** Replace the live bible with a past snapshot. Builds its guard from
@@ -307,7 +307,13 @@ export const useStoryStore = create<StoryState>((set, get) => {
         build(existing) as unknown as Record<string, unknown>,
         baseTs
       );
-      set((s) => ({ sections: { ...s.sections, meta: section } }));
+      // The user may have switched to a different Work while this PUT
+      // was in flight — meta belongs to whichever project is CURRENT, so
+      // writing it unconditionally would clobber a different Work's live
+      // state (same class of bug reviewed and fixed in resetBible).
+      if (get().projectId === projectId) {
+        set((s) => ({ sections: { ...s.sections, meta: section } }));
+      }
       return section;
     };
 
@@ -318,8 +324,12 @@ export const useStoryStore = create<StoryState>((set, get) => {
         (current?.data as unknown as MetaSection) ?? null
       );
       await reloadIfStillCurrent(get, projectId);
-      set({ isSaving: false });
-      return true;
+      const stillCurrent = get().projectId === projectId;
+      if (stillCurrent) set({ isSaving: false });
+      // A caller acting on this return value (e.g. confirmChange calling
+      // designate() after resetBible()) must not treat a remotely
+      // successful write against an abandoned project as success.
+      return stillCurrent;
     } catch (error) {
       if (error instanceof StoryConflictError) {
         // Another device wrote meta first. Adopt it and retry once — the
@@ -328,26 +338,33 @@ export const useStoryStore = create<StoryState>((set, get) => {
           const winnerData = error.current?.data as unknown as MetaSection | undefined;
           await write(error.currentTs, winnerData ?? null);
           await reloadIfStillCurrent(get, projectId);
-          set({ isSaving: false });
-          showToastGlobal(
-            'Story was updated on another device — changes merged',
-            'warning'
-          );
-          return true;
+          const stillCurrent = get().projectId === projectId;
+          if (stillCurrent) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'Story was updated on another device — changes merged',
+              'warning'
+            );
+          }
+          return stillCurrent;
         } catch {
-          set({ isSaving: false });
-          showToastGlobal(
-            'Failed to set the source chat — it changed on another device',
-            'error'
-          );
+          if (get().projectId === projectId) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'Failed to set the source chat — it changed on another device',
+              'error'
+            );
+          }
           return false;
         }
       }
-      set({ isSaving: false });
-      showToastGlobal(
-        error instanceof Error ? error.message : 'Failed to set the source chat',
-        'error'
-      );
+      if (get().projectId === projectId) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to set the source chat',
+          'error'
+        );
+      }
       return false;
     }
   },
@@ -359,11 +376,14 @@ export const useStoryStore = create<StoryState>((set, get) => {
     try {
       await storyApi.reset(projectId, reason);
       // The user may have switched to a different Work while the reset
-      // was in flight — every field below (including isSaving) belongs
-      // to whichever project is CURRENT, so clearing it unconditionally
-      // would wipe a different Work's live state and stomp its own
-      // isSaving flag out from under it.
-      if (get().projectId === projectId) {
+      // was in flight — every field below (including isSaving, the
+      // success toast, and the return value a caller acts on) belongs
+      // to whichever project is CURRENT, so clearing/reporting it
+      // unconditionally would wipe a different Work's live state, stomp
+      // its own isSaving flag, and lie to a caller (e.g. confirmChange's
+      // designate-after-reset) about which project actually succeeded.
+      const stillCurrent = get().projectId === projectId;
+      if (stillCurrent) {
         set({
           sections: {},
           scenes: [],
@@ -380,14 +400,17 @@ export const useStoryStore = create<StoryState>((set, get) => {
       if (get().projectId === projectId && get().archivesLoaded) {
         await get().loadArchives();
       }
-      showToastGlobal('Story reset', 'success');
-      return true;
+      if (stillCurrent) showToastGlobal('Story reset', 'success');
+      return stillCurrent;
     } catch (error) {
-      if (get().projectId === projectId) set({ isSaving: false });
-      showToastGlobal(
-        error instanceof Error ? error.message : 'Failed to reset the story',
-        'error'
-      );
+      const stillCurrent = get().projectId === projectId;
+      if (stillCurrent) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to reset the story',
+          'error'
+        );
+      }
       return false;
     }
   },
@@ -405,6 +428,11 @@ export const useStoryStore = create<StoryState>((set, get) => {
       if (get().projectId !== projectId || seq !== archivesFetchSeq) return;
       set({ archives, archivesLoaded: true });
     } catch (error) {
+      // A stale/superseded call (wrong project, or an older call whose
+      // result a newer one already replaced) failing must not pop an
+      // error toast over a list that's already showing correct, fresher
+      // data — same staleness check as the success path above.
+      if (get().projectId !== projectId || seq !== archivesFetchSeq) return;
       showToastGlobal(
         error instanceof Error ? error.message : 'Failed to load archives',
         'error'
@@ -429,8 +457,10 @@ export const useStoryStore = create<StoryState>((set, get) => {
     try {
       await storyApi.restoreArchive(projectId, archiveId, expected);
       // See resetBible: a switched-away project's state (including its
-      // OWN isSaving) must not be clobbered by this call's cleanup.
-      if (get().projectId === projectId) {
+      // OWN isSaving, the success toast, and the return value a caller
+      // acts on) must not be clobbered or misreported by this call.
+      const stillCurrent = get().projectId === projectId;
+      if (stillCurrent) {
         set({
           sections: {},
           scenes: [],
@@ -446,27 +476,34 @@ export const useStoryStore = create<StoryState>((set, get) => {
       if (get().projectId === projectId && get().archivesLoaded) {
         await get().loadArchives();
       }
-      showToastGlobal('Story restored', 'success');
-      return true;
+      if (stillCurrent) showToastGlobal('Story restored', 'success');
+      return stillCurrent;
     } catch (error) {
-      if (get().projectId === projectId) set({ isSaving: false });
+      const stillCurrent = get().projectId === projectId;
+      if (stillCurrent) set({ isSaving: false });
       if (error instanceof StoryRestoreConflictError) {
         // Adopt the fresh manifest the 409 carried so the next attempt's
         // guard is built from current state, not the stale one that just
-        // got rejected.
-        if (error.current && get().projectId === projectId) {
+        // got rejected. `error.current` is already runtime-validated at
+        // the client.ts boundary (isStoryManifestShape), so this can't
+        // adopt a malformed shape and crash hasBible()/sections reads.
+        if (error.current && stillCurrent) {
           set({ manifest: error.current });
         }
-        showToastGlobal(
-          'The story changed since this list was loaded — try again',
-          'warning'
-        );
+        if (stillCurrent) {
+          showToastGlobal(
+            'The story changed since this list was loaded — try again',
+            'warning'
+          );
+        }
         return false;
       }
-      showToastGlobal(
-        error instanceof Error ? error.message : 'Failed to restore the story',
-        'error'
-      );
+      if (stillCurrent) {
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to restore the story',
+          'error'
+        );
+      }
       return false;
     }
   },
