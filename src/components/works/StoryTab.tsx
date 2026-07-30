@@ -146,6 +146,7 @@ export function StoryTab({
     factsHasMore,
     archives,
     archivesLoaded,
+    archivesHasMore,
     isLoading,
     isSaving,
     error,
@@ -156,6 +157,7 @@ export function StoryTab({
     designateSourceChat,
     resetBible,
     loadArchives,
+    loadMoreArchives,
     restoreArchive,
   } = useStoryStore();
   const characters = useCharacterStore((s) => s.characters);
@@ -211,6 +213,10 @@ export function StoryTab({
         name: characterNameByAvatar.get(avatar),
       })),
       title: project.name,
+      // Belt and braces alongside resetBible's return value: confirmChange
+      // awaits a reset before getting here, and this pins the write to the
+      // Work the user actually picked the chat for.
+      projectId: project.id,
     });
     if (ok) setPickerOpen(false);
     return ok;
@@ -396,6 +402,15 @@ export function StoryTab({
               </Button>
             </div>
           ))}
+          {archivesHasMore && (
+            <Button
+              variant="secondary"
+              onClick={() => void loadMoreArchives()}
+              className="mt-2"
+            >
+              Load more
+            </Button>
+          )}
         </div>
       )}
     </section>

@@ -82,7 +82,12 @@ beforeEach(() => {
   manifest.mockResolvedValue(emptyManifest);
   listScenes.mockResolvedValue({ items: [], next_after_sequence: null, next_after_id: null, has_more: false });
   listFacts.mockResolvedValue({ items: [], next_after_seq: null, has_more: false });
-  listArchives.mockResolvedValue({ archives: [] });
+  listArchives.mockResolvedValue({
+    archives: [],
+    next_after_created_at: null,
+    next_after_id: null,
+    has_more: false,
+  });
 });
 
 describe('hasBible', () => {
@@ -438,6 +443,132 @@ describe('stale-project safety', () => {
   });
 });
 
+describe('success is reported against the work that is still current', () => {
+  it('resetBible does not report success when the user leaves during the reload', async () => {
+    // The window the epoch guard alone misses: `stillCurrent` is sampled
+    // right after the reset call, but reloadIfStillOn and loadArchives are
+    // two more awaits during which the user can switch Works. A stale
+    // `true` here is what lets confirmChange chain designate() into the
+    // wrong bible.
+    useStoryStore.setState({ projectId: 'p1' });
+    manifest.mockImplementation(async () => {
+      useStoryStore.getState().clear();
+      useStoryStore.setState({ projectId: 'p2' });
+      return emptyManifest;
+    });
+
+    const ok = await useStoryStore.getState().resetBible();
+
+    expect(ok).toBe(false);
+    expect(showToastGlobal).not.toHaveBeenCalledWith('Story reset', 'success');
+  });
+
+  it('designateSourceChat refuses to write into a work it was not asked for', async () => {
+    putSection.mockResolvedValue(metaSection(1));
+    useStoryStore.setState({ projectId: 'p2' });
+
+    // The caller decided this designation was for p1 (confirmChange picked
+    // the chat there), but the store is on p2 by the time it runs.
+    const ok = await useStoryStore
+      .getState()
+      .designateSourceChat(CHAT, { projectId: 'p1' });
+
+    expect(ok).toBe(false);
+    expect(putSection).not.toHaveBeenCalled();
+    // And p2's own saving flag is untouched — the bail happens before the
+    // claim.
+    expect(useStoryStore.getState().isSaving).toBe(false);
+  });
+});
+
+describe('same-work revisit safety (store epoch)', () => {
+  // The projectId guard alone can't see a leave-and-return: navigate away
+  // from Work A and back to Work A while a mutation is in flight, and by
+  // the time it resolves projectId reads 'p1' again — so the guard passes
+  // and the stale call wipes the SECOND visit's freshly loaded state.
+  // clear() (which the Story tab calls on unmount) bumps an epoch that
+  // makes "same project" mean "same visit".
+
+  /** Simulate the tab unmounting and immediately remounting on the same
+   *  Work, with its own state loaded and its own save in flight. */
+  const leaveAndReturn = () => {
+    useStoryStore.getState().clear();
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: { meta: metaSection(5) },
+      isSaving: true,
+    });
+  };
+
+  it('resetBible does not wipe the second visit to the same work', async () => {
+    reset.mockImplementation(async () => leaveAndReturn());
+    useStoryStore.setState({ projectId: 'p1' });
+
+    const ok = await useStoryStore.getState().resetBible();
+
+    expect(ok).toBe(false);
+    const state = useStoryStore.getState();
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
+    expect(manifest).not.toHaveBeenCalled();
+  });
+
+  it('restoreArchive does not wipe the second visit to the same work', async () => {
+    useStoryStore.setState({ projectId: 'p1', manifest: emptyManifest });
+    restoreArchiveApi.mockImplementation(async () => {
+      leaveAndReturn();
+      return {
+        sections_restored: 0,
+        scenes_restored: 0,
+        facts_restored: 0,
+        edits_restored: 0,
+        pre_restore_archive_id: null,
+      };
+    });
+
+    const ok = await useStoryStore.getState().restoreArchive('archive-1');
+
+    expect(ok).toBe(false);
+    const state = useStoryStore.getState();
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
+  });
+
+  it('designateSourceChat does not write meta into the second visit', async () => {
+    putSection.mockImplementation(async () => {
+      leaveAndReturn();
+      return metaSection(1);
+    });
+    useStoryStore.setState({ projectId: 'p1' });
+
+    const ok = await useStoryStore.getState().designateSourceChat(CHAT);
+
+    expect(ok).toBe(false);
+    const state = useStoryStore.getState();
+    // The second visit's meta (server_ts 5) survives; the stale write's
+    // server_ts 1 never lands.
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
+    expect(manifest).not.toHaveBeenCalled();
+  });
+
+  it('a late load() does not repopulate the second visit with stale rows', async () => {
+    let release: (v: unknown) => void = () => {};
+    manifest.mockImplementation(
+      () => new Promise((r) => { release = r as (v: unknown) => void; })
+    );
+
+    const inFlight = useStoryStore.getState().load('p1');
+    leaveAndReturn();
+    release(emptyManifest);
+    await inFlight;
+
+    const state = useStoryStore.getState();
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
+  });
+});
+
 describe('re-entrancy guard', () => {
   it('resetBible is a no-op while a save is already in flight', async () => {
     useStoryStore.setState({ projectId: 'p1', isSaving: true });
@@ -578,7 +709,7 @@ describe('resetBible reason', () => {
   it('refreshes an already-open archive list after a reset', async () => {
     useStoryStore.setState({ projectId: 'p1', archivesLoaded: true });
     await useStoryStore.getState().resetBible();
-    expect(listArchives).toHaveBeenCalledWith('p1');
+    expect(listArchives).toHaveBeenCalledWith('p1', { limit: 25 });
   });
 
   it('does not fetch archives when the panel was never opened', async () => {
@@ -628,6 +759,95 @@ describe('loadArchives', () => {
     await slow;
 
     expect(useStoryStore.getState().archives).toEqual([]);
+  });
+});
+
+describe('loadMoreArchives', () => {
+  const archive = (id: string, createdAt: string) => ({
+    id,
+    reason: 'reset' as const,
+    source_label: null,
+    scene_count: 0,
+    fact_count: 0,
+    edit_count: 0,
+    size_bytes: 1,
+    created_at: createdAt,
+  });
+
+  it('appends the next page and carries the keyset cursor forward', async () => {
+    listArchives.mockResolvedValueOnce({
+      archives: [archive('a1', 't1')],
+      next_after_created_at: 't1',
+      next_after_id: 'a1',
+      has_more: true,
+    });
+    useStoryStore.setState({ projectId: 'p1' });
+    await useStoryStore.getState().loadArchives();
+
+    expect(useStoryStore.getState().archivesHasMore).toBe(true);
+    expect(useStoryStore.getState().archivesCursor).toEqual({
+      createdAt: 't1',
+      id: 'a1',
+    });
+
+    listArchives.mockResolvedValueOnce({
+      archives: [archive('a2', 't2')],
+      next_after_created_at: null,
+      next_after_id: null,
+      has_more: false,
+    });
+    await useStoryStore.getState().loadMoreArchives();
+
+    // The cursor is the (created_at, id) PAIR — a cursor on created_at
+    // alone drops rows tied at a page boundary.
+    expect(listArchives).toHaveBeenLastCalledWith('p1', {
+      afterCreatedAt: 't1',
+      afterId: 'a1',
+      limit: 25,
+    });
+    expect(useStoryStore.getState().archives.map((a) => a.id)).toEqual(['a1', 'a2']);
+    expect(useStoryStore.getState().archivesHasMore).toBe(false);
+    expect(useStoryStore.getState().archivesCursor).toBeNull();
+  });
+
+  it('is a no-op when there is no further page', async () => {
+    useStoryStore.setState({ projectId: 'p1', archivesHasMore: false });
+    await useStoryStore.getState().loadMoreArchives();
+    expect(listArchives).not.toHaveBeenCalled();
+  });
+
+  it('a page landing after a reload does not resurrect replaced rows', async () => {
+    // resetBible/restoreArchive call loadArchives() on success. A page
+    // still in flight from before that must not append onto the fresh
+    // first page — both share archivesFetchSeq so the newer call wins.
+    useStoryStore.setState({
+      projectId: 'p1',
+      archives: [archive('old', 't1')],
+      archivesCursor: { createdAt: 't1', id: 'old' },
+      archivesHasMore: true,
+    });
+    let release: (v: unknown) => void = () => {};
+    listArchives.mockImplementationOnce(
+      () => new Promise((r) => { release = r as (v: unknown) => void; })
+    );
+
+    const slow = useStoryStore.getState().loadMoreArchives();
+    listArchives.mockResolvedValueOnce({
+      archives: [archive('fresh', 't9')],
+      next_after_created_at: null,
+      next_after_id: null,
+      has_more: false,
+    });
+    await useStoryStore.getState().loadArchives();
+    release({
+      archives: [archive('stale', 't0')],
+      next_after_created_at: null,
+      next_after_id: null,
+      has_more: false,
+    });
+    await slow;
+
+    expect(useStoryStore.getState().archives.map((a) => a.id)).toEqual(['fresh']);
   });
 });
 
@@ -730,6 +950,6 @@ describe('restoreArchive', () => {
 
     await useStoryStore.getState().restoreArchive('archive-1');
 
-    expect(listArchives).toHaveBeenCalledWith('p1');
+    expect(listArchives).toHaveBeenCalledWith('p1', { limit: 25 });
   });
 });

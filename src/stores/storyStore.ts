@@ -53,6 +53,10 @@ interface StoryState {
    *  tab's archive panel is actually opened, not on every load(). */
   archives: StoryArchiveSummary[];
   archivesLoaded: boolean;
+  /** Keyset cursor for the next archive page — the (created_at, id) pair
+   *  the last page ended on. Null when there is no further page. */
+  archivesCursor: { createdAt: string; id: string } | null;
+  archivesHasMore: boolean;
 
   isLoading: boolean;
   isSaving: boolean;
@@ -67,33 +71,31 @@ interface StoryState {
   /** Designate the bible's single source chat, creating `meta`. */
   designateSourceChat: (
     chat: ProjectChatRef,
-    opts?: { characters?: { avatar: string; name?: string }[]; title?: string }
+    opts?: {
+      characters?: { avatar: string; name?: string }[];
+      title?: string;
+      /** The Work this designation is FOR. Any caller with an await
+       *  between deciding and calling — confirmChange resets first, then
+       *  designates — must pass it: a mismatch aborts instead of writing
+       *  into whatever Work happens to be current by then. */
+      projectId?: string;
+    }
   ) => Promise<boolean>;
   resetBible: (reason?: StoryResetReason) => Promise<boolean>;
-  /** Fetch the archive list — safe to call repeatedly, just re-fetches. */
+  /** Fetch the FIRST archive page — safe to call repeatedly, just
+   *  re-fetches from the top (and resets any paging in progress). */
   loadArchives: () => Promise<void>;
+  /** Append the next archive page. */
+  loadMoreArchives: () => Promise<void>;
   /** Replace the live bible with a past snapshot. Builds its guard from
    *  the manifest already in state, so callers must have a fresh one
    *  (the Story tab always does — it's loaded on open). */
   restoreArchive: (archiveId: string) => Promise<boolean>;
 }
 
-/** Reload only while the store is still pointed at this project.
- *
- *  `load()` sets `projectId`, so calling it unconditionally after an
- *  await would drag the store BACK to a Work the user already left —
- *  and every later write (which reads `projectId`) would then hit the
- *  wrong bible. */
-async function reloadIfStillCurrent(
-  get: () => StoryState,
-  projectId: string
-): Promise<void> {
-  if (get().projectId !== projectId) return;
-  await get().load(projectId);
-}
-
 const FACT_PAGE = 50;
 const SCENE_PAGE = 100;
+const ARCHIVE_PAGE = 25;
 
 /** True when the manifest says `meta` exists — i.e. a source chat has
  *  been designated and the bible has begun. */
@@ -109,6 +111,36 @@ export const useStoryStore = create<StoryState>((set, get) => {
   // doesn't order two calls for the SAME project against each other).
   let archivesFetchSeq = 0;
 
+  // Bumped by clear(), which the Story tab calls whenever it unmounts or
+  // switches Works. `projectId` alone can't see a leave-and-return: the
+  // user can navigate away from Work A and back to Work A while a
+  // reset/restore/designate is still in flight, and by the time it
+  // resolves `projectId` reads 'A' again — so the guard passes and the
+  // stale call wipes the freshly reloaded state and stomps whatever save
+  // the SECOND visit has in progress. Comparing the epoch too makes
+  // "same project" mean "same visit".
+  let storeEpoch = 0;
+
+  /** True when the store is still on the same visit to the same project
+   *  that an action captured when it started. */
+  const stillOn = (projectId: string, epoch: number): boolean =>
+    get().projectId === projectId && storeEpoch === epoch;
+
+  /** Reload only while the store is still on the same visit to this
+   *  project.
+   *
+   *  `load()` sets `projectId`, so calling it unconditionally after an
+   *  await would drag the store BACK to a Work the user already left —
+   *  and every later write (which reads `projectId`) would then hit the
+   *  wrong bible. */
+  const reloadIfStillOn = async (
+    projectId: string,
+    epoch: number
+  ): Promise<void> => {
+    if (!stillOn(projectId, epoch)) return;
+    await get().load(projectId);
+  };
+
   return {
   projectId: null,
   manifest: null,
@@ -120,11 +152,17 @@ export const useStoryStore = create<StoryState>((set, get) => {
   factsHasMore: false,
   archives: [],
   archivesLoaded: false,
+  archivesCursor: null,
+  archivesHasMore: false,
   isLoading: false,
   isSaving: false,
   error: null,
 
-  clear: () =>
+  clear: () => {
+    // Ends the current visit: anything still in flight that captured the
+    // old epoch stops being allowed to write, even if the user comes
+    // straight back to the same Work.
+    storeEpoch++;
     set({
       projectId: null,
       manifest: null,
@@ -144,17 +182,21 @@ export const useStoryStore = create<StoryState>((set, get) => {
       factsHasMore: false,
       archives: [],
       archivesLoaded: false,
+      archivesCursor: null,
+      archivesHasMore: false,
       error: null,
-    }),
+    });
+  },
 
   load: async (projectId) => {
     set({ projectId, isLoading: true, error: null });
+    const epoch = storeEpoch;
     try {
       const manifest = await storyApi.manifest(projectId);
       // Guard before EVERY write, not just the final one: the user can
       // switch Works mid-flight, and a late manifest landing on the new
       // Work shows one story's counts under another's name.
-      if (get().projectId !== projectId) return;
+      if (!stillOn(projectId, epoch)) return;
       set({ manifest });
 
       // Only fetch what exists. A 404 here would be normal-but-noisy for
@@ -180,7 +222,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
       ]);
 
       // Guard against a slow load landing after the user switched Works.
-      if (get().projectId !== projectId) return;
+      if (!stillOn(projectId, epoch)) return;
       set({
         sections: loaded,
         scenes: scenePage?.items ?? [],
@@ -191,7 +233,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
         isLoading: false,
       });
     } catch (error) {
-      if (get().projectId !== projectId) return;
+      if (!stillOn(projectId, epoch)) return;
       set({
         isLoading: false,
         error: error instanceof Error ? error.message : 'Failed to load story',
@@ -202,9 +244,10 @@ export const useStoryStore = create<StoryState>((set, get) => {
   loadSection: async (name) => {
     const { projectId } = get();
     if (!projectId) return;
+    const epoch = storeEpoch;
     try {
       const section = await storyApi.getSection(projectId, name);
-      if (get().projectId !== projectId) return;
+      if (!stillOn(projectId, epoch)) return;
       set((s) => ({ sections: { ...s.sections, [name]: section } }));
     } catch {
       // A missing section is an expected state, not an error worth a toast.
@@ -214,6 +257,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
   loadMoreFacts: async () => {
     const { projectId, factsCursor, factsHasMore } = get();
     if (!projectId || !factsHasMore || factsCursor === null) return;
+    const epoch = storeEpoch;
     try {
       const page = await storyApi.listFacts(projectId, {
         afterSeq: factsCursor,
@@ -222,7 +266,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
       // Re-read state AFTER the await: appending onto the pre-await
       // snapshot would resurrect facts a concurrent reset just cleared.
       const live = get();
-      if (live.projectId !== projectId || live.factsCursor !== factsCursor) return;
+      if (!stillOn(projectId, epoch) || live.factsCursor !== factsCursor) return;
       set({
         facts: [...live.facts, ...page.items],
         factsCursor: page.next_after_seq,
@@ -240,6 +284,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
     const { projectId, scenes, scenesHasMore } = get();
     if (!projectId || !scenesHasMore || scenes.length === 0) return;
     const last = scenes[scenes.length - 1];
+    const epoch = storeEpoch;
     try {
       // Both cursor halves: `sequence` is not unique, and paging on it
       // alone drops every scene tied with the one that ended the page.
@@ -250,7 +295,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
       });
       // Post-await re-read, same reasoning as loadMoreFacts.
       const live = get();
-      if (live.projectId !== projectId) return;
+      if (!stillOn(projectId, epoch)) return;
       if (live.scenes[live.scenes.length - 1]?.id !== last.id) return;
       set({
         scenes: [...live.scenes, ...page.items],
@@ -267,7 +312,11 @@ export const useStoryStore = create<StoryState>((set, get) => {
   designateSourceChat: async (chat, opts = {}) => {
     const { projectId } = get();
     if (!projectId) return false;
+    // Checked BEFORE claiming isSaving — bailing after would strand the
+    // flag on a Work this call has no business touching.
+    if (opts.projectId && opts.projectId !== projectId) return false;
     set({ isSaving: true });
+    const epoch = storeEpoch;
 
     const build = (existing: MetaSection | null): MetaSection => {
       const now = capturedAt();
@@ -311,7 +360,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
       // was in flight — meta belongs to whichever project is CURRENT, so
       // writing it unconditionally would clobber a different Work's live
       // state (same class of bug reviewed and fixed in resetBible).
-      if (get().projectId === projectId) {
+      if (stillOn(projectId, epoch)) {
         set((s) => ({ sections: { ...s.sections, meta: section } }));
       }
       return section;
@@ -323,8 +372,8 @@ export const useStoryStore = create<StoryState>((set, get) => {
         current?.server_ts ?? 0,
         (current?.data as unknown as MetaSection) ?? null
       );
-      await reloadIfStillCurrent(get, projectId);
-      const stillCurrent = get().projectId === projectId;
+      await reloadIfStillOn(projectId, epoch);
+      const stillCurrent = stillOn(projectId, epoch);
       if (stillCurrent) set({ isSaving: false });
       // A caller acting on this return value (e.g. confirmChange calling
       // designate() after resetBible()) must not treat a remotely
@@ -337,8 +386,8 @@ export const useStoryStore = create<StoryState>((set, get) => {
         try {
           const winnerData = error.current?.data as unknown as MetaSection | undefined;
           await write(error.currentTs, winnerData ?? null);
-          await reloadIfStillCurrent(get, projectId);
-          const stillCurrent = get().projectId === projectId;
+          await reloadIfStillOn(projectId, epoch);
+          const stillCurrent = stillOn(projectId, epoch);
           if (stillCurrent) {
             set({ isSaving: false });
             showToastGlobal(
@@ -348,7 +397,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
           }
           return stillCurrent;
         } catch {
-          if (get().projectId === projectId) {
+          if (stillOn(projectId, epoch)) {
             set({ isSaving: false });
             showToastGlobal(
               'Failed to set the source chat — it changed on another device',
@@ -358,7 +407,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
           return false;
         }
       }
-      if (get().projectId === projectId) {
+      if (stillOn(projectId, epoch)) {
         set({ isSaving: false });
         showToastGlobal(
           error instanceof Error ? error.message : 'Failed to set the source chat',
@@ -373,6 +422,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
     const { projectId, isSaving } = get();
     if (!projectId || isSaving) return false;
     set({ isSaving: true });
+    const epoch = storeEpoch;
     try {
       await storyApi.reset(projectId, reason);
       // The user may have switched to a different Work while the reset
@@ -382,7 +432,10 @@ export const useStoryStore = create<StoryState>((set, get) => {
       // unconditionally would wipe a different Work's live state, stomp
       // its own isSaving flag, and lie to a caller (e.g. confirmChange's
       // designate-after-reset) about which project actually succeeded.
-      const stillCurrent = get().projectId === projectId;
+      // "Still current" means the same VISIT, not just the same id — see
+      // storeEpoch: leaving Work A and coming straight back to it must
+      // not let this stale call wipe the second visit's fresh state.
+      const stillCurrent = stillOn(projectId, epoch);
       if (stillCurrent) {
         set({
           sections: {},
@@ -394,16 +447,29 @@ export const useStoryStore = create<StoryState>((set, get) => {
           isSaving: false,
         });
       }
-      await reloadIfStillCurrent(get, projectId);
+      await reloadIfStillOn(projectId, epoch);
       // Reset just took a snapshot — refresh an already-open archive list
       // so it shows up without the user having to close and reopen it.
-      if (get().projectId === projectId && get().archivesLoaded) {
+      if (stillOn(projectId, epoch) && get().archivesLoaded) {
         await get().loadArchives();
       }
-      if (stillCurrent) showToastGlobal('Story reset', 'success');
-      return stillCurrent;
+      // Recomputed AFTER the two trailing awaits. `stillCurrent` above is
+      // sampled right after the network call, which is correct for the
+      // state writes it guards — but the user can switch Works during
+      // reloadIfStillOn or loadArchives, and a stale `true` returned here
+      // is exactly what lets confirmChange's
+      // `if (await resetBible(...)) await designate(chat)` write the OLD
+      // Work's chat into the NEW Work's bible.
+      //
+      // Deliberate consequence: switching away during the reload
+      // suppresses the success toast for a reset that DID succeed
+      // remotely. That is right — the toast would otherwise pop over the
+      // wrong Work's tab.
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) showToastGlobal('Story reset', 'success');
+      return stillCurrentNow;
     } catch (error) {
-      const stillCurrent = get().projectId === projectId;
+      const stillCurrent = stillOn(projectId, epoch);
       if (stillCurrent) {
         set({ isSaving: false });
         showToastGlobal(
@@ -423,16 +489,62 @@ export const useStoryStore = create<StoryState>((set, get) => {
     // the list to stale data — the projectId check alone only guards
     // against a DIFFERENT project, not two calls for the SAME one.
     const seq = ++archivesFetchSeq;
+    const epoch = storeEpoch;
     try {
-      const { archives } = await storyApi.listArchives(projectId);
-      if (get().projectId !== projectId || seq !== archivesFetchSeq) return;
-      set({ archives, archivesLoaded: true });
+      const page = await storyApi.listArchives(projectId, { limit: ARCHIVE_PAGE });
+      if (!stillOn(projectId, epoch) || seq !== archivesFetchSeq) return;
+      set({
+        archives: page.archives,
+        archivesLoaded: true,
+        archivesCursor:
+          page.has_more && page.next_after_created_at && page.next_after_id
+            ? { createdAt: page.next_after_created_at, id: page.next_after_id }
+            : null,
+        archivesHasMore: page.has_more,
+      });
     } catch (error) {
       // A stale/superseded call (wrong project, or an older call whose
       // result a newer one already replaced) failing must not pop an
       // error toast over a list that's already showing correct, fresher
       // data — same staleness check as the success path above.
-      if (get().projectId !== projectId || seq !== archivesFetchSeq) return;
+      if (!stillOn(projectId, epoch) || seq !== archivesFetchSeq) return;
+      showToastGlobal(
+        error instanceof Error ? error.message : 'Failed to load archives',
+        'error'
+      );
+    }
+  },
+
+  loadMoreArchives: async () => {
+    const { projectId, archivesCursor, archivesHasMore } = get();
+    if (!projectId || !archivesHasMore || !archivesCursor) return;
+    // Shares archivesFetchSeq with loadArchives on purpose: a reset or
+    // restore firing loadArchives() mid-page must win, and this appended
+    // page must not land on top of that fresh first page.
+    const seq = ++archivesFetchSeq;
+    const epoch = storeEpoch;
+    try {
+      const page = await storyApi.listArchives(projectId, {
+        afterCreatedAt: archivesCursor.createdAt,
+        afterId: archivesCursor.id,
+        limit: ARCHIVE_PAGE,
+      });
+      // Post-await re-read, same reasoning as loadMoreFacts: appending
+      // onto the pre-await snapshot would resurrect rows a concurrent
+      // reload just replaced.
+      const live = get();
+      if (!stillOn(projectId, epoch) || seq !== archivesFetchSeq) return;
+      if (live.archivesCursor?.id !== archivesCursor.id) return;
+      set({
+        archives: [...live.archives, ...page.archives],
+        archivesCursor:
+          page.has_more && page.next_after_created_at && page.next_after_id
+            ? { createdAt: page.next_after_created_at, id: page.next_after_id }
+            : null,
+        archivesHasMore: page.has_more,
+      });
+    } catch (error) {
+      if (!stillOn(projectId, epoch) || seq !== archivesFetchSeq) return;
       showToastGlobal(
         error instanceof Error ? error.message : 'Failed to load archives',
         'error'
@@ -446,6 +558,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
     // there is nothing to build the staleness guard from.
     if (!projectId || !manifest || isSaving) return false;
     set({ isSaving: true });
+    const epoch = storeEpoch;
     const expected = {
       sections: Object.fromEntries(
         manifest.sections.map((s) => [s.section, s.server_ts])
@@ -458,8 +571,10 @@ export const useStoryStore = create<StoryState>((set, get) => {
       await storyApi.restoreArchive(projectId, archiveId, expected);
       // See resetBible: a switched-away project's state (including its
       // OWN isSaving, the success toast, and the return value a caller
-      // acts on) must not be clobbered or misreported by this call.
-      const stillCurrent = get().projectId === projectId;
+      // acts on) must not be clobbered or misreported by this call — and
+      // "same project" here means the same VISIT (see storeEpoch), so a
+      // leave-and-return to the same Work invalidates this too.
+      const stillCurrent = stillOn(projectId, epoch);
       if (stillCurrent) {
         set({
           sections: {},
@@ -471,15 +586,19 @@ export const useStoryStore = create<StoryState>((set, get) => {
           isSaving: false,
         });
       }
-      await reloadIfStillCurrent(get, projectId);
+      await reloadIfStillOn(projectId, epoch);
       // Restore itself took a safety snapshot — refresh the list.
-      if (get().projectId === projectId && get().archivesLoaded) {
+      if (stillOn(projectId, epoch) && get().archivesLoaded) {
         await get().loadArchives();
       }
-      if (stillCurrent) showToastGlobal('Story restored', 'success');
-      return stillCurrent;
+      // See resetBible: recomputed after the trailing awaits, because the
+      // sample taken before them can report success for a Work the user
+      // has since left.
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) showToastGlobal('Story restored', 'success');
+      return stillCurrentNow;
     } catch (error) {
-      const stillCurrent = get().projectId === projectId;
+      const stillCurrent = stillOn(projectId, epoch);
       if (stillCurrent) set({ isSaving: false });
       if (error instanceof StoryRestoreConflictError) {
         // Adopt the fresh manifest the 409 carried so the next attempt's
