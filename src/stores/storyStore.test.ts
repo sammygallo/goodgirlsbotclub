@@ -438,6 +438,94 @@ describe('stale-project safety', () => {
   });
 });
 
+describe('same-work revisit safety (store epoch)', () => {
+  // The projectId guard alone can't see a leave-and-return: navigate away
+  // from Work A and back to Work A while a mutation is in flight, and by
+  // the time it resolves projectId reads 'p1' again — so the guard passes
+  // and the stale call wipes the SECOND visit's freshly loaded state.
+  // clear() (which the Story tab calls on unmount) bumps an epoch that
+  // makes "same project" mean "same visit".
+
+  /** Simulate the tab unmounting and immediately remounting on the same
+   *  Work, with its own state loaded and its own save in flight. */
+  const leaveAndReturn = () => {
+    useStoryStore.getState().clear();
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: { meta: metaSection(5) },
+      isSaving: true,
+    });
+  };
+
+  it('resetBible does not wipe the second visit to the same work', async () => {
+    reset.mockImplementation(async () => leaveAndReturn());
+    useStoryStore.setState({ projectId: 'p1' });
+
+    const ok = await useStoryStore.getState().resetBible();
+
+    expect(ok).toBe(false);
+    const state = useStoryStore.getState();
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
+    expect(manifest).not.toHaveBeenCalled();
+  });
+
+  it('restoreArchive does not wipe the second visit to the same work', async () => {
+    useStoryStore.setState({ projectId: 'p1', manifest: emptyManifest });
+    restoreArchiveApi.mockImplementation(async () => {
+      leaveAndReturn();
+      return {
+        sections_restored: 0,
+        scenes_restored: 0,
+        facts_restored: 0,
+        edits_restored: 0,
+        pre_restore_archive_id: null,
+      };
+    });
+
+    const ok = await useStoryStore.getState().restoreArchive('archive-1');
+
+    expect(ok).toBe(false);
+    const state = useStoryStore.getState();
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
+  });
+
+  it('designateSourceChat does not write meta into the second visit', async () => {
+    putSection.mockImplementation(async () => {
+      leaveAndReturn();
+      return metaSection(1);
+    });
+    useStoryStore.setState({ projectId: 'p1' });
+
+    const ok = await useStoryStore.getState().designateSourceChat(CHAT);
+
+    expect(ok).toBe(false);
+    const state = useStoryStore.getState();
+    // The second visit's meta (server_ts 5) survives; the stale write's
+    // server_ts 1 never lands.
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
+    expect(manifest).not.toHaveBeenCalled();
+  });
+
+  it('a late load() does not repopulate the second visit with stale rows', async () => {
+    let release: (v: unknown) => void = () => {};
+    manifest.mockImplementation(
+      () => new Promise((r) => { release = r as (v: unknown) => void; })
+    );
+
+    const inFlight = useStoryStore.getState().load('p1');
+    leaveAndReturn();
+    release(emptyManifest);
+    await inFlight;
+
+    const state = useStoryStore.getState();
+    expect(state.sections.meta?.server_ts).toBe(5);
+    expect(state.isSaving).toBe(true);
+  });
+});
+
 describe('re-entrancy guard', () => {
   it('resetBible is a no-op while a save is already in flight', async () => {
     useStoryStore.setState({ projectId: 'p1', isSaving: true });
