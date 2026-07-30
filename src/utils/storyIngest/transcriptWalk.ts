@@ -364,6 +364,23 @@ export async function processChunk(
 
     const startFullIdx = realIndices[startLocal];
     const endFullIdx = realIndices[endLocal];
+
+    // A second entry claiming the same first real message would mint the
+    // IDENTICAL deterministic id (see the `scene:${rangeStartMsg.id}` seed
+    // below), and the backend rejects a bulk batch carrying two rows with
+    // one id — a 422 duplicate_scene_id that fails the whole chunk and
+    // kills the walk. The model is told not to overlap ranges, but
+    // nothing verified it. Same idiom as the malformed-entry skip above.
+    //
+    // Placed here deliberately: after the indices are resolved (the check
+    // needs startFullIdx) but BEFORE buildMsgRef and the usedSysRuns
+    // bookkeeping below, so a skipped entry cannot mark system runs as
+    // used and strand them — the leftover-attach pass after the loop
+    // would never pick them up again.
+    if (!isContinuing && sceneRanges.some((r) => r.startFullIdx === startFullIdx)) {
+      continue;
+    }
+
     const rangeMessages = chunk.messages.slice(startFullIdx, endFullIdx + 1);
     const rangeStartMsg = chunk.messages[startFullIdx];
     const rangeEndMsg = chunk.messages[endFullIdx];
@@ -593,11 +610,26 @@ export async function processChunk(
   return {
     scenes: outScenes,
     facts: outFacts,
-    // If the open scene coming in was never explicitly continued (the
-    // model ignored it, or the continuing entry was malformed), return
-    // it untouched rather than letting it be silently dropped or
-    // overwritten by this chunk's own unrelated new-scene bookkeeping.
-    openScene: sawContinuation ? carry : (openScene ?? carry),
+    // `openScene` must always be the TAIL scene of the walked prefix —
+    // the next chunk's continuation merge (rangeStart/baseTs/totalMessages)
+    // and the resume path's `sequence + 1` seeding both assume it.
+    //
+    // So an incoming open scene survives only when this chunk produced no
+    // scenes at all (every entry malformed, an empty `scenes` array, or an
+    // all-system chunk — where `carry` is still the incoming value). The
+    // moment this chunk mints scenes of its own, the incoming one is
+    // superseded whether or not the model explicitly continued it, and we
+    // return `carry`: the chunk's own trailing open scene, or null if
+    // everything it emitted was closed.
+    //
+    // Preferring the incoming scene here instead (the old `openScene ??
+    // carry`) left a non-tail scene in the checkpoint, which a later
+    // chunk would then extend — producing an overlapping message_range,
+    // misattributed facts, and a resume that re-issues a sequence number
+    // already written. Note that returning null does NOT lose the scene
+    // ROW: it was written in an earlier chunk. Only the ability to keep
+    // extending it is dropped, which is what the model's output asked for.
+    openScene: sawContinuation || outScenes.length > 0 ? carry : openScene,
     nextSequence: sequence,
     parseFailed: false,
     llmCalls,

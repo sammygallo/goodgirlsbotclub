@@ -590,6 +590,273 @@ describe('transcript walk (phase 7)', () => {
     expect(last.chunk_index).toBe(2);
   });
 
+  /** An interrupted walk whose checkpoint still reads chunk_index 0.
+   *
+   *  This is the state the loop leaves behind whenever chunk 0's scenes
+   *  and facts are committed but the index has not advanced yet — the
+   *  window between the bulk write and the per-chunk checkpoint save,
+   *  which for a chunk with N facts spans N+1 HTTP calls. */
+  function interruptedAtChunkZero(chunkPlan: unknown[]) {
+    return (_p: string, name: string) => {
+      if (name === 'ingestion') {
+        return Promise.resolve({
+          section: 'ingestion',
+          server_ts: 10,
+          updated_at: 'x',
+          data: {
+            status: 'error',
+            current_pass: 'transcript_walk',
+            prompt_version: PROMPT_VERSION,
+            chunk_index: 0,
+            chunk_plan: chunkPlan,
+            last_ingested: null,
+            open_scene: null,
+            lock: null,
+            token_usage: { input_tokens: 5, output_tokens: 5 },
+            replay_approx: false,
+            error: 'HTTP 500',
+          },
+        });
+      }
+      if (name === 'entities') {
+        return Promise.resolve({
+          section: 'entities',
+          server_ts: 1,
+          updated_at: 'x',
+          data: {
+            characters: [{ id: 'char-ivy', canonical_name: 'Ivy', aliases: [] }],
+            objects: [],
+            factions: [],
+          },
+        });
+      }
+      return Promise.reject(new Error('404'));
+    };
+  }
+
+  it('does not rerun cold_start when interrupted at chunk_index 0', async () => {
+    // The off-by-one this covers: chunk 0's scenes are DURABLY committed
+    // before chunk_index leaves 0, so gating resume on `chunk_index > 0`
+    // classified that window as a fresh build. cold_start would then
+    // remint every character id and full-replace the entities section,
+    // orphaning the participants of the scene already on the server.
+    const messages = longMessages(65);
+    const chunkPlan = [
+      { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },
+      { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+    ];
+    getSection.mockImplementation(interruptedAtChunkZero(chunkPlan));
+    let ts = 10;
+    putSection.mockImplementation(async (_p, section, data) => ({
+      section,
+      data,
+      server_ts: ++ts,
+      updated_at: 'x',
+    }));
+    manifest.mockResolvedValue({
+      project_id: 'p1',
+      sections: [],
+      scene_count: 1,
+      fact_count: 0,
+      edit_count: 0,
+    });
+    wireScenesAndFacts();
+
+    const sceneJson = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title: 'Scene',
+          summary: 's',
+          detailed_summary: '',
+          participants: ['Ivy'],
+          start_local_idx: 0,
+          end_local_idx: 1,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const llm = vi.fn(async () => sceneJson);
+
+    const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
+
+    expect(ok).toBe(true);
+    // cold_start never ran: it is the only thing that writes 'entities'.
+    expect(putSection.mock.calls.some((c) => c[1] === 'entities')).toBe(false);
+    // And the cast was READ BACK rather than reminted — the scene written
+    // carries the id already on the server, not a fresh random one.
+    const writtenScenes = bulkWriteScenes.mock.calls.flatMap((c) => c[1]);
+    expect(writtenScenes[0].data.participants).toContain('char-ivy');
+  });
+
+  it('re-plans instead of diverging when interrupted at chunk_index 0', async () => {
+    // At index 0 nothing has been checkpointed, so there is nothing to
+    // reconcile against the pinned plan. Reusing it would mean a user who
+    // deleted a message after a failed first chunk gets dead-ended into
+    // "Reset story" — which deletes their whole bible — where today they
+    // just click Build. So the walk keeps `chunk_index > 0` for plan
+    // REUSE even though the store drops it for cold-start skipping.
+    const messages = longMessages(65);
+    const chunkPlan = [
+      // A boundary that no longer exists in `messages`.
+      { start_msg_id: 'gone-forever', end_msg_id: 'm59', est_tokens: 100 },
+      { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+    ];
+    getSection.mockImplementation(interruptedAtChunkZero(chunkPlan));
+    let ts = 10;
+    putSection.mockImplementation(async (_p, section, data) => ({
+      section,
+      data,
+      server_ts: ++ts,
+      updated_at: 'x',
+    }));
+    manifest.mockResolvedValue({
+      project_id: 'p1',
+      sections: [],
+      scene_count: 0,
+      fact_count: 0,
+      edit_count: 0,
+    });
+    wireScenesAndFacts();
+    const llm = vi.fn(async () =>
+      JSON.stringify({
+        scenes: [
+          {
+            continues_open_scene: false,
+            title: 'Scene',
+            summary: 's',
+            detailed_summary: '',
+            participants: [],
+            start_local_idx: 0,
+            end_local_idx: 1,
+            closed: true,
+            excluded_local_idxs: [],
+            facts: [],
+          },
+        ],
+      })
+    );
+
+    const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
+
+    // Completed rather than reporting divergence, and still without
+    // rerunning cold_start.
+    expect(ok).toBe(true);
+    expect(putSection.mock.calls.some((c) => c[1] === 'entities')).toBe(false);
+    expect(bulkWriteScenes).toHaveBeenCalled();
+  });
+
+  it('aborts the resume when the entities read fails transiently', async () => {
+    // A blip here is NOT "this bible has no cast". Swallowing it stripped
+    // participants from every scene in every remaining chunk, and the
+    // per-chunk checkpoint advance made that unrecoverable. Failing costs
+    // nothing: the read happens before the chunk loop and before any LLM
+    // call, so no tokens are spent and chunk_index is untouched.
+    const messages = longMessages(65);
+    const chunkPlan = [
+      { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },
+      { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+    ];
+    getSection.mockImplementation(async (_p: string, name: string) => {
+      if (name === 'ingestion') {
+        return {
+          section: 'ingestion',
+          server_ts: 10,
+          updated_at: 'x',
+          data: {
+            status: 'error',
+            current_pass: 'transcript_walk',
+            prompt_version: PROMPT_VERSION,
+            chunk_index: 1,
+            chunk_plan: chunkPlan,
+            last_ingested: {
+              msg_id: 'm59',
+              swipe_idx: 0,
+              fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+            },
+            open_scene: null,
+            lock: null,
+            token_usage: { input_tokens: 5, output_tokens: 5 },
+            replay_approx: false,
+            error: '',
+          },
+        };
+      }
+      if (name === 'entities') throw new Error('HTTP 503');
+      throw new Error('404');
+    });
+    let ts = 10;
+    putSection.mockImplementation(async (_p, section, data) => ({
+      section,
+      data,
+      server_ts: ++ts,
+      updated_at: 'x',
+    }));
+    wireScenesAndFacts();
+    const llm = vi.fn(async () => '{}');
+
+    const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
+
+    expect(ok).toBe(false);
+    // Nothing walked, nothing paid for.
+    expect(llm).not.toHaveBeenCalled();
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+    // And the index is preserved, so Build resumes from the same chunk.
+    const ingestWrites = putSection.mock.calls.filter((c) => c[1] === 'ingestion');
+    const last = ingestWrites[ingestWrites.length - 1][2];
+    expect(last.chunk_index).toBe(1);
+    expect(last.status).toBe('error');
+    expect(last.error).toContain('503');
+  });
+
+  it('does not leave a heartbeat running after the run loses ownership', async () => {
+    // The heartbeat used to be cleared at each exit point, which missed
+    // the bare `return false` bail-outs inside run()'s try. A leaked timer
+    // keeps firing for the life of the page and PUTs the DEAD run's
+    // checkpoint — against whichever project is open by then, using that
+    // project's server_ts as the base. It corrupts the wrong Work's tab
+    // and can 409 a healthy build into 'error'.
+    vi.useFakeTimers();
+    try {
+      wireHappyPath();
+      wireScenesAndFacts();
+      manifest.mockResolvedValue({
+        project_id: 'p1',
+        sections: [],
+        scene_count: 0,
+        fact_count: 0,
+        edit_count: 0,
+      });
+      // The user switches Works while the first model call is in flight.
+      const llm = vi.fn(async () => {
+        useStoryIngestStore.setState({ projectId: 'p2' });
+        return '{}';
+      });
+
+      const ok = await useStoryIngestStore
+        .getState()
+        .run(runInput({ messages: longMessages(10), llm }));
+      expect(ok).toBe(false);
+
+      // The same bail-outs also skipped finish(), so the run's own flags
+      // were never released — and clear() deliberately refuses to reset a
+      // run it believes is still live, wedging the store into never
+      // building again.
+      expect(useStoryIngestStore.getState().isRunning).toBe(false);
+      expect(useStoryIngestStore.getState().abort).toBeNull();
+
+      const callsAtBail = putSection.mock.calls.length;
+      // Well past two heartbeat periods.
+      await vi.advanceTimersByTimeAsync(LOCK_STALE_MS * 3);
+
+      expect(putSection.mock.calls.length).toBe(callsAtBail);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports divergence and does not touch scenes/facts when a resumed plan boundary is gone', async () => {
     const chunkPlan = [
       { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },

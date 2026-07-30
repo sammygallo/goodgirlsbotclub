@@ -422,7 +422,7 @@ describe('processChunk', () => {
     expect(r1.facts[0].id).not.toBe(r2.facts[0].id);
   });
 
-  it('preserves the open scene untouched when the model never explicitly continues it', async () => {
+  it('closes out the incoming open scene once the chunk mints scenes of its own', async () => {
     const openScene: OpenSceneCarry = {
       sceneId: 'existing-scene-id',
       sequence: 5,
@@ -465,9 +465,139 @@ describe('processChunk', () => {
     // The unrelated new scene was still recorded...
     expect(result.scenes).toHaveLength(1);
     expect(result.scenes[0].id).not.toBe('existing-scene-id');
-    // ...but the ORIGINAL open scene comes back completely unchanged,
-    // not silently dropped or replaced by the new scene's bookkeeping.
+    // ...and the incoming open scene is no longer carried: this chunk
+    // minted a scene of its own, so that one is the tail of the walked
+    // prefix now. It came back CLOSED, so nothing stays open.
+    //
+    // Its ROW is not lost — it was written in an earlier chunk and is
+    // untouched on the server. What's dropped is only the ability to keep
+    // extending it, which is what the model's output asked for by not
+    // continuing it. Carrying it forward instead left a NON-TAIL scene in
+    // the checkpoint, which a later chunk would extend into an
+    // overlapping message_range, and which made a resume re-issue a
+    // sequence number already written.
+    expect(result.openScene).toBeNull();
+  });
+
+  it('keeps the incoming open scene when the chunk yields no scenes at all', async () => {
+    // The genuine "don't silently drop it" case: nothing superseded it,
+    // so it is still the tail of the walked prefix.
+    const openScene: OpenSceneCarry = {
+      sceneId: 'existing-scene-id',
+      sequence: 5,
+      title: 'Ongoing',
+      summary: 'so far...',
+      detailedSummary: '',
+      participantIds: ['char-aria'],
+      factIds: ['fact-1'],
+      rangeStart: {
+        msg_id: 'earlier',
+        swipe_idx: 0,
+        fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+      },
+      excludedSegments: [],
+      swipeResolutions: [],
+      totalMessages: 3,
+      serverTs: 7,
+    };
+    // Pure filler — the walk prompt explicitly licenses an empty array.
+    const llm = fakeLlmSequence([JSON.stringify({ scenes: [] })]);
+    const result = await processChunk(baseParams({ llm, openScene, nextSequence: 6 }));
+
+    expect(result.scenes).toHaveLength(0);
     expect(result.openScene).toEqual(openScene);
+  });
+
+  it('the returned open scene is always the tail of the walked prefix', async () => {
+    // The invariant the next chunk's continuation merge and the resume
+    // path's `sequence + 1` seeding both depend on.
+    const openScene: OpenSceneCarry = {
+      sceneId: 'existing-scene-id',
+      sequence: 5,
+      title: 'Ongoing',
+      summary: 'so far...',
+      detailedSummary: '',
+      participantIds: [],
+      factIds: [],
+      rangeStart: {
+        msg_id: 'earlier',
+        swipe_idx: 0,
+        fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+      },
+      excludedSegments: [],
+      swipeResolutions: [],
+      totalMessages: 3,
+      serverTs: 7,
+    };
+    // A new scene the model leaves OPEN, without continuing the incoming
+    // one. Previously the stale incoming scene won this and the freshly
+    // opened one was stranded.
+    const json = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title: 'A new thread',
+          summary: 's',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 1,
+          closed: false,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const llm = fakeLlmSequence([json]);
+    const result = await processChunk(baseParams({ llm, openScene, nextSequence: 6 }));
+
+    expect(result.openScene).not.toBeNull();
+    expect(result.openScene!.sceneId).toBe(result.scenes[result.scenes.length - 1].id);
+    expect(result.openScene!.sequence).toBe(result.nextSequence - 1);
+  });
+
+  it('drops a second scene claiming the same start message', async () => {
+    // Both entries resolve to the same first real message, so both would
+    // mint the identical deterministic id and the backend would 422 the
+    // whole batch with duplicate_scene_id, killing the walk.
+    const json = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title: 'Arrival',
+          summary: 's',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 0,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+        {
+          continues_open_scene: false,
+          title: 'The argument',
+          summary: 's',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 1,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const llm = fakeLlmSequence([json]);
+    const result = await processChunk(baseParams({ llm, nextSequence: 0 }));
+
+    const ids = result.scenes.map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(result.scenes).toHaveLength(1);
+    // The surviving scene is the FIRST one, and the sequence counter did
+    // not advance for the dropped entry — no gap in the numbering.
+    expect(result.scenes[0].data.title).toBe('Arrival');
+    expect(result.nextSequence).toBe(1);
   });
 
   it('preserves the open scene when the continuing entry is malformed (out-of-range indices)', async () => {
