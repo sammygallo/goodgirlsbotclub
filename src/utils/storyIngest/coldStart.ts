@@ -25,7 +25,7 @@ import type {
   SourceRef,
   WorldSection,
 } from '../../types/storyBible';
-import { bibleUuid, capturedAt } from '../storyBible/sourceRefs';
+import { capturedAt, createIdMinter } from '../storyBible/sourceRefs';
 import {
   ATTRIBUTES_SYSTEM,
   VOICE_SYSTEM,
@@ -130,9 +130,32 @@ export async function runColdStart(
   const avatar = sources.characterAvatar;
   let llmCalls = 0;
 
+  // Every id this pass mints is derived from something mechanically
+  // stable about the thing it names — the card avatar, the persona name,
+  // the lorebook entry — never from randomness.
+  //
+  // Cold start reruns: on a "Rebuild the groundwork", and (before the
+  // resume gate was fixed) on any interrupted walk. Random ids made each
+  // rerun mint a NEW id for the same character and then full-replace the
+  // entities section, so every scene already on the server was left
+  // pointing at a character that no longer existed anywhere in the bible
+  // — a dangling reference the pipeline had no way to notice. Derived
+  // ids make a rerun idempotent instead: the same card re-derives the
+  // same character, and the scenes stay attached.
+  //
+  // Not scoped to the project: ids only have to be unique WITHIN a
+  // bible, and "the same card always maps to the same character id" is
+  // the property being bought. It also keeps runColdStart free of any
+  // project/bible argument it has no other use for.
+  const mintId = createIdMinter();
+
   // --- the character the chat is with -------------------------------
   const character: BibleCharacter = {
-    id: bibleUuid(),
+    // Avatar is the card's filename — stable across rebuilds in a way the
+    // display name is not (the user can rename a card). Falls back to the
+    // name, then to the same 'Unnamed' literal canonical_name uses, so a
+    // card with neither still mints something rather than seeding on ''.
+    id: mintId(`character:${avatar || sources.characterName || 'Unnamed'}`),
     canonical_name: sources.characterName || avatar || 'Unnamed',
     aliases: [],
     role: 'protagonist',
@@ -203,7 +226,9 @@ export async function runColdStart(
   const characters: BibleCharacter[] = [character];
   if (sources.persona?.name) {
     characters.push({
-      id: bibleUuid(),
+      // The persona name is already this entity's `source.ref` below —
+      // the same identity the SourceRef envelope resolves against.
+      id: mintId(`persona:${sources.persona.name}`),
       canonical_name: sources.persona.name,
       aliases: [],
       role: 'user_persona',
@@ -295,7 +320,10 @@ export async function runColdStart(
     }
     ruleBytes += cost;
     world.rules!.push({
-      id: bibleUuid(),
+      // Book + entry id, matching `lorebookRef` below. Seeding on the
+      // rule TEXT instead would remint the id whenever the user edited
+      // the entry, orphaning any fact that cited the rule.
+      id: mintId(`rule:${book.bookId}:${entry.id}`),
       text,
       category: 'other',
       source: lorebookRef(book.bookId, entry.id, entry.content),

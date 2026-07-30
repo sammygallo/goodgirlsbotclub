@@ -204,3 +204,90 @@ describe('JSON recovery', () => {
     expect(firstJsonObject('nope')).toBeNull();
   });
 });
+
+describe('id stability across reruns', () => {
+  // The whole point: cold_start reruns on a "Rebuild the groundwork" and
+  // (before the resume gate was fixed) on an interrupted walk. It then
+  // FULL-REPLACES the entities section. With random ids, every rerun
+  // renamed the character, leaving every scene already on the server
+  // pointing at a participant that no longer existed anywhere in the
+  // bible — a dangling ref nothing downstream could notice.
+  it('re-derives identical ids for the same card, persona and lorebook', async () => {
+    const input = sources({
+      persona: { name: 'Sam', description: 'A tired archivist.' },
+      lorebooks: [
+        {
+          bookId: 'book-1',
+          entries: [
+            { id: 'e1', content: 'The Reach floods at dusk.', constant: true },
+            { id: 'e2', content: 'Ink is currency.', constant: false },
+          ],
+        },
+      ],
+    } as Partial<ColdStartSources>);
+
+    const first = await runColdStart(input);
+    const second = await runColdStart(input);
+
+    expect(second.entities.characters.map((c) => c.id)).toEqual(
+      first.entities.characters.map((c) => c.id)
+    );
+    expect(second.world.rules?.map((r) => r.id)).toEqual(
+      first.world.rules?.map((r) => r.id)
+    );
+    // Sanity: the run actually produced the things we just compared.
+    expect(first.entities.characters).toHaveLength(2);
+    expect(first.world.rules?.length).toBeGreaterThan(0);
+  });
+
+  it('gives the character and the persona different ids', async () => {
+    // Same string on both sides — the seed prefixes are what separate
+    // them, and a collision here would merge the user into the character.
+    const out = await runColdStart(
+      sources({
+        characterName: 'Ivy',
+        characterAvatar: 'Ivy',
+        persona: { name: 'Ivy', description: 'Also Ivy.' },
+      } as Partial<ColdStartSources>)
+    );
+    const [character, persona] = out.entities.characters;
+    expect(character.id).not.toBe(persona.id);
+    expect(persona.is_user_persona).toBe(true);
+  });
+
+  it('keeps rule ids distinct when a lorebook repeats an entry id', async () => {
+    const out = await runColdStart(
+      sources({
+        lorebooks: [
+          {
+            bookId: 'book-1',
+            entries: [
+              { id: 'dupe', content: 'First rule.', constant: true },
+              { id: 'dupe', content: 'Second rule.', constant: true },
+            ],
+          },
+        ],
+      } as Partial<ColdStartSources>)
+    );
+    const ids = (out.world.rules ?? []).map((r) => r.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('renaming a lorebook entry does not remint its rule id', async () => {
+    // Seeded on book+entry id, not on the text — otherwise editing an
+    // entry orphans any fact that cited the rule it produced.
+    const withText = (content: string) =>
+      sources({
+        lorebooks: [
+          { bookId: 'book-1', entries: [{ id: 'e1', content, constant: true }] },
+        ],
+      } as Partial<ColdStartSources>);
+
+    const before = await runColdStart(withText('The Reach floods at dusk.'));
+    const after = await runColdStart(withText('The Reach floods at dawn.'));
+
+    expect(after.world.rules?.[0].id).toBe(before.world.rules?.[0].id);
+    expect(after.world.rules?.[0].text).not.toBe(before.world.rules?.[0].text);
+  });
+});
