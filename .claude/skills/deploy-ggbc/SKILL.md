@@ -7,7 +7,7 @@ description: "Push, merge, and deploy Good Girls Bot Club (goodgirlsbotclub) to 
 
 Push feature branches, merge them, wait for each repo's Docker image CI to finish, then update the live droplet with a pull-only deploy.
 
-Both the frontend and backend images are built in GitHub Actions and pulled from GHCR. **The droplet never builds — it just `docker compose pull`s and restarts.** Deploys should take under a minute once CI is green.
+The frontend and ggbc-backend images are built in GitHub Actions and pulled from GHCR. **The droplet never builds — it just `docker compose pull`s and restarts.** Deploys should take under a minute once CI is green.
 
 ## Repos
 
@@ -53,7 +53,9 @@ Post-B3c-final (2026-05-26): SillyTavern and `seed-owner` are gone from producti
 - `goodgirlsbotclub-ggbc-backend-1` — always running (FastAPI; runs `alembic upgrade head` on every start, then uvicorn)
 - `goodgirlsbotclub-postgres-1` — always running, healthy
 
-If you see lingering `goodgirlsbotclub-sillytavern-1` or `goodgirlsbotclub-seed-owner-1`, run `docker compose up -d --remove-orphans` to clean them up. The `st-config` / `st-data` volumes may still exist as historical backups — leave them alone.
+`docker ps -a` is now clean of ST remnants: the last leftover was **deleted on 2026-07-31**. Note what it actually was, because the previous advice here was wrong — it was a standalone container plainly named `sillytavern` (not `goodgirlsbotclub-sillytavern-1`), created outside compose back in the pre-compose era and exited `(0)` since 2026-04-13. **`docker compose up -d --remove-orphans` would never have removed it** — compose only reaps containers carrying its own project labels. It took a direct `docker rm sillytavern`. If a stray container ever shows up again, check whether it's compose-managed before assuming `--remove-orphans` will handle it.
+
+**The `st-data` / `st-config` volumes must be left alone — and they are easier to destroy than they look.** Card recovery off them is **complete** (verified 2026-07-31: `recover_st_characters.py` dry-run reports `imported=0`; all personal and global cards are in Postgres), so nothing on them is load-bearing today, but they are the only surviving copy of the pre-migration state. They are attached to no container, which makes them *dangling* — so `docker volume prune` or `docker system prune --volumes` would delete them **silently, without a confirmation naming them**. Never run either on this box. `docker image prune -af` is fine (images only). When removing containers, use `docker rm <name>` without `-v`.
 
 ### 3. Building the frontend on the droplet is the OLD way and must never happen again
 
@@ -74,10 +76,12 @@ The skill accepts optional branch names as arguments:
 ```
 /deploy-ggbc                                          # auto-detect all three repos
 /deploy-ggbc claude/some-branch                       # frontend only
-/deploy-ggbc - feat/some-branch                       # backend only (dash = skip frontend)
-/deploy-ggbc claude/some-branch feat/some-branch      # both web repos
+/deploy-ggbc - claude/api-branch                      # ggbc-backend only (dash = skip frontend)
+/deploy-ggbc claude/fe-branch claude/api-branch       # both web repos
 /deploy-ggbc intake                                   # intake bot only
 ```
+
+The second positional arg is a **ggbc-backend** branch. (Historically it was a SillyTavern branch; that repo has not been a deploy target since 2026-05-25 — see gotcha #2.)
 
 The intake bot is auto-included when detection finds unpushed commits or local commits ahead of `origin/main` in `~/Documents/GitHub/ggbc-intake-bot`. Use the explicit `intake` keyword to target it alone and skip web repos.
 
@@ -114,6 +118,15 @@ git fetch origin && git log --oneline origin/main..HEAD
 ```
 
 Confirm with the user what you're about to merge before proceeding. If a repo has no changes, skip it.
+
+**Also check for open PRs**, since work often lives on GitHub rather than in a local branch:
+
+```bash
+gh pr list --repo sammygallo/goodgirlsbotclub --json number,title,headRefName,baseRefName,isDraft \
+  --jq '.[] | "#\(.number) [\(if .isDraft then "DRAFT" else "ready" end)] \(.headRefName) -> \(.baseRefName)"'
+```
+
+Check the **base** branch, not just draft status. A non-draft PR whose base is another feature branch is a *stacked* review-fixes PR, not a deploy candidate — only PRs based on `main` ship. (Hit on 2026-07-31: #346 read as "ready" but was based on the draft `claude/story-state-phase7`, so nothing was deployable that run.)
 
 #### Frontend: verify the build locally before pushing
 
@@ -169,6 +182,19 @@ gh pr create --base main --head <branch-name> --title "..." --body "..."
 gh pr merge <new-pr-number> --repo sammygallo/goodgirlsbotclub --squash --delete-branch
 ```
 
+#### Fallback: local merge
+
+Only use this if `gh pr merge` isn't available, or the branch has no PR and you can't create one:
+
+```bash
+cd /Users/sammy/Documents/GitHub/goodgirlsbotclub
+git push origin <branch-name>
+# Find where main is checked out (may be a worktree) — git branch -v
+git checkout main
+git merge <branch-name> --no-edit
+git push origin main
+```
+
 #### Worktree pitfall
 
 The frontend repo sometimes has secondary worktrees under `.claude/worktrees/<slug>/`. Branch checkout in a worktree fails with `'main' is already used by worktree at …`. Either work in the primary worktree (`/Users/sammy/Documents/GitHub/goodgirlsbotclub`) or use `git fetch && git push` without trying to checkout. **Incurred on 2026-05-26 during B3c-final** — bash session cwd drifted into the wrong worktree mid-deploy and silently dropped edits via failed `git checkout main` → fallback compound commands.
@@ -191,7 +217,14 @@ gh run watch $BE_RUN --repo sammygallo/ggbc-backend --exit-status
 
 Typical durations:
 - **Frontend CI:** ~1.5–3 minutes (Vite build on GitHub runner with GHA cache)
-- **Backend CI:** ~3–5 minutes (pytest + ruff + multi-arch Docker image build)
+- **Backend CI:** ~3–5 minutes (pytest + ruff + multi-arch Docker image build). Measured 2026-07-31 across the last 5 successful runs: 3.9–4.2 min.
+
+On a **sync-only** run (nothing merged this time — see the Arguments note about deploying with no pending work), there is no run to watch. Just confirm the newest run on `main` already concluded `success` before pulling:
+
+```bash
+gh run list --repo sammygallo/goodgirlsbotclub --workflow docker-publish.yml --limit 3 \
+  --json databaseId,headBranch,status,conclusion --jq '.[] | "\(.databaseId) \(.headBranch) \(.status)/\(.conclusion)"'
+```
 
 Use `run_in_background: true` on the Bash call if you want to keep working in parallel — you'll get a task-notification when it completes.
 
@@ -276,13 +309,19 @@ ssh root@159.89.180.146 "curl -sI http://127.0.0.1:8080 | head -3 && curl -s htt
 ```
 Should return `HTTP/1.1 200 OK` and `{"status":"ok"}`.
 
+Confirm the backend actually came up — it runs `alembic upgrade head` before uvicorn (gotcha #4), so a bad migration surfaces here:
+```bash
+ssh root@159.89.180.146 "cd /opt/goodgirlsbotclub && docker compose logs --tail 8 ggbc-backend"
+```
+Should end with `Application startup complete.` / `Uvicorn running on http://127.0.0.1:8001`.
+
 If the intake bot was deployed, verify pm2:
 ```bash
 ssh root@159.89.180.146 "pm2 list"
 ```
 Expected:
 - `ggbc-intake-bot` — `online`, low restart count.
-- `ggbc-intake-recluster` — `stopped` (it runs once nightly at 04:00 then exits; that is normal).
+- `ggbc-intake-recluster` — **`online`**, with a restart count (↺) that climbs by roughly 1 per day. It uses `cron_restart: '0 4 * * *'` (not crash-triggered `autorestart`), so pm2 deliberately restarts it once nightly at 04:00 and it shows `online` continuously between runs — it does **not** sit at `stopped`. A high-but-slowly-climbing restart count is just its age in days, not thrashing (confirmed 2026-07-21 at 95 restarts / ~95 days, and again 2026-07-31 at 105 — both healthy). To tell that apart from genuine thrashing, check the logs (see the error-handling entry below).
 
 ### 5.5. Notify intake-bot subscribers that their feature shipped
 
@@ -324,7 +363,34 @@ fi
 
 The CLI no-ops if the GH issue isn't linked to an intake request, so PRs that came from non-intake issues (refactors, your own ideas) won't trigger noise. **First run after adding this step:** `.last-deployed` won't exist, so the whole loop is skipped — expected. Next deploy onward works normally.
 
-### 5.6. Report
+### 5.6. Post a release note to `#feature-releases`
+
+Channel: `1497283287867982104` (Discord ID — use the `mcp__ggbc-discord__post_message` tool). Run this after step 5.5 for every deploy that includes web-repo changes (skip on intake-only deploys).
+
+**Compose the note yourself** — don't copy-paste PR titles or generated commit summaries. Subscribers in #feature-releases want **what changed and what it means for them**, not engineering jargon. The PR body's "Summary" section is good source material; rewrite it in user-facing language.
+
+Format guidance (keep it under 2000 chars — Discord's hard limit):
+
+- Lead with a punchy headline (`**🎯 Short attention-grabbing title**`).
+- For each user-visible change: explain what it does, where to find it (settings path), trade-offs (cost, default on/off, etc.). Use Discord markdown.
+- For bug fixes, say what was broken and what changed.
+- Tell them how to access it ("reload the app", "Settings → Foo → Bar").
+
+Determine what's in the deploy window from the PRs already computed in step 5.5 (`MERGED_PRS`). Read each PR's body via `gh pr view <n> --repo sammygallo/goodgirlsbotclub --json body --jq .body` to source the user-facing facts.
+
+```bash
+# Example call once the message text is ready (substitute your composed text)
+mcp__ggbc-discord__post_message channel_id=1497283287867982104 content="<your release note>"
+```
+
+If the post errors with "max length", trim — don't multi-message; one message keeps the channel scannable. If the post fails for other reasons (Discord outage, etc.), report it but don't fail the deploy — the code is already live.
+
+**When to skip the release note:**
+- Intake-only deploys (no web changes shipped).
+- Deploys with no user-visible impact (pure refactor, dep bumps, internal infra, docs).
+- Re-deploys / "sync droplet to current branch" runs that don't include new merges.
+
+### 5.7. Report
 
 Report the final status to the user.
 
@@ -390,3 +456,42 @@ If you SSH in and see a zombie `docker build` or `vite` process, the droplet is 
 ssh root@159.89.180.146 "ps aux | grep -E 'docker build|vite|tsc|npm' | grep -v grep"
 ```
 Kill any zombies (`kill -9 <pid>`), then retry the deploy. The droplet should never be building — always pulling.
+
+### Intake bot: `npm ci` fails with `better-sqlite3` native rebuild error
+Usually a Node version mismatch or missing build toolchain. Check:
+```bash
+ssh root@159.89.180.146 "node -v && which python3 && which make"
+```
+Node must be 20+. If the rebuild failed mid-install, a retry usually succeeds. If it persists, fall back to `npm rebuild better-sqlite3 --build-from-source`.
+
+### Intake bot: pm2 app not starting
+```bash
+ssh root@159.89.180.146 "pm2 logs ggbc-intake-bot --lines 60 --nostream"
+```
+Common causes: missing `.env` (Discord token, Anthropic key, GitHub PAT), bad sqlite path, wrong working directory. `.env` at `/opt/ggbc-intake-bot/.env` is **not** in git — never overwrite it during deploy.
+
+### Intake bot: `ggbc-intake-recluster` restart count / status looks wrong
+Don't judge this app by restart count or `online` vs `stopped` alone — see step 5's note. The real signal is the *rate* and *content* of restarts:
+```bash
+ssh root@159.89.180.146 "pm2 logs ggbc-intake-recluster --lines 40 --nostream"
+```
+- **Healthy:** one `recluster: starting at <timestamp>` / `recluster: done in <n>s — ... errors=0` pair roughly every 24h; the only `-error-` content is harmless `@octokit/request` deprecation notices.
+- **Actually thrashing:** multiple restarts within minutes/seconds of each other, or real stack traces in the error log.
+
+`autorestart: false` must still be set alongside `cron_restart` — if it's missing, or the schedule fires more than once daily, that's the config bug to fix. If the script fails at import, fix the underlying error, then `pm2 delete ggbc-intake-recluster && pm2 start ecosystem.config.cjs --update-env`.
+
+### Droplet is low on disk / RAM
+2 GB swap is in place, but disk can fill with stale images:
+```bash
+ssh root@159.89.180.146 "df -h / && docker image prune -af"
+```
+`docker image prune -af` reclaims space from untagged / orphaned images. Safe to run routinely. (2026-07-31: 76% used, 5.8 G free.)
+
+**Do NOT reach for `docker volume prune` or `docker system prune --volumes` when disk is tight.** The `st-data` / `st-config` volumes are dangling by design and are the only pre-migration backup — a volume prune destroys them silently. See gotcha #2. Stick to image pruning.
+
+## CI cost tip
+
+The docker-publish workflow triggers on every push to the default branch. For docs-only or `.gitignore`-only changes that's wasted CI time. **Note:** `[skip ci]` in a PR's commit message does NOT work with the `--merge` strategy — GitHub creates a new merge commit that doesn't inherit the tag. Options:
+
+1. Use `--squash` or `--rebase` for docs-only PRs (preserves the commit message).
+2. Add `paths-ignore` to `.github/workflows/docker-publish.yml` to exclude `**.md`, `.gitignore`, `docs/**`. Better long-term fix — do this next time the workflow is touched.
