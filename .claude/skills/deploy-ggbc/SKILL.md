@@ -5,6 +5,19 @@ description: "Push, merge, and deploy Good Girls Bot Club (goodgirlsbotclub) to 
 
 # Deploy Good Girls Bot Club to Production
 
+> **⚠️ This file exists in TWO places and they are hand-synced.**
+> - `~/.claude/skills/deploy-ggbc/SKILL.md` (user-level — the one that
+>   actually loads when you invoke the skill)
+> - `<repo>/.claude/skills/deploy-ggbc/SKILL.md` (in goodgirlsbotclub —
+>   the version-controlled, reviewable one)
+>
+> They were unified on 2026-07-31 after drifting apart. **Editing one and
+> not the other re-creates that drift immediately** — it happened again
+> the same day. Always `cp` your edit across and commit the repo copy in
+> the same change. If you only ever touch one, make it the repo copy and
+> copy it out to `~/.claude/skills/`, so the change is reviewed and
+> recoverable.
+
 Push feature branches, merge them, wait for each repo's Docker image CI to finish, then update the live droplet with a pull-only deploy.
 
 The frontend and ggbc-backend images are built in GitHub Actions and pulled from GHCR. **The droplet never builds — it just `docker compose pull`s and restarts.** Deploys should take under a minute once CI is green.
@@ -203,27 +216,87 @@ The frontend repo sometimes has secondary worktrees under `.claude/worktrees/<sl
 
 Both repos build images in GitHub Actions. The droplet only pulls — it never builds — so you must wait for each repo whose code you pushed.
 
-Get the run ID and watch it in one flow:
+**Always match the run to the COMMIT YOU MERGED, never `--limit 1`.**
+Both repos now skip the image build for docs-only pushes (`paths-ignore`
+in `docker-publish.yml` — goodgirlsbotclub#349, ggbc-backend#49), and a
+commit carrying `[skip ci]` skips it too. After such a merge there is NO
+new run, so `--limit 1` silently returns the PREVIOUS run — already
+`success` — and `gh run watch` reports green instantly for the wrong
+commit. The deploy still does the right thing (`:latest` is genuinely
+unchanged), but the "CI is green" signal is a lie, and it would keep
+being a lie on a merge that *should* have built.
+
+Note `paths-ignore` covers only what its allow-list names. `.claude/**`
+is NOT in it — a skill-doc change will still trigger a build unless the
+commit says `[skip ci]`.
+
+Use this helper for each repo whose code you merged. It resolves the run
+by `headSha`, tolerates the run not existing yet, and distinguishes
+"skipped on purpose" from "something is wrong":
 
 ```bash
-# Frontend
-FE_RUN=$(gh run list --repo sammygallo/goodgirlsbotclub --workflow docker-publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')
-gh run watch $FE_RUN --repo sammygallo/goodgirlsbotclub --exit-status
+# usage: wait_for_image <repo> <local-checkout-path>
+wait_for_image() {
+  local REPO="$1" DIR="$2"
+  local SHA; SHA=$(git -C "$DIR" rev-parse HEAD)
+  echo "waiting on image build for ${REPO}@${SHA:0:7}"
 
-# Backend
-BE_RUN=$(gh run list --repo sammygallo/ggbc-backend --workflow docker-publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')
-gh run watch $BE_RUN --repo sammygallo/ggbc-backend --exit-status
+  # A run appears within seconds of a push. Poll ~90s before concluding
+  # it was skipped — declaring "skipped" too early would sail past a
+  # build that was merely slow to be created.
+  local RUN="" i
+  for i in $(seq 1 18); do
+    RUN=$(gh run list --repo "$REPO" --workflow docker-publish.yml --limit 30 \
+      --json databaseId,headSha --jq "[.[] | select(.headSha==\"$SHA\")][0].databaseId")
+    [ -n "$RUN" ] && [ "$RUN" != "null" ] && break
+    RUN=""; sleep 5
+  done
+
+  if [ -z "$RUN" ]; then
+    # No build for this SHA. Two legitimate causes: every changed file
+    # matched paths-ignore, or the commit message carried [skip ci].
+    # Don't try to distinguish them — verify the OUTCOME instead: the
+    # published :latest must still descend from a commit on this line,
+    # so we know it corresponds to real code.
+    local LAST_SHA
+    LAST_SHA=$(gh run list --repo "$REPO" --workflow docker-publish.yml --limit 30 \
+      --json headSha,conclusion --jq '[.[] | select(.conclusion=="success")][0].headSha')
+    if [ -n "$LAST_SHA" ] && git -C "$DIR" merge-base --is-ancestor "$LAST_SHA" "$SHA" 2>/dev/null; then
+      echo "  no build for this SHA (paths-ignore, or [skip ci] in the commit)."
+      echo "  :latest is from ${LAST_SHA:0:7}, an ancestor of HEAD. Safe to deploy."
+      return 0
+    fi
+    echo "  ERROR: no build for this SHA, and the last successful build (${LAST_SHA:0:7})"
+    echo "  is NOT an ancestor of HEAD. Do NOT deploy — investigate."
+    return 1
+  fi
+
+  gh run watch "$RUN" --repo "$REPO" --exit-status
+  # Explicit conclusion check — see the pipe warning below.
+  local CONCLUSION
+  CONCLUSION=$(gh run view "$RUN" --repo "$REPO" --json conclusion --jq .conclusion)
+  echo "  conclusion: $CONCLUSION"
+  [ "$CONCLUSION" = "success" ]
+}
+
+wait_for_image sammygallo/goodgirlsbotclub /Users/sammy/Documents/GitHub/goodgirlsbotclub
+wait_for_image sammygallo/ggbc-backend    /Users/sammy/Documents/GitHub/ggbc-backend
 ```
+
+Run it only for repos you actually merged into, and make sure that
+repo's local checkout is on `main` and pulled first — `HEAD` there is
+what the SHA is read from.
 
 Typical durations:
 - **Frontend CI:** ~1.5–3 minutes (Vite build on GitHub runner with GHA cache)
 - **Backend CI:** ~3–5 minutes (pytest + ruff + multi-arch Docker image build). Measured 2026-07-31 across the last 5 successful runs: 3.9–4.2 min.
 
-On a **sync-only** run (nothing merged this time — see the Arguments note about deploying with no pending work), there is no run to watch. Just confirm the newest run on `main` already concluded `success` before pulling:
+On a **sync-only** run (nothing merged this time — see the Arguments note about deploying with no pending work), `wait_for_image` still does the right thing: it finds no run for the current SHA, confirms the published `:latest` came from an ancestor commit, and returns 0. You can also eyeball recent runs directly:
 
 ```bash
 gh run list --repo sammygallo/goodgirlsbotclub --workflow docker-publish.yml --limit 3 \
-  --json databaseId,headBranch,status,conclusion --jq '.[] | "\(.databaseId) \(.headBranch) \(.status)/\(.conclusion)"'
+  --json databaseId,headSha,headBranch,status,conclusion \
+  --jq '.[] | "\(.databaseId) \(.headSha[0:7]) \(.headBranch) \(.status)/\(.conclusion)"'
 ```
 
 Use `run_in_background: true` on the Bash call if you want to keep working in parallel — you'll get a task-notification when it completes.
@@ -234,16 +307,18 @@ If you pipe `gh run watch` through `tail`, `head`, or similar (which is tempting
 
 ```bash
 # Option A: ALWAYS follow the watch with an explicit conclusion check.
-gh run watch $FE_RUN --repo sammygallo/goodgirlsbotclub --exit-status
-CONCLUSION=$(gh run view $FE_RUN --repo sammygallo/goodgirlsbotclub --json conclusion --jq .conclusion)
+gh run watch $RUN --repo <repo> --exit-status
+CONCLUSION=$(gh run view $RUN --repo <repo> --json conclusion --jq .conclusion)
 echo "Conclusion: $CONCLUSION"  # Expect: success
 
 # Option B: enable pipefail if you must pipe.
 set -o pipefail
-gh run watch $FE_RUN --repo sammygallo/goodgirlsbotclub --exit-status 2>&1 | tail -20
+gh run watch $RUN --repo <repo> --exit-status 2>&1 | tail -20
 ```
 
 **Option A is the safer default** — do it every time, even when the background task says exit 0. **Incurred on 2026-04-15:** the first deploy reported "exit code 0" from a backgrounded watch + tail pipeline while CI had actually failed, only caught by reading the output.
+
+`wait_for_image` above already does Option A internally, so if you use it you are covered — this section is the rationale, and applies if you ever watch a run by hand.
 
 If CI fails, stop and report the failing step:
 ```bash
@@ -494,4 +569,23 @@ ssh root@159.89.180.146 "df -h / && docker image prune -af"
 The docker-publish workflow triggers on every push to the default branch. For docs-only or `.gitignore`-only changes that's wasted CI time. **Note:** `[skip ci]` in a PR's commit message does NOT work with the `--merge` strategy — GitHub creates a new merge commit that doesn't inherit the tag. Options:
 
 1. Use `--squash` or `--rebase` for docs-only PRs (preserves the commit message).
-2. Add `paths-ignore` to `.github/workflows/docker-publish.yml` to exclude `**.md`, `.gitignore`, `docs/**`. Better long-term fix — do this next time the workflow is touched.
+2. Add `paths-ignore` to `.github/workflows/docker-publish.yml`. **Done** — goodgirlsbotclub#349 and ggbc-backend#49. Note both are explicit allow-lists, NOT `docs/**`: three docs in the frontend are compiled into the bundle via Vite `?raw` imports (`docs/faq.md`, `docs/character-guide.md`, `docs/hypercode-guide.md`), so a blanket ignore would silently ship a stale FAQ.
+
+#### ⚠️ Never write the skip-CI marker literally in a commit message
+
+GitHub scans the WHOLE commit message — subject and body — for the
+skip-CI marker (the `[skip` `ci]` bracket form, and its `[ci skip]` /
+`[no ci]` / `[skip actions]` variants). It does not care that you were
+merely *talking about* it.
+
+Writing a commit message that discusses the marker therefore silently
+suppresses every workflow for that commit. **This happened on
+2026-07-31**: the commit documenting this very helper mentioned the
+marker three times in prose, and CI never ran on its PR — no failure,
+no warning, just an empty checks list that looks identical to "still
+queued".
+
+When a commit message needs to refer to it, break up the literal or
+describe it in words ("the skip-CI marker"). And if a PR shows no checks
+at all, grep its head commit message for the marker before assuming
+GitHub is slow or Actions is down.
