@@ -36,7 +36,7 @@ in draft, gated on the Phase-1 soak** (see below — do not merge yet).
 | 5 | Story tab, source-chat designation, read plumbing | goodgirlsbotclub #336 | merged, deployed |
 | 6 | Cold-start ingestion, WI replay, checkpoints | goodgirlsbotclub #337 | merged, deployed |
 | 7 | Transcript walk (chunker, walk, resume, user_voice) | goodgirlsbotclub **#339** | **draft, gated on soak — see below** |
-| 9 | Bible snapshot archive (snapshot+restore, both repos) | ggbc-backend **#47** + goodgirlsbotclub **#343** | **merged 2026-07-30, not yet deployed** |
+| 9 | Bible snapshot archive (snapshot+restore, both repos) | ggbc-backend **#47** + goodgirlsbotclub **#343** | merged, deployed 2026-07-30 |
 
 Plus docs: schema + audit (#330), the plan (#332), v1.1 amendments
 (#335), the previous pickup doc (#338), **the plan's six open questions
@@ -46,12 +46,16 @@ Also shipped and merged, independent of phase order:
 **weak/cheap-model warning** in `StartIngestModal` — goodgirlsbotclub
 **#341** (merged 2026-07-30).
 
-**Backend migration head on `main`: `0016_add_story_archives`** (merged
-2026-07-30 with ggbc-backend#47). **Backend migration head in
-PRODUCTION is still `0015_story_log_seq`** — 0016 has NOT been deployed
-yet. Don't assume 0016 is live until it's actually been deployed; check
-`alembic current` against the running container if it matters, not
-this doc.
+**Backend migration head, `main` AND production: `0016_add_story_archives`**
+— deployed 2026-07-30 ~21:49 UTC, applied automatically by the compose
+`alembic upgrade head && uvicorn` wrapper. Don't trust this doc for it;
+check the running DB when it matters:
+
+```bash
+ssh root@159.89.180.146 "cd /opt/goodgirlsbotclub && \
+  docker compose exec -T postgres psql -U ggbc -d ggbc -tAc \
+  'select version_num from alembic_version;'"
+```
 
 ### What a user can do today (in production)
 
@@ -59,10 +63,10 @@ Open a Work → **Story** tab → designate a source chat → **Build the
 groundwork**. That runs cold start (card/persona/lorebooks → bible, two
 model calls on their own key) and the world-info replay. Scenes and facts
 are still empty in production: the transcript walk (Phase 7) is built
-and reviewed but not merged yet. "Reset story" is still the only escape
-hatch and is still irreversible in production — Phase 9's snapshot +
-restore (auto-snapshot before reset, a snapshot list, a restore action)
-is built, reviewed, and merged (#47 + #343) but not deployed yet.
+and reviewed but not merged yet. "Reset story" is **no longer
+irreversible**: Phase 9 shipped 2026-07-30, so a reset (or a source-chat
+change) auto-snapshots first, and the Story tab's "Show snapshots" panel
+lists them with a restore action behind a confirm.
 
 ---
 
@@ -71,36 +75,65 @@ is built, reviewed, and merged (#47 + #343) but not deployed yet.
 Phase 7 must not merge until Phase 1 (permanent message UUIDs) has been
 deployed and soaking in production for **days**, so stale open tabs stop
 re-minting message ids before the walk's provenance depends on them being
-stable. **Phase 1 (and 2–6) deployed to production on 2026-07-29
-around 16:23 UTC.** Check elapsed time now:
+stable.
+
+**The clock starts when Phase 1 first reached production: 2026-07-29
+~16:23 UTC.** It has run continuously since. Compute elapsed time from
+that timestamp:
 
 ```bash
-ssh root@159.89.180.146 "docker ps --format '{{.Names}}\t{{.Status}}'"
+python3 -c "
+from datetime import datetime, timezone
+d = datetime.now(timezone.utc) - datetime(2026,7,29,16,23,tzinfo=timezone.utc)
+print(f'soak: {d.days}d {d.seconds//3600}h')
+"
 ```
 
-`goodgirlsbotclub-ggbc-backend-1` / `-frontend-1` / `-postgres-1` uptime
-*is* the soak clock, as long as nothing has restarted them since — a
-redeploy for something unrelated resets it, so check `docker ps`, don't
-just trust the date on this doc. As of this doc's last update the soak
-was only ~10 hours old — nowhere close.
+> **Do NOT measure this with `docker ps` container uptime.** An earlier
+> version of this doc said uptime *was* the soak clock. That is wrong,
+> and it reads catastrophically low right after any deploy — on
+> 2026-07-30 two unrelated deploys put it at "Up 9 minutes" while the
+> real soak was 1d 6h.
+>
+> Uptime measures how long the current *containers* have run. The soak
+> measures how long *clients* have been served id-minting code, and
+> **every frontend build since 2026-07-29 still contains Phase 1** —
+> restarting a container does not un-ship it. Deploys are expected to
+> happen during the soak (Phase 9 and its follow-ups all shipped mid-soak)
+> and none of them reset anything.
+>
+> Only one thing genuinely restarts this clock: shipping a frontend that
+> does **not** mint message ids — i.e. reverting Phase 1, or rolling the
+> image back to a pre-2026-07-29 build. If that ever happens, reset the
+> date above to when id-minting was restored. `docker ps` is still worth
+> running, but as a health check, not a clock.
 
-**Do not merge PR #339 until this has run for multiple days.** Building
-on top of it, reviewing it further, or working on Phase 8 in the
-meantime is all fine — only the *merge* is gated.
+**How many days is "days"?** Deliberately not pinned to a number — it is
+a judgment call, not a threshold the code enforces. The thing being
+waited out is users' long-lived browser tabs cycling, so it wants to
+span at least one stretch of people not touching the app: **3–5 days is
+the sensible shape**, which puts the gate around 2026-08-01 to 08-03.
+Shorter is a risk decision, not a rule violation.
+
+**Do not merge PR #339 until then.** Building on top of it, reviewing it
+further, or working on Phase 8 in the meantime is all fine — only the
+*merge* is gated. (Its review-fix follow-up, goodgirlsbotclub **#346**,
+is stacked on #339's own branch and is gated by the same clock.)
 
 ---
 
 ## Next up
 
-Phase 9 is done and merged — **deploy it** whenever convenient (same
-droplet recipe as every other phase, see the migration-head note
-above). Nothing else is gated on that deploy itself.
+Phase 9 is merged and deployed. Everything mergeable is merged and in
+production; the review follow-ups from 2026-07-30 (ggbc-backend **#48**,
+goodgirlsbotclub **#345** and **#347**) all shipped the same day.
 
 One thread left blocking further phase work:
 
-1. **Wait out the soak, then merge #339.** Nothing to do here but watch
-   the clock (see above) and merge when it's actually been days, not
-   hours.
+1. **Wait out the soak, then merge #339 and its follow-up #346.**
+   Nothing to do here but watch the clock (see above) and merge when it
+   has actually been days — measured from the Phase-1 deploy date, NOT
+   from container uptime.
 
 Once #339 merges: **Phase 8 (Reconcile)** is next in strict sequence
 (needs 7). **Phase 10** (review checkpoint + lock canon + the new fact
