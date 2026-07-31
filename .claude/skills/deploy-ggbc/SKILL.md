@@ -53,7 +53,9 @@ Post-B3c-final (2026-05-26): SillyTavern and `seed-owner` are gone from producti
 - `goodgirlsbotclub-ggbc-backend-1` — always running (FastAPI; runs `alembic upgrade head` on every start, then uvicorn)
 - `goodgirlsbotclub-postgres-1` — always running, healthy
 
-If you see lingering `goodgirlsbotclub-sillytavern-1` or `goodgirlsbotclub-seed-owner-1`, run `docker compose up -d --remove-orphans` to clean them up. The `st-config` / `st-data` volumes may still exist as historical backups — leave them alone.
+`docker ps -a` is now clean of ST remnants: the last leftover was **deleted on 2026-07-31**. Note what it actually was, because the previous advice here was wrong — it was a standalone container plainly named `sillytavern` (not `goodgirlsbotclub-sillytavern-1`), created outside compose back in the pre-compose era and exited `(0)` since 2026-04-13. **`docker compose up -d --remove-orphans` would never have removed it** — compose only reaps containers carrying its own project labels. It took a direct `docker rm sillytavern`. If a stray container ever shows up again, check whether it's compose-managed before assuming `--remove-orphans` will handle it.
+
+**The `st-data` / `st-config` volumes must be left alone — and they are easier to destroy than they look.** Card recovery off them is **complete** (verified 2026-07-31: `recover_st_characters.py` dry-run reports `imported=0`; all personal and global cards are in Postgres), so nothing on them is load-bearing today, but they are the only surviving copy of the pre-migration state. They are attached to no container, which makes them *dangling* — so `docker volume prune` or `docker system prune --volumes` would delete them **silently, without a confirmation naming them**. Never run either on this box. `docker image prune -af` is fine (images only). When removing containers, use `docker rm <name>` without `-v`.
 
 ### 3. Building the frontend on the droplet is the OLD way and must never happen again
 
@@ -114,6 +116,15 @@ git fetch origin && git log --oneline origin/main..HEAD
 ```
 
 Confirm with the user what you're about to merge before proceeding. If a repo has no changes, skip it.
+
+**Also check for open PRs**, since work often lives on GitHub rather than in a local branch:
+
+```bash
+gh pr list --repo sammygallo/goodgirlsbotclub --json number,title,headRefName,baseRefName,isDraft \
+  --jq '.[] | "#\(.number) [\(if .isDraft then "DRAFT" else "ready" end)] \(.headRefName) -> \(.baseRefName)"'
+```
+
+Check the **base** branch, not just draft status. A non-draft PR whose base is another feature branch is a *stacked* review-fixes PR, not a deploy candidate — only PRs based on `main` ship. (Hit on 2026-07-31: #346 read as "ready" but was based on the draft `claude/story-state-phase7`, so nothing was deployable that run.)
 
 #### Frontend: verify the build locally before pushing
 
@@ -191,7 +202,14 @@ gh run watch $BE_RUN --repo sammygallo/ggbc-backend --exit-status
 
 Typical durations:
 - **Frontend CI:** ~1.5–3 minutes (Vite build on GitHub runner with GHA cache)
-- **Backend CI:** ~3–5 minutes (pytest + ruff + multi-arch Docker image build)
+- **Backend CI:** ~3–5 minutes (pytest + ruff + multi-arch Docker image build). Measured 2026-07-31 across the last 5 successful runs: 3.9–4.2 min.
+
+On a **sync-only** run (nothing merged this time — see the Arguments note about deploying with no pending work), there is no run to watch. Just confirm the newest run on `main` already concluded `success` before pulling:
+
+```bash
+gh run list --repo sammygallo/goodgirlsbotclub --workflow docker-publish.yml --limit 3 \
+  --json databaseId,headBranch,status,conclusion --jq '.[] | "\(.databaseId) \(.headBranch) \(.status)/\(.conclusion)"'
+```
 
 Use `run_in_background: true` on the Bash call if you want to keep working in parallel — you'll get a task-notification when it completes.
 
@@ -275,6 +293,12 @@ For a deeper check, smoke-test:
 ssh root@159.89.180.146 "curl -sI http://127.0.0.1:8080 | head -3 && curl -s https://www.goodgirlsbotclub.com/health"
 ```
 Should return `HTTP/1.1 200 OK` and `{"status":"ok"}`.
+
+Confirm the backend actually came up — it runs `alembic upgrade head` before uvicorn (gotcha #4), so a bad migration surfaces here:
+```bash
+ssh root@159.89.180.146 "cd /opt/goodgirlsbotclub && docker compose logs --tail 8 ggbc-backend"
+```
+Should end with `Application startup complete.` / `Uvicorn running on http://127.0.0.1:8001`.
 
 If the intake bot was deployed, verify pm2:
 ```bash
