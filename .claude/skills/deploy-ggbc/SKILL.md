@@ -5,18 +5,31 @@ description: "Push, merge, and deploy Good Girls Bot Club (goodgirlsbotclub) to 
 
 # Deploy Good Girls Bot Club to Production
 
-> **⚠️ This file exists in TWO places and they are hand-synced.**
-> - `~/.claude/skills/deploy-ggbc/SKILL.md` (user-level — the one that
->   actually loads when you invoke the skill)
-> - `<repo>/.claude/skills/deploy-ggbc/SKILL.md` (in goodgirlsbotclub —
->   the version-controlled, reviewable one)
+> **This file is the single source of truth. Edit it HERE.**
 >
-> They were unified on 2026-07-31 after drifting apart. **Editing one and
-> not the other re-creates that drift immediately** — it happened again
-> the same day. Always `cp` your edit across and commit the repo copy in
-> the same change. If you only ever touch one, make it the repo copy and
-> copy it out to `~/.claude/skills/`, so the change is reviewed and
-> recoverable.
+> `~/.claude/skills/deploy-ggbc/SKILL.md` — the path the skill loads
+> from — is a **symlink** to this file (set 2026-07-31):
+>
+> ```
+> ~/.claude/skills/deploy-ggbc/SKILL.md
+>   -> /Users/sammy/Documents/GitHub/goodgirlsbotclub/.claude/skills/deploy-ggbc/SKILL.md
+> ```
+>
+> They used to be two hand-synced copies. They drifted, were unified, and
+> re-diverged within the hour — so the copying was replaced with a link
+> that makes drift structurally impossible. Every edit is now
+> version-controlled and reviewable by construction.
+>
+> **The one failure mode this introduces:** the link is absolute, so
+> moving, renaming or deleting the goodgirlsbotclub checkout leaves it
+> dangling and the skill silently stops loading — no error, it just
+> disappears from the skill list. If `/deploy-ggbc` ever goes missing,
+> check `ls -la ~/.claude/skills/deploy-ggbc/` first. Recreate with:
+>
+> ```bash
+> ln -sf <repo>/.claude/skills/deploy-ggbc/SKILL.md \
+>        ~/.claude/skills/deploy-ggbc/SKILL.md
+> ```
 
 Push feature branches, merge them, wait for each repo's Docker image CI to finish, then update the live droplet with a pull-only deploy.
 
