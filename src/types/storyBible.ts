@@ -454,3 +454,44 @@ export interface RenderingHintsSection {
     panels_per_scene: number;
   };
 }
+
+// ---------------------------------------------------------------------------
+// continuity section (phase 8 — reconcile)
+//
+// Mirrors ggbc-backend `app/schemas/story.py` Contradiction /
+// ContradictionResolution / ContinuitySection, which have existed since
+// phase 3a but were never added on this side. Same gap phase 7 had to
+// close for Scene and UserVoiceSection: the backend validates these with
+// extra="forbid", so a field that drifts here is a 422 at write time, not
+// a type error at build time. Keep them in step.
+// ---------------------------------------------------------------------------
+
+export type ContradictionType =
+  | 'character_attribute'
+  | 'world_rule'
+  | 'timeline'
+  | 'relationship'
+  | 'object_state';
+
+export interface ContradictionResolution {
+  status: 'unresolved' | 'user_chose' | 'agent_resolved' | 'deferred';
+  /** The winning fact id once something has actually been chosen. */
+  canonical_choice?: string | null;
+  rationale: string;
+  resolved_at?: string | null;
+}
+
+export interface Contradiction {
+  id: string;
+  type: ContradictionType;
+  description: string;
+  /** The competing fact ids. Reconcile always emits at least two — a
+   *  single fact cannot contradict anything. */
+  sources: string[];
+  detected_by: 'agent' | 'user';
+  resolution: ContradictionResolution;
+}
+
+export interface ContinuitySection {
+  contradictions: Contradiction[];
+}
