@@ -73,6 +73,116 @@ describe('factEntities', () => {
   });
 });
 
+describe('names that are also ordinary words (review findings)', () => {
+  const WILL: KnownCastMember[] = [{ id: 'char-will', name: 'Will', aliases: [] }];
+
+  it('does not attribute a lowercase common word to a same-named character', () => {
+    // Will, May, Rose, Grace, Dawn, Mark, Hope, Art are all ordinary
+    // character names AND ordinary English words. Case-insensitive
+    // matching handed every "he will leave" to a character named Will.
+    expect(factEntities(fact('He will leave at dawn.'), WILL)).toEqual([]);
+    expect(factEntities(fact('Will left at dawn.'), WILL)).toEqual(['char-will']);
+  });
+
+  it('does not let a common-word match displace the WORLD_ENTITY bucket', () => {
+    // The severe half, and the silent one. A false attribution stops the
+    // fact falling through to WORLD_ENTITY, so a real world-rule conflict
+    // is never grouped and never reaches the judge. Nothing downstream
+    // can recover it.
+    const groups = groupFacts(
+      [
+        fact('Magic will always demand a blood price.', 'world_rule'),
+        fact('Magic is free to cast.', 'world_rule'),
+      ],
+      WILL
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0].entity).toBe(WORLD_ENTITY);
+    expect(groups[0].facts).toHaveLength(2);
+  });
+
+  it('holds for a lowercase common noun matching a cast name', () => {
+    expect(factEntities(fact('Poison ivy grows on the wall.'), CAST)).toEqual([]);
+    expect(factEntities(fact('Ivy grows restless.'), CAST)).toEqual(['char-ivy']);
+  });
+
+  it('still matches a lowercase ALIAS, which carries no proper-noun signal', () => {
+    // The capitalization rule keys off the NEEDLE's own casing, so a
+    // deliberately lowercase alias is matched case-insensitively.
+    expect(factEntities(fact('The archivist lied.'), CAST)).toEqual(['char-ivy']);
+  });
+
+  it('matches caseless scripts, which cannot satisfy a capitalization rule', () => {
+    // A caseless name is exempted from the capitalization requirement —
+    // without that exemption every CJK/kana cast member would silently
+    // stop matching. Fact text is English prose (the walk prompts are),
+    // so the name sits on ordinary word boundaries.
+    const jp: KnownCastMember[] = [{ id: 'c-jp', name: '\u3072\u306a', aliases: [] }];
+    expect(factEntities(fact('\u3072\u306a lied about the archive.'), jp)).toEqual([
+      'c-jp',
+    ]);
+  });
+
+  it('KNOWN LIMIT: a name embedded in space-less script is not matched', () => {
+    // Documented, not accidental. The word-boundary rule is what stops
+    // "Al" matching "already"; scripts without word separators put a
+    // letter on both sides of every name, so the rule cannot fire. Such a
+    // fact falls to WORLD_ENTITY — still grouped, still judged, just not
+    // attributed. That is the same safe direction the rest of this module
+    // fails in, and loosening the boundary rule for these scripts would
+    // reintroduce exactly the over-matching it exists to prevent.
+    const jp: KnownCastMember[] = [{ id: 'c-jp', name: '\u3072\u306a', aliases: [] }];
+    expect(
+      factEntities(fact('\u3072\u306a\u306f\u55e6\u3092\u3064\u3044\u305f\u3002'), jp)
+    ).toEqual([]);
+  });
+});
+
+describe('typographic and unicode skew (review findings)', () => {
+  it('folds curly apostrophes so a card-typed name still matches model prose', () => {
+    // Cards are typed with ASCII "'"; models emit U+2019. Without folding,
+    // O'Brien is simply invisible and the fact is silently unattributed.
+    const cast: KnownCastMember[] = [{ id: 'ob', name: "O'Brien", aliases: [] }];
+    expect(factEntities(fact('O\u2019Brien lied.'), cast)).toEqual(['ob']);
+    expect(factEntities(fact("O'Brien lied."), cast)).toEqual(['ob']);
+  });
+
+  it('treats accented neighbours as part of the word, independent of NFC/NFD', () => {
+    // With an ASCII-only boundary class, "Jose" matched inside "Josee"
+    // whenever the text happened to be precomposed — so attribution
+    // depended on which normalization form each side used.
+    const cast: KnownCastMember[] = [{ id: 'j', name: 'Jose', aliases: [] }];
+    const nfc = 'Jos\u00e9e arrived.';
+    const nfd = 'Jose\u0301e arrived.';
+    expect(factEntities(fact(nfc), cast)).toEqual([]);
+    expect(factEntities(fact(nfd), cast)).toEqual([]);
+  });
+
+  it('matches an accented name across normalization forms', () => {
+    const cast: KnownCastMember[] = [{ id: 'j', name: 'Jos\u00e9', aliases: [] }];
+    expect(factEntities(fact('Jose\u0301 arrived.'), cast)).toEqual(['j']);
+  });
+});
+
+describe('overlapping cast names (review finding)', () => {
+  it('the longer name claims the span, so the shorter one cannot re-match inside it', () => {
+    // Sorting longest-first alone did nothing — without claiming the
+    // matched span, "Ward" still matched inside "Mrs. Ward" and the fact
+    // was attributed to two different characters at once.
+    const cast: KnownCastMember[] = [
+      { id: 'ward', name: 'Ward', aliases: [] },
+      { id: 'mrsward', name: 'Mrs. Ward', aliases: [] },
+    ];
+    expect(factEntities(fact('Mrs. Ward arrived.'), cast)).toEqual(['mrsward']);
+    // ...and a bare mention still resolves to the shorter one.
+    expect(factEntities(fact('Ward arrived.'), cast)).toEqual(['ward']);
+  });
+
+  it('returns ids in CAST order regardless of mention order', () => {
+    expect(factEntities(fact('Sam blamed Ivy.'), CAST)).toEqual(['char-ivy', 'char-sam']);
+  });
+});
+
 describe('groupFacts', () => {
   it('groups by entity AND category, not entity alone', () => {
     const facts = [
