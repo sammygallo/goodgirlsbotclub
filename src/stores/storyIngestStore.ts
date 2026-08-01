@@ -129,6 +129,22 @@ function abortError(): Error {
   return e;
 }
 
+/** True only for "this section has never been written".
+ *
+ *  `apiRequest` surfaces the backend's detail string but not the status
+ *  code, so the message is all there is to go on — the load-bearing fact
+ *  is that a missing story section 404s with the literal
+ *  "section not written yet" (ggbc-backend app/routers/story.py). If that
+ *  string ever changes, this starts throwing on legitimate absences,
+ *  which is the safe direction to fail.
+ *
+ *  Every caller must distinguish this from a transient failure: reading
+ *  a blip as "never written" zeroes a base_ts or empties a cast, and both
+ *  are silent data loss rather than a retryable error. */
+function isMissingSection(error: unknown): boolean {
+  return /not written yet|404/i.test(error instanceof Error ? error.message : '');
+}
+
 function lockIsStale(checkpoint: IngestCheckpoint | null): boolean {
   const lock = checkpoint?.lock;
   if (!lock) return true;
@@ -200,9 +216,7 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       // Only a genuine 404 means "never ingested". Treating a network
       // blip the same way would zero base_ts AND blind the lock check,
       // so a transient failure could authorise a second paid build.
-      const message = error instanceof Error ? error.message : '';
-      const missing = /not written yet|404/i.test(message);
-      if (missing) {
+      if (isMissingSection(error)) {
         set({ checkpoint: null, checkpointTs: 0 });
       } else {
         throw error;
@@ -264,11 +278,25 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     // Re-initializing the checkpoint from emptyCheckpoint() here would
     // also destroy chunk_plan/chunk_index the moment pass 1 hit any
     // failure, discarding potentially hours of already-paid-for progress.
+    //
+    // The predicate is "the plan has been pinned", NOT "the index has
+    // advanced". chunk 0's scenes and facts are committed to the server
+    // BEFORE chunk_index leaves 0 (the loop in runTranscriptWalkPass
+    // writes, then checkpoints — correct ordering, since checkpointing
+    // first would turn an interrupt into silent chunk loss). Gating on
+    // `chunk_index > 0` classified that window as a fresh build and
+    // reran cold_start, reminting every character id and orphaning the
+    // scene already on the server. chunk_plan is written only after
+    // cold_start and wi_replay have durably landed, so it is the honest
+    // signal that their ids are load-bearing.
+    //
+    // Note this is deliberately NOT the same predicate runTranscriptWalkPass
+    // uses to decide whether to REUSE the pinned plan — see the
+    // `resumable` gate there, which still requires chunk_index > 0.
     const resumableWalk =
       existing !== null &&
       existing.prompt_version === PROMPT_VERSION &&
       existing.current_pass === 'transcript_walk' &&
-      existing.chunk_index > 0 &&
       existing.chunk_plan.length > 0;
 
     set({
@@ -314,6 +342,17 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     // LOCK_STALE_MS would otherwise look abandoned while it is still
     // spending the user's money.
     const heartbeat = setInterval(() => {
+      // `isRunning` is a SHARED flag, so it goes true again as soon as any
+      // later run starts — it cannot tell "this run is alive" from "some
+      // other run is". stillOurs() is this run's own identity, and a timer
+      // that has outlived its run must stop rather than PUT a dead run's
+      // checkpoint (with the CURRENT project's server_ts) over whatever
+      // Work is open now. The finally below is the primary guarantee; this
+      // is the backstop for a timer that somehow escapes it.
+      if (!stillOurs()) {
+        clearInterval(heartbeat);
+        return;
+      }
       if (!get().isRunning) return;
       void saveCheckpoint({
         ...checkpoint,
@@ -388,22 +427,44 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         // server) and re-walk facts already accounted for. Read back the
         // cast cold_start already wrote instead of recomputing it.
         if (!countingLlm) {
-          clearInterval(heartbeat);
           finish({ error: 'A connected model is needed to continue this build.' });
           showToastGlobal('A connected model is needed to continue this build', 'error');
           return false;
         }
-        let entities: { characters: { id: string; canonical_name: string; aliases: string[] }[] };
+        type EntitiesShape = {
+          characters: { id: string; canonical_name: string; aliases: string[] }[];
+        };
+        let entities: EntitiesShape;
         try {
           const section = await storyApi.getSection(projectId, 'entities');
-          entities = section.data as unknown as typeof entities;
-        } catch {
+          const data = section.data as unknown as Partial<EntitiesShape>;
+          // A 200 carrying an unexpected body is no more trustworthy than
+          // a 503 — validate before adopting, and fail with something the
+          // user can act on rather than a bare TypeError from .map().
+          if (!Array.isArray(data?.characters)) {
+            throw new Error("The story bible's character list could not be read.");
+          }
+          entities = data as EntitiesShape;
+        } catch (error) {
+          // A transient blip is NOT "this bible has no cast". Swallowing
+          // it strips participants from every scene in every remaining
+          // chunk, and the per-chunk checkpoint advance makes that
+          // unrecoverable without a full reset. Only a genuine absence
+          // degrades to an empty cast.
+          //
+          // Failing here is nearly free: this read happens before the
+          // chunk loop and before any LLM call, so nothing has been
+          // walked and no tokens have been spent. The throw unwinds into
+          // run()'s catch, which writes status 'error' and leaves
+          // chunk_index untouched — pressing Build again resumes from the
+          // same chunk with a correctly-read cast.
+          if (!isMissingSection(error)) throw error;
           entities = { characters: [] };
         }
         cast = entities.characters.map((c) => ({
           id: c.id,
           name: c.canonical_name,
-          aliases: c.aliases,
+          aliases: c.aliases ?? [],
         }));
       } else {
         // ---- pass 1: cold start ---------------------------------------
@@ -479,7 +540,6 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
             replay_approx: approximate,
             lock: null,
           });
-          clearInterval(heartbeat);
           finish({});
           showToastGlobal(
             allCallsFailed
@@ -532,7 +592,6 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       if (walkOutcome.status === 'needs_confirmation') {
         const message = WALK_CONFIRM_MESSAGE(walkOutcome.chunkCount ?? 0);
         await saveCheckpoint({ ...checkpoint, status: 'paused', error: message, lock: null });
-        clearInterval(heartbeat);
         finish({ error: message });
         showToastGlobal(message, 'warning');
         return false;
@@ -547,7 +606,6 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         const message =
           'The chat changed since this build started. Use "Reset story" below, then build again.';
         await saveCheckpoint({ ...checkpoint, status: 'error', error: message, lock: null });
-        clearInterval(heartbeat);
         finish({ error: message });
         showToastGlobal(message, 'error');
         return false;
@@ -592,7 +650,6 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         lock: null,
       });
 
-      clearInterval(heartbeat);
       finish({});
       showToastGlobal(
         unreadableNote ? 'Story built — some of the chat could not be read' : 'Story built',
@@ -617,10 +674,25 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         // The checkpoint write itself failed — nothing further to try,
         // and the in-memory error below is what the user sees.
       }
-      clearInterval(heartbeat);
       finish({ error: aborted ? null : message });
       showToastGlobal(message, aborted ? 'warning' : 'error');
       return false;
+    } finally {
+      // The ONLY place the heartbeat is cancelled. It used to be cleared
+      // at each exit point, which missed the four bare `return false`
+      // bail-outs inside this try (a lost ownership race, and an aborted
+      // walk) — leaving an immortal timer that kept PUTting a dead run's
+      // checkpoint every LOCK_STALE_MS/2, against whichever project was
+      // open by then, with that project's server_ts as the base.
+      clearInterval(heartbeat);
+      // Same reasoning for the run's own flags: those bail-outs skipped
+      // finish() as well, so `isRunning`/`abort` were never released and
+      // clear() deliberately refuses to reset a run it believes is live —
+      // wedging the store into never building again. finish() is a no-op
+      // once it has already run (it checks abort identity), and a no-op
+      // when a LATER run legitimately owns the store, so this is safe on
+      // every path.
+      finish({});
     }
   },
 
@@ -798,6 +870,21 @@ async function runTranscriptWalkPass(opts: {
   const { projectId, chat, messages, cast, llm, abort, stillOurs, saveCheckpoint } = opts;
   let cp = opts.checkpoint;
 
+  // Deliberately a DIFFERENT predicate from run()'s `resumableWalk`,
+  // which answers "are cold_start's ids durable?" and so drops the index
+  // condition. This one answers "should the pinned plan be reused, and
+  // the walk restarted mid-way through it?" — which additionally needs
+  // chunk_index > 0.
+  //
+  // Keeping the index condition here is what stops a resume at index 0
+  // from being dead-ended: sliceChunksFromPlan returns null the moment
+  // any pinned boundary msg_id is missing, which routes run() into the
+  // 'diverged' branch and tells the user to Reset story — destroying
+  // their whole bible. At index 0 nothing has been checkpointed, so
+  // there is nothing to reconcile: fall through to the fresh-plan branch
+  // below, re-plan from the CURRENT messages (picking up anything the
+  // user added while the build was broken), and leave nextSequence at 0
+  // and openScene null, exactly as a first run would.
   const resumable =
     opts.priorCheckpoint !== null &&
     opts.priorCheckpoint.prompt_version === PROMPT_VERSION &&
@@ -856,7 +943,14 @@ async function runTranscriptWalkPass(opts: {
         totalMessages: data.source.total_messages,
         serverTs: sceneRow.server_ts,
       };
-      nextSequence = sceneRow.sequence + 1;
+      // Take the max rather than trusting open_scene to be the tail.
+      // processChunk now guarantees it is, but a checkpoint written by an
+      // older build may still point at a non-tail row — and seeding from
+      // that alone re-issues sequence numbers already on the server.
+      // scene_count is a plain COUNT of scene rows, so it exceeds
+      // max(sequence) whenever duplicates already exist.
+      const manifest = await storyApi.manifest(projectId);
+      nextSequence = Math.max(sceneRow.sequence + 1, manifest.scene_count);
     } else {
       const manifest = await storyApi.manifest(projectId);
       nextSequence = manifest.scene_count;

@@ -98,10 +98,15 @@ export function IngestProgressCard() {
 
       {!isRunning && stopped && (
         <p className="text-xs text-[var(--color-text-secondary)]">
-          {checkpoint?.current_pass === 'transcript_walk' && checkpoint.chunk_index > 0
+          {checkpoint?.current_pass === 'transcript_walk' &&
+          checkpoint.chunk_plan.length > 0
             ? // The transcript walk (phase 7) checkpoints every chunk, so
-              // this genuinely continues rather than starting over.
-              'Building again continues reading the chat from where it stopped.'
+              // this genuinely continues rather than starting over. Keyed
+              // on chunk_plan, NOT chunk_index, to stay in lockstep with
+              // run()'s resumableWalk gate — at index 0 the walk still
+              // re-plans, but cold-start and world-info are skipped, so
+              // "starts from the beginning" would be a lie.
+              'Building again picks up where it stopped.'
             : // Honest about the limit: cold-start/world-info always
               // restart from the beginning — they are cheap enough that
               // resuming them isn't worth the complexity.
