@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { processChunk, deterministicUuid } from './transcriptWalk';
+import { processChunk } from './transcriptWalk';
+// deterministicUuid moved to sourceRefs (shared with coldStart's id minting);
+// these two cases stay here to pin the walk's own expectations of it.
+import { deterministicUuid } from '../storyBible/sourceRefs';
 import type { KnownCastMember, OpenSceneCarry, ProcessChunkParams } from './transcriptWalk';
 import type { WalkChunk } from './transcriptChunker';
 import type { IngestMessage } from './types';

@@ -228,7 +228,85 @@ export function describeRef(ref: SourceRef): string {
   }
 }
 
-/** Mint a bible-local UUID (character/scene/fact/edit ids, bible_id).
+function fnv1a(str: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function splitmix32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x9e3779b9) >>> 0;
+    let z = state;
+    z = Math.imul(z ^ (z >>> 16), 0x85ebca6b) >>> 0;
+    z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35) >>> 0;
+    return (z ^ (z >>> 16)) >>> 0;
+  };
+}
+
+/**
+ * Deterministic UUID-shaped string from a seed. Deliberately NOT random:
+ * an ingestion pass that reruns — a retry after a transient write
+ * failure, or a rebuild — must re-derive the SAME ids rather than mint
+ * fresh ones, or every row that referenced the old ids is orphaned.
+ *
+ * The seed must be something mechanically stable across a differently
+ * shaped rerun: a card avatar, a persona name, a lorebook entry id, a
+ * message id. NEVER position-in-a-model-response, which the model's own
+ * non-determinism can reshuffle so unrelated content lands on an id that
+ * already means something else.
+ *
+ * Not a cryptographic hash and not trying to be — it only has to be
+ * stable and well-distributed. It is UUID-SHAPED (version and variant
+ * nibbles are forced) so it satisfies the same `format: uuid` validation
+ * as a random one; it is not an RFC 4122 random UUID and does not claim
+ * that entropy.
+ */
+export function deterministicUuid(seed: string): string {
+  const rand = splitmix32(fnv1a(seed));
+  const bytes: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const v = rand();
+    bytes.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Mint ids from seeds, disambiguating any seed that repeats within one
+ *  run.
+ *
+ *  Two entities sharing a seed (a malformed lorebook with a repeated
+ *  entry id, two personas with one name) would otherwise get the SAME id
+ *  — which random minting never produced, so nothing downstream is built
+ *  to survive it. Suffixing the seed keeps every id distinct while
+ *  leaving the common no-collision case byte-identical to a bare
+ *  `deterministicUuid(seed)`.
+ *
+ *  Deliberately per-run rather than global: the point is reproducibility
+ *  across runs, so a fresh minter per pass must re-derive the same ids
+ *  from the same inputs in the same order. */
+export function createIdMinter(): (seed: string) => string {
+  const used = new Set<string>();
+  return (seed: string): string => {
+    let candidate = seed;
+    let n = 2;
+    while (used.has(candidate)) candidate = `${seed}#${n++}`;
+    used.add(candidate);
+    return deterministicUuid(candidate);
+  };
+}
+
+/** Mint a RANDOM bible-local UUID. Correct only for identities that are
+ *  genuinely new each time they are created — `bible_id` is the real
+ *  case. Anything re-derived by a rerun wants `deterministicUuid`
+ *  instead, or the rerun orphans everything that referenced it.
  *  Same crypto.randomUUID-with-fallback shape as message identity. */
 export function bibleUuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {

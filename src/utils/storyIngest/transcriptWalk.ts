@@ -15,7 +15,11 @@
 // this module stays unit-testable with a fake LLM.
 
 import type { ProjectChatRef } from '../../api/client';
-import { buildMsgRef, chatMessageSourceRef } from '../storyBible/sourceRefs';
+import {
+  buildMsgRef,
+  chatMessageSourceRef,
+  deterministicUuid,
+} from '../storyBible/sourceRefs';
 import type {
   BibleFact,
   Confidence,
@@ -34,55 +38,6 @@ import {
 import type { IngestMessage, LlmCall } from './types';
 import type { WalkChunk } from './transcriptChunker';
 
-// ---------------------------------------------------------------------------
-// Deterministic id minting
-// ---------------------------------------------------------------------------
-
-function fnv1a(str: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
-function splitmix32(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x9e3779b9) >>> 0;
-    let z = state;
-    z = Math.imul(z ^ (z >>> 16), 0x85ebca6b) >>> 0;
-    z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35) >>> 0;
-    return (z ^ (z >>> 16)) >>> 0;
-  };
-}
-
-/**
- * Deterministic UUID-shaped string from a seed. Deliberately NOT random:
- * scene/fact ids are seeded from `(chunk boundary, local position)`, so a
- * chunk retried after a transient write failure re-derives the SAME ids
- * rather than random ones. Scenes are mutable rows — a retry's
- * compare-and-set naturally reconciles a content difference. Facts are
- * append-only — a retry that lands on an already-written id safely
- * no-ops (the stored version wins) instead of duplicating. The tradeoff
- * (a retry that changes the MODEL's output for the same position keeps
- * the earlier content rather than the newer) is accepted deliberately:
- * facts are append-only by design, so "the first one recorded wins" is
- * consistent with the contract, not a bug.
- */
-export function deterministicUuid(seed: string): string {
-  const rand = splitmix32(fnv1a(seed));
-  const bytes: number[] = [];
-  for (let i = 0; i < 4; i++) {
-    const v = rand();
-    bytes.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-}
 
 // ---------------------------------------------------------------------------
 // Types

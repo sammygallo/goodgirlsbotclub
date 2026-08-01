@@ -8,6 +8,28 @@ on:
   push:
     branches:
       - main
+    # Skip the image rebuild for changes that cannot reach the bundle.
+    #
+    # DELIBERATELY an explicit allow-list, NOT `docs/**` or `**.md`:
+    # three docs are compiled INTO the app via Vite `?raw` imports —
+    #   docs/faq.md            -> src/components/help/HelpChat.tsx
+    #   docs/character-guide.md \
+    #   docs/hypercode-guide.md -> src/components/guides/guides.ts
+    # so a blanket docs ignore would silently ship a stale FAQ or guide
+    # with no failure anywhere to notice it.
+    #
+    # Anything NOT listed here still triggers a build. That is the point:
+    # a new doc added later is wasteful-but-safe by default, and only
+    # becomes skippable when someone deliberately adds it below after
+    # confirming nothing imports it. Fail toward rebuilding.
+    #
+    # `*.md` matches root level only — GitHub's glob `*` does not cross
+    # `/` — so it covers README/ROADMAP without touching docs/faq.md.
+    paths-ignore:
+      - '*.md'
+      - 'docs/story-state-*.md'
+      - 'docs/v2/**'
+      - '.gitignore'
   workflow_dispatch:
 
 env:

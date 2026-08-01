@@ -4,7 +4,9 @@ import {
   capturedAt,
   characterSourceRef,
   chatSourceRef,
+  createIdMinter,
   describeRef,
+  deterministicUuid,
   hashText,
   personaSourceRef,
   resolveRefState,
@@ -176,6 +178,70 @@ describe('describeRef', () => {
     expect(
       describeRef({ kind: 'user_annotation', captured_at: capturedAt() })
     ).toBe('you');
+  });
+});
+
+describe('deterministicUuid', () => {
+  it('is stable for a seed and distinct across seeds', () => {
+    expect(deterministicUuid('character:Ivy.png')).toBe(
+      deterministicUuid('character:Ivy.png')
+    );
+    expect(deterministicUuid('character:Ivy.png')).not.toBe(
+      deterministicUuid('character:Nyx.png')
+    );
+    // Prefixes are load-bearing: a persona named the same as an avatar
+    // must not collide with the character minted from that avatar.
+    expect(deterministicUuid('character:Ivy')).not.toBe(
+      deterministicUuid('persona:Ivy')
+    );
+  });
+
+  it('is UUID-shaped, so it passes the same validation a random one does', () => {
+    expect(deterministicUuid('rule:book-1:entry-4')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+  });
+
+  it('spreads similar seeds across the space', () => {
+    // Sequential/near-identical seeds are the realistic input (entry-1,
+    // entry-2, …) — a hash that clustered them would collide in practice
+    // while passing a "distinct for two seeds" test.
+    const ids = new Set(
+      Array.from({ length: 2000 }, (_, i) => deterministicUuid(`rule:b:entry-${i}`))
+    );
+    expect(ids.size).toBe(2000);
+  });
+});
+
+describe('createIdMinter', () => {
+  it('re-derives the same ids from the same seeds in a later run', () => {
+    const run = () => {
+      const mint = createIdMinter();
+      return ['character:Ivy.png', 'persona:Sam', 'rule:b1:e1'].map(mint);
+    };
+    expect(run()).toEqual(run());
+  });
+
+  it('leaves a non-repeated seed identical to a bare deterministicUuid', () => {
+    expect(createIdMinter()('character:Ivy.png')).toBe(
+      deterministicUuid('character:Ivy.png')
+    );
+  });
+
+  it('disambiguates a seed repeated within one run', () => {
+    const mint = createIdMinter();
+    const first = mint('rule:b1:dupe');
+    const second = mint('rule:b1:dupe');
+    const third = mint('rule:b1:dupe');
+    expect(new Set([first, second, third]).size).toBe(3);
+    // ...and the disambiguation is itself reproducible, so a rerun over
+    // the same malformed input lands on the same three ids.
+    const again = createIdMinter();
+    expect([
+      again('rule:b1:dupe'),
+      again('rule:b1:dupe'),
+      again('rule:b1:dupe'),
+    ]).toEqual([first, second, third]);
   });
 });
 

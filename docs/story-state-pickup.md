@@ -1,85 +1,272 @@
 # Story-state (productization step 2) — session pickup
 
 Hand-off notes for continuing this work in a fresh session. The plan is
-[story-state-step2-plan.md](story-state-step2-plan.md); the schema is
-[story-state-schema-v1.md](story-state-schema-v1.md) (read its **v1.1
-amendments** section — the original YAML above it is superseded in
-places) and its [compatibility audit](story-state-schema-v1-audit.md).
+[story-state-step2-plan.md](story-state-step2-plan.md) (phases 0–11 now,
+plus a resolved-decisions section 4 — read both before re-litigating
+anything); the schema is [story-state-schema-v1.md](story-state-schema-v1.md)
+(read its **v1.1 amendments** section — the original YAML above it is
+superseded in places) and its [compatibility audit](story-state-schema-v1-audit.md).
 
-Last updated: 2026-07-29, after Phase 6 merged.
+Last updated: 2026-07-30, after Phase 9 (bible snapshot archive) was
+built, adversarially reviewed twice over (backend + frontend, 17
+findings between them, all fixed), independently re-reviewed a second
+time before merge (2 more confirmed bugs caught that the first pass
+missed — see the hazards below), verified live end-to-end, and
+**merged** — ggbc-backend **#47** and goodgirlsbotclub **#343** are
+both on `main`, not yet deployed. Phase 7 is still built + reviewed but
+gated, unmerged (see below), unaffected by Phase 9.
 
 ---
 
 ## Where things stand
 
-**Phases 0–6 are merged and on `main` in both repos. Nothing is open.**
+**Phases 0–6 are merged, on `main` in both repos, and deployed to
+production** (2026-07-29 — the droplet had been three days stale before
+that deploy). **Phase 7 is built and adversarially reviewed but sitting
+in draft, gated on the Phase-1 soak** (see below — do not merge yet).
 
-| Phase | What landed | PR |
-|---|---|---|
-| 0 | WI fired-state capture into the chat header | goodgirlsbotclub #333 |
-| 1 | Permanent message UUIDs at `extra.ggbc_id` | goodgirlsbotclub #334 |
-| 2 | Backend id heal + backfill migration 0013 | ggbc-backend #43 |
-| 3a | Story-bible Pydantic schemas | ggbc-backend #44 |
-| 3b | Story tables (0014) + sections API | ggbc-backend #45 |
-| 4 | Scenes, append-only logs (0015), reset | ggbc-backend #46 |
-| 5 | Story tab, source-chat designation, read plumbing | goodgirlsbotclub #336 |
-| 6 | Cold-start ingestion, WI replay, checkpoints | goodgirlsbotclub #337 |
+| Phase | What landed | PR | Status |
+|---|---|---|---|
+| 0 | WI fired-state capture into the chat header | goodgirlsbotclub #333 | merged, deployed |
+| 1 | Permanent message UUIDs at `extra.ggbc_id` | goodgirlsbotclub #334 | merged, deployed |
+| 2 | Backend id heal + backfill migration 0013 | ggbc-backend #43 | merged, deployed |
+| 3a | Story-bible Pydantic schemas | ggbc-backend #44 | merged, deployed |
+| 3b | Story tables (0014) + sections API | ggbc-backend #45 | merged, deployed |
+| 4 | Scenes, append-only logs (0015), reset | ggbc-backend #46 | merged, deployed |
+| 5 | Story tab, source-chat designation, read plumbing | goodgirlsbotclub #336 | merged, deployed |
+| 6 | Cold-start ingestion, WI replay, checkpoints | goodgirlsbotclub #337 | merged, deployed |
+| 7 | Transcript walk (chunker, walk, resume, user_voice) | goodgirlsbotclub **#339** | **draft, gated on soak — see below** |
+| 9 | Bible snapshot archive (snapshot+restore, both repos) | ggbc-backend **#47** + goodgirlsbotclub **#343** | merged, deployed 2026-07-30 |
 
-Plus docs: schema + audit (#330), the plan (#332), v1.1 amendments (#335).
+Plus docs: schema + audit (#330), the plan (#332), v1.1 amendments
+(#335), the previous pickup doc (#338), **the plan's six open questions
+resolved** (#340, merged — new Phase 9, Phase 10 gains fact hard-delete).
 
-**Backend migration head: `0015_story_log_seq`.**
+Also shipped and merged, independent of phase order:
+**weak/cheap-model warning** in `StartIngestModal` — goodgirlsbotclub
+**#341** (merged 2026-07-30).
 
-### What a user can do today
+**Backend migration head, `main` AND production: `0016_add_story_archives`**
+— deployed 2026-07-30 ~21:49 UTC, applied automatically by the compose
+`alembic upgrade head && uvicorn` wrapper. Don't trust this doc for it;
+check the running DB when it matters:
+
+```bash
+ssh root@159.89.180.146 "cd /opt/goodgirlsbotclub && \
+  docker compose exec -T postgres psql -U ggbc -d ggbc -tAc \
+  'select version_num from alembic_version;'"
+```
+
+### What a user can do today (in production)
 
 Open a Work → **Story** tab → designate a source chat → **Build the
 groundwork**. That runs cold start (card/persona/lorebooks → bible, two
 model calls on their own key) and the world-info replay. Scenes and facts
-are still empty: the transcript walk is Phase 7.
+are still empty in production: the transcript walk (Phase 7) is built
+and reviewed but not merged yet. "Reset story" is **no longer
+irreversible**: Phase 9 shipped 2026-07-30, so a reset (or a source-chat
+change) auto-snapshots first, and the Story tab's "Show snapshots" panel
+lists them with a restore action behind a confirm.
 
 ---
 
-## Next up: Phase 7 — the transcript walk
+## ⚠️ The Phase-1 soak gate — check this before doing anything else
 
-The plan's designated **risk hotspot**, and the largest remaining piece.
-Read its bullet in the plan for the full spec. Shape:
+Phase 7 must not merge until Phase 1 (permanent message UUIDs) has been
+deployed and soaking in production for **days**, so stale open tabs stop
+re-minting message ids before the walk's provenance depends on them being
+stable.
 
-- `transcriptChunker.ts` — token-budgeted ~6000/chunk, never splits a
-  message, plan pinned into `ingestion.chunk_plan` for deterministic
-  resume, soft cap 200 chunks. **Name it that**, not `chunker.ts`: a
-  Data-Bank `chunker.ts` already exists and is unrelated.
-- `transcriptWalk.ts` — one call per chunk, rolling context, strict-JSON
-  with brace-matching recovery + one repair retry, mechanical swipe
-  resolution, force-split at 60 messages, cross-chunk scenes via
-  `open_scene`. Per chunk: bulk scene upsert → fact append → section PUT
-  → cursor advance → heartbeat.
-- Post-walk `user_voice` synthesis (sentence stats computed in TS, not
-  by the model).
+**The clock starts when Phase 1 first reached production: 2026-07-29
+~16:23 UTC.** It has run continuously since. Compute elapsed time from
+that timestamp:
 
-### ⚠️ Gate before merging Phase 7
+```bash
+python3 -c "
+from datetime import datetime, timezone
+d = datetime.now(timezone.utc) - datetime(2026,7,29,16,23,tzinfo=timezone.utc)
+print(f'soak: {d.days}d {d.seconds//3600}h')
+"
+```
 
-Phase 1 must have been **deployed and soaking for days** first, so stale
-tabs stop re-minting message ids. The walk writes provenance that points
-at those ids; churning them afterwards poisons it. Check when phase 1
-actually reached production before merging the walk.
+> **Do NOT measure this with `docker ps` container uptime.** An earlier
+> version of this doc said uptime *was* the soak clock. That is wrong,
+> and it reads catastrophically low right after any deploy — on
+> 2026-07-30 two unrelated deploys put it at "Up 9 minutes" while the
+> real soak was 1d 6h.
+>
+> Uptime measures how long the current *containers* have run. The soak
+> measures how long *clients* have been served id-minting code, and
+> **every frontend build since 2026-07-29 still contains Phase 1** —
+> restarting a container does not un-ship it. Deploys are expected to
+> happen during the soak (Phase 9 and its follow-ups all shipped mid-soak)
+> and none of them reset anything.
+>
+> Only one thing genuinely restarts this clock: shipping a frontend that
+> does **not** mint message ids — i.e. reverting Phase 1, or rolling the
+> image back to a pre-2026-07-29 build. If that ever happens, reset the
+> date above to when id-minting was restored. `docker ps` is still worth
+> running, but as a health check, not a clock.
 
-### Two things Phase 6 deferred that Phase 7 should pick up
+**How many days is "days"?** Deliberately not pinned to a number — it is
+a judgment call, not a threshold the code enforces. The thing being
+waited out is users' long-lived browser tabs cycling, so it wants to
+span at least one stretch of people not touching the app: **3–5 days is
+the sensible shape**, which puts the gate around 2026-08-01 to 08-03.
+Shorter is a risk decision, not a rule violation.
 
-1. **Resume.** Phase 6 has none — a stopped build starts over, and the
-   progress card says so honestly. The walk is where resume matters (it
-   is long and expensive), and the checkpoint already carries
-   `chunk_index` / `chunk_plan` / `last_ingested` for it.
-2. **`PHASE6_PASSES`** in `storyIngestStore.ts` is what the progress
-   checklist renders from — add `transcript_walk` there to make it
-   appear. `PASS_LABELS` already has copy for it.
+**Do not merge PR #339 until then.** Building on top of it, reviewing it
+further, or working on Phase 8 in the meantime is all fine — only the
+*merge* is gated. (Its review-fix follow-up, goodgirlsbotclub **#346**,
+is stacked on #339's own branch and is gated by the same clock.)
+
+---
+
+## Next up
+
+Phase 9 is merged and deployed. Everything mergeable is merged and in
+production; the review follow-ups from 2026-07-30 (ggbc-backend **#48**,
+goodgirlsbotclub **#345** and **#347**) all shipped the same day.
+
+One thread left blocking further phase work:
+
+1. **Wait out the soak, then merge #339 and its follow-up #346.**
+   Nothing to do here but watch the clock (see above) and merge when it
+   has actually been days — measured from the Phase-1 deploy date, NOT
+   from container uptime.
+
+Once #339 merges: **Phase 8 (Reconcile)** is next in strict sequence
+(needs 7). **Phase 10** (review checkpoint + lock canon + the new fact
+hard-delete work — plan resolved this: a real owner-scoped delete, not
+append-only-only, since it breaks the deliberately-built no-update/
+delete invariant, needs its own migration + review pass) needs BOTH 8
+and 9 — 9 is done, so Phase 10 now only waits on 8. Then **Phase 11**
+(incremental re-ingestion — also where Phase 7's "trailing messages
+added after a resumed plan was pinned" gap gets a real fix instead of
+just a surfaced warning).
+
+**Not urgent, not blocking, worth a look eventually:** a second
+independent review pass on ggbc-backend#47 (done right before merge —
+see the hazards below) found that every story write endpoint —
+including the two Phase 9 added — runs its permission/ownership DB
+queries *before* reading the request body. A slow or deliberately
+trickled body can still pin a real connection out of the DB pool for
+its whole transfer time; the Phase 9 review already fixed the
+per-project advisory-lock version of this (see hazards below), but this
+is the broader, app-wide, pre-existing variant. Deliberately left
+unfixed in #47 — it isn't specific to the archive feature, and fixing
+it means reordering auth dependency injection across the whole app.
+Worth its own tracking issue if it's ever going to get done, rather
+than a drive-by patch on one PR.
 
 ---
 
 ## Hazards that have actually bitten (do not rediscover these)
 
-**Migrations do NOT auto-apply.** The backend image's entrypoint is plain
-uvicorn; an unmigrated database fails startup outright with
-`relation "..." does not exist`. `alembic upgrade head` is a deliberate
-deploy step. 0013/0014/0015 are all pending production.
+**Migrations auto-apply in PRODUCTION, but NOT in the bare image.**
+Correction to an earlier version of this doc: production's
+`docker-compose.yml` already wraps the backend's command as
+`alembic upgrade head && uvicorn ...`, so `docker compose pull && up -d`
+genuinely does apply pending migrations on container restart — verified
+firsthand deploying 0013→0015 this way. The "migrations do NOT
+auto-apply" trap is real only for the **bare image run standalone**
+(e.g. `docker run ... ggbc-dev-api:local` in the local-dev recipes
+below, with no compose wrapper) — there it's a deliberate separate step.
+Don't assume either way; check the actual `command:` in whatever
+compose file you're using.
+
+**Deterministic ids for LLM-response-derived objects must be seeded from
+intrinsic content, never from a response's ordinal position.** Phase
+7's original scene/fact id scheme seeded from
+`${chunkBoundary}:scene:${indexInResponse}` — reviewed as a **blocker**:
+a retry whose model response is shaped differently (different scene
+count/split) lands unrelated content on the same id, silently
+overwriting a committed scene or dropping a billed fact. Fixed by
+seeding scene ids from the scene's own first real message id, and fact
+ids from `(source message id, fact text)` — so only a genuine
+re-derivation of the *same* content can collide. Keep this pattern for
+any future pass that mints ids from model output.
+
+**A per-project advisory lock (`pg_advisory_xact_lock`) must be
+acquired immediately before the DB write it protects, never before
+reading/validating the request body.** Phase 9 added the lock to three
+single-row write endpoints (section/scene PUT, scene DELETE) so they'd
+serialize against the new restore endpoint's whole-bible staleness
+check + wipe — but placed the lock call *before* the body was read.
+Reviewed as a **blocker**: a slow or deliberately-trickled request body
+held the project's lock for its entire transfer time, blocking every
+other write to the project — an unbounded, self-inflicted DoS with no
+request timeout anywhere in the app to bound it. Every *other* locked
+path in this router (bulk scene writes, fact/edit append, reset,
+restore) already validated the body first and locked only right before
+the critical section; the three new ones didn't match that pattern.
+Fixed by moving the lock to immediately before the write. Lesson: when
+adding a lock to an existing endpoint, lock last, not first.
+
+**A row recreated after being deleted (same id, brought back by a
+restore or similar) must get a version/CAS token that cannot coincide
+with a token a client cached from before the deletion.** Phase 9's
+restore endpoint recreated every section/scene at the hardcoded
+`server_ts=1` — the same value a brand-new row always starts at.
+Reviewed as a **major ABA hazard**: a client holding a `base_ts` from
+*before* the reset-that-preceded-the-restore (e.g. `1`, from when the
+row was first created) would have its now-stale token coincidentally
+match the freshly-restored row's version, and its write/delete would
+silently succeed against content it never actually saw. Reproduced
+live: a `base_ts=1` DELETE that had just been correctly rejected as
+stale pre-reset was accepted post-restore, purely by coincidence of the
+version number. Fixed by seeding restored rows' version from the
+current epoch in milliseconds instead of a constant — a scale no real
+`base_ts` counter (which increments by 1 per write) will ever reach.
+Keep this pattern for any future pass that resurrects an id after
+deletion: never restart a version counter at a fixed low value the old
+incarnation could also have held.
+
+**A stale-project guard on a store action's own `set()` calls does NOT
+cover its return value or its toast — callers act on those too.**
+Phase 9's original review fixed `resetBible`/`restoreArchive` so a
+switched-away project's state couldn't be clobbered, but a *second*,
+independent review pass right before merge found the guard stopped
+short: both functions still returned `true` and fired their success
+toast unconditionally, even when the store had moved on to a different
+Work by the time the request resolved. `StoryTab.tsx`'s
+`confirmChange()` chains `if (await resetBible(...)) await
+designate(chat)` off that exact return value — a stale `true` let
+`designate()` write the OLD Work's newly-picked chat into whichever
+Work was now current, silently, with the wrong toast shown over it.
+`designateSourceChat` itself had no stale-project guard at all (the
+other half of that same chain). Fixed by threading a single
+`stillCurrent = get().projectId === projectId` check through the
+return value, the toast, and every `set()` in all three actions.
+**Lesson: when guarding an async store action against a project
+switch, the state writes are not the only thing a stale resolution can
+corrupt — audit the return value and every side effect (toasts
+included), not just `set()`.**
+
+**A conflict/error body crossing the network boundary needs a runtime
+shape check, not just a TS cast.** `storyRestoreCall`'s 409 handler
+cast a parsed JSON body's `current` field straight to `StoryManifest |
+null` with no runtime validation. A malformed or differently-shaped
+body (version skew between frontend/backend, a proxy rewriting an error
+response) would have been adopted straight into `manifest` state and
+crashed the next `hasBible()` / `.sections` read, or left `isSaving`
+stuck `true` forever via an unhandled rejection. Fixed with a small
+`isStoryManifestShape()` runtime check at the client.ts boundary — an
+invalid shape is now treated as absent (`null`) rather than trusted.
+**Lesson: a TS type only constrains what compiles; anything crossing
+`response.json()` needs its own runtime check before being trusted,
+same as any other external input.**
+
+**A resumable pass must be detected *before* re-running anything
+upstream of it, not just before the pass itself.** Phase 7's `run()`
+originally reran cold_start unconditionally on every call (including
+resumes) and reset the checkpoint to empty before pass 1 — two symptoms
+of the same bug: cold_start mints brand-new random character ids every
+time, silently orphaning an already-open scene's participant refs on
+resume, and any pass-1 hiccup during a resume attempt destroyed the
+resumable `chunk_plan`/`chunk_index`. Fixed by checking "is there a
+resumable walk in progress" as the very first thing `run()` does, before
+any upstream work starts.
 
 **Never statically import `chatStore` from a store.** `lovenseStore`
 subscribes to it at module scope; a static edge TDZ-crashes the app. The
@@ -102,11 +289,23 @@ overflow the `world` section. Budget before writing; a 413 after paying
 for model calls is unrecoverable and every retry fails identically.
 
 **The frontend repo commits `node_modules`.** Never symlink it; revert
-incidental churn (`git checkout -- node_modules/`) before committing.
+incidental churn (`git checkout -- node_modules/`) before committing —
+running the local dev stack (below) touches `node_modules/.vite/deps/_metadata.json`
+every time, so check `git status` before every commit, not just once.
 `dist/` too.
 
 **Backticks in `git commit -m` get shell-substituted** and silently eat
 words. Write the message to a file and use `-F`.
+
+**Browser-automation clicks in this app are flaky against stale
+coordinates/refs.** A `ref` echoed by an earlier `read_page` call, or a
+coordinate eyeballed off a screenshot, frequently lands on the wrong
+element or silently no-ops — re-run `read_page` **immediately** before
+every click rather than reusing refs across turns, and if a click
+produces no visible/network effect, retry it once with a freshly-fetched
+ref before assuming the feature is broken. This cost real time
+verifying the weak-model warning (PR #341) even though the underlying
+code was correct on the first try.
 
 ---
 
@@ -133,7 +332,9 @@ reproduces in isolation — it is a `host.docker.internal` port-forward
 stall, not a defect. Re-run before believing a failure.
 
 **Full local stack** (for real end-to-end verification, which has caught
-things unit tests did not):
+things unit tests did not — this is the recipe that verified PR #341
+live, including logging in, creating a character/chat/Work, and driving
+the actual Story-tab UI):
 
 ```bash
 docker network create ggbc-dev
@@ -150,7 +351,20 @@ docker run -d --rm --name ggbc-dev-api --network ggbc-dev -p 127.0.0.1:8001:8000
 
 The API listens on **8000** inside the container (map `8001:8000`; vite
 proxies to 8001). Log in as `dev` / `devpassword`. The story routes need
-no proxy entry — they nest under the existing `/projects` rule.
+no proxy entry — they nest under the existing `/projects` rule. Tear
+down with `docker stop ggbc-dev-api ggbc-dev-db && docker network rm ggbc-dev`
+when done — don't touch any *other* running containers you didn't start
+(this box tends to accumulate long-lived ones from other work, e.g.
+`ggbc-backend-db-1`).
+
+**If `docker compose up` for the repo's own `docker-compose.dev.yml`
+throws `Error response from daemon: No such container: <hash>`
+repeatedly across retries** — that's Docker Desktop's compose-project
+state getting out of sync with the real container runtime, not a code
+problem. `docker compose down` first, `docker rm -f` any same-named
+leftovers, and if it still happens, skip compose entirely and use the
+plain `docker run` recipe above instead (it sidesteps compose's project
+state completely and reliably works).
 
 ---
 
@@ -158,18 +372,52 @@ no proxy entry — they nest under the existing `/projects` rule.
 
 Every phase has been reviewed by a multi-lens adversarial workflow before
 commit, and **every single phase had a defect the green test suite
-missed**. Worth continuing:
+missed**. Phase 7 was the starkest case yet at the time: **11 findings,
+all 11 confirmed on independent adversarial re-verification, 3 of them
+blockers.** Phase 9 matched that hit rate exactly on the backend side —
+**9 findings raised, all 9 confirmed, 0 refuted**, including a blocker
+(the lock-before-body-validation DoS) and a major concurrency defect
+(the restore ABA hazard) neither the shipped test suite nor a first
+read-through caught — plus a **separate** frontend-side review, **8 of
+10 findings confirmed** (2 refuted as non-issues), including two
+blockers in `storyStore.ts` (unconditional cross-project state
+clobbering in `resetBible`/`restoreArchive`, caught by the same "did
+you check `get().projectId` is still current" pattern as prior phases,
+just in two NEW functions). A **second, independent** review pass
+covering all 4 then-open PRs (8 review lenses total, including one
+dedicated to cross-repo wire-contract consistency between #343 and
+#47) found **6 more confirmed issues specific to Phase 9's two PRs**
+that the first pass missed (2 major on the frontend, 1 major backend,
+1 major cross-repo type gap, 2 backend nits) — plus several real,
+independently-verified bugs on the still-gated, unmerged Phase 7
+branch (out of scope for this merge; not listed here) and one
+over-eager blocker claim on that same branch that got correctly
+refuted rather than accepted at face value. All of Phase 9's majors
+got fixed before merge (see the two new hazards above); see "Not
+urgent, not blocking" under Next Up for the one confirmed-but-
+deliberately-deferred finding. **Second-pass, pre-merge review is
+earning its keep just as much as the first pass did — worth keeping as
+standard practice, not a one-off.** Worth continuing:
 
 - Lenses per phase: wire-contract (against the backend's real Pydantic
   models — `extra="forbid"` means a wrong field name is a runtime 422 no
   type check catches), logic, concurrency/security, plan conformance.
 - Tell verifiers to **reproduce**, not reason. The best findings came
-  from agents that ran the real validator in a container or drove real
-  concurrent HTTP requests.
+  from agents that ran the real validator in a container, drove real
+  concurrent HTTP requests, or built a stateful fake backend and ran the
+  actual production code against it end-to-end.
 - Findings to date included: a lost update under concurrent writes,
   Postgres deadlocks surfacing as 500s, a cursor that skipped rows
-  forever, a scene-pagination cursor on a non-unique column, and a
-  blocker that started a second concurrent **paid** model run.
+  forever, a scene-pagination cursor on a non-unique column, a blocker
+  that started a second concurrent **paid** model run, cold_start
+  reminting character ids on every resume, scene/fact ids collidable
+  across a differently-shaped retry, an advisory lock held across a
+  request body's transfer time (unbounded DoS), an ABA version-token
+  hazard on rows recreated by a restore, a stale-project guard that
+  covered `set()` calls but not a store action's return value/toast,
+  and a 409 conflict body trusted into state with only a TS cast and no
+  runtime shape check (see the hazards above for the newest two — a
+  second review pass, not the first, is what caught them).
 
 **Standing lessons:**
 - Any read-check-write in an async handler needs the check *in the SQL*.
@@ -177,20 +425,51 @@ missed**. Worth continuing:
   navigated-away paths tested explicitly.
 - Write the concurrent-request test (`asyncio.gather` / `Promise.all`
   over the real transport) *before* claiming a write path works.
+- IDs minted from an LLM's own response must be seeded from something
+  mechanically stable (message ids, content), never from the response's
+  ordinal position — the model's non-determinism can reshuffle that.
+- A resume path must be detected *before* anything upstream of it runs,
+  not just guarded at its own entry point.
+- On the frontend store side: EVERY `set()` that runs after an `await`
+  needs its own `get().projectId === projectId` check, not just the
+  `reloadIfStillCurrent` call that typically follows it. Phase 9's
+  `resetBible`/`restoreArchive` both cleared `sections`/`scenes`/
+  `isSaving` unconditionally right after their API call resolved —
+  correct for the common case, but wrong the instant the user had
+  switched Works while the call was in flight, since it would clobber
+  the NEW Work's live state (including stomping its own `isSaving`
+  flag). The `reloadIfStillCurrent` guard downstream doesn't retroactively
+  protect an unconditional `set()` that already ran before it. **This
+  wasn't the whole story either** — a second review pass found the
+  SAME functions' return values and toasts were still unconditional
+  even after that fix, and a caller (`confirmChange`) acts on the
+  return value. Audit the full surface of a stale-project guard: every
+  `set()`, the return value, and every side effect, not just the state
+  writes that happen to be easiest to spot.
+- A body crossing `response.json()` at a fetch boundary needs a runtime
+  shape check before being trusted into store state, not just a TS
+  cast — a cast is compile-time only and does nothing against a
+  malformed or differently-shaped real response.
 
 ---
 
-## Still open for Sammy (plan §4)
+## The plan's open questions — all resolved (2026-07-29, PR #340)
 
-None of these block Phase 7, but 8–10 will want answers:
+No longer open; recorded here so you don't re-ask them. Full detail in
+the plan's §4:
 
-1. Is the Story tab tier-gated under the features-not-compute model?
-2. Facts are server-enforced append-only; removal is `supersedes` or a
-   full reset. Given the NSFW context, is that acceptable, or is an
-   owner-scoped hard delete needed?
-3. "Change source chat" and re-ingest **discard** the bible with no
-   archive. Ship as-is, or build a snapshot archive first?
-4. Group chats as bible sources — currently allowed, with lorebook
-   confidence degraded (group chats never scan world info).
-5. Weak-model messaging: soft recommendation, hard warning, or nothing?
-6. `content_rating` × `derivative_flags` policy for step-3 rendering.
+1. **No tier gate** on the Story tab.
+2. **Add owner-scoped fact hard-delete** (not append-only-only) — new
+   scope on Phase 10, still needs an implementation choice (a real
+   `DELETE`, or a scrub-in-place `PATCH` that blanks `text` but keeps
+   the row/id for audit) — "pick one at implementation time" per the
+   plan text, i.e. **still an open design detail**, just not an open
+   *policy* question anymore.
+3. **Build the snapshot archive first** — new Phase 9, snapshot +
+   restore (not export-only). Built, reviewed, and merged (ggbc-backend
+   #47 + goodgirlsbotclub #343) — see "Where things stand" above.
+4. **Group chats stay allowed** as bible sources, unchanged.
+5. **Warn about weak/cheap models, informational only** — shipped and
+   merged, PR #341.
+6. **No gating** from `content_rating` × `derivative_flags` on anything
+   downstream.
