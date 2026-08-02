@@ -7,6 +7,7 @@ import {
   parseLorebookFromJSON,
   cardToCharacterInfo,
   exportCharacterAsJSON,
+  embedCharacterInPNG,
   downloadFile,
   type CharacterBookV2,
   type CharacterCardV2,
@@ -695,11 +696,15 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   exportCharacterAsPNG: async (character: CharacterInfo) => {
     set({ isExporting: true, error: null });
     try {
-      // B1 — server-side export. ggbc-backend re-embeds the card JSON
-      // (including the v2 `chara` chunk for max compatibility) into the
-      // stored PNG and streams it back. The character-embedded lorebook
-      // lives inside `data.character_book`, so it travels with the card
-      // without a separate write here.
+      // B1 — the server hands back the character art with its stored card
+      // embedded, but that card's `data.character_book` is only as fresh as
+      // the last card write. Lorebook edits go through worldInfoStore and
+      // never touch the character row, so the server's copy is stale (and
+      // for cards imported before the book was registered, absent). Re-embed
+      // client-side from the live book — the same source
+      // exportCharacterAsJSON reads — so PNG and JSON exports carry the same
+      // card. embedCharacterInPNG strips the server's card chunks first, so
+      // the download ends up with exactly one.
       const resp = await fetch(
         `/characters/${encodeURIComponent(character.avatar)}/export.png`,
         { credentials: 'include' },
@@ -707,7 +712,13 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       if (!resp.ok) {
         throw new Error(`Export failed (HTTP ${resp.status})`);
       }
-      const pngBlob = await resp.blob();
+      const embedded = useWorldInfoStore.getState().getCharacterBook(character.avatar);
+      const characterBook = embedded ? bookToCharacterBookV2(embedded) : undefined;
+      const pngBlob = await embedCharacterInPNG(
+        await resp.blob(),
+        character,
+        characterBook,
+      );
       const filename = `${character.name.replace(/[^a-zA-Z0-9]/g, '_')}.png`;
       downloadFile(pngBlob, filename);
       set({ isExporting: false });
