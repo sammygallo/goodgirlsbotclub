@@ -11,10 +11,11 @@ on:
     # Skip the image rebuild for changes that cannot reach the bundle.
     #
     # DELIBERATELY an explicit allow-list, NOT `docs/**` or `**.md`:
-    # three docs are compiled INTO the app via Vite `?raw` imports —
-    #   docs/faq.md            -> src/components/help/HelpChat.tsx
-    #   docs/character-guide.md \
-    #   docs/hypercode-guide.md -> src/components/guides/guides.ts
+    # four docs are compiled INTO the app via Vite `?raw` imports —
+    #   docs/faq.md             -> src/components/help/HelpChat.tsx
+    #   docs/character-guide.md  \
+    #   docs/hypercode-guide.md   > src/components/guides/guides.ts
+    #   docs/lorebook-guide.md   /
     # so a blanket docs ignore would silently ship a stale FAQ or guide
     # with no failure anywhere to notice it.
     #
@@ -28,6 +29,7 @@ on:
     paths-ignore:
       - '*.md'
       - 'docs/story-state-*.md'
+      - 'docs/pgvector-migration-plan.md'
       - 'docs/v2/**'
       - '.gitignore'
   workflow_dispatch:
