@@ -17,6 +17,7 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import { useCharacterStore } from '../../stores/characterStore';
 import {
   useWorldInfoStore,
+  humanizeCategory,
   type WorldInfoBook,
 } from '../../stores/worldInfoStore';
 import {
@@ -149,7 +150,8 @@ export function GenerateLorebookModal({
       createEntry(book.id, {
         keys: draft.keys,
         content: draft.content.trim(),
-        comment: draft.category,
+        category: draft.category,
+        comment: '',
       });
     }
     // Auto-link the new (standalone) book to the source character so it
@@ -339,7 +341,7 @@ export function GenerateLorebookModal({
                         aria-label="Include this entry"
                       />
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--color-primary)]/15 text-[var(--color-primary)] flex-shrink-0">
-                        {draft.category}
+                        {humanizeCategory(draft.category)}
                       </span>
                       <div className="flex-1" />
                       <button

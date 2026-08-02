@@ -1,5 +1,6 @@
 import characterGuideMd from '../../../docs/character-guide.md?raw';
 import hypercodeGuideMd from '../../../docs/hypercode-guide.md?raw';
+import lorebookGuideMd from '../../../docs/lorebook-guide.md?raw';
 import type { Permission } from '../../types';
 
 export interface Guide {
@@ -26,6 +27,14 @@ export const GUIDES: Guide[] = [
     summary:
       'Pick a tier and six dials to compose the narrator system prompt — what each option does, and when to skip it.',
     source: hypercodeGuideMd,
+    requiredPermission: 'character:edit',
+  },
+  {
+    slug: 'lorebook-guide',
+    title: 'Lorebook Authoring',
+    summary:
+      'Craft entries that fire when they should — one fact per card, honest keys, Critical vs Constant, and placement bands.',
+    source: lorebookGuideMd,
     requiredPermission: 'character:edit',
   },
 ];

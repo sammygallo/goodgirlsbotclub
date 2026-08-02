@@ -209,6 +209,16 @@ export function normalizeCharacterBookEntries(
       sticky: typeof e.sticky === 'number' ? e.sticky : 0,
       cooldown: typeof e.cooldown === 'number' ? e.cooldown : 0,
       delay: typeof e.delay === 'number' ? e.delay : 0,
+      // GGBC extensions written by our own ST-format export (entryToStFormat
+      // puts them top-level); real SillyTavern exports simply lack them.
+      ...(typeof e.ggbcId === 'string' ? { ggbc_id: e.ggbcId } : {}),
+      critical: e.critical === true,
+      category: typeof e.category === 'string' ? e.category : '',
+      related_ids: Array.isArray(e.relatedIds)
+        ? (e.relatedIds as unknown[]).filter(
+            (id): id is string => typeof id === 'string'
+          )
+        : [],
     },
   }));
 }

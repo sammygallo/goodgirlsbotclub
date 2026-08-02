@@ -55,6 +55,8 @@ export function gatherColdStartSources(
         keys: e.keys,
         content: e.content,
         constant: e.constant,
+        critical: e.critical,
+        category: e.category,
         enabled: e.enabled,
       })),
     })),
@@ -72,6 +74,7 @@ export function replayEntriesFrom(books: WorldInfoBook[]): ReplayEntry[] {
       enabled: e.enabled,
       constant: e.constant,
       caseSensitive: e.caseSensitive,
+      relatedIds: e.relatedIds,
       scanDepth: (e as unknown as { scanDepth?: number | null }).scanDepth ?? null,
     }))
   );

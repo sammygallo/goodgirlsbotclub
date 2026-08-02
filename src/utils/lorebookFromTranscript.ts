@@ -1,7 +1,8 @@
 /**
  * Create-lorebook-from-transcript — distill an ENTIRE chat into a fresh set of
- * standalone lorebook entries (characters, locations, items, factions, events,
- * lore) for the user to review and save as a new World Info book.
+ * standalone lorebook entries (character facts, world rules, relationships,
+ * locations, continuity notes, standing directives) for the user to review and
+ * save as a new World Info book.
  *
  * This is the one-shot, user-triggered cousin of the auto-memory extension
  * (`src/stores/autoMemoryStore.ts`), which instead appends recent-window facts
@@ -17,7 +18,7 @@ import { estimateTokens } from './tokenizer';
 export interface DraftLorebookEntry {
   /** Primary keywords a future scan would look for to surface this entry. */
   keys: string[];
-  /** The lore text. One or two sentences. */
+  /** The lore text. ~60–110 words; the first sentence carries the whole fact. */
   content: string;
   /** Coarse bucket used for grouping/badging in the review UI. */
   category: string;
@@ -49,15 +50,17 @@ export interface ExtractResult {
   truncated: boolean;
 }
 
-// Categories the model is asked to bucket entries into. Kept loose — the review
-// UI badges whatever string comes back, falling back to "Lore".
+// Categories the model is asked to bucket entries into — the canonical
+// authoring taxonomy (mirrors WI_CATEGORIES in worldInfoStore). Kept loose —
+// the review UI badges whatever string comes back, falling back to
+// "world_rule".
 export const LOREBOOK_CATEGORIES = [
-  'Character',
-  'Location',
-  'Item',
-  'Faction',
-  'Event',
-  'Lore',
+  'character_fact',
+  'world_rule',
+  'relationship',
+  'location',
+  'continuity_note',
+  'standing_directive',
 ] as const;
 
 /** Roughly how many transcript tokens to feed the model per chunk. */
@@ -203,14 +206,24 @@ async function* parseSSEStream(
   }
 }
 
+/** Category values from the pre-taxonomy prompt (and old saved drafts),
+ *  mapped onto the canonical set. Keys are lowercase. */
+const LEGACY_CATEGORY_MAP: Record<string, string> = {
+  character: 'character_fact',
+  location: 'location',
+  item: 'world_rule',
+  faction: 'world_rule',
+  event: 'continuity_note',
+  lore: 'world_rule',
+};
+
 function normalizeCategory(raw: unknown): string {
-  if (typeof raw !== 'string') return 'Lore';
-  const trimmed = raw.trim();
-  if (!trimmed) return 'Lore';
-  const match = LOREBOOK_CATEGORIES.find(
-    (c) => c.toLowerCase() === trimmed.toLowerCase()
-  );
-  return match ?? 'Lore';
+  if (typeof raw !== 'string') return 'world_rule';
+  const lowered = raw.trim().toLowerCase();
+  if (!lowered) return 'world_rule';
+  const match = LOREBOOK_CATEGORIES.find((c) => c === lowered);
+  if (match) return match;
+  return LEGACY_CATEGORY_MAP[lowered] ?? 'world_rule';
 }
 
 function entryFromObject(obj: Record<string, unknown>): DraftLorebookEntry | null {
@@ -283,13 +296,18 @@ function parseEntriesFromResponse(text: string): DraftLorebookEntry[] {
   return out;
 }
 
-const SYSTEM_PROMPT = `You are an information-extraction assistant building a reusable lorebook from a roleplay chat transcript. Extract durable, canonical world facts worth remembering across future sessions — named characters, locations, items, factions/groups, key events, and established lore or concepts.
+const SYSTEM_PROMPT = `You are an information-extraction assistant building a reusable lorebook from a roleplay chat transcript. Extract durable, canonical facts worth remembering across future sessions.
+
+Entry standard:
+- One self-contained fact per entry. If you need "and" to describe what an entry covers, split it into two entries.
+- The first sentence must carry the whole fact on its own — dense and declarative. The model reading this entry mid-generation has no other context: never write "as mentioned above", "she also", or anything that leans on another entry.
+- Target roughly 60-110 words per entry: the core fact first, then the specifics that make it usable.
+- "keys" are 3-6 identifiers or phrases that actually appear in the prose — names, aliases, place names, specific terms. Never speculative paraphrases a keyword scan would not find.
 
 Output rules:
 - Return ONLY a JSON array. No prose, no markdown fences.
-- Each item: {"keys": ["keyword1", "keyword2"], "content": "fact in one or two sentences", "category": "Character"}.
-- "category" must be one of: Character, Location, Item, Faction, Event, Lore.
-- "keys" are short trigger words a future keyword scan would look for to surface this fact (names, aliases, place names, object names).
+- Each item: {"keys": ["keyword1", "keyword2"], "content": "the fact", "category": "character_fact"}.
+- "category" must be one of: character_fact, world_rule, relationship, location, continuity_note, standing_directive.
 - Skip facts already covered by the "Already extracted" list.
 - Skip transient chatter (greetings, small talk, weather flavor, one-off reactions).
 - Prefer durable world-state over moment-to-moment action.
@@ -335,11 +353,26 @@ export async function extractLorebookEntries(
       throw new DOMException('Aborted', 'AbortError');
     }
 
-    // Digest of already-found entries so later chunks don't repeat themselves.
-    const knownDigest = entries
+    // Digest of already-found entries so later chunks don't repeat
+    // themselves. Capped two ways: per-entry (the ~60-110-word authoring
+    // target made full contents ~4x longer than the digest was designed
+    // for) and overall, so a long run can't blow small context windows.
+    const DIGEST_ENTRY_CHARS = 160;
+    const DIGEST_TOTAL_CHARS = 6000;
+    let knownDigest = entries
       .slice(-40)
-      .map((e) => `- (${e.keys.join(', ')}) ${e.content}`)
+      .map((e) => {
+        const body =
+          e.content.length > DIGEST_ENTRY_CHARS
+            ? `${e.content.slice(0, DIGEST_ENTRY_CHARS)}…`
+            : e.content;
+        return `- (${e.keys.join(', ')}) ${body}`;
+      })
       .join('\n');
+    if (knownDigest.length > DIGEST_TOTAL_CHARS) {
+      // Keep the tail — the most recent entries are the likeliest repeats.
+      knownDigest = knownDigest.slice(-DIGEST_TOTAL_CHARS);
+    }
 
     const stream = await api.generateMessage(
       [

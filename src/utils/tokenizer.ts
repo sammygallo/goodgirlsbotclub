@@ -108,6 +108,13 @@ export function getDefaultContextSize(provider: string): number {
  * @param responseReserve Tokens to reserve for the AI response.
  * @param maxTokens      Total token budget.
  * @param profile        Tokenizer profile.
+ * @param pinned         History messages (matched by identity) that must
+ *                       always survive the trim — critical world-info
+ *                       insertions, and the newest real chat turn (the
+ *                       caller knows which element that is; role alone
+ *                       can't distinguish a real turn from an injected
+ *                       note). Their cost comes off the top, like the
+ *                       system block.
  */
 export function trimHistoryToBudget<
   T extends { role: string; content: string }
@@ -116,7 +123,8 @@ export function trimHistoryToBudget<
   history: T[],
   responseReserve: number,
   maxTokens: number,
-  profile: TokenizerProfile = 'generic'
+  profile: TokenizerProfile = 'generic',
+  pinned?: ReadonlySet<T>
 ): { kept: T[]; dropped: number; usedTokens: number; overBudget: boolean } {
   const budget = Math.max(256, maxTokens - responseReserve);
   const systemCost = systemPrompts.reduce(
@@ -125,24 +133,48 @@ export function trimHistoryToBudget<
   );
   let remaining = budget - systemCost - 2;
 
-  // Walk from most recent to oldest, keeping what fits. The most recent
-  // message (the user's just-sent turn) is ALWAYS kept, even when the system
-  // block has eaten the whole budget — otherwise a long thread with a large
-  // system block (accumulated summary + RAG) would drop every turn and ship a
-  // turn-less request, which providers answer with an empty completion or a
-  // 400. A degraded request the model can still respond to beats silence.
-  // When that forced inclusion drives `remaining` negative, `overBudget`
-  // tells the caller the assembled request may exceed the model's real
-  // context window even though this function "succeeded".
-  const kept: T[] = [];
+  const keepFlags = new Array<boolean>(history.length).fill(false);
+  let keptCount = 0;
+  if (pinned && pinned.size > 0) {
+    for (let i = 0; i < history.length; i++) {
+      if (pinned.has(history[i])) {
+        keepFlags[i] = true;
+        keptCount += 1;
+        remaining -= estimateMessageTokens(history[i], profile);
+      }
+    }
+  }
+
+  // Walk from most recent to oldest, keeping what fits. When nothing is
+  // pinned, the newest message is ALWAYS kept, even when the system block
+  // has eaten the whole budget — otherwise a long thread with a large
+  // system block (accumulated summary + RAG) would drop every turn and ship
+  // a turn-less request, which providers answer with an empty completion or
+  // a 400. (Callers who inject trailing notes after the newest turn pin the
+  // turn itself instead, so this fallback isn't fooled by an insertion.)
+  // When forced inclusions or pinned messages drive `remaining` negative,
+  // `overBudget` tells the caller the assembled request may exceed the
+  // model's real context window even though this function "succeeded".
+  // Once the contiguous recent window stops fitting, only pinned messages
+  // survive from the older history.
+  let broke = false;
   for (let i = history.length - 1; i >= 0; i--) {
-    const msg = history[i];
-    const cost = estimateMessageTokens(msg, profile);
-    if (kept.length > 0 && cost > remaining) break;
-    kept.unshift(msg);
+    if (keepFlags[i]) continue;
+    if (broke) continue;
+    const cost = estimateMessageTokens(history[i], profile);
+    if (keptCount > 0 && cost > remaining) {
+      broke = true;
+      continue;
+    }
+    keepFlags[i] = true;
+    keptCount += 1;
     remaining -= cost;
   }
 
+  const kept: T[] = [];
+  for (let i = 0; i < history.length; i++) {
+    if (keepFlags[i]) kept.push(history[i]);
+  }
   const dropped = history.length - kept.length;
   const usedTokens = budget - remaining;
   return { kept, dropped, usedTokens, overBudget: remaining < 0 };

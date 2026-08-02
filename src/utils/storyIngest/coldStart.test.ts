@@ -71,8 +71,8 @@ describe('lorebook entries become world rules', () => {
             bookId: 'b1',
             bookName: 'Reach lore',
             entries: [
-              { id: 'e1', keys: ['magic'], content: 'Magic needs words.', constant: true, enabled: true },
-              { id: 'e2', keys: ['duke'], content: 'The duke is dead.', constant: false, enabled: true },
+              { id: 'e1', keys: ['magic'], content: 'Magic needs words.', constant: true, critical: false, category: '', enabled: true },
+              { id: 'e2', keys: ['duke'], content: 'The duke is dead.', constant: false, critical: false, category: '', enabled: true },
             ],
           },
         ],
@@ -94,7 +94,7 @@ describe('lorebook entries become world rules', () => {
           {
             bookId: 'b1',
             bookName: 'x',
-            entries: [{ id: 'e1', keys: [], content: '   ', constant: true, enabled: true }],
+            entries: [{ id: 'e1', keys: [], content: '   ', constant: true, critical: false, category: '', enabled: true }],
           },
         ],
       })

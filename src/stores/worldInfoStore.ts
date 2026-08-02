@@ -68,8 +68,43 @@ export interface WorldInfoEntry {
   cooldown: number;
   /** Turns to wait before first activation (0 = disabled). */
   delay: number;
+  /**
+   * Critical entries are hard continuity facts that must never silently
+   * vanish: the token budget never evicts them, and they can only be
+   * triggered by real chat text — never by another entry's content during
+   * recursive scanning (an entry body echoing a keyword is untrusted as a
+   * trigger source for high-stakes lore).
+   */
+  critical: boolean;
+  /** Authoring category tag (see WI_CATEGORIES). Free-form; '' = untagged. */
+  category: string;
+  /**
+   * IDs of entries (same book) that always co-fire when this entry fires,
+   * bypassing their own keys/probability/group competition. Timed effects
+   * (delay/cooldown) still apply to the pulled-in entry.
+   */
+  relatedIds: string[];
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * Suggested authoring categories. `category` stays a free string so imports
+ * never lose data; the editor offers these as presets.
+ */
+export const WI_CATEGORIES = [
+  'character_fact',
+  'world_rule',
+  'relationship',
+  'location',
+  'continuity_note',
+  'standing_directive',
+] as const;
+
+/** Display form of a category tag: character_fact → "Character fact". */
+export function humanizeCategory(cat: string): string {
+  const spaced = cat.replace(/_/g, ' ').trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 export interface WorldInfoBook {
@@ -141,11 +176,19 @@ export const DEFAULT_ENTRY: Omit<
   sticky: 0,
   cooldown: 0,
   delay: 0,
+  critical: false,
+  category: '',
+  relatedIds: [],
 };
 
-function parseBooks(raw: string): WorldInfoBook[] {
-  const list = JSON.parse(raw) as WorldInfoBook[];
-  // Backfill fields added after initial release so old stored data works.
+/**
+ * Backfill fields added after initial release so old stored data works.
+ * Runs on BOTH persistence paths — localStorage (parseBooks) and the
+ * server-sync blob (fetchPrefs): blobs written by a pre-update client lack
+ * the newer fields, and `relatedIds` in particular is dereferenced as an
+ * array throughout the scanner and UI.
+ */
+function normalizeStoredBooks(list: WorldInfoBook[]): WorldInfoBook[] {
   return list.map((b) => ({
     ...b,
     ownerCharacterAvatar:
@@ -157,8 +200,17 @@ function parseBooks(raw: string): WorldInfoBook[] {
       sticky: e.sticky ?? 0,
       cooldown: e.cooldown ?? 0,
       delay: e.delay ?? 0,
+      critical: e.critical ?? false,
+      category: typeof e.category === 'string' ? e.category : '',
+      relatedIds: Array.isArray(e.relatedIds)
+        ? e.relatedIds.filter((id) => typeof id === 'string')
+        : [],
     })),
   }));
+}
+
+function parseBooks(raw: string): WorldInfoBook[] {
+  return normalizeStoredBooks(JSON.parse(raw) as WorldInfoBook[]);
 }
 
 function loadBooks(handle?: string | null): WorldInfoBook[] {
@@ -365,6 +417,11 @@ interface StEntry {
   caseSensitive?: boolean | null;
   addMemo?: boolean;
   name?: string;
+  // GGBC extensions (ignored by SillyTavern, round-tripped by us).
+  ggbcId?: string;
+  critical?: boolean;
+  category?: string;
+  relatedIds?: string[];
 }
 
 const ST_LOGIC_TO_LOCAL: Record<number, SelectiveLogic> = {
@@ -440,9 +497,34 @@ export function entryFromStFormat(raw: StEntry): WorldInfoEntry {
     sticky: typeof raw.sticky === 'number' && raw.sticky > 0 ? Math.floor(raw.sticky) : 0,
     cooldown: typeof raw.cooldown === 'number' && raw.cooldown > 0 ? Math.floor(raw.cooldown) : 0,
     delay: typeof raw.delay === 'number' && raw.delay > 0 ? Math.floor(raw.delay) : 0,
+    critical: raw.critical === true,
+    category: typeof raw.category === 'string' ? raw.category : '',
+    // Source-file ids; bookFromStFormat remaps these onto the fresh ids.
+    relatedIds: pickStringArray(raw.relatedIds),
     createdAt: now,
     updatedAt: now,
   };
+}
+
+/**
+ * Remap `relatedIds` after entries get fresh ids on import/duplicate.
+ * `idMap` translates source ids → fresh ids; links whose target didn't make
+ * it through the import are dropped rather than left dangling.
+ */
+function remapRelatedIds(
+  entries: WorldInfoEntry[],
+  idMap: Map<string, string>
+): WorldInfoEntry[] {
+  return entries.map((e) =>
+    e.relatedIds.length === 0
+      ? e
+      : {
+          ...e,
+          relatedIds: e.relatedIds
+            .map((id) => idMap.get(id))
+            .filter((id): id is string => !!id),
+        }
+  );
 }
 
 export function entryToStFormat(
@@ -477,6 +559,10 @@ export function entryToStFormat(
     displayIndex: uid,
     caseSensitive: entry.caseSensitive,
     addMemo: !!entry.comment,
+    ggbcId: entry.id,
+    critical: entry.critical,
+    category: entry.category,
+    relatedIds: entry.relatedIds,
   };
 }
 
@@ -491,10 +577,20 @@ export function bookFromStFormat(name: string, raw: StBook): WorldInfoBook {
     }
   }
   const now = Date.now();
+  // Fresh ids are generated per import, so related-entry links written by a
+  // previous GGBC export (which reference the *source* ids) need remapping.
+  const idMap = new Map<string, string>();
+  const entries = list.map((rawEntry) => {
+    const entry = entryFromStFormat(rawEntry);
+    if (typeof rawEntry.ggbcId === 'string' && rawEntry.ggbcId) {
+      idMap.set(rawEntry.ggbcId, entry.id);
+    }
+    return entry;
+  });
   return {
     id: generateId('wibook'),
     name: raw.name || name || 'Imported Lorebook',
-    entries: list.map(entryFromStFormat),
+    entries: remapRelatedIds(entries, idMap),
     ownerCharacterAvatar: null,
     createdAt: now,
     updatedAt: now,
@@ -533,6 +629,11 @@ interface CharacterBookExtensions {
   sticky?: number;
   cooldown?: number;
   delay?: number;
+  // GGBC extensions (round-tripped through the card, ignored elsewhere).
+  ggbc_id?: string;
+  critical?: boolean;
+  category?: string;
+  related_ids?: string[];
 }
 
 function positionFromString(
@@ -606,6 +707,9 @@ export function entryFromCharacterBookV2(
     sticky: typeof ext.sticky === 'number' && ext.sticky > 0 ? Math.floor(ext.sticky) : 0,
     cooldown: typeof ext.cooldown === 'number' && ext.cooldown > 0 ? Math.floor(ext.cooldown) : 0,
     delay: typeof ext.delay === 'number' && ext.delay > 0 ? Math.floor(ext.delay) : 0,
+    critical: ext.critical === true,
+    category: typeof ext.category === 'string' ? ext.category : '',
+    relatedIds: pickStringArray(ext.related_ids),
     createdAt: now,
     updatedAt: now,
   };
@@ -630,6 +734,10 @@ export function entryToCharacterBookV2(
     sticky: entry.sticky,
     cooldown: entry.cooldown,
     delay: entry.delay,
+    ggbc_id: entry.id,
+    critical: entry.critical,
+    category: entry.category,
+    related_ids: entry.relatedIds,
   };
   return {
     id,
@@ -654,12 +762,22 @@ export function bookFromCharacterBookV2(
   fallbackName: string,
   ownerCharacterAvatar: string | null
 ): WorldInfoBook {
-  const entries = Array.isArray(raw.entries) ? raw.entries : [];
+  const rawEntries = Array.isArray(raw.entries) ? raw.entries : [];
   const now = Date.now();
+  // Same remap as bookFromStFormat: related links reference source-card ids.
+  const idMap = new Map<string, string>();
+  const entries = rawEntries.map((rawEntry) => {
+    const entry = entryFromCharacterBookV2(rawEntry);
+    const ext = (rawEntry.extensions || {}) as CharacterBookExtensions;
+    if (typeof ext.ggbc_id === 'string' && ext.ggbc_id) {
+      idMap.set(ext.ggbc_id, entry.id);
+    }
+    return entry;
+  });
   return {
     id: generateId('wibook'),
     name: raw.name || fallbackName || 'Character Lorebook',
-    entries: entries.map(entryFromCharacterBookV2),
+    entries: remapRelatedIds(entries, idMap),
     ownerCharacterAvatar,
     createdAt: now,
     updatedAt: now,
@@ -679,6 +797,33 @@ export interface MatchedEntry {
   entry: WorldInfoEntry;
   bookId: string;
   bookName: string;
+  /**
+   * Number of primary keys that matched when this entry activated by
+   * keyword scan. Absent for constant entries, sticky carry-overs, and
+   * related-entry pull-ins. Used as a deterministic group tiebreaker.
+   */
+  matchedKeyCount?: number;
+}
+
+/**
+ * Filled in by scanMessagesForEntries when the caller passes a report
+ * object. Makes budget eviction observable instead of silent.
+ */
+export interface WorldInfoScanReport {
+  /** Entries that matched but were evicted by the token budget. */
+  dropped: MatchedEntry[];
+  /** Token cost of never-evictable entries (constant + critical). */
+  pinnedTokens: number;
+  /** Total token cost of everything actually injected. */
+  totalTokens: number;
+  /** The budget the scan ran against (0 = unlimited). */
+  budget: number;
+  /**
+   * True when the pinned entries alone exceed the budget — the fix is
+   * architectural (raise the budget, narrow scope, or demote entries),
+   * not something the trimmer can solve.
+   */
+  pinnedOverBudget: boolean;
 }
 
 // ---- WI timer helpers (timed effects: sticky / cooldown / delay) ----------
@@ -809,20 +954,24 @@ function evalSelectiveLogic(
   }
 }
 
-function entryActivates(entry: WorldInfoEntry, haystack: string): boolean {
-  // Primary keys (OR). Caller is responsible for skipping constant entries.
-  if (entry.keys.length === 0) return false;
-  const primary = entry.keys.some((k) =>
+/**
+ * Returns the number of primary keys matching the haystack (0 = the entry
+ * does not activate). Caller is responsible for skipping constant entries.
+ */
+function entryMatchCount(entry: WorldInfoEntry, haystack: string): number {
+  // Primary keys (OR) — count matches for the deterministic group tiebreak.
+  if (entry.keys.length === 0) return 0;
+  const primaryCount = entry.keys.filter((k) =>
     keyMatches(haystack, k, entry.caseSensitive)
-  );
-  if (!primary) return false;
+  ).length;
+  if (primaryCount === 0) return 0;
   if (entry.selective && entry.keysSecondary.length > 0) {
     const results = entry.keysSecondary.map((k) =>
       keyMatches(haystack, k, entry.caseSensitive)
     );
-    if (!evalSelectiveLogic(entry.selectiveLogic, results)) return false;
+    if (!evalSelectiveLogic(entry.selectiveLogic, results)) return 0;
   }
-  return true;
+  return primaryCount;
 }
 
 function rollProbability(entry: WorldInfoEntry): boolean {
@@ -831,9 +980,35 @@ function rollProbability(entry: WorldInfoEntry): boolean {
 }
 
 /**
+ * Deterministic group winner: highest priority (lowest `order`) first, then
+ * most matched primary keys, then alphabetical (comment, else first key,
+ * else id) so the same inputs always inject the same fact.
+ */
+function pickDeterministicWinner(pool: MatchedEntry[]): MatchedEntry {
+  const label = (m: MatchedEntry) =>
+    (m.entry.comment || m.entry.keys[0] || m.entry.id).toLowerCase();
+  return pool.reduce((best, m) => {
+    if (m.entry.order !== best.entry.order) {
+      return m.entry.order < best.entry.order ? m : best;
+    }
+    const mCount = m.matchedKeyCount ?? 0;
+    const bestCount = best.matchedKeyCount ?? 0;
+    if (mCount !== bestCount) return mCount > bestCount ? m : best;
+    return label(m) < label(best) ? m : best;
+  });
+}
+
+/**
  * Resolve inclusion-group conflicts: for each group, pick one winner.
  * Skips groups listed in `wonGroups` (they already have a winner from a
  * previous pass) and updates the set with new winners.
+ *
+ * When every candidate in the pool has the same groupWeight, the winner is
+ * picked deterministically (order → matched-key count → alphabetical): the
+ * same chat state always injects the same fact, which is what a lorebook
+ * exists to guarantee. Unequal weights opt the group into ST-style
+ * weighted-random selection — reserve that for cosmetic variety where
+ * *which* entry fires genuinely doesn't matter to continuity.
  */
 function resolveGroups(
   matches: MatchedEntry[],
@@ -860,6 +1035,14 @@ function resolveGroups(
   for (const [groupName, groupMatches] of byGroup) {
     const overrides = groupMatches.filter((m) => m.entry.groupOverride);
     const pool = overrides.length > 0 ? overrides : groupMatches;
+    const allEqualWeight = pool.every(
+      (m) => m.entry.groupWeight === pool[0].entry.groupWeight
+    );
+    if (allEqualWeight) {
+      winners.push(pickDeterministicWinner(pool));
+      wonGroups.add(groupName);
+      continue;
+    }
     const totalWeight = pool.reduce(
       (sum, m) => sum + Math.max(1, m.entry.groupWeight),
       0
@@ -882,26 +1065,43 @@ function resolveGroups(
 function applyTokenBudget(
   matches: MatchedEntry[],
   budget: number,
-  profile: TokenizerProfile
+  profile: TokenizerProfile,
+  outReport?: WorldInfoScanReport
 ): MatchedEntry[] {
-  if (budget <= 0) return matches;
-  // Constant entries are always injected — never pruned by the budget.
-  const constantMatches = matches.filter((m) => m.entry.constant);
-  const budgetable = matches.filter((m) => !m.entry.constant);
-  const constantCost = constantMatches.reduce(
-    (s, m) => s + estimateTokens(m.entry.content, profile),
-    0
+  const cost = (m: MatchedEntry) => estimateTokens(m.entry.content, profile);
+  // Constant and critical entries are always injected — never pruned.
+  const pinned = matches.filter((m) => m.entry.constant || m.entry.critical);
+  const pinnedCost = pinned.reduce((s, m) => s + cost(m), 0);
+  if (outReport) {
+    outReport.dropped = [];
+    outReport.pinnedTokens = pinnedCost;
+    outReport.budget = budget;
+    outReport.pinnedOverBudget = false;
+  }
+  if (budget <= 0) {
+    if (outReport) {
+      outReport.totalTokens = matches.reduce((s, m) => s + cost(m), 0);
+    }
+    return matches;
+  }
+  const budgetable = matches.filter(
+    (m) => !m.entry.constant && !m.entry.critical
   );
-  const remaining = Math.max(0, budget - constantCost);
+  const remaining = Math.max(0, budget - pinnedCost);
   // High priority first (lower `order`), drop lowest priority when over budget.
   const sorted = [...budgetable].sort((a, b) => a.entry.order - b.entry.order);
-  const costs = sorted.map((m) => estimateTokens(m.entry.content, profile));
+  const costs = sorted.map(cost);
   let total = costs.reduce((s, c) => s + c, 0);
   while (total > remaining && sorted.length > 0) {
-    sorted.pop();
+    const droppedEntry = sorted.pop();
     total -= costs.pop() || 0;
+    if (outReport && droppedEntry) outReport.dropped.push(droppedEntry);
   }
-  return [...constantMatches, ...sorted];
+  if (outReport) {
+    outReport.totalTokens = pinnedCost + total;
+    outReport.pinnedOverBudget = pinnedCost > budget;
+  }
+  return [...pinned, ...sorted];
 }
 
 /**
@@ -914,13 +1114,17 @@ function applyTokenBudget(
  *   entries that were *freshly* activated this turn (excluding sticky carry-overs).
  *   Callers should persist this set via saveWiTimers() after a successful
  *   generation to update the timed-effects state for the next turn.
+ * @param outScanReport - Optional report object (see WorldInfoScanReport)
+ *   populated with what the token budget evicted, so callers can surface
+ *   drops instead of letting lore vanish silently.
  */
 export function scanMessagesForEntries(
   books: WorldInfoBook[],
   activeBookIds: string[],
   messages: { content: string; isSystem?: boolean }[],
   options: WorldInfoScanOptions,
-  outActivatedIds?: Set<string>
+  outActivatedIds?: Set<string>,
+  outScanReport?: WorldInfoScanReport
 ): MatchedEntry[] {
   const activeBooks = books.filter((b) => activeBookIds.includes(b.id));
   if (activeBooks.length === 0) return [];
@@ -971,9 +1175,10 @@ export function scanMessagesForEntries(
     }
     const depth = c.entry.scanDepth ?? options.scanDepth;
     const haystack = buildHaystack(messages, depth);
-    if (!entryActivates(c.entry, haystack)) continue;
+    const matchedKeyCount = entryMatchCount(c.entry, haystack);
+    if (matchedKeyCount === 0) continue;
     if (!rollProbability(c.entry)) continue;
-    initial.push(c);
+    initial.push({ ...c, matchedKeyCount });
     matchedIds.add(c.entry.id);
   }
 
@@ -997,13 +1202,17 @@ export function scanMessagesForEntries(
     for (const c of candidates) {
       if (matchedIds.has(c.entry.id)) continue;
       if (c.entry.excludeRecursion) continue;
+      // Trust partition: other entries' content is untrusted as a trigger
+      // source — critical lore only ever fires off real chat text.
+      if (c.entry.critical) continue;
       if (c.entry.constant) continue; // constants were decided in initial pass
       if (c.entry.keys.length === 0) continue;
       if (c.entry.group && wonGroups.has(c.entry.group)) continue;
       if (!timedEffectsAllow(c.entry)) continue;
-      if (!entryActivates(c.entry, recursionHaystack)) continue;
+      const matchedKeyCount = entryMatchCount(c.entry, recursionHaystack);
+      if (matchedKeyCount === 0) continue;
       if (!rollProbability(c.entry)) continue;
-      newMatches.push(c);
+      newMatches.push({ ...c, matchedKeyCount });
       matchedIds.add(c.entry.id);
     }
     if (newMatches.length === 0) break;
@@ -1031,6 +1240,34 @@ export function scanMessagesForEntries(
     }
   }
 
+  const allMatched = matched.concat(stickyMatches);
+
+  // Explicit links: entries listed in relatedIds always co-fire with their
+  // source, bypassing their own keys, probability, and group competition —
+  // the author's declared pairing is trusted over the usual gates. Timed
+  // effects (delay/cooldown) still apply. Transitive, cycle-safe via the
+  // included-set; dangling ids (deleted entries, inactive books) are ignored.
+  const byId = new Map<string, Candidate>();
+  for (const c of candidates) byId.set(c.entry.id, c);
+  const included = new Set(allMatched.map((m) => m.entry.id));
+  const queue = [...allMatched];
+  while (queue.length > 0) {
+    const m = queue.pop() as MatchedEntry;
+    for (const relId of m.entry.relatedIds) {
+      if (included.has(relId)) continue;
+      const rel = byId.get(relId);
+      if (!rel) continue;
+      if (!timedEffectsAllow(rel.entry)) continue;
+      included.add(relId);
+      // Pull-ins count as fresh activations so their own sticky/cooldown
+      // timers start ticking.
+      matchedIds.add(relId);
+      const pulled: MatchedEntry = { ...rel };
+      allMatched.push(pulled);
+      queue.push(pulled);
+    }
+  }
+
   // Report freshly activated IDs to the caller (excludes sticky carry-overs).
   if (outActivatedIds) {
     for (const id of matchedIds) {
@@ -1038,10 +1275,86 @@ export function scanMessagesForEntries(
     }
   }
 
-  const allMatched = matched.concat(stickyMatches);
-  const result = applyTokenBudget(allMatched, options.tokenBudget, options.profile);
+  const result = applyTokenBudget(
+    allMatched,
+    options.tokenBudget,
+    options.profile,
+    outScanReport
+  );
   result.sort((a, b) => a.entry.order - b.entry.order);
   return result;
+}
+
+// ---- Book health audit ----------------------------------------------------
+
+export interface BookHealth {
+  bookId: string;
+  /** Enabled entries only — disabled entries cost nothing. */
+  entryCount: number;
+  constantCount: number;
+  criticalCount: number;
+  /** Token cost of never-evictable entries (constant or critical). */
+  pinnedTokens: number;
+  /** Fraction of enabled entries that are constant (0-1). */
+  constantShare: number;
+  /** Related-entry links whose target no longer exists in this book. */
+  danglingRelated: { entryId: string; missingIds: string[] }[];
+  /**
+   * Related-entry links whose target exists but is disabled or has empty
+   * content — the scanner skips those targets, silently breaking the
+   * co-fire chain at that point.
+   */
+  inactiveRelated: { entryId: string; inactiveIds: string[] }[];
+}
+
+/**
+ * Automated version of the periodic hand-audit: how much of the token
+ * budget is spoken for by entries the trimmer can never evict, and which
+ * explicit links dangle. The UI compares pinnedTokens (summed across the
+ * books active for a chat) against the global token budget — when pinned
+ * cost alone exceeds it, the fix is architectural (narrow scope, split
+ * entries, or demote something), not more trimming.
+ */
+export function auditBookHealth(
+  book: WorldInfoBook,
+  profile: TokenizerProfile
+): BookHealth {
+  const enabled = book.entries.filter(
+    (e) => e.enabled && e.content.trim().length > 0
+  );
+  const pinned = enabled.filter((e) => e.constant || e.critical);
+  const ids = new Set(book.entries.map((e) => e.id));
+  const activeIds = new Set(enabled.map((e) => e.id));
+  const danglingRelated: BookHealth['danglingRelated'] = [];
+  const inactiveRelated: BookHealth['inactiveRelated'] = [];
+  for (const e of book.entries) {
+    const missing = e.relatedIds.filter((id) => !ids.has(id));
+    if (missing.length > 0) {
+      danglingRelated.push({ entryId: e.id, missingIds: missing });
+    }
+    const inactive = e.relatedIds.filter(
+      (id) => ids.has(id) && !activeIds.has(id)
+    );
+    if (inactive.length > 0) {
+      inactiveRelated.push({ entryId: e.id, inactiveIds: inactive });
+    }
+  }
+  return {
+    bookId: book.id,
+    entryCount: enabled.length,
+    constantCount: enabled.filter((e) => e.constant).length,
+    criticalCount: enabled.filter((e) => e.critical).length,
+    pinnedTokens: pinned.reduce(
+      (s, e) => s + estimateTokens(e.content, profile),
+      0
+    ),
+    constantShare:
+      enabled.length > 0
+        ? enabled.filter((e) => e.constant).length / enabled.length
+        : 0,
+    danglingRelated,
+    inactiveRelated,
+  };
 }
 
 // ---- Store ---------------------------------------------------------------
@@ -1204,15 +1517,17 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
     const now = Date.now();
     // Duplicates are always standalone globals so they don't collide with
     // the original character's embedded-book link.
+    const idMap = new Map<string, string>();
+    const copiedEntries = original.entries.map((e) => {
+      const id = generateId('wi');
+      idMap.set(e.id, id);
+      return { ...e, id, createdAt: now, updatedAt: now };
+    });
     const copy: WorldInfoBook = {
       id: generateId('wibook'),
       name: `${original.name} (Copy)`,
-      entries: original.entries.map((e) => ({
-        ...e,
-        id: generateId('wi'),
-        createdAt: now,
-        updatedAt: now,
-      })),
+      // Related-entry links must point at the copies, not the originals.
+      entries: remapRelatedIds(copiedEntries, idMap),
       ownerCharacterAvatar: null,
       createdAt: now,
       updatedAt: now,
@@ -1269,7 +1584,18 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       b.id === bookId
         ? {
             ...b,
-            entries: b.entries.filter((e) => e.id !== entryId),
+            entries: b.entries
+              .filter((e) => e.id !== entryId)
+              // Drop related-entry links that pointed at the deleted entry.
+              .map((e) =>
+                e.relatedIds.includes(entryId)
+                  ? {
+                      ...e,
+                      relatedIds: e.relatedIds.filter((id) => id !== entryId),
+                      updatedAt: now,
+                    }
+                  : e
+              ),
             updatedAt: now,
           }
         : b
@@ -1526,10 +1852,14 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
         return;
       }
 
-      // Server has newer (or equal) state — apply it.
+      // Server has newer (or equal) state — apply it. Normalize first: the
+      // blob may have been written by an older client without the newer
+      // entry fields.
       _persistEnabled = false;
       const handle = _currentHandle;
-      const books = Array.isArray(stored.books) ? stored.books : [];
+      const books = normalizeStoredBooks(
+        Array.isArray(stored.books) ? stored.books : []
+      );
       const activeBookIds = Array.isArray(stored.activeBookIds)
         ? stored.activeBookIds
         : [];

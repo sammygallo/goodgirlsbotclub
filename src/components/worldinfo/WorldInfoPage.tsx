@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Plus,
@@ -12,10 +12,13 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import {
   useWorldInfoStore,
+  auditBookHealth,
   type WorldInfoBook,
 } from '../../stores/worldInfoStore';
+import { profileForProvider } from '../../utils/tokenizer';
 import { Button, Input, ConfirmDialog, Modal } from '../ui';
 import { WorldInfoBookEditor } from './WorldInfoBookEditor';
 import { ChatPickerModal, type ChatSelection } from './ChatPickerModal';
@@ -94,6 +97,20 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
   // them from the global lorebook list to avoid confusion.
   const globalBooks = books.filter((b) => b.ownerCharacterAvatar == null);
   const charOwnedCount = books.length - globalBooks.length;
+
+  // Lorebook health: audit each active book against the active provider's
+  // tokenizer profile. Memoized — never build fresh arrays inside zustand
+  // selectors (React #185 churn hazard).
+  const activeProvider = useSettingsStore((s) => s.activeProvider);
+  const health = useMemo(() => {
+    const profile = profileForProvider(activeProvider || '');
+    const reports = books
+      .filter((b) => activeBookIds.includes(b.id))
+      .map((b) => ({ book: b, audit: auditBookHealth(b, profile) }));
+    const pinnedTotal = reports.reduce((s, r) => s + r.audit.pinnedTokens, 0);
+    return { reports, pinnedTotal };
+  }, [books, activeBookIds, activeProvider]);
+  const pinnedOverBudget = tokenBudget > 0 && health.pinnedTotal > tokenBudget;
 
   const handleCreate = () => {
     const trimmed = newBookName.trim();
@@ -282,11 +299,98 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
               />
             </div>
             <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
-              Max total tokens of injected entries. Entries with higher{' '}
-              <code>order</code> are dropped first when over budget. 0 =
-              unlimited.
+              Max total tokens of injected entries. Constant and critical
+              entries are exempt from trimming and count against the budget
+              first; of the rest, entries with higher <code>order</code> are
+              dropped first when over budget. 0 = unlimited.
             </p>
           </div>
+        </section>
+
+        {/* Lorebook health */}
+        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-3">
+          <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">
+            Lorebook health
+          </h2>
+          {health.reports.length === 0 ? (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              No active lorebooks — activate a book below to see its health.
+            </p>
+          ) : (
+            <>
+              <div
+                className={`p-3 rounded-lg border ${
+                  pinnedOverBudget
+                    ? 'bg-red-500/10 border-red-500/30'
+                    : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)]'
+                }`}
+              >
+                <p
+                  className={`text-sm ${
+                    pinnedOverBudget
+                      ? 'text-red-400 font-medium'
+                      : 'text-[var(--color-text-primary)]'
+                  }`}
+                >
+                  Pinned lore (constant + critical): ~{health.pinnedTotal}
+                  {tokenBudget > 0 ? ` / ${tokenBudget}` : ''} tokens
+                  {tokenBudget === 0 ? ' (no budget limit)' : ''}
+                </p>
+                {pinnedOverBudget && (
+                  <p className="mt-1 text-xs text-red-400">
+                    If every constant + critical entry fired at once they
+                    would exceed the budget on their own — raise the budget,
+                    narrow scope, or demote entries. (Keyword-gated critical
+                    entries only cost tokens when they actually fire.)
+                  </p>
+                )}
+              </div>
+              <ul className="space-y-2">
+                {health.reports.map(({ book, audit }) => (
+                  <li
+                    key={book.id}
+                    className="p-3 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]"
+                  >
+                    <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
+                      {book.name}
+                    </p>
+                    <p className="text-xs text-[var(--color-text-secondary)]">
+                      {audit.entryCount} enabled · {audit.constantCount}{' '}
+                      constant · {audit.criticalCount} critical · ~
+                      {audit.pinnedTokens} pinned tokens
+                    </p>
+                    {audit.constantShare > 0.2 && (
+                      <p className="mt-1 text-xs text-amber-400">
+                        Over 20% constant — consider demoting some.
+                      </p>
+                    )}
+                    {audit.criticalCount > 5 && (
+                      <p className="mt-1 text-xs text-amber-400">
+                        More than a handful marked critical — if everything is
+                        critical, nothing is.
+                      </p>
+                    )}
+                    {audit.danglingRelated.length > 0 && (
+                      <p className="mt-1 text-xs text-amber-400">
+                        {audit.danglingRelated.length} broken related-entry
+                        link
+                        {audit.danglingRelated.length === 1 ? '' : 's'}.
+                      </p>
+                    )}
+                    {audit.inactiveRelated.length > 0 && (
+                      <p className="mt-1 text-xs text-amber-400">
+                        {audit.inactiveRelated.length} related-entry link
+                        {audit.inactiveRelated.length === 1 ? '' : 's'} point
+                        {audit.inactiveRelated.length === 1 ? 's' : ''} at a
+                        disabled or empty entry — the chain silently stops
+                        there.
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </section>
 
         {/* Lorebooks */}

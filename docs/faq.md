@@ -35,7 +35,9 @@ The app has three memory mechanisms — they can run together:
 1. **Auto-Memory** — every N messages (default 30), the active model extracts
    canonical facts from the chat and appends them to a per-character lorebook
    called "{Character} — Auto Memory". Same retrieval as regular World Info
-   (keyword-triggered). Toggle under Settings → Extensions → Auto-Memory.
+   (keyword-triggered). Entries it creates are tagged with the
+   `continuity_note` category, so they are easy to spot and audit in the
+   entry list. Toggle under Settings → Extensions → Auto-Memory.
 
 2. **Chat-History RAG** — embeds your past chat messages and pulls the most
    semantically relevant past turns into context at generation time. Better
@@ -154,8 +156,43 @@ Lorebooks can be:
 - **Chat-attached** — only active in that specific chat.
 - **Globally enabled** — active everywhere.
 
-The injection budget is shared with the rest of the prompt context, so very
-large lorebooks can push older chat messages out.
+**Budget and eviction:** active lorebooks share a World Info token budget.
+When the budget runs out, entries are evicted highest-Order first — except
+entries marked **Constant** or **Critical**, which are never evicted. If the
+constant + critical entries alone exceed the budget, the app warns: a toast
+in chat (once per chat) and a **Lorebook health** panel on the World Info
+page showing pinned-token totals vs the budget, constant share, critical
+counts, and broken related-entry links. The injection budget is shared with
+the rest of the prompt context, so very large lorebooks can push older chat
+messages out.
+
+**Critical toggle:** a per-entry flag. A critical entry is never evicted by
+the budget, survives chat-history trimming, and keyword scanning can only
+trigger it from real chat text — other entries' content can never trigger
+it during recursive scanning. (An explicit Related-entries link authored by
+the user can still pull a critical entry in.) Use it for hard continuity
+facts that must never silently disappear.
+
+**Category:** each entry can carry a category label picked from a dropdown —
+presets are `character_fact`, `world_rule`, `relationship`, `location`,
+`continuity_note`, `standing_directive`; custom values from imported books
+are preserved and stay selectable, but the editor does not offer a
+free-text field. It is shown as a chip in the entry list, and the AI
+lorebook generator tags entries automatically. It is never sent to the
+model.
+
+**Related entries:** an entry can list other entries in the same book that
+inject alongside it whenever it fires. The link bypasses the target's own
+keywords, probability, and group competition (delay and cooldown are still
+respected). Links are transitive; deleting an entry cleans up links to it,
+and duplicate/import remaps them. A pulled-in entry still counts against
+the World Info token budget and can be evicted like any other unless it is
+constant or critical.
+
+**Group competition:** when all competing entries in an inclusion group have
+equal weight, the winner is deterministic — lowest Order wins, ties go to
+the entry with more matched keys, then alphabetical. Setting different
+weights switches the group to a weighted-random draw instead.
 
 ---
 

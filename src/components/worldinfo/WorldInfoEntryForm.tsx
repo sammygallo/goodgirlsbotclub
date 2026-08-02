@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
   useWorldInfoStore,
+  WI_CATEGORIES,
+  humanizeCategory,
   type WorldInfoEntry,
   type WorldInfoPosition,
   type SelectiveLogic,
@@ -28,8 +30,15 @@ const LOGIC_OPTIONS: { value: SelectiveLogic; label: string; hint: string }[] = 
   { value: 'NOT_ALL', label: 'NOT ALL', hint: 'Primary matches AND at least one secondary is missing' },
 ];
 
+// Stable fallback so the zustand selector never returns a fresh array
+// reference (fresh `[]` per call destabilizes useSyncExternalStore — React #185).
+const EMPTY_ENTRIES: WorldInfoEntry[] = [];
+
 export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFormProps) {
   const { createEntry, updateEntry } = useWorldInfoStore();
+  const bookEntries = useWorldInfoStore(
+    (s) => s.books.find((b) => b.id === bookId)?.entries ?? EMPTY_ENTRIES
+  );
 
   const [keys, setKeys] = useState('');
   const [content, setContent] = useState('');
@@ -68,6 +77,11 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
   const [cooldown, setCooldown] = useState(0);
   const [delay, setDelay] = useState(0);
 
+  // Continuity & linking
+  const [critical, setCritical] = useState(false);
+  const [category, setCategory] = useState('');
+  const [relatedIds, setRelatedIds] = useState<string[]>([]);
+
   useEffect(() => {
     if (entry) {
       setKeys(entry.keys.join(', '));
@@ -94,6 +108,9 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       setSticky(entry.sticky);
       setCooldown(entry.cooldown);
       setDelay(entry.delay);
+      setCritical(entry.critical);
+      setCategory(entry.category);
+      setRelatedIds(entry.relatedIds);
     } else {
       setKeys('');
       setContent('');
@@ -119,6 +136,9 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       setSticky(0);
       setCooldown(0);
       setDelay(0);
+      setCritical(false);
+      setCategory('');
+      setRelatedIds([]);
     }
   }, [entry]);
 
@@ -164,6 +184,9 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       sticky,
       cooldown,
       delay,
+      critical,
+      category,
+      relatedIds,
     };
 
     if (entry) {
@@ -175,6 +198,25 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
   };
 
   const canSubmit = content.trim().length > 0 && (constant || parsedKeys.length > 0);
+
+  // Category stays free-form so imports never lose data — surface any
+  // nonstandard value (from the saved entry or current state) as an option.
+  const extraCategories = Array.from(
+    new Set(
+      [entry?.category ?? '', category].filter(
+        (c) => c && !(WI_CATEGORIES as readonly string[]).includes(c)
+      )
+    )
+  );
+
+  // Candidates for explicit related-entry links: every OTHER entry in this book.
+  const otherEntries = bookEntries.filter((e) => e.id !== entry?.id);
+
+  const toggleRelated = (id: string) => {
+    setRelatedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -207,6 +249,32 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
         value={comment}
         onChange={(e) => setComment(e.target.value)}
       />
+
+      <div>
+        <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5">
+          Category
+        </label>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+        >
+          <option value="">No category</option>
+          {WI_CATEGORIES.map((cat) => (
+            <option key={cat} value={cat}>
+              {humanizeCategory(cat)}
+            </option>
+          ))}
+          {extraCategories.map((cat) => (
+            <option key={cat} value={cat}>
+              {humanizeCategory(cat)}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+          Authoring tag for organizing lore. Does not affect matching.
+        </p>
+      </div>
 
       <div>
         <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5">
@@ -258,6 +326,7 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           />
           <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
             Lower order is injected first and survives token-budget trimming.
+            Constant and Critical entries are never trimmed at all.
           </p>
         </div>
       </div>
@@ -281,6 +350,19 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           />
           Constant (always inject, ignore keywords)
         </label>
+        <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={critical}
+            onChange={(e) => setCritical(e.target.checked)}
+            className="w-4 h-4 accent-[var(--color-primary)]"
+          />
+          Critical
+        </label>
+        <p className="-mt-1 pl-6 text-xs text-[var(--color-text-secondary)]">
+          Hard continuity fact — never evicted by the token budget, and only
+          real chat text can trigger it (other entries&apos; text can&apos;t).
+        </p>
         <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
           <input
             type="checkbox"
@@ -416,29 +498,71 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           onChange={(e) => setGroup(e.target.value)}
         />
         {group.trim().length > 0 && (
-          <div className="grid grid-cols-2 gap-3 items-end">
-            <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
-              <input
-                type="checkbox"
-                checked={groupOverride}
-                onChange={(e) => setGroupOverride(e.target.checked)}
-                className="w-4 h-4 accent-[var(--color-primary)]"
-              />
-              Override
-            </label>
-            <div>
-              <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-                Weight
+          <>
+            <div className="grid grid-cols-2 gap-3 items-end">
+              <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={groupOverride}
+                  onChange={(e) => setGroupOverride(e.target.checked)}
+                  className="w-4 h-4 accent-[var(--color-primary)]"
+                />
+                Override
               </label>
-              <input
-                type="number"
-                min={1}
-                max={1000}
-                value={groupWeight}
-                onChange={(e) => setGroupWeight(Number(e.target.value) || 1)}
-                className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-              />
+              <div>
+                <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
+                  Weight
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={groupWeight}
+                  onChange={(e) => setGroupWeight(Number(e.target.value) || 1)}
+                  className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+                />
+              </div>
             </div>
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Equal weights pick a deterministic winner (lowest Order, then most
+              matched keys). Set different weights only when you want a random
+              draw.
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* Related entries */}
+      <div className="space-y-2 pt-3 border-t border-[var(--color-border)]">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">
+          Related entries
+        </h3>
+        <p className="text-xs text-[var(--color-text-secondary)]">
+          Always inject these entries whenever this one fires — an explicit
+          link that bypasses their own keywords and group competition.
+        </p>
+        {otherEntries.length === 0 ? (
+          <p className="text-xs text-[var(--color-text-secondary)] italic">
+            No other entries in this book yet.
+          </p>
+        ) : (
+          <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg border border-[var(--color-border)] p-2">
+            {otherEntries.map((e) => (
+              <label
+                key={e.id}
+                className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={relatedIds.includes(e.id)}
+                  onChange={() => toggleRelated(e.id)}
+                  className="w-4 h-4 flex-shrink-0 accent-[var(--color-primary)]"
+                />
+                <span className="min-w-0 truncate">
+                  {e.comment || e.keys[0] || e.id}
+                </span>
+              </label>
+            ))}
           </div>
         )}
       </div>
@@ -466,6 +590,10 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           />
           Exclude from recursion (other entries can't trigger this one)
         </label>
+        <p className="text-xs text-[var(--color-text-secondary)]">
+          Critical entries are always excluded from being triggered by
+          recursion — only real chat text can activate them.
+        </p>
       </div>
 
       {/* Timed Effects */}

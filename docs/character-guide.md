@@ -71,7 +71,7 @@ Set up in the World Info page. Two ways to use them:
 1. **Always on** — used in every chat with every character (a checkbox).
 2. **Linked to a character** — only used when that character is in the chat.
 
-**Important:** All active lorebooks share one budget (default **1,024 tokens**). If your books have more lore than that, the extra gets cut. More books = more competition.
+**Important:** All active lorebooks share one budget (default **1,024 tokens**). If your books have more lore than that, the extra gets cut — except cards marked **Constant** or **Critical**, which are never cut. If your constant + critical cards alone are bigger than the budget, the app warns you: a toast in chat (once per chat) plus a **Lorebook health** panel on the World Info page showing the totals. More books = more competition.
 
 ## Lorebook Entry Settings
 
@@ -93,6 +93,9 @@ Each card in your lorebook has these settings.
 **Constant** — The card *always* fires, no triggers needed.
 - *How it changes behavior:* The fact is always in the AI's mind. Use only for stuff that truly always matters.
 
+**Critical** — The card can never be cut, no matter how tight the token budget gets, and keyword scanning can only trigger it from real chat text (other cards' text can't set it off through chain reactions; a Related Entries link you author yourself can still bring it in).
+- *How it changes behavior:* This is the "never lose this fact" switch. Use it for hard continuity facts — "she lost her left hand in chapter 12" — where the story breaks if the AI silently forgets. Mark only a handful of cards Critical; if everything is critical, nothing is.
+
 **Case Sensitive** — Whether "biscuit" and "Biscuit" count as the same. Usually leave off.
 
 **Probability + Use Probability** — A dice roll for whether the card fires.
@@ -100,11 +103,16 @@ Each card in your lorebook has these settings.
 
 **Enabled** — On/off switch.
 
+**Category** — A label for what kind of fact this is: `character_fact`, `world_rule`, `relationship`, `location`, `continuity_note`, or `standing_directive`, picked from a dropdown (custom tags from imported books are kept and stay selectable). Shows as a little chip in the entry list. The AI never sees it (free), but it makes finding and auditing cards way faster. The AI lorebook generator fills it in automatically.
+
 **Delay / Cooldown / Sticky** — Time-based controls.
 - **Delay**: wait this many turns before the card can ever fire.
 - **Cooldown**: after firing, wait this many turns before it can fire again.
 - **Sticky**: after firing, stay active for this many turns (even without trigger words).
 - *How it changes behavior:* Sticky is great for emotions ("she's been crying for the last 3 messages"). Cooldown stops repetitive lore dumps.
+
+**Related Entries** — Other cards in the same book that come along when this card fires.
+- *How it changes behavior:* The linked card skips its own triggers entirely — no keys needed, no dice roll, no group competition (delay and cooldown still apply). Great for pairs that belong together: a rule and its one exception, a name and the fact that always travels with it. Links chain (A brings B, B brings C), and the app tidies them up when you delete or duplicate cards. One caveat: a pulled-in card still counts against the token budget and can be trimmed like any other — if a pair truly must never split, mark both cards Critical.
 
 ### Where the Card Goes in the AI's "Memory"
 
@@ -115,10 +123,10 @@ Each card in your lorebook has these settings.
 - `after_an` — after the author's note.
 - `at_depth` — slipped in N messages back in the chat (use the depth field).
 
-*How position changes behavior:* The AI pays more attention to stuff near the *end* of what it reads. So `at_depth` with a low depth number (close to the latest message) makes the lore feel "fresh" and recent.
+*How position changes behavior:* The AI pays more attention to stuff near the *end* of what it reads. So `at_depth` with a low depth number (close to the latest message) makes the lore feel "fresh" and recent. Depth 0 works too: it puts the card right after the newest message — the closest possible spot to where the AI starts writing. Save that trailing slot for the one rule the AI absolutely must follow right now.
 
 **Order** — A number for sorting cards in the same position. Lower = earlier.
-- *How it changes behavior:* If the budget runs out, higher-order cards get cut first. Put your most important cards at order 0–50.
+- *How it changes behavior:* If the budget runs out, higher-order cards get cut first. Put your most important cards at order 0–50. Cards marked Constant or Critical are never cut, whatever their order.
 
 ### Scanning (How Far Back the AI Looks)
 
@@ -132,17 +140,17 @@ Each card in your lorebook has these settings.
 **Prevent Recursion** — This card's words can't trigger others.
 
 **Exclude Recursion** — This card can't be triggered *by* other cards (only by chat).
-- *How it changes behavior:* Stops cards from snowballing into a giant lore dump.
+- *How it changes behavior:* Stops cards from snowballing into a giant lore dump. Cards marked **Critical** get this protection automatically — keyword scanning only ever triggers them from real chat text (an explicit Related Entries link is the one thing that can still bring one in, because you authored that link yourself).
 
 ### Group Competition
 
 **Group** — Give multiple cards the same group name and only ONE will fire per message.
 
-**Group Weight** — Higher number = better odds of being the chosen one.
+**Group Weight** — Decides *how* the winner is picked. If every competing card has the **same** weight, the winner is predictable: lowest Order wins, ties go to the card that matched more trigger words, then alphabetical. Same chat, same winner — no dice. Give the cards **different** weights and it becomes a weighted dice roll instead (higher weight = better odds).
 
 **Group Override** — This card always wins, no matter the weight.
 
-*How it changes behavior:* Perfect for moods. Make 5 cards: happy, sad, angry, tired, excited. Put them all in group "mood." Now exactly ONE mood is active at a time, instead of all 5 piling on.
+*How it changes behavior:* Perfect for moods. Make 5 cards: happy, sad, angry, tired, excited. Put them all in group "mood." Now exactly ONE mood is active at a time, instead of all 5 piling on. Keep weights equal when it matters *which* card wins (a story fact that must stay consistent); use different weights only for flavor cards where any of them would do.
 
 ## Smart Tricks That Save Tokens
 
@@ -164,7 +172,7 @@ If you set the global scan depth to 20, *every* card now searches 20 messages. I
 
 ### Trick 4: Use Order, Not Position, to Pick Favorites
 
-When the token budget runs out, the AI cuts cards starting from the highest order numbers. So your most important cards should be at order 0, 10, 20… and your nice-to-haves at order 200+.
+When the token budget runs out, the AI cuts cards starting from the highest order numbers. So your most important cards should be at order 0, 10, 20… and your nice-to-haves at order 200+. (Constant and Critical cards skip this line entirely — they never get cut. For the two or three facts you truly can't lose, flip the Critical toggle instead of trusting a low order.)
 
 ### Trick 5: Use at_depth for "Right Now" Lore
 
@@ -172,7 +180,7 @@ Stuff like "She just got bad news" works better at `at_depth` (depth 2) than at 
 
 ### Trick 6: Group Your Mood Cards
 
-Five mood cards in a group = only one fires per message. Total tokens stay the same no matter how many moods you add.
+Five mood cards in a group = only one fires per message. Total tokens stay the same no matter how many moods you add. With equal weights **and the same Order** on every mood card, when two moods trigger at once the card that matched more of the chat's words wins — so the mood that fires is the one the scene is actually about, not a coin flip. (Order is checked first, so if you stagger Orders per Trick 4 the lowest-Order mood always wins instead.)
 
 ### Trick 7: Two Example Messages Is Enough
 

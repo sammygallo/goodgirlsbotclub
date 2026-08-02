@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Edit2, Trash2, Check, X, ChevronRight } from 'lucide-react';
 import {
   useWorldInfoStore,
+  humanizeCategory,
   type WorldInfoBook,
   type WorldInfoEntry,
 } from '../../stores/worldInfoStore';
@@ -81,6 +82,21 @@ export function WorldInfoBookEditor({ isOpen, onClose, book }: WorldInfoBookEdit
                           {entry.constant && (
                             <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-medium">
                               CONSTANT
+                            </span>
+                          )}
+                          {entry.critical && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 font-medium">
+                              CRITICAL
+                            </span>
+                          )}
+                          {entry.category && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-bg-primary)] text-[var(--color-text-secondary)]">
+                              {humanizeCategory(entry.category)}
+                            </span>
+                          )}
+                          {entry.relatedIds.length > 0 && (
+                            <span className="text-[10px] text-[var(--color-text-secondary)]">
+                              links: {entry.relatedIds.length}
                             </span>
                           )}
                           {entry.caseSensitive && (

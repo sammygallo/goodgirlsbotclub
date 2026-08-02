@@ -113,6 +113,11 @@ export interface ColdStartSources {
       keys: string[];
       content: string;
       constant: boolean;
+      /** Never budget-evicted once triggered — ranked with constant as
+       *  the never-evictable class the story was played under. */
+      critical: boolean;
+      /** Authoring category tag (see WI_CATEGORIES); '' = untagged. */
+      category: string;
       /** A disabled entry never reaches a prompt, so it is not canon. */
       enabled: boolean;
     }[];

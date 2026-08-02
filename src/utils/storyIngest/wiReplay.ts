@@ -33,6 +33,9 @@ export interface ReplayEntry {
   enabled: boolean;
   constant: boolean;
   caseSensitive: boolean;
+  /** Explicit co-fire links (entry ids): targets fire whenever this
+   *  entry does, transitively, bypassing their own keys. */
+  relatedIds: string[];
   /** Per-entry override; falls back to the global scan depth. */
   scanDepth?: number | null;
 }
@@ -69,11 +72,14 @@ function keyMatches(haystack: string, key: string, caseSensitive: boolean): bool
  * Replay the keyword scan across the transcript.
  *
  * Deliberately simplified against the live scanner: no recursion, no
- * token budgeting, no group weighting, and probability is treated as
- * "could fire" rather than re-rolled. Every one of those simplifications
- * makes the result MORE inclusive, which is the right direction — an
- * entry we flag as possibly-fired gets reviewed, one we wrongly drop
- * silently vanishes from the bible.
+ * token budgeting, no group weighting, probability is treated as "could
+ * fire" rather than re-rolled, and relatedIds pull-ins skip the timed
+ * effects (delay/cooldown) the live scanner consults. Every one of those
+ * simplifications makes the result MORE inclusive, which is the right
+ * direction — an entry we flag as possibly-fired gets reviewed, one we
+ * wrongly drop silently vanishes from the bible. (`critical` needs no
+ * modelling here for the same reason: it only restricts recursion
+ * triggering and budget eviction, neither of which replay has.)
  */
 export function replayWorldInfo(
   messages: IngestMessage[],
@@ -132,6 +138,32 @@ export function replayWorldInfo(
       }
     }
     turn++;
+  }
+
+  // Explicit links: mirror the live scanner's relatedIds pull-ins — an
+  // entry linked from one that fired co-fires with it, transitively,
+  // regardless of its own keys. Cycle-safe via the seen-set; dangling
+  // ids (deleted entries, inactive books) are ignored.
+  const byId = new Map(active.map((e) => [e.id, e]));
+  const queue = active.filter((e) => fired[wiFiredKey(e.bookId, e.id)]);
+  const seen = new Set(queue.map((e) => e.id));
+  while (queue.length > 0) {
+    const src = queue.pop() as ReplayEntry;
+    const srcStats = fired[wiFiredKey(src.bookId, src.id)];
+    for (const relId of src.relatedIds) {
+      if (seen.has(relId)) continue;
+      seen.add(relId);
+      const rel = byId.get(relId);
+      if (!rel) continue;
+      const key = wiFiredKey(rel.bookId, rel.id);
+      if (!fired[key]) {
+        // A pull-in is reconstructed, never measured — it co-fired
+        // whenever its source did, so it inherits the source's stats.
+        replayed = true;
+        fired[key] = { ...srcStats };
+      }
+      queue.push(rel);
+    }
   }
 
   const neverFired = active
