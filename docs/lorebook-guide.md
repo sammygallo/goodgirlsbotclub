@@ -16,7 +16,15 @@ Aim for about 60–110 words. If you're consistently going over, you almost cert
 
 Pick 3–6 keys that literally appear in your prose or your own messages: a name, a place, a specific term you actually type. Skip paraphrases of the concept — if you write "the Hollow" in chat, "mysterious forest" is a key that will never fire.
 
+**Keys match as substrings, not as words.** GGBC scans the recent chat text and asks "does this key appear anywhere inside it?", ignoring case and ignoring word boundaries. That has three consequences worth internalising:
+
+- **Short fragments fire inside unrelated words.** `ana` matches "banana", `art` matches "started", `Ed` matches "wanted". Anything under three characters is almost always a mistake; distinctive proper nouns and multi-word phrases are the safe end of the scale.
+- **Everyday words fire constantly.** `the`, `she`, `they`, `said`, `about` — these appear in nearly every message, so the entry is effectively always on, eating budget and crowding out the cards that actually matter. If you want a card on every message, use **Constant** and say so, rather than faking it with a common word.
+- **A longer key is pointless when a shorter one already covers it.** If you list `Hollow`, then `the Hollow Road` can never be the reason the card fires — any text containing the longer phrase already contains the shorter key. It's a free line in the list that does nothing.
+
 Resist the urge to add every word that might come up. 3–6 well-chosen keys beat 15 speculative ones, because every extra key is another way for the card to fire on a coincidental mention and eat budget for nothing.
+
+A key wrapped in `/slashes/` is treated as a regular expression instead — powerful, but if the pattern doesn't compile the app falls back to matching the literal text *including* the slashes, which means it never fires.
 
 ## Categories
 
@@ -69,6 +77,27 @@ Think of the prompt in three bands, and place entries deliberately:
 - **Trailing** (@ Depth 0–1): the one non-negotiable rule of the scene. Depth 0 lands the card right after the newest message — the closest possible spot to where the AI starts writing, and the spot it obeys most.
 
 Placement decides *where* an entry goes, never *whether* it loads. Loading is still governed by keys, Constant, and Critical — a trailing slot is no substitute for a trigger that works.
+
+## The entry check
+
+The editor now checks each entry while you write it, and the AI lorebook generator checks its drafts before you save them. Nothing here blocks you — it's a second pair of eyes, not a gate.
+
+**Red means the entry can never reach the AI.** These are the silent failures, the ones that look fine in the list and simply never show up in a story:
+
+- No keywords and not Constant — nothing can trigger it.
+- Empty content — the scanner skips it entirely.
+- A Critical entry with no trigger. Critical protects an entry from being cut; it doesn't fire one. Give it a keyword or make it Constant.
+- A `/regex/` key that doesn't compile, which gets matched as literal text (slashes and all) and never hits.
+
+**Amber means it'll work, but probably not the way you want:**
+
+- A key under three characters, or an everyday word — both fire far more often than you intended (see *Choosing keys* above).
+- More than six keys on one entry.
+- A body over roughly 150 tokens — usually two facts wearing one coat.
+- Two entries in the book that start with the same text. Both fire, both cost budget, and editing one leaves the other quietly stale.
+- Related-entry links pointing at something deleted, disabled, or empty — the chain stops there.
+
+If you only ever act on one colour, make it red. An amber entry is merely expensive; a red one isn't in the story at all, and nothing else in the app will tell you.
 
 ---
 

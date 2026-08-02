@@ -10,7 +10,7 @@
  * so it takes already-prepared `TranscriptMsg[]` rather than reaching into a
  * particular store for the active chat.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Sparkles, Trash2, BookPlus } from 'lucide-react';
 import { Modal, Button, Input, TextArea, TagInput } from '../ui';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -18,6 +18,7 @@ import { useCharacterStore } from '../../stores/characterStore';
 import {
   useWorldInfoStore,
   humanizeCategory,
+  DEFAULT_ENTRY,
   type WorldInfoBook,
 } from '../../stores/worldInfoStore';
 import {
@@ -26,6 +27,7 @@ import {
   type TranscriptMsg,
   type DraftLorebookEntry,
 } from '../../utils/lorebookFromTranscript';
+import { lintEntry, type LintFinding } from '../../utils/lorebookLint';
 
 interface GenerateLorebookModalProps {
   isOpen: boolean;
@@ -49,6 +51,9 @@ interface EditableDraft extends DraftLorebookEntry {
   uid: number;
   enabled: boolean;
 }
+
+/** Most findings to show under one draft row — this is a bulk-review list. */
+const MAX_FINDINGS_PER_DRAFT = 2;
 
 export function GenerateLorebookModal({
   isOpen,
@@ -142,6 +147,33 @@ export function GenerateLorebookModal({
   const enabledDrafts = drafts.filter(
     (d) => d.enabled && d.keys.length > 0 && d.content.trim().length > 0
   );
+
+  // Entry-quality check on the drafts the author is about to save. Linting the
+  // DEFAULT_ENTRY-spread shape mirrors exactly what `createEntry` persists, so
+  // the advice describes the real saved entry rather than a partial draft.
+  // Advisory only — nothing here blocks creation.
+  //
+  // `info` findings are dropped: the generator always sets a category, and the
+  // remaining housekeeping notes are noise in a twenty-row bulk-review list.
+  const draftFindings = useMemo(() => {
+    const byUid = new Map<number, LintFinding[]>();
+    for (const draft of drafts) {
+      if (!draft.enabled) continue;
+      const findings = lintEntry({
+        ...DEFAULT_ENTRY,
+        keys: draft.keys,
+        content: draft.content.trim(),
+        category: draft.category,
+        id: `draft-${draft.uid}`,
+        createdAt: 0,
+        updatedAt: 0,
+      }).filter((f) => f.severity !== 'info');
+      if (findings.length > 0) {
+        byUid.set(draft.uid, findings.slice(0, MAX_FINDINGS_PER_DRAFT));
+      }
+    }
+    return byUid;
+  }, [drafts]);
 
   const handleCreate = () => {
     const name = bookName.trim() || defaultBookName;
@@ -367,6 +399,18 @@ export function GenerateLorebookModal({
                         }
                         rows={2}
                       />
+                      {(draftFindings.get(draft.uid) ?? []).map((f, i) => (
+                        <p
+                          key={`${f.code}-${i}`}
+                          className={`text-[11px] leading-snug ${
+                            f.severity === 'error'
+                              ? 'text-red-400'
+                              : 'text-amber-400'
+                          }`}
+                        >
+                          {f.message}
+                        </p>
+                      ))}
                     </div>
                   </li>
                 ))}

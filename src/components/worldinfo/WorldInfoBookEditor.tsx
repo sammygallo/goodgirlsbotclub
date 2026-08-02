@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus, Edit2, Trash2, Check, X, ChevronRight } from 'lucide-react';
 import {
   useWorldInfoStore,
@@ -6,6 +6,9 @@ import {
   type WorldInfoBook,
   type WorldInfoEntry,
 } from '../../stores/worldInfoStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { profileForProvider } from '../../utils/tokenizer';
+import { lintBook, worstSeverity, type LintFinding } from '../../utils/lorebookLint';
 import { Modal, Button, ConfirmDialog } from '../ui';
 import { WorldInfoEntryForm } from './WorldInfoEntryForm';
 
@@ -29,6 +32,17 @@ export function WorldInfoBookEditor({ isOpen, onClose, book }: WorldInfoBookEdit
   const [editingEntry, setEditingEntry] = useState<WorldInfoEntry | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<WorldInfoEntry | null>(null);
+
+  // Lint the whole book once per change (cross-entry rules need every entry in
+  // view) and index it by entry id for the per-row badge.
+  const activeProvider = useSettingsStore((s) => s.activeProvider);
+  const lintByEntry = useMemo(() => {
+    const map = new Map<string, LintFinding[]>();
+    for (const result of lintBook(book.entries, profileForProvider(activeProvider || ''))) {
+      map.set(result.entryId, result.findings);
+    }
+    return map;
+  }, [book.entries, activeProvider]);
 
   const handleFormClose = () => {
     setEditingEntry(null);
@@ -61,7 +75,11 @@ export function WorldInfoBookEditor({ isOpen, onClose, book }: WorldInfoBookEdit
               </div>
             ) : (
               <ul className="space-y-2">
-                {book.entries.map((entry) => (
+                {book.entries.map((entry) => {
+                  const lintFindings = lintByEntry.get(entry.id) ?? [];
+                  const lintWorst = worstSeverity(lintFindings);
+                  const lintTitle = lintFindings.map((f) => f.message).join('\n');
+                  return (
                   <li
                     key={entry.id}
                     className={`
@@ -87,6 +105,22 @@ export function WorldInfoBookEditor({ isOpen, onClose, book }: WorldInfoBookEdit
                           {entry.critical && (
                             <span className="text-xs px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 font-medium">
                               CRITICAL
+                            </span>
+                          )}
+                          {lintWorst === 'error' && (
+                            <span
+                              className="text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-medium"
+                              title={lintTitle}
+                            >
+                              NEEDS FIX
+                            </span>
+                          )}
+                          {lintWorst === 'warning' && (
+                            <span
+                              className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-medium"
+                              title={lintTitle}
+                            >
+                              CHECK
                             </span>
                           )}
                           {entry.category && (
@@ -184,7 +218,8 @@ export function WorldInfoBookEditor({ isOpen, onClose, book }: WorldInfoBookEdit
                       View details <ChevronRight size={12} />
                     </button>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
 

@@ -303,6 +303,9 @@ Entry standard:
 - The first sentence must carry the whole fact on its own — dense and declarative. The model reading this entry mid-generation has no other context: never write "as mentioned above", "she also", or anything that leans on another entry.
 - Target roughly 60-110 words per entry: the core fact first, then the specifics that make it usable.
 - "keys" are 3-6 identifiers or phrases that actually appear in the prose — names, aliases, place names, specific terms. Never speculative paraphrases a keyword scan would not find.
+- Keys are matched case-insensitively as SUBSTRINGS of recent chat text, not as whole words. Favor distinctive proper nouns, place names, and multi-word phrases that appear verbatim in the transcript.
+- Never use everyday words (the, she, her, they, said, about, back, over, just…) and never use a fragment shorter than 3 characters. Because matching is by substring, "ana" fires inside "banana" and a common word fires on nearly every message, burying the entries that matter.
+- Do not list a phrase when a shorter key you already included would match it anyway: if "Hollow" is in the list, "the Hollow Road" can never be the reason the entry fires, so it only adds noise.
 
 Output rules:
 - Return ONLY a JSON array. No prose, no markdown fences.

@@ -19,6 +19,7 @@ import {
   type WorldInfoBook,
 } from '../../stores/worldInfoStore';
 import { profileForProvider } from '../../utils/tokenizer';
+import { lintBook, worstSeverity } from '../../utils/lorebookLint';
 import { Button, Input, ConfirmDialog, Modal } from '../ui';
 import { WorldInfoBookEditor } from './WorldInfoBookEditor';
 import { ChatPickerModal, type ChatSelection } from './ChatPickerModal';
@@ -106,7 +107,24 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
     const profile = profileForProvider(activeProvider || '');
     const reports = books
       .filter((b) => activeBookIds.includes(b.id))
-      .map((b) => ({ book: b, audit: auditBookHealth(b, profile) }));
+      .map((b) => {
+        // Entry-quality lint, folded into the same pass so nothing recomputes
+        // per render. Errors = entries the scanner can never fire.
+        const lint = lintBook(b.entries, profile);
+        let lintErrors = 0;
+        let lintWarnings = 0;
+        for (const { findings } of lint) {
+          const worst = worstSeverity(findings);
+          if (worst === 'error') lintErrors++;
+          else if (worst === 'warning') lintWarnings++;
+        }
+        return {
+          book: b,
+          audit: auditBookHealth(b, profile),
+          lintErrors,
+          lintWarnings,
+        };
+      });
     const pinnedTotal = reports.reduce((s, r) => s + r.audit.pinnedTokens, 0);
     return { reports, pinnedTotal };
   }, [books, activeBookIds, activeProvider]);
@@ -346,7 +364,7 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
                 )}
               </div>
               <ul className="space-y-2">
-                {health.reports.map(({ book, audit }) => (
+                {health.reports.map(({ book, audit, lintErrors, lintWarnings }) => (
                   <li
                     key={book.id}
                     className="p-3 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]"
@@ -359,6 +377,18 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
                       constant · {audit.criticalCount} critical · ~
                       {audit.pinnedTokens} pinned tokens
                     </p>
+                    {lintErrors > 0 && (
+                      <p className="mt-1 text-xs text-red-400">
+                        {lintErrors} entr{lintErrors === 1 ? 'y' : 'ies'} can
+                        never fire — open the book to fix.
+                      </p>
+                    )}
+                    {lintWarnings > 0 && (
+                      <p className="mt-1 text-xs text-amber-400">
+                        {lintWarnings} entr{lintWarnings === 1 ? 'y' : 'ies'}{' '}
+                        need{lintWarnings === 1 ? 's' : ''} attention.
+                      </p>
+                    )}
                     {audit.constantShare > 0.2 && (
                       <p className="mt-1 text-xs text-amber-400">
                         Over 20% constant — consider demoting some.

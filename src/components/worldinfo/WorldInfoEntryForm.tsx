@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   useWorldInfoStore,
   WI_CATEGORIES,
@@ -7,6 +7,9 @@ import {
   type WorldInfoPosition,
   type SelectiveLogic,
 } from '../../stores/worldInfoStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { profileForProvider } from '../../utils/tokenizer';
+import { lintEntry, type LintSeverity } from '../../utils/lorebookLint';
 import { Button, Input, TextArea } from '../ui';
 
 interface WorldInfoEntryFormProps {
@@ -33,6 +36,18 @@ const LOGIC_OPTIONS: { value: SelectiveLogic; label: string; hint: string }[] = 
 // Stable fallback so the zustand selector never returns a fresh array
 // reference (fresh `[]` per call destabilizes useSyncExternalStore — React #185).
 const EMPTY_ENTRIES: WorldInfoEntry[] = [];
+
+// Lint findings are advisory — they never block saving, so severity only
+// drives colour. Errors mean the entry can never fire.
+const LINT_SEVERITY_STYLES: Record<LintSeverity, { text: string; dot: string; label: string }> = {
+  error: { text: 'text-red-400', dot: 'bg-red-400', label: 'Never fires' },
+  warning: { text: 'text-amber-400', dot: 'bg-amber-400', label: 'Check' },
+  info: {
+    text: 'text-[var(--color-text-secondary)]',
+    dot: 'bg-[var(--color-text-secondary)]',
+    label: 'Note',
+  },
+};
 
 export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFormProps) {
   const { createEntry, updateEntry } = useWorldInfoStore();
@@ -147,21 +162,18 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
     .map((k) => k.trim())
     .filter(Boolean);
 
-  const parsedKeysSecondary = keysSecondary
-    .split(',')
-    .map((k) => k.trim())
-    .filter(Boolean);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Stop propagation so the submit event doesn't bubble through the React portal
-    // tree to CharacterEdit's outer form, which would save + close the character editor.
-    e.stopPropagation();
-    if (!content.trim()) return;
-    if (!constant && parsedKeys.length === 0) return;
-
-    const data = {
-      keys: parsedKeys,
+  // Single source of truth for "what would be saved". The submit path writes
+  // this straight to the store, and the Entry check panel lints it, so the
+  // advice always describes the entry the author is about to save.
+  // Keyed on the raw comma strings, not the parsed arrays — the parsed arrays
+  // are fresh every render and would defeat the memo.
+  const draftEntry = useMemo<WorldInfoEntry>(
+    () => ({
+      id: entry?.id ?? 'draft',
+      keys: keys
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean),
       content: content.trim(),
       comment: comment.trim(),
       enabled,
@@ -170,7 +182,10 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       position,
       depth,
       order,
-      keysSecondary: parsedKeysSecondary,
+      keysSecondary: keysSecondary
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean),
       selective,
       selectiveLogic,
       scanDepth: useScanDepthOverride ? scanDepthOverride : null,
@@ -187,7 +202,60 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       critical,
       category,
       relatedIds,
-    };
+      // Timestamps are owned by the store; they exist here only so the draft
+      // is a complete WorldInfoEntry for the linter, and are stripped on save.
+      createdAt: entry?.createdAt ?? 0,
+      updatedAt: entry?.updatedAt ?? 0,
+    }),
+    [
+      entry?.id,
+      entry?.createdAt,
+      entry?.updatedAt,
+      keys,
+      content,
+      comment,
+      enabled,
+      constant,
+      caseSensitive,
+      position,
+      depth,
+      order,
+      keysSecondary,
+      selective,
+      selectiveLogic,
+      useScanDepthOverride,
+      scanDepthOverride,
+      probability,
+      useProbability,
+      group,
+      groupOverride,
+      groupWeight,
+      preventRecursion,
+      excludeRecursion,
+      sticky,
+      cooldown,
+      delay,
+      critical,
+      category,
+      relatedIds,
+    ]
+  );
+
+  const activeProvider = useSettingsStore((s) => s.activeProvider);
+  const findings = useMemo(
+    () => lintEntry(draftEntry, profileForProvider(activeProvider || '')),
+    [draftEntry, activeProvider]
+  );
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    // Stop propagation so the submit event doesn't bubble through the React portal
+    // tree to CharacterEdit's outer form, which would save + close the character editor.
+    e.stopPropagation();
+    if (!content.trim()) return;
+    if (!constant && parsedKeys.length === 0) return;
+
+    const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...data } = draftEntry;
 
     if (entry) {
       updateEntry(bookId, entry.id, data);
@@ -647,6 +715,38 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           <span className="font-medium">Cooldown:</span> turns to wait before re-triggering.{' '}
           <span className="font-medium">Delay:</span> turns to wait before first activation. 0 = off.
         </p>
+      </div>
+
+      {/* Entry check — advisory only, never blocks saving */}
+      <div className="space-y-2 pt-3 border-t border-[var(--color-border)]">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">
+          Entry check
+        </h3>
+        {findings.length === 0 ? (
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            No issues found.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {findings.map((f, i) => {
+              const style = LINT_SEVERITY_STYLES[f.severity];
+              return (
+                <li
+                  key={`${f.code}-${i}`}
+                  className={`flex items-start gap-2 text-xs ${style.text}`}
+                >
+                  <span
+                    className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${style.dot}`}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0">
+                    <span className="font-medium">{style.label}:</span> {f.message}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
 
       <div className="flex gap-3 pt-4 border-t border-[var(--color-border)]">
