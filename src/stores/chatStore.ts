@@ -877,7 +877,8 @@ async function resolveRagContext(
   return parts.join('\n\n---\n\n');
 }
 
-// In/out parameter for the world-info scan inside buildConversationContext:
+// In/out parameter for the world-info scan inside buildConversationContext
+// and buildGroupConversationContext:
 // the caller supplies turn/timer state for timed effects and receives back
 // the freshly activated entry ids (for saveWiTimers) and, in `fired`, the
 // entries whose content actually survived into the assembled prompt — after
@@ -1626,16 +1627,165 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   return { context, overBudget };
 }
 
-// Build conversation context for group chat AI
-function buildGroupConversationContext(
+// Build conversation context for group chat AI.
+// Exported for tests — the app itself only reaches this via generateGroupTurn.
+export function buildGroupConversationContext(
   messages: ChatMessage[],
   characters: CharacterInfo[],
   currentCharacter: CharacterInfo,
   scenarioOverride?: string,
   ragContext?: string,
-  cardMode: GroupCardMode = DEFAULT_GROUP_CARD_MODE
+  cardMode: GroupCardMode = DEFAULT_GROUP_CARD_MODE,
+  wiTimerOut?: WiScanOut
 ): { role: 'user' | 'assistant' | 'system'; content: string }[] {
   const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
+
+  const groupChatState = useChatStore.getState();
+  const groupChatFile = groupChatState.currentChatFile;
+  const persona = usePersonaStore
+    .getState()
+    .getPersonaForContext(currentCharacter.avatar);
+  const personaName = getUserDisplayName(currentCharacter.avatar);
+  const personaDescription = persona?.description || '';
+  const { activeModel, activeProvider } = useSettingsStore.getState();
+
+  // Phase 9.3 parity with solo chat: macros inside world-info content read
+  // from and write to the chat's variable map, persisted at the end of the
+  // build. {{char}} resolves to the speaker whose turn this is — the model is
+  // being asked to write exactly that character, so a speaker-relative macro
+  // in a lore entry means the same thing here as it does in a solo chat.
+  const variables: Record<string, string> = groupChatFile
+    ? { ...groupChatState.getChatVariables(groupChatFile) }
+    : {};
+  const wiMacroCtx = buildMacroContext(
+    currentCharacter,
+    personaName,
+    personaDescription,
+    messages,
+    activeModel,
+    variables
+  );
+  const subWi = (text: string) => (text ? processMacros(text, wiMacroCtx) : '');
+
+  // World Info. Book scoping is the union of every scope that can contribute
+  // to this room: the globally-active books, EVERY member's embedded + linked
+  // books (not just the current speaker's — lore about member B is precisely
+  // what member A needs in order to react to them coherently), the
+  // speaker-resolved persona's books, and the chat-linked books.
+  // getActiveBookIdsForCharacter already refuses a book owned by a different
+  // character, so the union can't pull a private book in on membership alone.
+  const wiState = useWorldInfoStore.getState();
+  const characterStoreState = useCharacterStore.getState();
+  const memberBookIds = characters.flatMap((c) =>
+    characterStoreState.getActiveBookIdsForCharacter(c.avatar || '')
+  );
+  const personaBookIds = persona?.linkedBookIds ?? [];
+  const chatBookIds = groupChatFile
+    ? wiState.chatLinkedBookIds[groupChatFile] ?? []
+    : [];
+  const scanBookIds = Array.from(
+    new Set([
+      ...wiState.activeBookIds,
+      ...memberBookIds,
+      ...personaBookIds,
+      ...chatBookIds,
+    ])
+  );
+  const tokenProfile = profileForProvider(activeProvider);
+  const wiScanReport: WorldInfoScanReport = {
+    dropped: [],
+    pinnedTokens: 0,
+    totalTokens: 0,
+    budget: 0,
+    pinnedOverBudget: false,
+  };
+  const matchedEntries = scanMessagesForEntries(
+    wiState.books,
+    scanBookIds,
+    messages,
+    {
+      scanDepth: wiState.scanDepth,
+      maxRecursionSteps: wiState.maxRecursionSteps,
+      tokenBudget: wiState.tokenBudget,
+      profile: tokenProfile,
+      currentTurn: wiTimerOut?.currentTurn,
+      wiTimers: wiTimerOut?.timers,
+    },
+    wiTimerOut?.activated,
+    wiScanReport
+  );
+  if (wiTimerOut) wiTimerOut.scanReport = wiScanReport;
+  // Same fail-loud contract as solo chat: never-evictable lore that alone
+  // busts the WI budget can't be fixed by trimming. Warn once per chat.
+  if (
+    wiScanReport.pinnedOverBudget &&
+    groupChatFile &&
+    !wiPinnedWarnedChats.has(groupChatFile)
+  ) {
+    wiPinnedWarnedChats.add(groupChatFile);
+    showToastGlobal(
+      `Constant + critical lore (~${wiScanReport.pinnedTokens} tokens) exceeds the World Info budget (${wiScanReport.budget}). Raise the budget or demote entries.`,
+      'warning'
+    );
+  }
+
+  const wiByPosition: Record<WorldInfoPosition, MatchedEntry[]> = {
+    before_char: [],
+    after_char: [],
+    before_an: [],
+    after_an: [],
+    at_depth: [],
+  };
+  for (const m of matchedEntries) {
+    wiByPosition[m.entry.position].push(m);
+  }
+
+  // Attribution. A group prompt has several characters in play at once, so an
+  // unlabelled block of lore out of member B's own book reads as though it
+  // described the speaker — the same identity-bleed the persona label below
+  // guards against, which is why solo chat needs neither. Only
+  // character-OWNED books (an embedded book, or one with an explicit owner)
+  // are attributed; books shared across the room stay unlabelled.
+  const memberNameByOwnedBookId = new Map<string, string>();
+  for (const book of wiState.books) {
+    if (!book.ownerCharacterAvatar) continue;
+    const owner = characters.find(
+      (c) => c.avatar === book.ownerCharacterAvatar
+    );
+    if (owner) memberNameByOwnedBookId.set(book.id, owner.name);
+  }
+  const personaBookIdSet = new Set(personaBookIds);
+  const wrapWiContent = (m: MatchedEntry): string => {
+    const content = subWi(m.entry.content);
+    if (!content.trim()) return '';
+    if (personaBookIdSet.has(m.bookId)) {
+      const subject = personaName || 'the user';
+      return `[Information about ${subject}, the user you're talking to]\n${content}`;
+    }
+    const ownerName = memberNameByOwnedBookId.get(m.bookId);
+    if (ownerName && ownerName !== currentCharacter.name) {
+      return `[Information about ${ownerName}, another character in this conversation]\n${content}`;
+    }
+    return content;
+  };
+  // Entries whose wrapped content was non-empty at render time — tracked in
+  // the single joinWi pass rather than by re-wrapping later, since
+  // wrapWiContent runs macros and {{setvar}} writes must not execute twice.
+  const wiRendered = new Set<MatchedEntry>();
+  const joinWi = (list: MatchedEntry[]): string =>
+    list
+      .map((m) => ({ m, c: wrapWiContent(m) }))
+      .filter(({ m, c }) => {
+        const ok = c.trim().length > 0;
+        if (ok) wiRendered.add(m);
+        return ok;
+      })
+      .map(({ c }) => c)
+      .join('\n\n');
+
+  const wiBeforeChar = joinWi(wiByPosition.before_char);
+  const wiAfterChar = joinWi(wiByPosition.after_char);
+  const wiBeforeAn = joinWi(wiByPosition.before_an);
 
   // Phase 5.3: build the "Characters in this conversation" block according to
   // the chosen mode. Swap keeps the flat one-liner-per-member view (only the
@@ -1684,11 +1834,6 @@ function buildGroupConversationContext(
   // by passing an empty charName + character fields.
   let scenarioText = '';
   if (scenarioOverride && scenarioOverride.trim()) {
-    const persona = usePersonaStore
-      .getState()
-      .getPersonaForContext(currentCharacter.avatar);
-    const personaName = getUserDisplayName(currentCharacter.avatar);
-    const { activeModel } = useSettingsStore.getState();
     scenarioText = processMacros(scenarioOverride, {
       charName: '',
       userName: personaName,
@@ -1713,12 +1858,18 @@ function buildGroupConversationContext(
   const mesExample =
     cardMode === 'join' ? '' : getCharacterField(currentCharacter, 'mes_example');
 
+  // World-info positional sections. A group prompt has no promptOrder
+  // section map to slot them into (it's one flat system message), so the
+  // four non-depth positions land at the nearest structural equivalent:
+  // before/after the character block, and — for the author's-note pair —
+  // the tail of the system message and a post-history message respectively,
+  // matching where solo chat's pre- and post-history stages put them.
   const systemPrompt = `This is a roleplay group chat. You are playing ${currentCharacter.name} — write ONLY ${currentCharacter.name}'s turn.
-
+${wiBeforeChar ? `\n${wiBeforeChar}\n` : ''}
 Characters in this conversation:
 ${cardBlock}
-
-${scenarioText ? `Current scenario: ${scenarioText}\n` : ''}${mesExample ? `Example dialogue for ${currentCharacter.name}:\n${mesExample}\n\n` : ''}FORMATTING RULES (follow exactly):
+${wiAfterChar ? `\n${wiAfterChar}\n` : ''}
+${scenarioText ? `Current scenario: ${scenarioText}\n` : ''}${mesExample ? `Example dialogue for ${currentCharacter.name}:\n${mesExample}\n\n` : ''}${wiBeforeAn ? `${wiBeforeAn}\n\n` : ''}FORMATTING RULES (follow exactly):
 - Wrap ALL actions, movements, and narration in *single asterisks*: *He glances toward the door*
 - Write spoken dialogue as plain text or in "quotes": "Hello there!"
 - Alternate freely between *action* and "dialogue" throughout your response
@@ -1740,10 +1891,18 @@ CONTENT RULES:
   context.push({ role: 'system', content: finalSystemPrompt });
 
   // Phase 8.1: Author's Note for group chats
-  const { currentChatFile: groupChatFile } = useChatStore.getState();
   const groupAuthorNote = groupChatFile
-    ? useChatStore.getState().getAuthorNote(groupChatFile)
+    ? groupChatState.getAuthorNote(groupChatFile)
     : null;
+
+  // WI at-depth entries, grouped by depth for interleaved injection —
+  // same shape as solo chat's wiAtDepthByDepth.
+  const wiAtDepthByDepth: Record<number, MatchedEntry[]> = {};
+  for (const m of wiByPosition.at_depth) {
+    const d = Math.max(0, Math.floor(m.entry.depth));
+    if (!wiAtDepthByDepth[d]) wiAtDepthByDepth[d] = [];
+    wiAtDepthByDepth[d].push(m);
+  }
 
   const recentMessages = messages.slice(-30).filter((m) => !m.isSystem);
   for (let i = 0; i < recentMessages.length; i++) {
@@ -1758,6 +1917,13 @@ CONTENT RULES:
       });
     }
 
+    // WI at-depth entries: inject as system messages at the matching depth
+    const wiHere = wiAtDepthByDepth[depthFromEnd];
+    if (wiHere && wiHere.length > 0) {
+      const content = joinWi(wiHere);
+      if (content) context.push({ role: 'system', content });
+    }
+
     const contentWithName = msg.isUser
       ? msg.content
       : `[${msg.name}]: ${msg.content}`;
@@ -1767,6 +1933,14 @@ CONTENT RULES:
     });
   }
 
+  // Depth 0 — the trailing slot, after the newest message and closest to the
+  // generation point. The loop above only reaches depthFromEnd >= 1.
+  const wiTrailing = wiAtDepthByDepth[0];
+  if (wiTrailing && wiTrailing.length > 0) {
+    const content = joinWi(wiTrailing);
+    if (content) context.push({ role: 'system', content });
+  }
+
   // If depth exceeds history, prepend
   if (groupAuthorNote && groupAuthorNote.depth > recentMessages.length) {
     // Insert after the system prompt (index 1)
@@ -1774,6 +1948,35 @@ CONTENT RULES:
       role: groupAuthorNote.role,
       content: groupAuthorNote.content,
     });
+  }
+
+  // WI at-depth overflow: entries whose depth exceeds the history length land
+  // right after the system prompt, same as the author's note above.
+  for (const depthKey of Object.keys(wiAtDepthByDepth)) {
+    const d = parseInt(depthKey, 10);
+    if (d > recentMessages.length) {
+      const content = joinWi(wiAtDepthByDepth[d]);
+      if (content) context.splice(1, 0, { role: 'system', content });
+    }
+  }
+
+  // Post-history slot (solo chat's wi_after_an stage).
+  const wiAfterAn = joinWi(wiByPosition.after_an);
+  if (wiAfterAn) context.push({ role: 'system', content: wiAfterAn });
+
+  // Phase 9.3: persist any macro variable writes back to the chat's store.
+  if (groupChatFile) {
+    groupChatState.setChatVariables(groupChatFile, variables);
+  }
+
+  // Report the entries that actually reached the prompt. Unlike solo chat
+  // there are only two filters to survive — a group prompt has no
+  // promptOrder section toggles and no token-aware history trim — so every
+  // entry that rendered to non-empty content was injected somewhere above,
+  // and nothing at-depth can be trimmed away after the fact.
+  if (wiTimerOut) {
+    wiTimerOut.fired = matchedEntries.filter((m) => wiRendered.has(m));
+    wiTimerOut.trimmedAtDepth = [];
   }
 
   return context;
@@ -1811,13 +2014,27 @@ async function generateGroupTurn(
   const groupCardMode =
     chatState.groupChats.find((g) => g.fileName === chatState.currentChatFile)
       ?.cardMode ?? DEFAULT_GROUP_CARD_MODE;
+  // World-info timed effects (sticky / cooldown / delay). Scoped to this one
+  // speaker's turn: a group round runs generateGroupTurn once per member, and
+  // each of those is its own generation as far as WI is concerned.
+  const groupChatFile = chatState.currentChatFile;
+  const currentTurn = updatedMessages.filter(
+    (m) => !m.isUser && !m.isSystem
+  ).length;
+  const wiTimerActivated = new Set<string>();
+  const wiOut: WiScanOut = {
+    currentTurn,
+    timers: loadWiTimers(groupChatFile || ''),
+    activated: wiTimerActivated,
+  };
   const context = buildGroupConversationContext(
     updatedMessages,
     characters,
     character,
     scenarioOverride,
     ragCtx ?? undefined,
-    groupCardMode
+    groupCardMode,
+    wiOut
   );
 
   const finalContext = await runGenerateInterceptors(
@@ -1836,6 +2053,9 @@ async function generateGroupTurn(
   );
 
   if (!stream) return false;
+  // Record fired WI only once the request actually dispatched — a thrown send
+  // or null stream is not a generation (mirrors saveWiTimers gating).
+  captureWiFired(groupChatFile, wiOut, currentTurn);
 
   const aiMessageId = generateId();
   set((state) => ({
@@ -1900,6 +2120,10 @@ async function generateGroupTurn(
         : msg
     ),
   }));
+
+  // Advance the timed-effect clock only for a turn that actually produced
+  // text — same gating as the solo paths.
+  saveWiTimers(groupChatFile || '', wiTimerActivated, currentTurn);
 
   return get().isSending;
 }
