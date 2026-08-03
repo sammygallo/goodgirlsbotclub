@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   lintEntry,
   lintBook,
+  lintDraftInBook,
   worstSeverity,
   BODY_TOKEN_TARGET,
 } from './lorebookLint';
@@ -220,6 +221,21 @@ describe('lintBook', () => {
     );
   });
 
+  it('agrees in number for one dangling link and for several', () => {
+    const one = lintBook([mkEntry({ relatedIds: ['ghost'] })])[0].findings.find(
+      (f) => f.code === 'dangling-related'
+    );
+    expect(one?.message).toBe(
+      '1 related-entry link points at an entry that no longer exists.'
+    );
+    const many = lintBook([
+      mkEntry({ relatedIds: ['ghost', 'wraith'] }),
+    ])[0].findings.find((f) => f.code === 'dangling-related');
+    expect(many?.message).toBe(
+      '2 related-entry links point at entries that no longer exist.'
+    );
+  });
+
   it('flags related links pointing at disabled or empty entries', () => {
     const disabled = mkEntry({ keys: ['ashvale'], enabled: false, comment: 'Ashvale' });
     const source = mkEntry({ relatedIds: [disabled.id] });
@@ -239,6 +255,63 @@ describe('lintBook', () => {
     const aCodes = results.find((r) => r.entryId === a.id)!.findings.map((f) => f.code);
     expect(aCodes).toContain('stopword-key');
     expect(aCodes).toContain('duplicate-entry');
+  });
+});
+
+describe('lintDraftInBook', () => {
+  it('reports the cross-entry rules lintEntry cannot see', () => {
+    // The editor's panel used to call lintEntry, which returns nothing here —
+    // while the list badge and health panel (both lintBook) flagged the entry.
+    const draft = mkEntry({ relatedIds: ['ghost'] });
+    expect(lintEntry(draft)).toEqual([]);
+    expect(lintDraftInBook(draft, [draft]).map((f) => f.code)).toContain(
+      'dangling-related'
+    );
+  });
+
+  it('does not flag an unedited entry as a duplicate of its saved self', () => {
+    const saved = mkEntry({ content: 'The keep burned down.' });
+    // Same id, so the draft replaces the stored copy rather than joining it.
+    expect(lintDraftInBook({ ...saved }, [saved])).toEqual([]);
+  });
+
+  it('flags a draft that duplicates a sibling', () => {
+    const sibling = mkEntry({ content: 'The keep burned down.' });
+    const draft = mkEntry({
+      keys: ['ashvale'],
+      content: '  the keep BURNED down.  ',
+    });
+    expect(lintDraftInBook(draft, [sibling]).map((f) => f.code)).toContain(
+      'duplicate-entry'
+    );
+  });
+
+  it('treats a brand-new draft as a sibling of every saved entry', () => {
+    const sibling = mkEntry({ content: 'The keep burned down.' });
+    // id 'draft' matches nothing in the book — the form's new-entry case.
+    const draft = mkEntry({ id: 'draft', content: 'The keep burned down.' });
+    expect(lintDraftInBook(draft, [sibling]).map((f) => f.code)).toContain(
+      'duplicate-entry'
+    );
+  });
+
+  it('resolves related links against the saved siblings', () => {
+    const disabled = mkEntry({
+      keys: ['ashvale'],
+      enabled: false,
+      comment: 'Ashvale',
+    });
+    const draft = mkEntry({ relatedIds: [disabled.id] });
+    const codes = lintDraftInBook(draft, [disabled]).map((f) => f.code);
+    expect(codes).toContain('inactive-related');
+    expect(codes).not.toContain('dangling-related');
+  });
+
+  it('still reports the per-entry findings', () => {
+    const draft = mkEntry({ keys: [] });
+    expect(lintDraftInBook(draft, [draft]).map((f) => f.code)).toContain(
+      'no-trigger'
+    );
   });
 });
 

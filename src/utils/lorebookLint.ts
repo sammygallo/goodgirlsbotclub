@@ -332,9 +332,10 @@ export function lintBook(
         code: 'dangling-related',
         severity: 'warning',
         field: 'related',
-        message: `${missing.length} related-entry link${
-          missing.length === 1 ? '' : 's'
-        } point at entries that no longer exist.`,
+        message:
+          missing.length === 1
+            ? '1 related-entry link points at an entry that no longer exists.'
+            : `${missing.length} related-entry links point at entries that no longer exist.`,
       });
     }
     const inactive = (entry.relatedIds ?? []).filter(
@@ -355,6 +356,31 @@ export function lintBook(
   return entries
     .map((e) => ({ entryId: e.id, findings: byEntry.get(e.id) ?? [] }))
     .filter((r) => r.findings.length > 0);
+}
+
+/**
+ * Check one in-progress draft against the book it belongs to.
+ *
+ * The entry editor needs this rather than `lintEntry`: three rules
+ * (`duplicate-entry`, `dangling-related`, `inactive-related`) live only in
+ * `lintBook` because they need sibling entries in view. Linting the draft
+ * alone left the editor reporting "No issues found" for entries the list had
+ * already badged from `lintBook` — the author was told to fix something and
+ * then shown a clean panel.
+ *
+ * The draft REPLACES its saved counterpart (matched by id) rather than
+ * joining it, so an unedited entry is not flagged as a near-duplicate of
+ * itself. A new draft carries an id no sibling shares, so nothing is
+ * replaced and every saved entry counts as a sibling.
+ */
+export function lintDraftInBook(
+  draft: WorldInfoEntry,
+  bookEntries: WorldInfoEntry[],
+  profile: TokenizerProfile = 'generic'
+): LintFinding[] {
+  const siblings = bookEntries.filter((e) => e.id !== draft.id);
+  const results = lintBook([...siblings, draft], profile);
+  return results.find((r) => r.entryId === draft.id)?.findings ?? [];
 }
 
 /** Highest severity present, or null when the entry is clean. */

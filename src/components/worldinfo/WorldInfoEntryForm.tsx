@@ -9,7 +9,7 @@ import {
 } from '../../stores/worldInfoStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { profileForProvider } from '../../utils/tokenizer';
-import { lintEntry, type LintSeverity } from '../../utils/lorebookLint';
+import { lintDraftInBook, type LintSeverity } from '../../utils/lorebookLint';
 import { Button, Input, TextArea } from '../ui';
 
 interface WorldInfoEntryFormProps {
@@ -242,9 +242,19 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
   );
 
   const activeProvider = useSettingsStore((s) => s.activeProvider);
+  // Linted against the whole book, not in isolation — the cross-entry rules
+  // (near-duplicate bodies, related links that no longer resolve) are exactly
+  // the ones the list badges and the health panel report, and a panel that
+  // said "No issues found" for a row badged CHECK sent authors looking for a
+  // problem the editor refused to name.
   const findings = useMemo(
-    () => lintEntry(draftEntry, profileForProvider(activeProvider || '')),
-    [draftEntry, activeProvider]
+    () =>
+      lintDraftInBook(
+        draftEntry,
+        bookEntries,
+        profileForProvider(activeProvider || '')
+      ),
+    [draftEntry, bookEntries, activeProvider]
   );
 
   const handleSubmit = (e: React.FormEvent) => {
