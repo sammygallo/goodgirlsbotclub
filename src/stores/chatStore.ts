@@ -24,6 +24,7 @@ import {
   saveWiTimers,
   type WorldInfoPosition,
   type MatchedEntry,
+  type WorldInfoScanReport,
 } from './worldInfoStore';
 import { parseEmotion, stripEmotionTag, type Emotion } from '../utils/emotions';
 import { dataUrlToPart, supportsVision } from '../utils/images';
@@ -888,7 +889,15 @@ interface WiScanOut {
   timers: Record<string, number>;
   activated: Set<string>;
   fired?: MatchedEntry[];
+  /** What the WI token budget evicted during the scan (fail-loud audit). */
+  scanReport?: WorldInfoScanReport;
+  /** At-depth entries that survived the scan but were cut by history trim. */
+  trimmedAtDepth?: MatchedEntry[];
 }
+
+// Chats already warned about pinned lore exceeding the WI budget this app
+// session — the toast fires once per chat, not on every generation.
+const wiPinnedWarnedChats = new Set<string>();
 
 // Build conversation context for AI
 function buildConversationContext(
@@ -962,6 +971,13 @@ function buildConversationContext(
     ])
   );
   const tokenProfile = profileForProvider(activeProvider);
+  const wiScanReport: WorldInfoScanReport = {
+    dropped: [],
+    pinnedTokens: 0,
+    totalTokens: 0,
+    budget: 0,
+    pinnedOverBudget: false,
+  };
   const matchedEntries = scanMessagesForEntries(
     wiState.books,
     scanBookIds,
@@ -974,8 +990,25 @@ function buildConversationContext(
       currentTurn: wiTimerOut?.currentTurn,
       wiTimers: wiTimerOut?.timers,
     },
-    wiTimerOut?.activated
+    wiTimerOut?.activated,
+    wiScanReport
   );
+  if (wiTimerOut) wiTimerOut.scanReport = wiScanReport;
+  // Fail-loud instead of silently degrading: when the never-evictable lore
+  // (constant + critical) alone exceeds the WI budget, trimming can't help —
+  // the fix is architectural (raise the budget, demote or split entries).
+  // Warn once per chat per app session.
+  if (
+    wiScanReport.pinnedOverBudget &&
+    ctxChatFile &&
+    !wiPinnedWarnedChats.has(ctxChatFile)
+  ) {
+    wiPinnedWarnedChats.add(ctxChatFile);
+    showToastGlobal(
+      `Constant + critical lore (~${wiScanReport.pinnedTokens} tokens) exceeds the World Info budget (${wiScanReport.budget}). Raise the budget or demote entries.`,
+      'warning'
+    );
+  }
   // NOTE: wiTimerOut.fired is assigned at the END of this function, from the
   // entries that actually survive into the prompt — the raw scan result here
   // still faces section-enable filtering, macro-empty drops, and token-aware
@@ -1298,6 +1331,14 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     role: 'user' | 'assistant' | 'system';
     content: string;
   }[] = [];
+  // The newest REAL chat turn (not an injected note). Pinned through the
+  // token-aware trim below: role alone can't distinguish a real turn from a
+  // user/assistant-role insertion pushed after it, and the request must
+  // never ship without the user's latest message.
+  let newestTurnMsg: {
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+  } | null = null;
   // Maps each WI at-depth insertion (by message object identity, which
   // trimHistoryToBudget preserves) to the entries it carries, so the
   // fired-state telemetry can tell which at-depth entries survived trimming.
@@ -1330,12 +1371,17 @@ Choose the emotion that best matches how ${character.name} would feel based on t
         content: depthPromptContent,
       });
     }
-    // Phase 8.1: Author's Note injection at depth
+    // Phase 8.1: Author's Note injection at depth. Guard the post-macro
+    // result: a macro-only note (e.g. {{setvar::…}}) renders to '', and an
+    // empty content block makes providers like Claude 400 (see below).
     if (authorNote && depthFromEnd === authorNote.depth) {
-      historyWithInsertions.push({
-        role: authorNote.role,
-        content: sub(authorNote.content),
-      });
+      const anContent = sub(authorNote.content);
+      if (anContent.trim()) {
+        historyWithInsertions.push({
+          role: authorNote.role,
+          content: anContent,
+        });
+      }
     }
     if (personaAtDepth && depthFromEnd === personaAtDepth.depth) {
       historyWithInsertions.push({
@@ -1372,10 +1418,59 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     const subbed = sub(msg.content);
     const hasImages = Array.isArray(msg.images) && msg.images.length > 0;
     if (subbed.trim() !== '' || hasImages) {
-      historyWithInsertions.push({
-        role: msg.isUser ? 'user' : 'assistant',
+      const turn = {
+        role: msg.isUser ? ('user' as const) : ('assistant' as const),
         content: subbed,
+      };
+      historyWithInsertions.push(turn);
+      newestTurnMsg = turn;
+    }
+  }
+
+  // Depth 0 — the trailing slot, AFTER the newest message and closest to the
+  // generation point. The loop above only reaches depthFromEnd >= 1, so
+  // depth-0 insertions were previously dropped on the floor entirely.
+  // Same in-loop ordering: depth prompt, author's note, persona, WI, ext.
+  // Everything here is trim-guarded: an empty content block 400s providers.
+  if (depthPrompt && depthPrompt.depth === 0 && depthPromptContent.trim()) {
+    historyWithInsertions.push({
+      role: depthPrompt.role,
+      content: depthPromptContent,
+    });
+  }
+  if (authorNote && authorNote.depth === 0) {
+    const anContent = sub(authorNote.content);
+    if (anContent.trim()) {
+      historyWithInsertions.push({
+        role: authorNote.role,
+        content: anContent,
       });
+    }
+  }
+  if (personaAtDepth && personaAtDepth.depth === 0 && personaAtDepth.content.trim()) {
+    historyWithInsertions.push({
+      role: personaAtDepth.role,
+      content: personaAtDepth.content,
+    });
+  }
+  const wiTrailing = wiAtDepthByDepth[0];
+  if (wiTrailing && wiTrailing.length > 0) {
+    const content = joinWi(wiTrailing);
+    if (content) {
+      const insertion = { role: 'system' as const, content };
+      historyWithInsertions.push(insertion);
+      wiAtDepthByMessage.set(
+        insertion,
+        wiTrailing.filter((m) => wiRendered.has(m))
+      );
+    }
+  }
+  const extTrailing = extAtDepthByDepth[0];
+  if (extTrailing && extTrailing.length > 0) {
+    for (const c of extTrailing) {
+      if (c.content.trim()) {
+        historyWithInsertions.push({ role: c.role, content: c.content });
+      }
     }
   }
 
@@ -1391,10 +1486,13 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     });
   }
   if (authorNote && authorNote.depth > recentMessages.length) {
-    historyWithInsertions.unshift({
-      role: authorNote.role,
-      content: sub(authorNote.content),
-    });
+    const anContent = sub(authorNote.content);
+    if (anContent.trim()) {
+      historyWithInsertions.unshift({
+        role: authorNote.role,
+        content: anContent,
+      });
+    }
   }
   if (personaAtDepth && personaAtDepth.depth > recentMessages.length) {
     historyWithInsertions.unshift({
@@ -1434,12 +1532,31 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   let keptHistory = historyWithInsertions;
   if (ctxConfig.tokenAware) {
     const systemPrompts = context.slice(); // system prompt we already pushed
+    // Two kinds of messages must survive the history trim: critical
+    // at-depth lore (the WI budget already refused to evict it — without
+    // this, "never evicted" would only be true for the scan pass) and the
+    // newest real chat turn (trailing depth-0 insertions sit after it, so
+    // the trimmer's own newest-first fallback can't identify it by
+    // position or role).
+    const pinnedMessages = new Set<{
+      role: 'user' | 'assistant' | 'system';
+      content: string;
+    }>();
+    if (newestTurnMsg) pinnedMessages.add(newestTurnMsg);
+    for (const [msg, entries] of wiAtDepthByMessage) {
+      if (entries.some((m) => m.entry.critical)) {
+        pinnedMessages.add(
+          msg as { role: 'user' | 'assistant' | 'system'; content: string }
+        );
+      }
+    }
     const trimmed = trimHistoryToBudget(
       systemPrompts,
       historyWithInsertions,
       ctxConfig.responseReserve,
       ctxConfig.maxTokens,
-      tokenProfile
+      tokenProfile,
+      pinnedMessages
     );
     context.push(...trimmed.kept);
     genState.setLastTokenEstimate(trimmed.usedTokens);
@@ -1499,6 +1616,14 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       if (atDepth) injected.push(...atDepth);
     }
     wiTimerOut.fired = injected;
+    // At-depth entries the history trim cut after the scan passed them —
+    // never critical ones (those are pinned above), but part of the audit.
+    const keptSet = new Set<object>(keptHistory);
+    const trimmedAtDepth: MatchedEntry[] = [];
+    for (const [msg, atDepth] of wiAtDepthByMessage) {
+      if (!keptSet.has(msg)) trimmedAtDepth.push(...atDepth);
+    }
+    wiTimerOut.trimmedAtDepth = trimmedAtDepth;
   }
 
   return { context, overBudget };

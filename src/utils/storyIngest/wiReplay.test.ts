@@ -29,6 +29,7 @@ function entry(over: Partial<ReplayEntry> = {}): ReplayEntry {
     enabled: true,
     constant: false,
     caseSensitive: false,
+    relatedIds: [],
     ...over,
   };
 }
@@ -101,6 +102,47 @@ describe('replayWorldInfo', () => {
       [entry()]
     );
     expect(out.fired['b1:e1']).toBeUndefined();
+  });
+});
+
+describe('relatedIds co-firing', () => {
+  it('co-fires a related entry whose own keys never match', () => {
+    const out = replayWorldInfo(TRANSCRIPT, [
+      entry({ id: 'a', relatedIds: ['b'] }),
+      entry({ id: 'b', keys: ['nothing-matches'] }),
+    ]);
+    expect(out.fired['b1:a']).toBeTruthy();
+    expect(out.fired['b1:b']).toBeTruthy();
+    expect(out.neverFired).toEqual([]);
+  });
+
+  it('follows transitive chains: A → B → C fires all three', () => {
+    const out = replayWorldInfo(TRANSCRIPT, [
+      entry({ id: 'a', relatedIds: ['b'] }),
+      entry({ id: 'b', keys: ['nothing-matches'], relatedIds: ['c'] }),
+      entry({ id: 'c', keys: ['nothing-matches'] }),
+    ]);
+    expect(out.fired['b1:a']).toBeTruthy();
+    expect(out.fired['b1:b']).toBeTruthy();
+    expect(out.fired['b1:c']).toBeTruthy();
+    expect(out.neverFired).toEqual([]);
+  });
+
+  it('terminates on cycles: A → B → A fires both', () => {
+    const out = replayWorldInfo(TRANSCRIPT, [
+      entry({ id: 'a', relatedIds: ['b'] }),
+      entry({ id: 'b', keys: ['nothing-matches'], relatedIds: ['a'] }),
+    ]);
+    expect(out.fired['b1:a']).toBeTruthy();
+    expect(out.fired['b1:b']).toBeTruthy();
+  });
+
+  it('ignores dangling relatedIds', () => {
+    const out = replayWorldInfo(TRANSCRIPT, [
+      entry({ id: 'a', relatedIds: ['ghost'] }),
+    ]);
+    expect(out.fired['b1:a']).toBeTruthy();
+    expect(Object.keys(out.fired)).toEqual(['b1:a']);
   });
 });
 

@@ -381,6 +381,9 @@ New canonical facts (JSON array):`;
               keys: fact.keys,
               content: fact.content,
               comment: 'Auto-extracted',
+              // Machine-extracted recent-window facts are continuity
+              // notes by definition (see WI_CATEGORIES).
+              category: 'continuity_note',
             });
             added++;
           }

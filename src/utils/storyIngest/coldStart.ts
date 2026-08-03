@@ -296,8 +296,12 @@ export async function runColdStart(
   // The section has a hard 256KB server cap and a rejected write is a
   // 413 that kills the whole run AFTER the model calls are paid for, so
   // the budget is enforced here rather than discovered there. Constant
-  // entries go first: they were in every prompt, so they are the ones
-  // the story was demonstrably played under.
+  // entries go first: they were in every prompt, so the story was
+  // demonstrably played under them. Critical entries are deliberately
+  // NOT prioritized — criticality is authorial intent, not evidence: a
+  // keyword-gated critical entry whose keys never matched was never in
+  // a single prompt, and the WI replay pass is the evidence gate that
+  // decides what actually fired.
   const candidates = sources.lorebooks.flatMap((book) =>
     book.entries
       // A switched-off entry never reached a prompt — ingesting it as
@@ -306,7 +310,9 @@ export async function runColdStart(
       .filter((entry) => entry.enabled !== false && entry.content.trim())
       .map((entry) => ({ book, entry }))
   );
-  candidates.sort((a, b) => Number(b.entry.constant) - Number(a.entry.constant));
+  candidates.sort(
+    (a, b) => Number(b.entry.constant) - Number(a.entry.constant)
+  );
 
   let ruleBytes = 0;
   let rulesDropped = 0;
@@ -325,12 +331,16 @@ export async function runColdStart(
       // the entry, orphaning any fact that cited the rule.
       id: mintId(`rule:${book.bookId}:${entry.id}`),
       text,
+      // WorldRule.category is a closed enum (magic/tech/social/physics/
+      // other) that the WI authoring taxonomy (character_fact,
+      // world_rule, …) does not map onto, so lorebook-derived rules
+      // stay 'other'.
       category: 'other',
       source: lorebookRef(book.bookId, entry.id, entry.content),
       // Constant entries are always in the prompt, so the chat has
-      // demonstrably been played under them. Selective entries may
-      // never have fired — the WI replay pass (1.5) upgrades those it
-      // can show did.
+      // demonstrably been played under them. Everything selective —
+      // critical included — starts 'inferred': the WI replay pass (1.5)
+      // is the evidence gate that upgrades entries it can show fired.
       confidence: entry.constant ? 'explicit' : 'inferred',
       established_in: null,
     });

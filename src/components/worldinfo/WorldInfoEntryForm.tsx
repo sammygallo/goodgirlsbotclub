@@ -1,10 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   useWorldInfoStore,
+  WI_CATEGORIES,
+  humanizeCategory,
   type WorldInfoEntry,
   type WorldInfoPosition,
   type SelectiveLogic,
 } from '../../stores/worldInfoStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { profileForProvider } from '../../utils/tokenizer';
+import { lintDraftInBook, type LintSeverity } from '../../utils/lorebookLint';
 import { Button, Input, TextArea } from '../ui';
 
 interface WorldInfoEntryFormProps {
@@ -28,8 +33,27 @@ const LOGIC_OPTIONS: { value: SelectiveLogic; label: string; hint: string }[] = 
   { value: 'NOT_ALL', label: 'NOT ALL', hint: 'Primary matches AND at least one secondary is missing' },
 ];
 
+// Stable fallback so the zustand selector never returns a fresh array
+// reference (fresh `[]` per call destabilizes useSyncExternalStore — React #185).
+const EMPTY_ENTRIES: WorldInfoEntry[] = [];
+
+// Lint findings are advisory — they never block saving, so severity only
+// drives colour. Errors mean the entry can never fire.
+const LINT_SEVERITY_STYLES: Record<LintSeverity, { text: string; dot: string; label: string }> = {
+  error: { text: 'text-red-400', dot: 'bg-red-400', label: 'Never fires' },
+  warning: { text: 'text-amber-400', dot: 'bg-amber-400', label: 'Check' },
+  info: {
+    text: 'text-[var(--color-text-secondary)]',
+    dot: 'bg-[var(--color-text-secondary)]',
+    label: 'Note',
+  },
+};
+
 export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFormProps) {
   const { createEntry, updateEntry } = useWorldInfoStore();
+  const bookEntries = useWorldInfoStore(
+    (s) => s.books.find((b) => b.id === bookId)?.entries ?? EMPTY_ENTRIES
+  );
 
   const [keys, setKeys] = useState('');
   const [content, setContent] = useState('');
@@ -68,6 +92,11 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
   const [cooldown, setCooldown] = useState(0);
   const [delay, setDelay] = useState(0);
 
+  // Continuity & linking
+  const [critical, setCritical] = useState(false);
+  const [category, setCategory] = useState('');
+  const [relatedIds, setRelatedIds] = useState<string[]>([]);
+
   useEffect(() => {
     if (entry) {
       setKeys(entry.keys.join(', '));
@@ -94,6 +123,9 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       setSticky(entry.sticky);
       setCooldown(entry.cooldown);
       setDelay(entry.delay);
+      setCritical(entry.critical);
+      setCategory(entry.category);
+      setRelatedIds(entry.relatedIds);
     } else {
       setKeys('');
       setContent('');
@@ -119,6 +151,9 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       setSticky(0);
       setCooldown(0);
       setDelay(0);
+      setCritical(false);
+      setCategory('');
+      setRelatedIds([]);
     }
   }, [entry]);
 
@@ -127,21 +162,18 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
     .map((k) => k.trim())
     .filter(Boolean);
 
-  const parsedKeysSecondary = keysSecondary
-    .split(',')
-    .map((k) => k.trim())
-    .filter(Boolean);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Stop propagation so the submit event doesn't bubble through the React portal
-    // tree to CharacterEdit's outer form, which would save + close the character editor.
-    e.stopPropagation();
-    if (!content.trim()) return;
-    if (!constant && parsedKeys.length === 0) return;
-
-    const data = {
-      keys: parsedKeys,
+  // Single source of truth for "what would be saved". The submit path writes
+  // this straight to the store, and the Entry check panel lints it, so the
+  // advice always describes the entry the author is about to save.
+  // Keyed on the raw comma strings, not the parsed arrays — the parsed arrays
+  // are fresh every render and would defeat the memo.
+  const draftEntry = useMemo<WorldInfoEntry>(
+    () => ({
+      id: entry?.id ?? 'draft',
+      keys: keys
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean),
       content: content.trim(),
       comment: comment.trim(),
       enabled,
@@ -150,7 +182,10 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       position,
       depth,
       order,
-      keysSecondary: parsedKeysSecondary,
+      keysSecondary: keysSecondary
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean),
       selective,
       selectiveLogic,
       scanDepth: useScanDepthOverride ? scanDepthOverride : null,
@@ -164,7 +199,73 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       sticky,
       cooldown,
       delay,
-    };
+      critical,
+      category,
+      relatedIds,
+      // Timestamps are owned by the store; they exist here only so the draft
+      // is a complete WorldInfoEntry for the linter, and are stripped on save.
+      createdAt: entry?.createdAt ?? 0,
+      updatedAt: entry?.updatedAt ?? 0,
+    }),
+    [
+      entry?.id,
+      entry?.createdAt,
+      entry?.updatedAt,
+      keys,
+      content,
+      comment,
+      enabled,
+      constant,
+      caseSensitive,
+      position,
+      depth,
+      order,
+      keysSecondary,
+      selective,
+      selectiveLogic,
+      useScanDepthOverride,
+      scanDepthOverride,
+      probability,
+      useProbability,
+      group,
+      groupOverride,
+      groupWeight,
+      preventRecursion,
+      excludeRecursion,
+      sticky,
+      cooldown,
+      delay,
+      critical,
+      category,
+      relatedIds,
+    ]
+  );
+
+  const activeProvider = useSettingsStore((s) => s.activeProvider);
+  // Linted against the whole book, not in isolation — the cross-entry rules
+  // (near-duplicate bodies, related links that no longer resolve) are exactly
+  // the ones the list badges and the health panel report, and a panel that
+  // said "No issues found" for a row badged CHECK sent authors looking for a
+  // problem the editor refused to name.
+  const findings = useMemo(
+    () =>
+      lintDraftInBook(
+        draftEntry,
+        bookEntries,
+        profileForProvider(activeProvider || '')
+      ),
+    [draftEntry, bookEntries, activeProvider]
+  );
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    // Stop propagation so the submit event doesn't bubble through the React portal
+    // tree to CharacterEdit's outer form, which would save + close the character editor.
+    e.stopPropagation();
+    if (!content.trim()) return;
+    if (!constant && parsedKeys.length === 0) return;
+
+    const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...data } = draftEntry;
 
     if (entry) {
       updateEntry(bookId, entry.id, data);
@@ -175,6 +276,25 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
   };
 
   const canSubmit = content.trim().length > 0 && (constant || parsedKeys.length > 0);
+
+  // Category stays free-form so imports never lose data — surface any
+  // nonstandard value (from the saved entry or current state) as an option.
+  const extraCategories = Array.from(
+    new Set(
+      [entry?.category ?? '', category].filter(
+        (c) => c && !(WI_CATEGORIES as readonly string[]).includes(c)
+      )
+    )
+  );
+
+  // Candidates for explicit related-entry links: every OTHER entry in this book.
+  const otherEntries = bookEntries.filter((e) => e.id !== entry?.id);
+
+  const toggleRelated = (id: string) => {
+    setRelatedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -207,6 +327,32 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
         value={comment}
         onChange={(e) => setComment(e.target.value)}
       />
+
+      <div>
+        <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5">
+          Category
+        </label>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+        >
+          <option value="">No category</option>
+          {WI_CATEGORIES.map((cat) => (
+            <option key={cat} value={cat}>
+              {humanizeCategory(cat)}
+            </option>
+          ))}
+          {extraCategories.map((cat) => (
+            <option key={cat} value={cat}>
+              {humanizeCategory(cat)}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+          Authoring tag for organizing lore. Does not affect matching.
+        </p>
+      </div>
 
       <div>
         <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5">
@@ -258,6 +404,7 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           />
           <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
             Lower order is injected first and survives token-budget trimming.
+            Constant and Critical entries are never trimmed at all.
           </p>
         </div>
       </div>
@@ -281,6 +428,19 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           />
           Constant (always inject, ignore keywords)
         </label>
+        <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
+          <input
+            type="checkbox"
+            checked={critical}
+            onChange={(e) => setCritical(e.target.checked)}
+            className="w-4 h-4 accent-[var(--color-primary)]"
+          />
+          Critical
+        </label>
+        <p className="-mt-1 pl-6 text-xs text-[var(--color-text-secondary)]">
+          Hard continuity fact — never evicted by the token budget, and only
+          real chat text can trigger it (other entries&apos; text can&apos;t).
+        </p>
         <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
           <input
             type="checkbox"
@@ -416,29 +576,71 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           onChange={(e) => setGroup(e.target.value)}
         />
         {group.trim().length > 0 && (
-          <div className="grid grid-cols-2 gap-3 items-end">
-            <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
-              <input
-                type="checkbox"
-                checked={groupOverride}
-                onChange={(e) => setGroupOverride(e.target.checked)}
-                className="w-4 h-4 accent-[var(--color-primary)]"
-              />
-              Override
-            </label>
-            <div>
-              <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-                Weight
+          <>
+            <div className="grid grid-cols-2 gap-3 items-end">
+              <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={groupOverride}
+                  onChange={(e) => setGroupOverride(e.target.checked)}
+                  className="w-4 h-4 accent-[var(--color-primary)]"
+                />
+                Override
               </label>
-              <input
-                type="number"
-                min={1}
-                max={1000}
-                value={groupWeight}
-                onChange={(e) => setGroupWeight(Number(e.target.value) || 1)}
-                className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-              />
+              <div>
+                <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
+                  Weight
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={groupWeight}
+                  onChange={(e) => setGroupWeight(Number(e.target.value) || 1)}
+                  className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+                />
+              </div>
             </div>
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Equal weights pick a deterministic winner (lowest Order, then most
+              matched keys). Set different weights only when you want a random
+              draw.
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* Related entries */}
+      <div className="space-y-2 pt-3 border-t border-[var(--color-border)]">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">
+          Related entries
+        </h3>
+        <p className="text-xs text-[var(--color-text-secondary)]">
+          Always inject these entries whenever this one fires — an explicit
+          link that bypasses their own keywords and group competition.
+        </p>
+        {otherEntries.length === 0 ? (
+          <p className="text-xs text-[var(--color-text-secondary)] italic">
+            No other entries in this book yet.
+          </p>
+        ) : (
+          <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg border border-[var(--color-border)] p-2">
+            {otherEntries.map((e) => (
+              <label
+                key={e.id}
+                className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={relatedIds.includes(e.id)}
+                  onChange={() => toggleRelated(e.id)}
+                  className="w-4 h-4 flex-shrink-0 accent-[var(--color-primary)]"
+                />
+                <span className="min-w-0 truncate">
+                  {e.comment || e.keys[0] || e.id}
+                </span>
+              </label>
+            ))}
           </div>
         )}
       </div>
@@ -466,6 +668,10 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           />
           Exclude from recursion (other entries can't trigger this one)
         </label>
+        <p className="text-xs text-[var(--color-text-secondary)]">
+          Critical entries are always excluded from being triggered by
+          recursion — only real chat text can activate them.
+        </p>
       </div>
 
       {/* Timed Effects */}
@@ -519,6 +725,38 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
           <span className="font-medium">Cooldown:</span> turns to wait before re-triggering.{' '}
           <span className="font-medium">Delay:</span> turns to wait before first activation. 0 = off.
         </p>
+      </div>
+
+      {/* Entry check — advisory only, never blocks saving */}
+      <div className="space-y-2 pt-3 border-t border-[var(--color-border)]">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">
+          Entry check
+        </h3>
+        {findings.length === 0 ? (
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            No issues found.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {findings.map((f, i) => {
+              const style = LINT_SEVERITY_STYLES[f.severity];
+              return (
+                <li
+                  key={`${f.code}-${i}`}
+                  className={`flex items-start gap-2 text-xs ${style.text}`}
+                >
+                  <span
+                    className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${style.dot}`}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0">
+                    <span className="font-medium">{style.label}:</span> {f.message}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
 
       <div className="flex gap-3 pt-4 border-t border-[var(--color-border)]">
