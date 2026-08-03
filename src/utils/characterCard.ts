@@ -375,6 +375,13 @@ function crc32(data: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+/** Offset of the null byte separating a tEXt chunk's keyword from its text. */
+function textChunkNullIndex(chunkData: Uint8Array): number {
+  let i = 0;
+  while (i < chunkData.length && chunkData[i] !== 0) i++;
+  return i;
+}
+
 /**
  * Extract character data from a PNG file's tEXt chunk
  * Character Card format stores base64-encoded JSON in a tEXt chunk with keyword "chara"
@@ -403,13 +410,7 @@ export async function extractCharacterFromPNG(
     if (type === 'tEXt') {
       // tEXt chunk: keyword\0text
       const chunkData = data.slice(offset + 8, offset + 8 + length);
-
-      // Find null separator
-      let nullIndex = 0;
-      while (nullIndex < chunkData.length && chunkData[nullIndex] !== 0) {
-        nullIndex++;
-      }
-
+      const nullIndex = textChunkNullIndex(chunkData);
       const keyword = String.fromCharCode(...chunkData.slice(0, nullIndex));
 
       if (keyword === 'chara') {
@@ -486,9 +487,19 @@ function createTextChunk(keyword: string, text: string): Uint8Array {
   return chunk;
 }
 
+/** tEXt keywords that carry a character card. Both are rewritten on embed. */
+const CARD_KEYWORDS = ['ccv3', 'chara'];
+
 /**
- * Embed character data into a PNG file
- * Returns a new PNG blob with the character data in a tEXt chunk
+ * Embed character data into a PNG file.
+ *
+ * Returns a new PNG blob carrying the card as base64 JSON in both a `ccv3`
+ * and a `chara` tEXt chunk — v3 readers find the former, v2 readers the
+ * latter. Any card chunks already in the image are stripped first, so the
+ * result holds exactly one card even when the input was itself an export.
+ * This mirrors ggbc-backend's `embed_card` (app/util/png_card.py); the two
+ * must stay in step or the same character exports differently depending on
+ * which path produced the file.
  */
 export async function embedCharacterInPNG(
   imageBlob: Blob,
@@ -519,40 +530,49 @@ export async function embedCharacterInPNG(
   }
   const base64Data = btoa(binary);
 
-  // Create the tEXt chunk
-  const textChunk = createTextChunk('chara', base64Data);
+  const cardChunks = CARD_KEYWORDS.map((kw) => createTextChunk(kw, base64Data));
 
-  // Find IEND chunk and insert tEXt before it
+  // Copy the chunk stream through, dropping stale card chunks and inserting
+  // the new ones just before IEND.
+  const parts: Uint8Array[] = [data.slice(0, 8)];
+  let inserted = false;
   let offset = 8;
-  let iendOffset = -1;
 
-  while (offset < data.length) {
+  while (offset + 8 <= data.length) {
     const length = readUint32BE(data, offset);
-    const typeBytes = data.slice(offset + 4, offset + 8);
-    const type = String.fromCharCode(...typeBytes);
+    const type = String.fromCharCode(...data.slice(offset + 4, offset + 8));
+    const end = offset + 12 + length;
 
-    if (type === 'IEND') {
-      iendOffset = offset;
-      break;
+    if (type === 'tEXt') {
+      const chunkData = data.slice(offset + 8, offset + 8 + length);
+      const nullIndex = textChunkNullIndex(chunkData);
+      const keyword = String.fromCharCode(...chunkData.slice(0, nullIndex));
+      if (CARD_KEYWORDS.includes(keyword)) {
+        offset = end;
+        continue;
+      }
     }
 
-    offset += 12 + length;
+    if (type === 'IEND' && !inserted) {
+      parts.push(...cardChunks);
+      inserted = true;
+    }
+
+    parts.push(data.slice(offset, end));
+    offset = end;
   }
 
-  if (iendOffset === -1) {
+  if (!inserted) {
     throw new Error('Invalid PNG: IEND chunk not found');
   }
 
-  // Build new PNG: signature + chunks before IEND + tEXt + IEND
-  const beforeIEND = data.slice(0, iendOffset);
-  const iendChunk = data.slice(iendOffset);
-
-  const newPNG = new Uint8Array(
-    beforeIEND.length + textChunk.length + iendChunk.length
-  );
-  newPNG.set(beforeIEND, 0);
-  newPNG.set(textChunk, beforeIEND.length);
-  newPNG.set(iendChunk, beforeIEND.length + textChunk.length);
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const newPNG = new Uint8Array(total);
+  let cursor = 0;
+  for (const part of parts) {
+    newPNG.set(part, cursor);
+    cursor += part.length;
+  }
 
   return new Blob([newPNG], { type: 'image/png' });
 }
