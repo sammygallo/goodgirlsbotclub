@@ -177,7 +177,7 @@ export function lintEntry(
       if (long.toLowerCase().includes(short.toLowerCase())) {
         findings.push({
           code: 'redundant-key',
-          severity: 'info',
+          severity: 'warning',
           field: 'keys',
           message: `"${long}" never adds a trigger — "${short}" already matches anything it would.`,
         });

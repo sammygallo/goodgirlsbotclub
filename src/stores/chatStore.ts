@@ -1486,10 +1486,13 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     });
   }
   if (authorNote && authorNote.depth > recentMessages.length) {
-    historyWithInsertions.unshift({
-      role: authorNote.role,
-      content: sub(authorNote.content),
-    });
+    const anContent = sub(authorNote.content);
+    if (anContent.trim()) {
+      historyWithInsertions.unshift({
+        role: authorNote.role,
+        content: anContent,
+      });
+    }
   }
   if (personaAtDepth && personaAtDepth.depth > recentMessages.length) {
     historyWithInsertions.unshift({

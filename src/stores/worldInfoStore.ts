@@ -200,7 +200,7 @@ function normalizeStoredBooks(list: WorldInfoBook[]): WorldInfoBook[] {
       sticky: e.sticky ?? 0,
       cooldown: e.cooldown ?? 0,
       delay: e.delay ?? 0,
-      critical: e.critical ?? false,
+      critical: e.critical === true,
       category: typeof e.category === 'string' ? e.category : '',
       relatedIds: Array.isArray(e.relatedIds)
         ? e.relatedIds.filter((id) => typeof id === 'string')
