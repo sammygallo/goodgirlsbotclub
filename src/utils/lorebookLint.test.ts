@@ -213,6 +213,15 @@ describe('lintBook', () => {
     }
   });
 
+  it('names the entry a duplicate collides with', () => {
+    const a = mkEntry({ content: 'The keep burned down.', comment: 'Keep fire' });
+    const b = mkEntry({ keys: ['ashvale'], content: 'The keep burned down.' });
+    const finding = lintBook([a, b])
+      .find((r) => r.entryId === b.id)!
+      .findings.find((f) => f.code === 'duplicate-entry');
+    expect(finding?.message).toContain('"Keep fire"');
+  });
+
   it('flags related links pointing at missing entries', () => {
     const source = mkEntry({ relatedIds: ['ghost'] });
     const results = lintBook([source]);
@@ -255,6 +264,113 @@ describe('lintBook', () => {
     const aCodes = results.find((r) => r.entryId === a.id)!.findings.map((f) => f.code);
     expect(aCodes).toContain('stopword-key');
     expect(aCodes).toContain('duplicate-entry');
+  });
+});
+
+describe('lintBook — near-duplicate detection', () => {
+  const dupes = (...contents: string[]) => {
+    const es = contents.map((content, i) =>
+      mkEntry({ content, keys: [`k${i}`], comment: `entry ${i}` })
+    );
+    const results = lintBook(es);
+    return es.map((e) =>
+      (results.find((r) => r.entryId === e.id)?.findings ?? []).some(
+        (f) => f.code === 'duplicate-entry'
+      )
+    );
+  };
+
+  it('catches a restatement that diverges after the opening', () => {
+    // The old fingerprint compared only the first 120 characters, so a pair
+    // that reworded the tail read as two unrelated entries.
+    expect(
+      dupes(
+        'The keep at Dragonspire burned three winters ago during the siege.',
+        'Dragonspire keep burned down three winters ago, during the siege.'
+      )
+    ).toEqual([true, true]);
+  });
+
+  it('catches a reordered restatement of the same fact', () => {
+    expect(
+      dupes(
+        'Seraphina lost her right hand to the Ashfall siege and writes left-handed.',
+        'Writes left-handed: Seraphina lost her right hand during the Ashfall siege.'
+      )
+    ).toEqual([true, true]);
+  });
+
+  it('catches an entry wholly subsumed by a longer one', () => {
+    // Containment, not similarity — the longer body is twice the length, so
+    // intersection-over-union alone tops out below the threshold.
+    expect(
+      dupes(
+        'Aldric shoes horses in the lower market.',
+        'Aldric shoes horses in the lower market, owes the guard a favour, and drinks at the Rookery every night after closing.'
+      )
+    ).toEqual([true, true]);
+  });
+
+  it('leaves two different facts about the same subject alone', () => {
+    expect(
+      dupes(
+        'Seraphina lost her right hand to the Ashfall siege.',
+        'Seraphina commands the northern garrison.'
+      )
+    ).toEqual([false, false]);
+  });
+
+  it('does not call entries alike for sharing only stopwords', () => {
+    expect(
+      dupes(
+        'The dragon was in the tower and it was very cold.',
+        'The merchant was in the market and it was very loud.'
+      )
+    ).toEqual([false, false]);
+  });
+
+  it('does not let a very short entry be contained by everything', () => {
+    // Under the containment floor: two content words would otherwise sit
+    // inside any longer entry that happens to mention both.
+    expect(
+      dupes(
+        'Ivy gardens.',
+        'Ivy gardens behind the chapel, sells cuttings at market, and has never once been seen indoors before dusk.'
+      )
+    ).toEqual([false, false]);
+  });
+
+  it('still catches whitespace- and case-only differences', () => {
+    expect(dupes('The keep burned down.', '  the KEEP burned   down.  ')).toEqual([
+      true,
+      true,
+    ]);
+  });
+
+  it('ignores empty bodies rather than matching them to each other', () => {
+    expect(dupes('', '')).toEqual([false, false]);
+  });
+
+  it('flags every member of a three-way pile-up', () => {
+    expect(
+      dupes(
+        'The keep at Dragonspire burned three winters ago.',
+        'Dragonspire keep burned three winters ago.',
+        'Three winters ago the keep at Dragonspire burned.'
+      )
+    ).toEqual([true, true, true]);
+  });
+
+  it('stays fast enough for the editor to run per keystroke', () => {
+    const many = Array.from({ length: 400 }, (_, i) =>
+      mkEntry({
+        keys: [`key${i}`],
+        content: `Entry ${i} concerns the ${i} garrison at outpost ${i} and its supply line.`,
+      })
+    );
+    const started = performance.now();
+    lintBook(many);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });
 

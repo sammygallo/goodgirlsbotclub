@@ -94,7 +94,7 @@ The editor now checks each entry while you write it, and the AI lorebook generat
 - A key under three characters, or an everyday word — both fire far more often than you intended (see *Choosing keys* above).
 - More than six keys on one entry.
 - A body over roughly 150 tokens — usually two facts wearing one coat.
-- Two entries in the book that start with the same text. Both fire, both cost budget, and editing one leaves the other quietly stale.
+- Two entries in the book that say nearly the same thing — either mostly the same words, or one entry whose content sits entirely inside a longer one. Both fire, both cost budget, and editing one leaves the other quietly stale. The check is lexical, so a restatement in genuinely different words ("keeps a knife in her boot" vs "hides a blade in her boot") will slip past it.
 - Related-entry links pointing at something deleted, disabled, or empty — the chain stops there.
 
 If you only ever act on one colour, make it red. An amber entry is merely expensive; a red one isn't in the story at all, and nothing else in the app will tell you.
