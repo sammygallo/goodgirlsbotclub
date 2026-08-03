@@ -266,9 +266,76 @@ export interface EntryLintResult {
   findings: LintFinding[];
 }
 
-/** Normalized dedupe key, mirroring the generator's own duplicate check. */
-function contentFingerprint(content: string): string {
-  return content.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 120);
+/**
+ * Two bodies count as near-duplicates when their content words overlap this
+ * much (intersection / union). Set from the two failure modes either side:
+ * a genuine restatement of the same fact lands around 0.7-1.0, while two
+ * different facts about the same subject rarely clear 0.35 — they share the
+ * name and little else.
+ */
+export const DUPLICATE_SIMILARITY = 0.6;
+/**
+ * …or when one body's content words are almost entirely contained in the
+ * other's. Subsumption is redundancy even when the lengths differ wildly:
+ * the shorter entry adds nothing the longer one does not already say, and
+ * union-based similarity is blind to it (a body twice as long as the one it
+ * swallows caps out at 0.5).
+ */
+export const DUPLICATE_CONTAINMENT = 0.85;
+/**
+ * Containment needs a floor. Below this many content words almost anything
+ * is "contained" in a longer entry by coincidence — "Ivy is the gardener"
+ * sits inside any entry that happens to mention Ivy and gardening.
+ */
+const CONTAINMENT_MIN_WORDS = 4;
+
+/**
+ * The content words a near-duplicate comparison runs on: case- and
+ * punctuation-insensitive, stopwords dropped so two entries are not judged
+ * alike for sharing "the" and "with".
+ *
+ * Single characters go too — they are almost always the tail of a split
+ * possessive ("Ivy's" → "ivy", "s") and would otherwise be a free point of
+ * overlap between unrelated entries.
+ */
+function contentWords(content: string): Set<string> {
+  const tokens =
+    content.normalize('NFC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const words = tokens.filter((w) => w.length > 1);
+  const meaningful = words.filter((w) => !STOPWORD_KEYS.has(w));
+  // A body that is nothing but stopwords still deserves to be compared —
+  // falling back keeps two copies of "and then it was over" detectable.
+  return new Set(meaningful.length > 0 ? meaningful : words);
+}
+
+/** Iterates the smaller set, so cost is O(min(|a|,|b|)). */
+function intersectionSize(a: Set<string>, b: Set<string>): number {
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  let n = 0;
+  for (const word of small) if (large.has(word)) n += 1;
+  return n;
+}
+
+/**
+ * Lexical near-duplicate test.
+ *
+ * Deliberately lexical, not semantic: "Kestrel keeps a knife in her boot"
+ * and "Kestrel hides a blade in her boot" say the same thing and share
+ * almost no words, so nothing short of embeddings would catch them. This
+ * finds restatements and copy-paste-then-edit, which is what the dedup
+ * sweep is actually for.
+ */
+function isNearDuplicate(a: Set<string>, b: Set<string>): boolean {
+  if (a.size === 0 || b.size === 0) return false;
+  const shared = intersectionSize(a, b);
+  if (shared === 0) return false;
+  const union = a.size + b.size - shared;
+  if (shared / union >= DUPLICATE_SIMILARITY) return true;
+  const smaller = Math.min(a.size, b.size);
+  return (
+    smaller >= CONTAINMENT_MIN_WORDS &&
+    shared / smaller >= DUPLICATE_CONTAINMENT
+  );
 }
 
 /**
@@ -292,26 +359,43 @@ export function lintBook(
     if (findings.length > 0) byEntry.set(entry.id, [...findings]);
   }
 
+  const label = (id: string) => {
+    const target = entries.find((e) => e.id === id);
+    return target?.comment || target?.keys[0] || id;
+  };
+
   // Near-duplicate bodies: two entries saying the same thing both fire and
   // both cost tokens, and editing one silently leaves the other stale.
-  const byFingerprint = new Map<string, WorldInfoEntry[]>();
-  for (const entry of entries) {
-    const fp = contentFingerprint(entry.content);
-    if (!fp) continue;
-    const list = byFingerprint.get(fp);
-    if (list) list.push(entry);
-    else byFingerprint.set(fp, [entry]);
-  }
-  for (const group of byFingerprint.values()) {
-    if (group.length < 2) continue;
-    for (const entry of group) {
-      push(entry.id, {
-        code: 'duplicate-entry',
-        severity: 'warning',
-        field: 'content',
-        message: `${group.length} entries in this book start with the same text — merge them or narrow what each one covers.`,
-      });
+  //
+  // Pairwise, so O(n²) on entries with content — but the token sets are
+  // built once up front and the inner test walks only the smaller set, and
+  // books run to tens of entries, not thousands. Worth watching if that
+  // stops being true: lintDraftInBook re-runs this on every keystroke.
+  const comparable = entries
+    .map((entry) => ({ entry, words: contentWords(entry.content) }))
+    .filter((c) => c.words.size > 0);
+  const partners = new Map<string, string[]>();
+  for (let i = 0; i < comparable.length; i += 1) {
+    for (let j = i + 1; j < comparable.length; j += 1) {
+      if (!isNearDuplicate(comparable[i].words, comparable[j].words)) continue;
+      const a = comparable[i].entry.id;
+      const b = comparable[j].entry.id;
+      partners.set(a, [...(partners.get(a) ?? []), b]);
+      partners.set(b, [...(partners.get(b) ?? []), a]);
     }
+  }
+  for (const [id, others] of partners) {
+    const named = others.slice(0, 2).map((o) => `"${label(o)}"`).join(' and ');
+    const rest = others.length - Math.min(others.length, 2);
+    push(id, {
+      code: 'duplicate-entry',
+      severity: 'warning',
+      field: 'content',
+      message:
+        `Says nearly the same thing as ${named}` +
+        (rest > 0 ? ` and ${rest} more` : '') +
+        ' — merge them or narrow what each one covers.',
+    });
   }
 
   // Related-entry links the scanner cannot follow.
@@ -321,10 +405,6 @@ export function lintBook(
       .filter((e) => e.enabled && e.content.trim().length > 0)
       .map((e) => e.id)
   );
-  const label = (id: string) => {
-    const target = entries.find((e) => e.id === id);
-    return target?.comment || target?.keys[0] || id;
-  };
   for (const entry of entries) {
     const missing = (entry.relatedIds ?? []).filter((id) => !ids.has(id));
     if (missing.length > 0) {
