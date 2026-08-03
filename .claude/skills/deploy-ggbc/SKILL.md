@@ -391,17 +391,36 @@ Expected output after a successful deploy:
 - `goodgirlsbotclub-ggbc-backend-1` — **Up** (running)
 - `goodgirlsbotclub-postgres-1` — **Up** (healthy)
 
-For a deeper check, smoke-test:
+For a deeper check, smoke-test. **`/health` must be polled, not curled once** — see the 502 note below:
 ```bash
-ssh root@159.89.180.146 "curl -sI http://127.0.0.1:8080 | head -3 && curl -s https://www.goodgirlsbotclub.com/health"
+ssh root@159.89.180.146 "curl -sI http://127.0.0.1:8080 | head -3
+  for i in \$(seq 1 20); do
+    S=\$(curl -s -o /dev/null -w '%{http_code}' https://www.goodgirlsbotclub.com/health)
+    [ \"\$S\" = 200 ] && { echo \"health OK after \${i} \$([ \$i = 1 ] && echo try || echo tries)\"; break; }
+    [ \$i = 20 ] && echo \"health still \$S after 60s — NOT a startup race, investigate\"
+    sleep 3
+  done
+  curl -s https://www.goodgirlsbotclub.com/health"
 ```
-Should return `HTTP/1.1 200 OK` and `{"status":"ok"}`.
+Should return `HTTP/1.1 200 OK` for the frontend and `{"status":"ok"}` for health.
 
-Confirm the backend actually came up — it runs `alembic upgrade head` before uvicorn (gotcha #4), so a bad migration surfaces here:
+Note the `sleep` runs **on the droplet**, inside the SSH command — a foreground `sleep` in the local Bash tool is blocked, so a loop written to run locally will not work.
+
+#### ⚠️ `/health` 502s for a few seconds after every deploy — poll, don't conclude
+
+`docker compose up -d` returns as soon as the container *starts*, but the backend's CMD is `alembic upgrade head && uvicorn …` (gotcha #4). Until alembic finishes there is nothing listening on :8001, so the reverse proxy returns **502 Bad Gateway** — while `docker ps` cheerfully reports the container **Up**, because "Up" means the process is running, not that it is serving.
+
+A single `curl` fired immediately after the deploy therefore reports a broken site on a perfectly good deploy. **Observed 2026-08-03**: `/health` returned the nginx 502 page 5 seconds in, and `{"status":"ok"}` on the very next check.
+
+The distinction that matters:
+- **502 that clears within ~60s** — normal startup, nothing to do.
+- **502 that persists past the loop** — a real failure, and almost always a migration that did not apply. Go straight to the logs; the container will be sitting in a restart loop or stopped before uvicorn.
+
+Confirm the backend actually reached uvicorn — this is what separates the two cases, so run it even when the poll went green on the first try:
 ```bash
 ssh root@159.89.180.146 "cd /opt/goodgirlsbotclub && docker compose logs --tail 8 ggbc-backend"
 ```
-Should end with `Application startup complete.` / `Uvicorn running on http://127.0.0.1:8001`.
+Should end with `Application startup complete.` / `Uvicorn running on http://127.0.0.1:8001`. If it ends on an alembic traceback instead, see "Alembic migration failure" below.
 
 If the intake bot was deployed, verify pm2:
 ```bash
