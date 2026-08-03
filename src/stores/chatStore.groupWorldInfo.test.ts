@@ -110,7 +110,7 @@ beforeEach(() => {
     maxRecursionSteps: 2,
     tokenBudget: 0,
   });
-  useCharacterStore.setState({ linkedBookIdsByAvatar: {} });
+  useCharacterStore.setState({ linkedBookIdsByAvatar: {}, characters: [] });
   usePersonaStore.setState({ personas: [], activePersonaId: null });
   useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4' });
   useChatStore.setState({
@@ -214,6 +214,28 @@ describe('buildGroupConversationContext — attribution labels', () => {
     const ctx = buildGroupConversationContext(
       [mkMsg('a dragon lands')],
       [seraphina, marcus],
+      seraphina
+    );
+
+    expect(textOf(ctx)).toContain(
+      '[Information about Marcus, another character in this conversation]'
+    );
+  });
+
+  it("tags lore from an owner who isn't a member of this room, when their book was manually made globally active", () => {
+    // Marcus owns this book but is NOT passed as a member below — the book
+    // only reaches the scan because it's globally active (a user can flip
+    // that toggle on any book regardless of ownership). Attribution must
+    // still resolve Marcus's name from the full roster, not just the room's
+    // members, or this lore would render unlabelled and read as Seraphina's
+    // own — the identity-bleed attribution exists to prevent.
+    const marc = mkEntry({ keys: ['dragon'], content: 'Marcus hunts dragons.' });
+    useBooks([mkBook([marc], { ownerCharacterAvatar: marcus.avatar })]);
+    useCharacterStore.setState({ characters: [seraphina, marcus] });
+
+    const ctx = buildGroupConversationContext(
+      [mkMsg('a dragon lands')],
+      [seraphina],
       seraphina
     );
 

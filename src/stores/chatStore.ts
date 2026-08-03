@@ -1746,12 +1746,19 @@ export function buildGroupConversationContext(
   // guards against, which is why solo chat needs neither. Only
   // character-OWNED books (an embedded book, or one with an explicit owner)
   // are attributed; books shared across the room stay unlabelled.
+  // Owner name is resolved from the full roster, not just `characters` (this
+  // room's members): a book can be manually toggled globally-active or
+  // chat-linked without being owned by anyone actually in the room, and an
+  // unlabelled block of that owner's lore would read as the current
+  // speaker's — the same identity-bleed this attribution exists to prevent.
   const memberNameByOwnedBookId = new Map<string, string>();
   for (const book of wiState.books) {
     if (!book.ownerCharacterAvatar) continue;
-    const owner = characters.find(
-      (c) => c.avatar === book.ownerCharacterAvatar
-    );
+    const owner =
+      characters.find((c) => c.avatar === book.ownerCharacterAvatar) ??
+      characterStoreState.characters.find(
+        (c) => c.avatar === book.ownerCharacterAvatar
+      );
     if (owner) memberNameByOwnedBookId.set(book.id, owner.name);
   }
   const personaBookIdSet = new Set(personaBookIds);
