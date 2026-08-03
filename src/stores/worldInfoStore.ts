@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { estimateTokens, type TokenizerProfile } from '../utils/tokenizer';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { useChatLoreConfigStore } from './chatLoreConfigStore';
 import type {
   CharacterBookV2,
   CharacterBookEntryV2,
@@ -19,6 +20,40 @@ export type WorldInfoPosition =
 // How secondary keys combine with the primary-key match. Mirrors ST's
 // selectiveLogic integer codes: 0=AND_ANY, 1=NOT_ALL, 2=NOT_ANY, 3=AND_ALL.
 export type SelectiveLogic = 'AND_ANY' | 'AND_ALL' | 'NOT_ANY' | 'NOT_ALL';
+
+/**
+ * Where an entry's content came from. Surfaced in the v2 composition layer
+ * (a follow-up step) to distinguish hand-curated lore from machine-written
+ * or imported content.
+ */
+export type EntrySource =
+  | 'manual'
+  | 'auto_memory'
+  | 'import'
+  | 'generated'
+  | 'fork';
+
+/**
+ * What kind of change a revision record captures. The conflict_* actions are
+ * unused until a later phase (per-chat overlays / forking) but are valid
+ * values now so revision history written today stays forward-compatible.
+ */
+export type RevisionAction =
+  | 'create'
+  | 'edit'
+  | 'auto_update'
+  | 'conflict_keep'
+  | 'conflict_replace'
+  | 'conflict_fork';
+
+/** A single point-in-time snapshot of an entry's content before an edit. */
+export interface EntryRevision {
+  ts: number;
+  authorHandle: string;
+  action: RevisionAction;
+  prevContent: string;
+  sourceChatFile?: string;
+}
 
 export interface WorldInfoEntry {
   id: string;
@@ -84,6 +119,10 @@ export interface WorldInfoEntry {
    * (delay/cooldown) still apply to the pulled-in entry.
    */
   relatedIds: string[];
+  /** Where this entry's content came from (manual authoring, auto-memory, etc). */
+  source: EntrySource;
+  /** Content-edit history, most recent last. Capped at the last 10 records. */
+  revisions: EntryRevision[];
   createdAt: number;
   updatedAt: number;
 }
@@ -107,6 +146,12 @@ export function humanizeCategory(cat: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+/** Whether a book is embedded in a character card or a normal global book. */
+export type BookScope = 'character' | 'world';
+
+/** Sharing state for a book — used by the v2 composition layer. */
+export type BookVisibility = 'private' | 'shared';
+
 export interface WorldInfoBook {
   id: string;
   name: string;
@@ -124,6 +169,16 @@ export interface WorldInfoBook {
    * hand-curated lore from machine-extracted notes.
    */
   autoExtracted?: boolean;
+  /**
+   * DERIVED field — never authoritative. Always equals
+   * `ownerCharacterAvatar != null ? 'character' : 'world'`. Every place that
+   * sets ownerCharacterAvatar must recompute this alongside it.
+   */
+  scope: BookScope;
+  /** Handle of the user who owns this book. */
+  ownerHandle: string;
+  /** Sharing state; only 'shared' books are visible to other users. */
+  visibility: BookVisibility;
   createdAt: number;
   updatedAt: number;
 }
@@ -143,6 +198,26 @@ let _currentHandle: string | null = null;
 function scopedKey(base: string, handle?: string | null): string {
   const h = handle !== undefined ? handle : _currentHandle;
   return h ? `${base}_${h}` : base;
+}
+
+/** Current logged-in user's handle, or '' when unauthenticated. */
+function currentHandle(): string {
+  return _currentHandle ?? '';
+}
+
+const ENTRY_SOURCES: readonly EntrySource[] = [
+  'manual',
+  'auto_memory',
+  'import',
+  'generated',
+  'fork',
+];
+
+function isValidEntrySource(value: unknown): value is EntrySource {
+  return (
+    typeof value === 'string' &&
+    (ENTRY_SOURCES as readonly string[]).includes(value)
+  );
 }
 
 const DEFAULT_SCAN_DEPTH = 4;
@@ -179,6 +254,8 @@ export const DEFAULT_ENTRY: Omit<
   critical: false,
   category: '',
   relatedIds: [],
+  source: 'manual',
+  revisions: [],
 };
 
 /**
@@ -187,26 +264,50 @@ export const DEFAULT_ENTRY: Omit<
  * server-sync blob (fetchPrefs): blobs written by a pre-update client lack
  * the newer fields, and `relatedIds` in particular is dereferenced as an
  * array throughout the scanner and UI.
+ *
+ * This is a lazy backfill only: it fills in-memory defaults for whatever a
+ * loaded book/entry is missing, but does not eagerly rewrite storage — the
+ * backfilled fields persist naturally the next time the book/entry is saved.
+ *
+ * `handle` defaults to the module's current-user handle so call sites that
+ * don't pass one (both existing call sites) keep working unchanged.
  */
-function normalizeStoredBooks(list: WorldInfoBook[]): WorldInfoBook[] {
-  return list.map((b) => ({
-    ...b,
-    ownerCharacterAvatar:
-      typeof b.ownerCharacterAvatar === 'string'
-        ? b.ownerCharacterAvatar
-        : null,
-    entries: b.entries.map((e) => ({
-      ...e,
-      sticky: e.sticky ?? 0,
-      cooldown: e.cooldown ?? 0,
-      delay: e.delay ?? 0,
-      critical: e.critical === true,
-      category: typeof e.category === 'string' ? e.category : '',
-      relatedIds: Array.isArray(e.relatedIds)
-        ? e.relatedIds.filter((id) => typeof id === 'string')
-        : [],
-    })),
-  }));
+function normalizeStoredBooks(
+  list: WorldInfoBook[],
+  handle: string | null = _currentHandle
+): WorldInfoBook[] {
+  return list.map((b) => {
+    const ownerCharacterAvatar =
+      typeof b.ownerCharacterAvatar === 'string' ? b.ownerCharacterAvatar : null;
+    return {
+      ...b,
+      ownerCharacterAvatar,
+      // scope is derived — always recompute, never trust a stored value.
+      scope: ownerCharacterAvatar != null ? 'character' : 'world',
+      ownerHandle:
+        typeof b.ownerHandle === 'string' && b.ownerHandle
+          ? b.ownerHandle
+          : handle ?? '',
+      visibility: b.visibility === 'shared' ? 'shared' : 'private',
+      entries: b.entries.map((e) => ({
+        ...e,
+        sticky: e.sticky ?? 0,
+        cooldown: e.cooldown ?? 0,
+        delay: e.delay ?? 0,
+        critical: e.critical === true,
+        category: typeof e.category === 'string' ? e.category : '',
+        relatedIds: Array.isArray(e.relatedIds)
+          ? e.relatedIds.filter((id) => typeof id === 'string')
+          : [],
+        source: isValidEntrySource(e.source)
+          ? e.source
+          : b.autoExtracted === true || e.comment === 'Auto-extracted'
+            ? 'auto_memory'
+            : 'manual',
+        revisions: Array.isArray(e.revisions) ? e.revisions.slice(-10) : [],
+      })),
+    };
+  });
 }
 
 function parseBooks(raw: string): WorldInfoBook[] {
@@ -422,6 +523,7 @@ interface StEntry {
   critical?: boolean;
   category?: string;
   relatedIds?: string[];
+  ggbcSource?: EntrySource;
 }
 
 const ST_LOGIC_TO_LOCAL: Record<number, SelectiveLogic> = {
@@ -460,11 +562,20 @@ export function entryFromStFormat(raw: StEntry): WorldInfoEntry {
     typeof raw.selectiveLogic === 'number'
       ? ST_LOGIC_TO_LOCAL[raw.selectiveLogic] || 'AND_ANY'
       : 'AND_ANY';
+  const comment = typeof raw.comment === 'string' ? raw.comment : '';
+  // Prefer our own round-tripped source tag; otherwise infer, defaulting
+  // freshly-imported entries to 'import' rather than the general 'manual'
+  // fallback used by normalizeStoredBooks.
+  const source: EntrySource = isValidEntrySource(raw.ggbcSource)
+    ? raw.ggbcSource
+    : comment === 'Auto-extracted'
+      ? 'auto_memory'
+      : 'import';
   return {
     id: generateId('wi'),
     keys: pickStringArray(raw.key),
     content: typeof raw.content === 'string' ? raw.content : '',
-    comment: typeof raw.comment === 'string' ? raw.comment : '',
+    comment,
     enabled: raw.disable === true ? false : true,
     constant: raw.constant === true,
     caseSensitive: raw.caseSensitive === true,
@@ -501,6 +612,9 @@ export function entryFromStFormat(raw: StEntry): WorldInfoEntry {
     category: typeof raw.category === 'string' ? raw.category : '',
     // Source-file ids; bookFromStFormat remaps these onto the fresh ids.
     relatedIds: pickStringArray(raw.relatedIds),
+    source,
+    // Never import revision history — imported entries always start fresh.
+    revisions: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -563,6 +677,7 @@ export function entryToStFormat(
     critical: entry.critical,
     category: entry.category,
     relatedIds: entry.relatedIds,
+    ggbcSource: entry.source,
   };
 }
 
@@ -587,11 +702,17 @@ export function bookFromStFormat(name: string, raw: StBook): WorldInfoBook {
     }
     return entry;
   });
+  const ownerCharacterAvatar: string | null = null;
   return {
     id: generateId('wibook'),
     name: raw.name || name || 'Imported Lorebook',
     entries: remapRelatedIds(entries, idMap),
-    ownerCharacterAvatar: null,
+    ownerCharacterAvatar,
+    // scope is derived from ownerCharacterAvatar — compute inline rather
+    // than trusting any caller-supplied value.
+    scope: ownerCharacterAvatar != null ? 'character' : 'world',
+    ownerHandle: _currentHandle ?? '',
+    visibility: 'private',
     createdAt: now,
     updatedAt: now,
   };
@@ -634,6 +755,7 @@ interface CharacterBookExtensions {
   critical?: boolean;
   category?: string;
   related_ids?: string[];
+  ggbc_source?: EntrySource;
 }
 
 function positionFromString(
@@ -670,11 +792,21 @@ export function entryFromCharacterBookV2(
       ? ST_LOGIC_TO_LOCAL[ext.selectiveLogic] || 'AND_ANY'
       : 'AND_ANY';
 
+  const comment = typeof raw.comment === 'string' ? raw.comment : '';
+  // Prefer our own round-tripped source tag; otherwise infer, defaulting
+  // freshly-imported entries to 'import' rather than the general 'manual'
+  // fallback used by normalizeStoredBooks.
+  const source: EntrySource = isValidEntrySource(ext.ggbc_source)
+    ? ext.ggbc_source
+    : comment === 'Auto-extracted'
+      ? 'auto_memory'
+      : 'import';
+
   return {
     id: generateId('wi'),
     keys: pickStringArray(raw.keys),
     content: typeof raw.content === 'string' ? raw.content : '',
-    comment: typeof raw.comment === 'string' ? raw.comment : '',
+    comment,
     enabled: raw.enabled !== false,
     constant: raw.constant === true,
     caseSensitive: raw.case_sensitive === true,
@@ -710,6 +842,9 @@ export function entryFromCharacterBookV2(
     critical: ext.critical === true,
     category: typeof ext.category === 'string' ? ext.category : '',
     relatedIds: pickStringArray(ext.related_ids),
+    source,
+    // Never import revision history — imported entries always start fresh.
+    revisions: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -738,6 +873,7 @@ export function entryToCharacterBookV2(
     critical: entry.critical,
     category: entry.category,
     related_ids: entry.relatedIds,
+    ggbc_source: entry.source,
   };
   return {
     id,
@@ -779,6 +915,11 @@ export function bookFromCharacterBookV2(
     name: raw.name || fallbackName || 'Character Lorebook',
     entries: remapRelatedIds(entries, idMap),
     ownerCharacterAvatar,
+    // scope is derived from ownerCharacterAvatar — compute inline rather
+    // than trusting any caller-supplied value.
+    scope: ownerCharacterAvatar != null ? 'character' : 'world',
+    ownerHandle: _currentHandle ?? '',
+    visibility: 'private',
     createdAt: now,
     updatedAt: now,
   };
@@ -1117,6 +1258,15 @@ function applyTokenBudget(
  * @param outScanReport - Optional report object (see WorldInfoScanReport)
  *   populated with what the token budget evicted, so callers can surface
  *   drops instead of letting lore vanish silently.
+ */
+/**
+ * v2 composition contract: callers that support per-chat lore config must
+ * run books/activeBookIds through resolveEffectiveBooks (in
+ * src/utils/worldInfoComposition.ts, added in a follow-up step) before
+ * calling this function. This function itself is frozen for v2 - overlays,
+ * exclusions, and local per-chat entries are invisible to it by design,
+ * because entry and book ids survive composition unchanged. Do not add
+ * config-awareness here.
  */
 export function scanMessagesForEntries(
   books: WorldInfoBook[],
@@ -1474,6 +1624,9 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       name: trimmed,
       entries: [],
       ownerCharacterAvatar: null,
+      scope: 'world',
+      ownerHandle: currentHandle(),
+      visibility: 'private',
       createdAt: now,
       updatedAt: now,
     };
@@ -1509,6 +1662,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       activeBookIds: activeNext,
       chatLinkedBookIds: chatNext,
     });
+    useChatLoreConfigStore.getState().pruneBook(bookId);
   },
 
   duplicateBook: (bookId) => {
@@ -1529,6 +1683,10 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       // Related-entry links must point at the copies, not the originals.
       entries: remapRelatedIds(copiedEntries, idMap),
       ownerCharacterAvatar: null,
+      // scope is derived — recompute now that ownerCharacterAvatar is cleared.
+      scope: 'world',
+      ownerHandle: original.ownerHandle,
+      visibility: original.visibility,
       createdAt: now,
       updatedAt: now,
     };
@@ -1549,6 +1707,15 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       ...DEFAULT_ENTRY,
       ...(data || {}),
       id: generateId('wi'),
+      source: data?.source ?? 'manual',
+      revisions: [
+        {
+          ts: now,
+          authorHandle: currentHandle(),
+          action: 'create',
+          prevContent: '',
+        },
+      ],
       createdAt: now,
       updatedAt: now,
     };
@@ -1568,9 +1735,22 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       if (b.id !== bookId) return b;
       return {
         ...b,
-        entries: b.entries.map((e) =>
-          e.id === entryId ? { ...e, ...data, updatedAt: now } : e
-        ),
+        entries: b.entries.map((e) => {
+          if (e.id !== entryId) return e;
+          // Content changes get a revision record BEFORE the patch is
+          // applied, so prevContent captures the pre-edit state.
+          let revisions: EntryRevision[] = e.revisions;
+          if (data.content !== undefined && data.content !== e.content) {
+            const rev: EntryRevision = {
+              ts: now,
+              authorHandle: currentHandle(),
+              action: 'edit',
+              prevContent: e.content,
+            };
+            revisions = [...e.revisions, rev].slice(-10);
+          }
+          return { ...e, ...data, revisions, updatedAt: now };
+        }),
         updatedAt: now,
       };
     });
@@ -1671,6 +1851,8 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       // any existing embedded book for the same owner is replaced.
       if (ownerAvatar) {
         book.ownerCharacterAvatar = ownerAvatar;
+        // scope is derived — recompute alongside ownerCharacterAvatar.
+        book.scope = 'character';
         const existing = get().books.find(
           (b) => b.ownerCharacterAvatar === ownerAvatar
         );
@@ -1708,6 +1890,8 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
         name: fresh.name,
         entries: fresh.entries,
         ownerCharacterAvatar: ownerAvatar,
+        // scope is derived — recompute alongside ownerCharacterAvatar.
+        scope: ownerAvatar != null ? 'character' : 'world',
         updatedAt: now,
       };
       const next = get().books.map((b) =>
@@ -1738,6 +1922,10 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       name: trimmed,
       entries: [],
       ownerCharacterAvatar: ownerAvatar,
+      // scope is derived — compute inline rather than trusting a caller.
+      scope: ownerAvatar != null ? 'character' : 'world',
+      ownerHandle: currentHandle(),
+      visibility: 'private',
       createdAt: now,
       updatedAt: now,
     };
@@ -1780,6 +1968,9 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
     }
     saveChatLinkedBooks(next);
     set({ chatLinkedBookIds: next });
+    if (useChatLoreConfigStore.getState().getConfig(chatFileName) !== undefined) {
+      useChatLoreConfigStore.getState().updateConfig(chatFileName, { linkedBookIds: deduped });
+    }
   },
 
   clearError: () => set({ error: null }),

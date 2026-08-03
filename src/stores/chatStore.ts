@@ -26,6 +26,8 @@ import {
   type MatchedEntry,
   type WorldInfoScanReport,
 } from './worldInfoStore';
+import { useChatLoreConfigStore } from './chatLoreConfigStore';
+import { resolveEffectiveBooks } from '../utils/worldInfoComposition';
 import { parseEmotion, stripEmotionTag, type Emotion } from '../utils/emotions';
 import { dataUrlToPart, supportsVision } from '../utils/images';
 import { processMacros, type MacroContext } from '../utils/macros';
@@ -953,23 +955,28 @@ function buildConversationContext(
   // The character's embedded book + per-character linked books are
   // auto-activated at scan time (scoped to this call), leaving the global
   // `activeBookIds` list untouched as the user navigates between characters.
-  // Persona-linked and chat-linked books are unioned in on top of that so
-  // each scope contributes its own bucket.
+  // Persona-linked books are unioned in on top of that so each scope
+  // contributes its own bucket. The legacy chat-linked-books map is folded
+  // in via resolveEffectiveBooks (chatConfig), not unioned directly here.
   const wiState = useWorldInfoStore.getState();
   const charBookIds = useCharacterStore
     .getState()
     .getActiveBookIdsForCharacter(character.avatar || '');
   const personaBookIds = persona?.linkedBookIds ?? [];
-  const chatBookIds = ctxChatFile
-    ? wiState.chatLinkedBookIds[ctxChatFile] ?? []
-    : [];
-  const scanBookIds = Array.from(
+  const inheritedBookIds = Array.from(
     new Set([
       ...wiState.activeBookIds,
       ...charBookIds,
       ...personaBookIds,
-      ...chatBookIds,
     ])
+  );
+  const chatConfig = ctxChatFile
+    ? useChatLoreConfigStore.getState().getEffectiveConfig(ctxChatFile)
+    : undefined;
+  const { effectiveBooks, effectiveActiveIds } = resolveEffectiveBooks(
+    wiState.books,
+    inheritedBookIds,
+    chatConfig
   );
   const tokenProfile = profileForProvider(activeProvider);
   const wiScanReport: WorldInfoScanReport = {
@@ -980,8 +987,8 @@ function buildConversationContext(
     pinnedOverBudget: false,
   };
   const matchedEntries = scanMessagesForEntries(
-    wiState.books,
-    scanBookIds,
+    effectiveBooks,
+    effectiveActiveIds,
     messages,
     {
       scanDepth: wiState.scanDepth,
@@ -1673,26 +1680,32 @@ export function buildGroupConversationContext(
   // World Info. Book scoping is the union of every scope that can contribute
   // to this room: the globally-active books, EVERY member's embedded + linked
   // books (not just the current speaker's — lore about member B is precisely
-  // what member A needs in order to react to them coherently), the
-  // speaker-resolved persona's books, and the chat-linked books.
-  // getActiveBookIdsForCharacter already refuses a book owned by a different
-  // character, so the union can't pull a private book in on membership alone.
+  // what member A needs in order to react to them coherently), and the
+  // speaker-resolved persona's books. The legacy chat-linked-books map is
+  // folded in via resolveEffectiveBooks (chatConfig), not unioned directly
+  // here. getActiveBookIdsForCharacter already refuses a book owned by a
+  // different character, so the union can't pull a private book in on
+  // membership alone.
   const wiState = useWorldInfoStore.getState();
   const characterStoreState = useCharacterStore.getState();
   const memberBookIds = characters.flatMap((c) =>
     characterStoreState.getActiveBookIdsForCharacter(c.avatar || '')
   );
   const personaBookIds = persona?.linkedBookIds ?? [];
-  const chatBookIds = groupChatFile
-    ? wiState.chatLinkedBookIds[groupChatFile] ?? []
-    : [];
-  const scanBookIds = Array.from(
+  const inheritedBookIds = Array.from(
     new Set([
       ...wiState.activeBookIds,
       ...memberBookIds,
       ...personaBookIds,
-      ...chatBookIds,
     ])
+  );
+  const chatConfig = groupChatFile
+    ? useChatLoreConfigStore.getState().getEffectiveConfig(groupChatFile)
+    : undefined;
+  const { effectiveBooks, effectiveActiveIds } = resolveEffectiveBooks(
+    wiState.books,
+    inheritedBookIds,
+    chatConfig
   );
   const tokenProfile = profileForProvider(activeProvider);
   const wiScanReport: WorldInfoScanReport = {
@@ -1703,8 +1716,8 @@ export function buildGroupConversationContext(
     pinnedOverBudget: false,
   };
   const matchedEntries = scanMessagesForEntries(
-    wiState.books,
-    scanBookIds,
+    effectiveBooks,
+    effectiveActiveIds,
     messages,
     {
       scanDepth: wiState.scanDepth,

@@ -202,6 +202,11 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       critical,
       category,
       relatedIds,
+      // source/revisions aren't editable via this form; carry the existing
+      // entry's values through so the draft is a complete WorldInfoEntry for
+      // the linter, and default a brand-new entry the same way the store does.
+      source: entry?.source ?? 'manual',
+      revisions: entry?.revisions ?? [],
       // Timestamps are owned by the store; they exist here only so the draft
       // is a complete WorldInfoEntry for the linter, and are stripped on save.
       createdAt: entry?.createdAt ?? 0,
@@ -211,6 +216,8 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
       entry?.id,
       entry?.createdAt,
       entry?.updatedAt,
+      entry?.source,
+      entry?.revisions,
       keys,
       content,
       comment,

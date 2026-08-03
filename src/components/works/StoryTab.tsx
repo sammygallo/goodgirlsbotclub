@@ -17,6 +17,8 @@ import { usePersonaStore } from '../../stores/personaStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useConnectionProfileStore } from '../../stores/connectionProfileStore';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
+import { useChatLoreConfigStore } from '../../stores/chatLoreConfigStore';
+import { resolveEffectiveBooks } from '../../utils/worldInfoComposition';
 import { IngestProgressCard } from './IngestProgressCard';
 import { StartIngestModal } from './StartIngestModal';
 import {
@@ -265,9 +267,11 @@ export function StoryTab({
   };
 
   // The scanner's own book set: globally active + the character's
-  // embedded/linked + persona-linked + chat-linked. Ingesting every book
-  // in the library instead would write lore from unrelated stories into
-  // this bible as canon.
+  // embedded/linked + persona-linked, plus whatever this chat's
+  // resolveEffectiveBooks config contributes (which folds in the legacy
+  // chat-linked map for chats that haven't been promoted to a v2 config).
+  // Ingesting every book in the library instead would write lore from
+  // unrelated stories into this bible as canon.
   const booksForChat = useCallback(
     (avatar: string, fileName: string) => {
       const wi = useWorldInfoStore.getState();
@@ -275,13 +279,23 @@ export function StoryTab({
       const persona = usePersonaStore
         .getState()
         .getPersonaForContext(avatar, fileName);
-      const ids = new Set<string>([
-        ...wi.activeBookIds,
-        ...chars.getActiveBookIdsForCharacter(avatar),
-        ...(persona?.linkedBookIds ?? []),
-        ...(wi.chatLinkedBookIds[fileName] ?? []),
-      ]);
-      return wi.books.filter((b) => ids.has(b.id));
+      const inheritedIds = Array.from(
+        new Set<string>([
+          ...wi.activeBookIds,
+          ...chars.getActiveBookIdsForCharacter(avatar),
+          ...(persona?.linkedBookIds ?? []),
+        ])
+      );
+      const chatConfig = fileName
+        ? useChatLoreConfigStore.getState().getEffectiveConfig(fileName)
+        : undefined;
+      const { effectiveBooks, effectiveActiveIds } = resolveEffectiveBooks(
+        wi.books,
+        inheritedIds,
+        chatConfig
+      );
+      const activeIds = new Set(effectiveActiveIds);
+      return effectiveBooks.filter((b) => activeIds.has(b.id));
     },
     []
   );

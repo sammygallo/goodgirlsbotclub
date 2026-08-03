@@ -4,6 +4,7 @@ import { useCharacterStore } from './characterStore';
 import { useChatStore } from './chatStore';
 import { useSettingsStore } from './settingsStore';
 import { useWorldInfoStore } from './worldInfoStore';
+import { useChatLoreConfigStore } from './chatLoreConfigStore';
 import { useBranchStore } from './branchStore';
 import { useRegexScriptStore } from './regexScriptStore';
 import { usePromptTemplateStore } from './promptTemplateStore';
@@ -53,6 +54,7 @@ function resetAllUserState(): void {
     successMessage: null,
   });
   useWorldInfoStore.getState().resetUser();
+  useChatLoreConfigStore.getState().resetUser();
   useExtensionStore.getState().resetUser();
   useSummarizeStore.getState().resetUser();
   useAutoMemoryStore.getState().resetUser();
@@ -139,6 +141,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         useMotionModeStore.getState().initForUser(user.handle);
         useUsageStore.getState().initForUser(user.handle);
         useLovenseStore.getState().initForUser(user.handle);
+        useChatLoreConfigStore.getState().initForUser(user.handle);
         set({
           isAuthenticated: true,
           currentUser: {
@@ -177,6 +180,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useMotionModeStore.getState().fetchPrefs();
       useUsageStore.getState().fetchPrefs();
       useLovenseStore.getState().fetchPrefs();
+      useChatLoreConfigStore.getState().fetchPrefs();
       } else {
         set({ isAuthenticated: false, currentUser: null, isLoading: false });
       }
@@ -223,6 +227,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useMotionModeStore.getState().initForUser(h);
       useUsageStore.getState().initForUser(h);
       useLovenseStore.getState().initForUser(h);
+      useChatLoreConfigStore.getState().initForUser(h);
       set({
         isAuthenticated: true,
         currentUser: user
@@ -263,6 +268,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useMotionModeStore.getState().fetchPrefs();
       useUsageStore.getState().fetchPrefs();
       useLovenseStore.getState().fetchPrefs();
+      useChatLoreConfigStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
@@ -291,6 +297,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useMotionModeStore.getState().initForUser(h);
       useUsageStore.getState().initForUser(h);
       useLovenseStore.getState().initForUser(h);
+      useChatLoreConfigStore.getState().initForUser(h);
       set({
         isAuthenticated: true,
         currentUser: user
@@ -331,6 +338,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       useMotionModeStore.getState().fetchPrefs();
       useUsageStore.getState().fetchPrefs();
       useLovenseStore.getState().fetchPrefs();
+      useChatLoreConfigStore.getState().fetchPrefs();
       return true;
     } catch (error) {
       set({
