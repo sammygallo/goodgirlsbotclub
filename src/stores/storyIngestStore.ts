@@ -2,6 +2,9 @@ import { create } from 'zustand';
 import {
   storyApi,
   StoryConflictError,
+  SceneBulkConflictError,
+  type ProjectChatRef,
+  type StorySceneOut,
   type StorySectionOut,
 } from '../api/client';
 import { showToastGlobal } from '../components/ui/Toast';
@@ -12,11 +15,26 @@ import { PROMPT_VERSION } from '../utils/storyIngest/prompts';
 import { replaySupported, replayWorldInfo } from '../utils/storyIngest/wiReplay';
 import type { ReplayEntry } from '../utils/storyIngest/wiReplay';
 import {
+  planTranscriptChunks,
+  sliceChunksFromPlan,
+  type WalkChunk,
+} from '../utils/storyIngest/transcriptChunker';
+import { buildMsgRef } from '../utils/storyBible/sourceRefs';
+import {
+  processChunk,
+  type KnownCastMember,
+  type OpenSceneCarry,
+  type SceneBulkItem,
+} from '../utils/storyIngest/transcriptWalk';
+import { runUserVoiceSynthesis } from '../utils/storyIngest/userVoice';
+import type { Scene } from '../types/storyBible';
+import {
   emptyCheckpoint,
   type ColdStartSources,
   type IngestCheckpoint,
   type IngestMessage,
   type IngestPass,
+  type LlmCall,
 } from '../utils/storyIngest/types';
 
 /**
@@ -33,9 +51,16 @@ import {
  * cycle TDZ-crashes. Callers hand us plain message/card data instead.
  */
 
-/** Passes phase 6 runs, in order — the progress checklist renders from
- *  this, so adding phase 7's walk here is what makes it appear. */
-export const PHASE6_PASSES: IngestPass[] = ['cold_start', 'wi_replay'];
+/** Passes the pipeline runs, in order — the progress checklist renders
+ *  from this. */
+export const PHASE6_PASSES: IngestPass[] = ['cold_start', 'wi_replay', 'transcript_walk'];
+
+/** A walk longer than this many chunks needs an explicit confirmation
+ *  before it starts (plan Phase 7: "no silent caps" on a very long RP) —
+ *  checked again here even though the UI already gates on it, since this
+ *  pathway spends the user's own API key. */
+const WALK_CONFIRM_MESSAGE = (chunkCount: number) =>
+  `This chat is long — about ${chunkCount} chunks to read, which will take a while and spend more of your key than usual. Build again to confirm.`;
 
 export const PASS_LABELS: Record<IngestPass, string> = {
   cold_start: 'Reading the character and lorebooks',
@@ -64,6 +89,12 @@ export interface IngestRunInput {
     opts: { maxTokens?: number; signal?: AbortSignal }
   ) => Promise<string>;
   model?: string | null;
+  /** The bible's source chat — needed by the transcript walk (phase 7)
+   *  to build `chat_message` SourceRefs on facts and sample passages. */
+  chat: ProjectChatRef;
+  /** Required once a walk would exceed `WALK_CHUNK_SOFT_CAP` chunks — the
+   *  UI must get an explicit "yes, this one's long" before it starts. */
+  confirmLongWalk?: boolean;
 }
 
 interface StoryIngestState {
@@ -96,6 +127,22 @@ function abortError(): Error {
   const e = new Error('Build cancelled');
   e.name = 'AbortError';
   return e;
+}
+
+/** True only for "this section has never been written".
+ *
+ *  `apiRequest` surfaces the backend's detail string but not the status
+ *  code, so the message is all there is to go on — the load-bearing fact
+ *  is that a missing story section 404s with the literal
+ *  "section not written yet" (ggbc-backend app/routers/story.py). If that
+ *  string ever changes, this starts throwing on legitimate absences,
+ *  which is the safe direction to fail.
+ *
+ *  Every caller must distinguish this from a transient failure: reading
+ *  a blip as "never written" zeroes a base_ts or empties a cast, and both
+ *  are silent data loss rather than a retryable error. */
+function isMissingSection(error: unknown): boolean {
+  return /not written yet|404/i.test(error instanceof Error ? error.message : '');
 }
 
 function lockIsStale(checkpoint: IngestCheckpoint | null): boolean {
@@ -169,9 +216,7 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       // Only a genuine 404 means "never ingested". Treating a network
       // blip the same way would zero base_ts AND blind the lock check,
       // so a transient failure could authorise a second paid build.
-      const message = error instanceof Error ? error.message : '';
-      const missing = /not written yet|404/i.test(message);
-      if (missing) {
+      if (isMissingSection(error)) {
         set({ checkpoint: null, checkpointTs: 0 });
       } else {
         throw error;
@@ -226,15 +271,54 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       showToastGlobal('Story tooling changed — starting a fresh build', 'warning');
     }
 
-    set({ currentPass: 'cold_start' });
+    // A walk already in progress must NOT be treated as a fresh build:
+    // cold_start mints brand-new random character ids on every call, and
+    // an already-open scene on the server references the ids from the
+    // ORIGINAL run — rerunning cold_start would silently orphan them.
+    // Re-initializing the checkpoint from emptyCheckpoint() here would
+    // also destroy chunk_plan/chunk_index the moment pass 1 hit any
+    // failure, discarding potentially hours of already-paid-for progress.
+    //
+    // The predicate is "the plan has been pinned", NOT "the index has
+    // advanced". chunk 0's scenes and facts are committed to the server
+    // BEFORE chunk_index leaves 0 (the loop in runTranscriptWalkPass
+    // writes, then checkpoints — correct ordering, since checkpointing
+    // first would turn an interrupt into silent chunk loss). Gating on
+    // `chunk_index > 0` classified that window as a fresh build and
+    // reran cold_start, reminting every character id and orphaning the
+    // scene already on the server. chunk_plan is written only after
+    // cold_start and wi_replay have durably landed, so it is the honest
+    // signal that their ids are load-bearing.
+    //
+    // Note this is deliberately NOT the same predicate runTranscriptWalkPass
+    // uses to decide whether to REUSE the pinned plan — see the
+    // `resumable` gate there, which still requires chunk_index > 0.
+    const resumableWalk =
+      existing !== null &&
+      existing.prompt_version === PROMPT_VERSION &&
+      existing.current_pass === 'transcript_walk' &&
+      existing.chunk_plan.length > 0;
 
-    let checkpoint: IngestCheckpoint = {
-      ...emptyCheckpoint(PROMPT_VERSION),
-      status: 'running',
-      current_pass: 'cold_start',
-      model: input.model ?? null,
-      lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
-    };
+    set({
+      currentPass: resumableWalk ? 'transcript_walk' : 'cold_start',
+      // cold_start/wi_replay genuinely completed in the ORIGINAL run —
+      // show them as done rather than reverting the checklist.
+      completed: resumableWalk ? ['cold_start', 'wi_replay'] : [],
+    });
+
+    let checkpoint: IngestCheckpoint = resumableWalk
+      ? {
+          ...existing!,
+          status: 'running',
+          lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
+        }
+      : {
+          ...emptyCheckpoint(PROMPT_VERSION),
+          status: 'running',
+          current_pass: 'cold_start',
+          model: input.model ?? null,
+          lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
+        };
 
     const saveCheckpoint = async (next: IngestCheckpoint) => {
       checkpoint = next;
@@ -258,6 +342,17 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     // LOCK_STALE_MS would otherwise look abandoned while it is still
     // spending the user's money.
     const heartbeat = setInterval(() => {
+      // `isRunning` is a SHARED flag, so it goes true again as soon as any
+      // later run starts — it cannot tell "this run is alive" from "some
+      // other run is". stillOurs() is this run's own identity, and a timer
+      // that has outlived its run must stop rather than PUT a dead run's
+      // checkpoint (with the CURRENT project's server_ts) over whatever
+      // Work is open now. The finally below is the primary guarantee; this
+      // is the backstop for a timer that somehow escapes it.
+      if (!stillOurs()) {
+        clearInterval(heartbeat);
+        return;
+      }
       if (!get().isRunning) return;
       void saveCheckpoint({
         ...checkpoint,
@@ -271,9 +366,11 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     try {
       await saveCheckpoint(checkpoint);
 
-      // ---- pass 1: cold start ---------------------------------------
-      let inputTokens = 0;
-      let outputTokens = 0;
+      // Seeded from the checkpoint (0 for a fresh build) so a resume's
+      // running total keeps accumulating rather than reverting to 0 and
+      // undercounting everything spent before the tab closed.
+      let inputTokens = checkpoint.token_usage.input_tokens;
+      let outputTokens = checkpoint.token_usage.output_tokens;
       let llmAttempts = 0;
       let llmFailures = 0;
       const countingLlm = input.llm
@@ -320,80 +417,243 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
           }
         : undefined;
 
-      const cold = await runColdStart(input.sources, countingLlm, abort.signal);
-      // Stop pressed while the last call was in flight: bail before
-      // writing, rather than completing and toasting success.
-      if (abort.signal.aborted) throw abortError();
-      if (!stillOurs()) return false;
+      let cast: KnownCastMember[];
+      let approximate = checkpoint.replay_approx;
 
-      if (cold.rulesDropped > 0) {
-        // A silently truncated bible reads as a complete one.
-        showToastGlobal(
-          `${cold.rulesDropped} lorebook ${cold.rulesDropped === 1 ? 'entry' : 'entries'} didn't fit and were left out`,
-          'warning'
-        );
+      if (resumableWalk) {
+        // Cold start / world-info replay already ran in the ORIGINAL
+        // run — rerunning them would mint brand-new random character ids
+        // (orphaning the ones an already-open scene references on the
+        // server) and re-walk facts already accounted for. Read back the
+        // cast cold_start already wrote instead of recomputing it.
+        if (!countingLlm) {
+          finish({ error: 'A connected model is needed to continue this build.' });
+          showToastGlobal('A connected model is needed to continue this build', 'error');
+          return false;
+        }
+        type EntitiesShape = {
+          characters: { id: string; canonical_name: string; aliases: string[] }[];
+        };
+        let entities: EntitiesShape;
+        try {
+          const section = await storyApi.getSection(projectId, 'entities');
+          const data = section.data as unknown as Partial<EntitiesShape>;
+          // A 200 carrying an unexpected body is no more trustworthy than
+          // a 503 — validate before adopting, and fail with something the
+          // user can act on rather than a bare TypeError from .map().
+          if (!Array.isArray(data?.characters)) {
+            throw new Error("The story bible's character list could not be read.");
+          }
+          entities = data as EntitiesShape;
+        } catch (error) {
+          // A transient blip is NOT "this bible has no cast". Swallowing
+          // it strips participants from every scene in every remaining
+          // chunk, and the per-chunk checkpoint advance makes that
+          // unrecoverable without a full reset. Only a genuine absence
+          // degrades to an empty cast.
+          //
+          // Failing here is nearly free: this read happens before the
+          // chunk loop and before any LLM call, so nothing has been
+          // walked and no tokens have been spent. The throw unwinds into
+          // run()'s catch, which writes status 'error' and leaves
+          // chunk_index untouched — pressing Build again resumes from the
+          // same chunk with a correctly-read cast.
+          if (!isMissingSection(error)) throw error;
+          entities = { characters: [] };
+        }
+        cast = entities.characters.map((c) => ({
+          id: c.id,
+          name: c.canonical_name,
+          aliases: c.aliases ?? [],
+        }));
+      } else {
+        // ---- pass 1: cold start ---------------------------------------
+        const cold = await runColdStart(input.sources, countingLlm, abort.signal);
+        // Stop pressed while the last call was in flight: bail before
+        // writing, rather than completing and toasting success.
+        if (abort.signal.aborted) throw abortError();
+        if (!stillOurs()) return false;
+
+        if (cold.rulesDropped > 0) {
+          // A silently truncated bible reads as a complete one.
+          showToastGlobal(
+            `${cold.rulesDropped} lorebook ${cold.rulesDropped === 1 ? 'entry' : 'entries'} didn't fit and were left out`,
+            'warning'
+          );
+        }
+
+        await writeSection(projectId, 'entities', cold.entities);
+        await writeSection(projectId, 'world', cold.world);
+        await writeSection(projectId, 'rendering_hints', cold.renderingHints);
+
+        if (abort.signal.aborted) throw abortError();
+        set({ completed: ['cold_start'], currentPass: 'wi_replay' });
+        await saveCheckpoint({
+          ...checkpoint,
+          current_pass: 'wi_replay',
+          token_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+          lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
+        });
+
+        // ---- pass 1.5: world-info replay (no LLM) ---------------------
+        if (replaySupported(input.isGroupChat) && input.wiEntries.length > 0) {
+          const replay = replayWorldInfo(input.messages, input.wiEntries, {
+            scanDepth: input.wiScanDepth,
+            capturedFired: input.capturedWiFired,
+          });
+          approximate = replay.approximate;
+
+          // Promote rules whose entry demonstrably fired: a selective
+          // entry the story was actually played under is established,
+          // not latent.
+          const fired = new Set(Object.keys(replay.fired));
+          const promoted = {
+            ...cold.world,
+            rules: (cold.world.rules ?? []).map((rule) =>
+              rule.source.kind === 'lorebook_entry' &&
+              fired.has(`${rule.source.ref.book_id}:${rule.source.ref.entry_id}`)
+                ? { ...rule, confidence: 'explicit' as const }
+                : rule
+            ),
+          };
+          await writeSection(projectId, 'world', promoted);
+        }
+
+        if (abort.signal.aborted) throw abortError();
+        set({ completed: ['cold_start', 'wi_replay'] });
+        const allCallsFailed = llmAttempts > 0 && llmFailures === llmAttempts;
+
+        // No model, or the model never answered a single cold-start
+        // call: stop here with exactly phase 6's original behavior.
+        // Reading the full transcript needs a working model far more
+        // than the mechanical cold-start mapping does.
+        if (!countingLlm || allCallsFailed) {
+          set({ currentPass: null });
+          await saveCheckpoint({
+            ...checkpoint,
+            status: 'complete',
+            error: allCallsFailed
+              ? 'The model could not be reached, so only the mechanical parts were built.'
+              : '',
+            current_pass: null,
+            token_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+            replay_approx: approximate,
+            lock: null,
+          });
+          finish({});
+          showToastGlobal(
+            allCallsFailed
+              ? 'Built the basics — the model could not be reached'
+              : 'Story groundwork built',
+            allCallsFailed ? 'warning' : 'success'
+          );
+          return true;
+        }
+
+        cast = cold.entities.characters.map((c) => ({
+          id: c.id,
+          name: c.canonical_name,
+          aliases: c.aliases,
+        }));
       }
 
-      await writeSection(projectId, 'entities', cold.entities);
-      await writeSection(projectId, 'world', cold.world);
-      await writeSection(projectId, 'rendering_hints', cold.renderingHints);
-
-      if (abort.signal.aborted) throw abortError();
-      set({ completed: ['cold_start'], currentPass: 'wi_replay' });
+      // ---- pass 2: transcript walk -----------------------------------
+      set({ currentPass: 'transcript_walk' });
+      checkpoint = {
+        ...checkpoint,
+        current_pass: 'transcript_walk',
+        token_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+        replay_approx: approximate,
+      };
       await saveCheckpoint({
         ...checkpoint,
-        current_pass: 'wi_replay',
-        token_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
         lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
       });
 
-      // ---- pass 1.5: world-info replay (no LLM) ---------------------
-      let approximate = false;
-      if (replaySupported(input.isGroupChat) && input.wiEntries.length > 0) {
-        const replay = replayWorldInfo(input.messages, input.wiEntries, {
-          scanDepth: input.wiScanDepth,
-          capturedFired: input.capturedWiFired,
-        });
-        approximate = replay.approximate;
+      const walkOutcome = await runTranscriptWalkPass({
+        projectId,
+        chat: input.chat,
+        messages: input.messages,
+        cast,
+        llm: countingLlm,
+        checkpoint,
+        priorCheckpoint: existing,
+        confirmLongWalk: input.confirmLongWalk ?? false,
+        abort,
+        stillOurs,
+        saveCheckpoint,
+      });
+      checkpoint = walkOutcome.checkpoint;
 
-        // Promote rules whose entry demonstrably fired: a selective entry
-        // the story was actually played under is established, not latent.
-        const fired = new Set(Object.keys(replay.fired));
-        const promoted = {
-          ...cold.world,
-          rules: (cold.world.rules ?? []).map((rule) =>
-            rule.source.kind === 'lorebook_entry' &&
-            fired.has(`${rule.source.ref.book_id}:${rule.source.ref.entry_id}`)
-              ? { ...rule, confidence: 'explicit' as const }
-              : rule
-          ),
-        };
-        await writeSection(projectId, 'world', promoted);
+      // Another run took over (the user switched Works mid-flight) — its
+      // owner is responsible for the outcome now, not us.
+      if (walkOutcome.status === 'aborted') return false;
+
+      if (walkOutcome.status === 'needs_confirmation') {
+        const message = WALK_CONFIRM_MESSAGE(walkOutcome.chunkCount ?? 0);
+        await saveCheckpoint({ ...checkpoint, status: 'paused', error: message, lock: null });
+        finish({ error: message });
+        showToastGlobal(message, 'warning');
+        return false;
+      }
+
+      if (walkOutcome.status === 'diverged') {
+        // "Reset ingestion state" only clears this checkpoint, not the
+        // scenes/facts already written — pointing at it here would leave
+        // stale, pre-divergence content in place for a rebuild to
+        // duplicate on top of. The full "Reset story" action clears
+        // scenes/facts too, which divergence genuinely needs.
+        const message =
+          'The chat changed since this build started. Use "Reset story" below, then build again.';
+        await saveCheckpoint({ ...checkpoint, status: 'error', error: message, lock: null });
+        finish({ error: message });
+        showToastGlobal(message, 'error');
+        return false;
       }
 
       if (abort.signal.aborted) throw abortError();
-      set({ completed: ['cold_start', 'wi_replay'], currentPass: null });
-      const allCallsFailed = llmAttempts > 0 && llmFailures === llmAttempts;
+      if (!stillOurs()) return false;
+
+      // ---- post-walk: user_voice synthesis ---------------------------
+      const voice = await runUserVoiceSynthesis({
+        messages: input.messages,
+        chat: input.chat,
+        llm: countingLlm,
+        signal: abort.signal,
+      });
+      if (abort.signal.aborted) throw abortError();
+      if (!stillOurs()) return false;
+      await writeSection(projectId, 'user_voice', voice.section);
+
+      set({ completed: ['cold_start', 'wi_replay', 'transcript_walk'], currentPass: null });
+      const notes: string[] = [];
+      if (walkOutcome.unreadableChunks > 0) {
+        notes.push(
+          `${walkOutcome.unreadableChunks} of ${walkOutcome.totalChunks} chunks could not be read and were skipped.`
+        );
+      }
+      if (walkOutcome.trailingUnwalked > 0) {
+        // The user kept chatting while a build was paused — the plan
+        // this resume continued was pinned before those messages
+        // existed, so they were never walked (see runTranscriptWalkPass).
+        notes.push(
+          `${walkOutcome.trailingUnwalked} newer ${walkOutcome.trailingUnwalked === 1 ? 'message wasn’t' : 'messages weren’t'} included — rebuild to pick them up.`
+        );
+      }
+      const unreadableNote = notes.join(' ');
       await saveCheckpoint({
         ...checkpoint,
         status: 'complete',
-        error: allCallsFailed
-          ? 'The model could not be reached, so only the mechanical parts were built.'
-          : '',
+        error: unreadableNote,
         current_pass: null,
-        token_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-        replay_approx: approximate,
         // Released: a completed run holds nothing.
         lock: null,
       });
 
-      clearInterval(heartbeat);
       finish({});
       showToastGlobal(
-        allCallsFailed
-          ? 'Built the basics — the model could not be reached'
-          : 'Story groundwork built',
-        allCallsFailed ? 'warning' : 'success'
+        unreadableNote ? 'Story built — some of the chat could not be read' : 'Story built',
+        unreadableNote ? 'warning' : 'success'
       );
       return true;
     } catch (error) {
@@ -414,10 +674,25 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         // The checkpoint write itself failed — nothing further to try,
         // and the in-memory error below is what the user sees.
       }
-      clearInterval(heartbeat);
       finish({ error: aborted ? null : message });
       showToastGlobal(message, aborted ? 'warning' : 'error');
       return false;
+    } finally {
+      // The ONLY place the heartbeat is cancelled. It used to be cleared
+      // at each exit point, which missed the four bare `return false`
+      // bail-outs inside this try (a lost ownership race, and an aborted
+      // walk) — leaving an immortal timer that kept PUTting a dead run's
+      // checkpoint every LOCK_STALE_MS/2, against whichever project was
+      // open by then, with that project's server_ts as the base.
+      clearInterval(heartbeat);
+      // Same reasoning for the run's own flags: those bail-outs skipped
+      // finish() as well, so `isRunning`/`abort` were never released and
+      // clear() deliberately refuses to reset a run it believes is live —
+      // wedging the store into never building again. finish() is a no-op
+      // once it has already run (it checks abort identity), and a no-op
+      // when a LATER run legitimately owns the store, so this is safe on
+      // every path.
+      finish({});
     }
   },
 
@@ -518,6 +793,254 @@ async function writeSection(
     }
     throw error;
   }
+}
+
+/** All-or-nothing scene batch write with the standard adopt-and-retry-once
+ *  pattern: a bulk 409 lists every conflicting row's CURRENT server_ts,
+ *  so a single retry with corrected base_ts values resolves it without
+ *  a second round-trip per row. */
+async function bulkWriteScenesWithRetry(
+  projectId: string,
+  scenes: SceneBulkItem[]
+): Promise<StorySceneOut[]> {
+  const payload = scenes.map((s) => ({
+    id: s.id,
+    data: s.data as unknown as Record<string, unknown>,
+    baseTs: s.baseTs,
+  }));
+  try {
+    const res = await storyApi.bulkWriteScenes(projectId, payload);
+    return res.scenes;
+  } catch (error) {
+    if (error instanceof SceneBulkConflictError) {
+      const currentTsById = new Map(error.conflicts.map((c) => [c.id, c.currentTs]));
+      const retried = payload.map((s) =>
+        currentTsById.has(s.id) ? { ...s, baseTs: currentTsById.get(s.id)! } : s
+      );
+      const res = await storyApi.bulkWriteScenes(projectId, retried);
+      return res.scenes;
+    }
+    throw error;
+  }
+}
+
+interface WalkPassOutcome {
+  status: 'complete' | 'needs_confirmation' | 'diverged' | 'aborted';
+  chunkCount?: number;
+  checkpoint: IngestCheckpoint;
+  unreadableChunks: number;
+  totalChunks: number;
+  /** Messages added to the chat AFTER a resumed walk's plan was pinned —
+   *  the plan isn't extended mid-resume (that's incremental re-ingestion,
+   *  Phase 10's job), so these are never walked. Reported rather than
+   *  silently dropped; 0 for a fresh walk (whose plan always covers
+   *  every current message). */
+  trailingUnwalked: number;
+}
+
+/**
+ * Orchestrate the transcript walk across all chunks: resume-or-plan,
+ * then per chunk call `processChunk`, persist (bulk scene upsert + fact
+ * append), and advance the checkpoint. Kept as a module-level helper
+ * (like `writeSection`/`putIngestion` above) rather than inlined in
+ * `run()`, which is already a long pass sequence.
+ *
+ * Resume is INTENTIONALLY conservative: it only continues when the
+ * persisted `chunk_plan` still slices cleanly against the current
+ * messages AND `last_ingested` still exists. Anything else is reported
+ * as `diverged` rather than guessed at — reconciling a transcript that
+ * changed mid-walk is Phase 10's job (incremental re-ingestion), not
+ * this pass's.
+ */
+async function runTranscriptWalkPass(opts: {
+  projectId: string;
+  chat: ProjectChatRef;
+  messages: IngestMessage[];
+  cast: KnownCastMember[];
+  llm: LlmCall;
+  checkpoint: IngestCheckpoint;
+  /** The checkpoint as it stood BEFORE this run() call started — used to
+   *  decide whether an in-progress walk can be resumed. */
+  priorCheckpoint: IngestCheckpoint | null;
+  confirmLongWalk: boolean;
+  abort: AbortController;
+  stillOurs: () => boolean;
+  saveCheckpoint: (next: IngestCheckpoint) => Promise<void>;
+}): Promise<WalkPassOutcome> {
+  const { projectId, chat, messages, cast, llm, abort, stillOurs, saveCheckpoint } = opts;
+  let cp = opts.checkpoint;
+
+  // Deliberately a DIFFERENT predicate from run()'s `resumableWalk`,
+  // which answers "are cold_start's ids durable?" and so drops the index
+  // condition. This one answers "should the pinned plan be reused, and
+  // the walk restarted mid-way through it?" — which additionally needs
+  // chunk_index > 0.
+  //
+  // Keeping the index condition here is what stops a resume at index 0
+  // from being dead-ended: sliceChunksFromPlan returns null the moment
+  // any pinned boundary msg_id is missing, which routes run() into the
+  // 'diverged' branch and tells the user to Reset story — destroying
+  // their whole bible. At index 0 nothing has been checkpointed, so
+  // there is nothing to reconcile: fall through to the fresh-plan branch
+  // below, re-plan from the CURRENT messages (picking up anything the
+  // user added while the build was broken), and leave nextSequence at 0
+  // and openScene null, exactly as a first run would.
+  const resumable =
+    opts.priorCheckpoint !== null &&
+    opts.priorCheckpoint.prompt_version === PROMPT_VERSION &&
+    opts.priorCheckpoint.current_pass === 'transcript_walk' &&
+    opts.priorCheckpoint.chunk_index > 0 &&
+    opts.priorCheckpoint.chunk_plan.length > 0;
+
+  let chunks: WalkChunk[];
+  let startIndex = 0;
+  let openScene: OpenSceneCarry | null = null;
+  let nextSequence = 0;
+  let trailingUnwalked = 0;
+
+  if (resumable) {
+    const prior = opts.priorCheckpoint!;
+    const sliced = sliceChunksFromPlan(messages, prior.chunk_plan);
+    const lastId = prior.last_ingested?.msg_id;
+    const stillExists = !lastId || messages.some((m) => m.id === lastId);
+    if (!sliced || !stillExists) {
+      return {
+        status: 'diverged',
+        checkpoint: cp,
+        unreadableChunks: 0,
+        totalChunks: 0,
+        trailingUnwalked: 0,
+      };
+    }
+    chunks = sliced;
+    startIndex = prior.chunk_index;
+    cp = { ...cp, chunk_plan: prior.chunk_plan, chunk_index: startIndex, open_scene: prior.open_scene };
+
+    // The plan was pinned against an EARLIER fetch of this chat; the
+    // user may have kept roleplaying while the build was paused. Those
+    // trailing messages aren't part of any plan entry and are never
+    // walked here — surfaced below rather than silently unaccounted for.
+    const lastPlannedId = prior.chunk_plan[prior.chunk_plan.length - 1]?.end_msg_id;
+    const lastPlannedIdx = lastPlannedId
+      ? messages.findIndex((m) => m.id === lastPlannedId)
+      : -1;
+    trailingUnwalked = lastPlannedIdx >= 0 ? messages.length - 1 - lastPlannedIdx : 0;
+
+    if (prior.open_scene) {
+      const sceneRow = await storyApi.getScene(projectId, prior.open_scene);
+      const data = sceneRow.data as unknown as Scene;
+      openScene = {
+        sceneId: sceneRow.id,
+        sequence: sceneRow.sequence,
+        title: data.title,
+        summary: data.summary,
+        detailedSummary: data.detailed_summary,
+        participantIds: data.participants,
+        factIds: data.continuity_facts_established,
+        rangeStart: data.source.message_range.start,
+        excludedSegments: data.source.excluded_segments,
+        swipeResolutions: data.source.swipe_resolutions,
+        totalMessages: data.source.total_messages,
+        serverTs: sceneRow.server_ts,
+      };
+      // Take the max rather than trusting open_scene to be the tail.
+      // processChunk now guarantees it is, but a checkpoint written by an
+      // older build may still point at a non-tail row — and seeding from
+      // that alone re-issues sequence numbers already on the server.
+      // scene_count is a plain COUNT of scene rows, so it exceeds
+      // max(sequence) whenever duplicates already exist.
+      const manifest = await storyApi.manifest(projectId);
+      nextSequence = Math.max(sceneRow.sequence + 1, manifest.scene_count);
+    } else {
+      const manifest = await storyApi.manifest(projectId);
+      nextSequence = manifest.scene_count;
+    }
+  } else {
+    const planned = planTranscriptChunks(messages);
+    if (planned.exceedsSoftCap && !opts.confirmLongWalk) {
+      return {
+        status: 'needs_confirmation',
+        chunkCount: planned.chunks.length,
+        checkpoint: cp,
+        unreadableChunks: 0,
+        totalChunks: planned.chunks.length,
+        trailingUnwalked: 0,
+      };
+    }
+    chunks = planned.chunks;
+    cp = { ...cp, chunk_plan: planned.chunkPlan, chunk_index: 0, open_scene: null };
+    await saveCheckpoint(cp);
+  }
+
+  let previousTail: IngestMessage[] =
+    startIndex > 0 && chunks[startIndex - 1]
+      ? chunks[startIndex - 1].messages.filter((m) => !m.isSystem).slice(-2)
+      : [];
+  const recentFactsDigest: string[] = [];
+  let unreadableChunks = 0;
+
+  for (let i = startIndex; i < chunks.length; i++) {
+    if (abort.signal.aborted) throw abortError();
+    if (!stillOurs()) {
+      return {
+        status: 'aborted',
+        checkpoint: cp,
+        unreadableChunks,
+        totalChunks: chunks.length,
+        trailingUnwalked,
+      };
+    }
+
+    const chunk = chunks[i];
+    const result = await processChunk({
+      chunk,
+      previousTailMessages: previousTail,
+      openScene,
+      nextSequence,
+      knownCast: cast,
+      recentFactsDigest,
+      chat,
+      llm,
+      signal: abort.signal,
+    });
+
+    if (result.parseFailed) {
+      unreadableChunks++;
+    } else {
+      if (result.scenes.length > 0) {
+        const written = await bulkWriteScenesWithRetry(projectId, result.scenes);
+        if (result.openScene) {
+          const match = written.find((s) => s.id === result.openScene!.sceneId);
+          if (match) result.openScene.serverTs = match.server_ts;
+        }
+      }
+      for (const fact of result.facts) {
+        await storyApi.appendFact(projectId, fact as unknown as Record<string, unknown>);
+        recentFactsDigest.push(fact.text);
+      }
+      openScene = result.openScene;
+      nextSequence = result.nextSequence;
+    }
+
+    previousTail = chunk.messages.filter((m) => !m.isSystem).slice(-2);
+    const lastMsg = chunk.messages[chunk.messages.length - 1];
+    cp = {
+      ...cp,
+      chunk_index: i + 1,
+      last_ingested: await buildMsgRef(lastMsg),
+      open_scene: openScene?.sceneId ?? null,
+      lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
+    };
+    await saveCheckpoint(cp);
+  }
+
+  return {
+    status: 'complete',
+    checkpoint: cp,
+    unreadableChunks,
+    totalChunks: chunks.length,
+    trailingUnwalked,
+  };
 }
 
 export { PROMPT_VERSION };

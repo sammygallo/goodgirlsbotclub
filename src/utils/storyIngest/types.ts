@@ -92,6 +92,10 @@ export interface IngestMessage {
   content: string;
   timestamp: number;
   swipeIdx: number;
+  /** Total swipes recorded on this message (>=1). The transcript walk
+   *  (phase 7) derives `alternate_swipes_available` from this mechanically
+   *  — never asks the model to count swipes. */
+  swipesCount: number;
 }
 
 /** What the cold-start pass reads. Everything is optional because a

@@ -1898,6 +1898,19 @@ export class StoryTooLargeError extends Error {
   }
 }
 
+/** 409 from POST /scenes/bulk — lists EVERY conflicting row, not just the
+ *  first, since the caller (the transcript walk) is replanning a whole
+ *  chunk's batch and needs every stale id in one round-trip. */
+export class SceneBulkConflictError extends Error {
+  conflicts: { id: string; currentTs: number }[];
+
+  constructor(conflicts: { id: string; currentTs: number }[]) {
+    super('scene bulk write conflict');
+    this.name = 'SceneBulkConflictError';
+    this.conflicts = conflicts;
+  }
+}
+
 async function storyWrite<T>(
   path: string,
   method: 'PUT' | 'POST',
@@ -1939,6 +1952,57 @@ async function storyWrite<T>(
     const err = await response.json().catch(() => ({}));
     // A 422 body carries pydantic's field errors; surface the first one
     // rather than a bare "HTTP 422" an ingestion agent can't act on.
+    const fieldError = Array.isArray(err?.detail?.errors)
+      ? err.detail.errors[0]?.msg
+      : null;
+    throw new Error(
+      fieldError || err?.detail?.error || err?.detail || err?.message ||
+      `HTTP ${response.status}`
+    );
+  }
+  return response.json();
+}
+
+/** All-or-nothing scene batch write. Distinct from `storyWrite` because a
+ *  bulk 409 lists every conflicting row (`SceneBulkConflictError`), not a
+ *  single current/current_ts pair — the transcript walk (phase 7) is
+ *  replanning a whole chunk's batch and needs every stale id at once. */
+async function sceneBulkPost(
+  projectId: string,
+  scenes: { id: string; data: Record<string, unknown>; base_ts: number }[]
+): Promise<{ written: number; scenes: StorySceneOut[] }> {
+  const token = await getCsrfToken();
+  const response = await fetch(`/projects/${projectId}/story/scenes/bulk`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+    body: JSON.stringify({ scenes }),
+  });
+
+  if (response.status === 409) {
+    const parsed = await response.json().catch(() => ({}));
+    const detail = (parsed?.detail ?? parsed) as {
+      conflicts?: { id: string; current_ts: number }[];
+    };
+    throw new SceneBulkConflictError(
+      (detail?.conflicts ?? []).map((c) => ({ id: c.id, currentTs: c.current_ts }))
+    );
+  }
+  if (response.status === 413) {
+    const parsed = await response.json().catch(() => ({}));
+    const detail = (parsed?.detail ?? parsed) as {
+      cap_bytes?: number;
+      actual_bytes?: number;
+      over_by?: number;
+    };
+    throw new StoryTooLargeError(
+      detail?.cap_bytes ?? 0,
+      detail?.actual_bytes ?? 0,
+      detail?.over_by ?? 0
+    );
+  }
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
     const fieldError = Array.isArray(err?.detail?.errors)
       ? err.detail.errors[0]?.msg
       : null;
@@ -1998,6 +2062,14 @@ async function storyRestoreCall(path: string, body: unknown): Promise<StoryResto
   return response.json();
 }
 
+export interface StorySceneOut {
+  id: string;
+  sequence: number;
+  data: Record<string, unknown>;
+  server_ts: number;
+  updated_at: string;
+}
+
 export const storyApi = {
   /** What the bible contains — sizes and counts, no payloads. Cheap
    *  enough to call on every Story-tab open. */
@@ -2023,6 +2095,43 @@ export const storyApi = {
       `/projects/${projectId}/story/sections/${name}`,
       'PUT',
       { data, base_ts: baseTs }
+    );
+  },
+
+  /** Throws (404) when the scene doesn't exist. Used by the transcript
+   *  walk (phase 7) to reconstruct an in-progress scene's full state
+   *  (sequence, summary-so-far, message range) when resuming after a
+   *  closed tab — the checkpoint only carries the scene's id. */
+  async getScene(projectId: string, sceneId: string): Promise<StorySceneOut> {
+    return apiRequest<StorySceneOut>(
+      `/projects/${projectId}/story/scenes/${sceneId}`
+    );
+  },
+
+  /** All-or-nothing batch write — the transcript walk's throughput path.
+   *  `baseTs: 0` creates; otherwise it must be the scene's last known
+   *  `server_ts`. Throws `SceneBulkConflictError` listing every stale row
+   *  on a 409, `StoryTooLargeError` on a 413. */
+  async bulkWriteScenes(
+    projectId: string,
+    scenes: { id: string; data: Record<string, unknown>; baseTs: number }[]
+  ): Promise<{ written: number; scenes: StorySceneOut[] }> {
+    return sceneBulkPost(
+      projectId,
+      scenes.map((s) => ({ id: s.id, data: s.data, base_ts: s.baseTs }))
+    );
+  },
+
+  /** Append-only: re-posting a known fact id is a no-op that returns the
+   *  stored row (the walk relies on this for safe chunk retries). */
+  async appendFact(
+    projectId: string,
+    fact: Record<string, unknown>
+  ): Promise<StoryLogEntry> {
+    return storyWrite<StoryLogEntry>(
+      `/projects/${projectId}/story/facts`,
+      'POST',
+      { data: fact }
     );
   },
 

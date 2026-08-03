@@ -97,11 +97,20 @@ export function IngestProgressCard() {
       )}
 
       {!isRunning && stopped && (
-        // Honest about the limit: this phase has no partial resume, so
-        // "Build" starts over. Saying "resume" would promise otherwise.
         <p className="text-xs text-[var(--color-text-secondary)]">
-          Building again starts from the beginning — the groundwork pass
-          isn't resumable yet.
+          {checkpoint?.current_pass === 'transcript_walk' &&
+          checkpoint.chunk_plan.length > 0
+            ? // The transcript walk (phase 7) checkpoints every chunk, so
+              // this genuinely continues rather than starting over. Keyed
+              // on chunk_plan, NOT chunk_index, to stay in lockstep with
+              // run()'s resumableWalk gate — at index 0 the walk still
+              // re-plans, but cold-start and world-info are skipped, so
+              // "starts from the beginning" would be a lie.
+              'Building again picks up where it stopped.'
+            : // Honest about the limit: cold-start/world-info always
+              // restart from the beginning — they are cheap enough that
+              // resuming them isn't worth the complexity.
+              'Building again starts from the beginning.'}
         </p>
       )}
 

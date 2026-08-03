@@ -25,10 +25,12 @@ import {
   replayEntriesFrom,
 } from './ingestSources';
 import { makeLlmCall } from '../../utils/storyIngest/llmBridge';
+import { planTranscriptChunks } from '../../utils/storyIngest/transcriptChunker';
 import { Button, ConfirmDialog, Modal } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import type { Project, ProjectChatRef, StoryArchiveReason } from '../../api/client';
 import type { MetaSection } from '../../types/storyBible';
+import type { IngestMessage } from '../../utils/storyIngest/types';
 import { describeRef, resolveRefState } from '../../utils/storyBible/sourceRefs';
 
 /**
@@ -177,6 +179,16 @@ export function StoryTab({
   const [pendingChange, setPendingChange] = useState<ProjectChatRef | null>(null);
   const [startOpen, setStartOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  /** A walk long enough to need an explicit "yes, this one's long"
+   *  before it spends more of the user's key than usual (plan Phase 7:
+   *  no silent caps). Holds what's needed to resume the SAME build once
+   *  confirmed, without re-fetching the chat. */
+  const [pendingLongWalk, setPendingLongWalk] = useState<{
+    profileId: string | null;
+    messages: IngestMessage[];
+    capturedWiFired: unknown;
+    chunkCount: number;
+  } | null>(null);
   const [archivesOpen, setArchivesOpen] = useState(false);
   const [pendingRestore, setPendingRestore] = useState<string | null>(null);
 
@@ -289,6 +301,50 @@ export function StoryTab({
     return gatherColdStartSources(character, avatar, persona ?? null, relevant);
   }, [sourceChat, characters, booksForChat, personas]);
 
+  const buildAndRun = async (
+    profileId: string | null,
+    messages: IngestMessage[],
+    capturedWiFired: unknown,
+    confirmLongWalk: boolean
+  ) => {
+    if (!sourceChat || !coldStartSources) return;
+    const profile = profileId
+      ? useConnectionProfileStore.getState().getProfile(profileId)
+      : null;
+    const settings = useSettingsStore.getState();
+    const provider = profile?.provider ?? settings.activeProvider;
+    const model = profile?.model ?? settings.activeModel;
+    // A saved custom profile points at its OWN endpoint; falling back
+    // to the settings URL would send this run somewhere else entirely.
+    const customUrl = profile
+      ? profile.customUrl
+      : (settings as unknown as { customEndpointUrl?: string }).customEndpointUrl;
+
+    await runIngest({
+      projectId: project.id,
+      sources: coldStartSources,
+      messages,
+      capturedWiFired,
+      wiEntries: replayEntriesFrom(
+        booksForChat(sourceChat.ref.character_avatar, sourceChat.ref.file_name)
+      ),
+      wiScanDepth,
+      // A group chat's source would be a group file; solo is the v1
+      // cut, and the replay pass skips group chats regardless.
+      isGroupChat: false,
+      chat: sourceChat.ref,
+      confirmLongWalk,
+      llm: makeLlmCall({
+        provider,
+        model,
+        customUrl,
+        characterName: coldStartSources.characterName,
+      }),
+      model,
+    });
+    await load(project.id);
+  };
+
   const startIngest = async (profileId: string | null) => {
     if (!sourceChat || !coldStartSources) return;
     setPreparing(true);
@@ -296,40 +352,37 @@ export function StoryTab({
       const { messages, capturedWiFired } = await gatherIngestInputs(
         sourceChat.ref
       );
-      const profile = profileId
-        ? useConnectionProfileStore.getState().getProfile(profileId)
-        : null;
-      const settings = useSettingsStore.getState();
-      const provider = profile?.provider ?? settings.activeProvider;
-      const model = profile?.model ?? settings.activeModel;
-      // A saved custom profile points at its OWN endpoint; falling back
-      // to the settings URL would send this run somewhere else entirely.
-      const customUrl = profile
-        ? profile.customUrl
-        : (settings as unknown as { customEndpointUrl?: string }).customEndpointUrl;
-
       setStartOpen(false);
-      await runIngest({
-        projectId: project.id,
-        sources: coldStartSources,
-        messages,
-        capturedWiFired,
-        wiEntries: replayEntriesFrom(
-          booksForChat(sourceChat.ref.character_avatar, sourceChat.ref.file_name)
-        ),
-        wiScanDepth,
-        // A group chat's source would be a group file; solo is the v1
-        // cut, and the replay pass skips group chats regardless.
-        isGroupChat: false,
-        llm: makeLlmCall({
-          provider,
-          model,
-          customUrl,
-          characterName: coldStartSources.characterName,
-        }),
-        model,
-      });
-      await load(project.id);
+
+      // A very long chat spends more of the user's key than usual —
+      // confirm before any model call, not mid-build (plan: "no silent
+      // caps"). Cheap to check: chunk planning is pure and instant.
+      const plan = planTranscriptChunks(messages);
+      if (plan.exceedsSoftCap) {
+        setPendingLongWalk({
+          profileId,
+          messages,
+          capturedWiFired,
+          chunkCount: plan.chunks.length,
+        });
+        return;
+      }
+
+      await buildAndRun(profileId, messages, capturedWiFired, false);
+    } catch (err) {
+      showIngestError(err);
+    } finally {
+      setPreparing(false);
+    }
+  };
+
+  const confirmLongWalkAndRun = async () => {
+    if (!pendingLongWalk) return;
+    const { profileId, messages, capturedWiFired } = pendingLongWalk;
+    setPendingLongWalk(null);
+    setPreparing(true);
+    try {
+      await buildAndRun(profileId, messages, capturedWiFired, true);
     } catch (err) {
       showIngestError(err);
     } finally {
@@ -737,6 +790,15 @@ export function StoryTab({
           void resetBible();
         }}
         onClose={() => setConfirmReset(false)}
+      />
+
+      <ConfirmDialog
+        isOpen={pendingLongWalk !== null}
+        title="This chat is long"
+        message={`Reading the whole chat will take about ${pendingLongWalk?.chunkCount ?? 0} passes over the model and will spend more of your key than usual. Continue?`}
+        confirmLabel="Build anyway"
+        onConfirm={() => void confirmLongWalkAndRun()}
+        onClose={() => setPendingLongWalk(null)}
       />
 
       {restoreConfirmDialog}
