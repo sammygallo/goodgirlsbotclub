@@ -1,37 +1,83 @@
-import { useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Plus,
-  Trash2,
-  Edit2,
-  Download,
   Upload,
-  Copy,
   BookOpen,
   Sparkles,
   Loader2,
+  Search,
+  X,
 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useCharacterStore } from '../../stores/characterStore';
+import { usePersonaStore } from '../../stores/personaStore';
+import { useChatLoreConfigStore } from '../../stores/chatLoreConfigStore';
 import {
   useWorldInfoStore,
   auditBookHealth,
   type WorldInfoBook,
 } from '../../stores/worldInfoStore';
-import { profileForProvider } from '../../utils/tokenizer';
+import { profileForProvider, estimateTokens } from '../../utils/tokenizer';
 import { lintBook, worstSeverity } from '../../utils/lorebookLint';
+import {
+  computeBookAttachments,
+  filterBooksByScope,
+  type BookAttachments,
+  type LibraryScope,
+} from '../../utils/bookAttachments';
+import {
+  buildEntrySearchIndex,
+  searchEntries,
+  MIN_SEARCH_QUERY_LENGTH,
+} from '../../utils/lorebookSearch';
 import { Button, Input, ConfirmDialog, Modal } from '../ui';
 import { WorldInfoBookEditor } from './WorldInfoBookEditor';
 import { ChatPickerModal, type ChatSelection } from './ChatPickerModal';
 import { GenerateLorebookModal } from './GenerateLorebookModal';
+import { LibraryFilterBar } from './LibraryFilterBar';
+import { LibraryBookRow } from './LibraryBookRow';
+import { BookAttachmentChips } from './BookAttachmentChips';
+import { EntrySearchResults } from './EntrySearchResults';
+import { CharacterEdit } from '../character/CharacterEdit';
 import { api } from '../../api/client';
 import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
+
+/** Safe fallback for a book somehow missing from the attachments map. */
+const EMPTY_ATTACHMENTS: BookAttachments = {
+  ownerAvatar: null,
+  linkedByCharacterAvatars: [],
+  linkedByPersonas: [],
+  chatFiles: [],
+  globallyActive: false,
+};
+
+const EMPTY_STATE_COPY: Record<LibraryScope, { title: string; body: string }> = {
+  all: {
+    title: 'No lorebooks yet',
+    body: 'Create one above, or import an existing World Info JSON.',
+  },
+  world: {
+    title: 'No world lorebooks yet',
+    body: 'Create one above, or import an existing World Info JSON.',
+  },
+  character: {
+    title: 'No character lorebooks yet',
+    body: "Add one from a character's Edit screen, or import below.",
+  },
+  auto_memory: {
+    title: 'No auto-memory lorebooks yet',
+    body: 'These are generated automatically as chats accumulate lore.',
+  },
+};
 
 export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
   const { goBack } = useSettingsPanelStore();
   const {
     books,
     activeBookIds,
+    chatLinkedBookIds,
     scanDepth,
     maxRecursionSteps,
     tokenBudget,
@@ -51,11 +97,23 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
 
   const [newBookName, setNewBookName] = useState('');
   const [editingBook, setEditingBook] = useState<WorldInfoBook | null>(null);
+  const [initialEntryId, setInitialEntryId] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<WorldInfoBook | null>(null);
   const [importNotice, setImportNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Lorebook v2 (Phase 3) library controls: scope filter + entry search.
+  const [scope, setScope] = useState<LibraryScope>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const deferredQuery = useDeferredValue(searchQuery);
+  const [editingCharacterAvatar, setEditingCharacterAvatar] = useState<string | null>(null);
+
+  const chatConfigs = useChatLoreConfigStore((s) => s.configs);
+  const characters = useCharacterStore((s) => s.characters);
+  const linkedBookIdsByAvatar = useCharacterStore((s) => s.linkedBookIdsByAvatar);
+  const personas = usePersonaStore((s) => s.personas);
 
   // "Generate from chat" flow: pick a chat → load its messages → review modal.
   const [isChatPickerOpen, setIsChatPickerOpen] = useState(false);
@@ -94,15 +152,100 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
     }
   };
 
-  // Character-embedded books are managed from the character editor; hide
-  // them from the global lorebook list to avoid confusion.
-  const globalBooks = books.filter((b) => b.ownerCharacterAvatar == null);
-  const charOwnedCount = books.length - globalBooks.length;
-
   // Lorebook health: audit each active book against the active provider's
   // tokenizer profile. Memoized — never build fresh arrays inside zustand
   // selectors (React #185 churn hazard).
   const activeProvider = useSettingsStore((s) => s.activeProvider);
+
+  // Resolve a character avatar to display info for owner chips / attachment
+  // chips. Not memoized as a function reference (it's cheap and only ever
+  // used inside other memos / JSX, never passed anywhere that cares about
+  // referential stability across renders).
+  const resolveCharacter = (avatar: string): { avatar: string; name: string } | null => {
+    const character = characters.find((c) => c.avatar === avatar);
+    return character ? { avatar: character.avatar, name: character.name } : null;
+  };
+
+  // Global entry search index — rebuilt only when the books array changes.
+  const searchIndex = useMemo(() => buildEntrySearchIndex(books), [books]);
+  const searchHits = useMemo(
+    () => searchEntries(searchIndex, deferredQuery),
+    [searchIndex, deferredQuery]
+  );
+  const isSearching = deferredQuery.trim().length >= MIN_SEARCH_QUERY_LENGTH;
+
+  // Attachment summary (owner / linked characters / personas / chats /
+  // globally-active) per book, for the library rows' badge/chip row.
+  const attachments = useMemo(
+    () =>
+      computeBookAttachments({
+        books,
+        activeBookIds,
+        linkedBookIdsByAvatar,
+        personas,
+        chatConfigs,
+        legacyChatLinkedBookIds: chatLinkedBookIds,
+      }),
+    [books, activeBookIds, linkedBookIdsByAvatar, personas, chatConfigs, chatLinkedBookIds]
+  );
+
+  // Per-book token estimate over enabled entries only, for the library row's
+  // "~N tok" caption.
+  const tokenEstimatesByBookId = useMemo(() => {
+    const profile = profileForProvider(activeProvider || '');
+    const map = new Map<string, number>();
+    for (const book of books) {
+      let total = 0;
+      for (const entry of book.entries) {
+        if (!entry.enabled) continue;
+        total += estimateTokens(entry.content, profile);
+      }
+      map.set(book.id, total);
+    }
+    return map;
+  }, [books, activeProvider]);
+
+  // Scope-filtered book list, with presentation-only ordering: world books
+  // keep their existing array order; character-owned books (in 'all',
+  // 'character', 'auto_memory') are grouped/sorted by resolved owner display
+  // name, then book name.
+  const scopedBooks = useMemo(() => {
+    const filtered = filterBooksByScope(books, scope);
+    if (scope === 'world') return filtered;
+
+    const ownerName = (book: WorldInfoBook): string => {
+      if (!book.ownerCharacterAvatar) return '';
+      const character = characters.find((c) => c.avatar === book.ownerCharacterAvatar);
+      return character?.name ?? '';
+    };
+    const byOwnerThenName = (a: WorldInfoBook, b: WorldInfoBook) => {
+      const nameCompare = ownerName(a).localeCompare(ownerName(b));
+      if (nameCompare !== 0) return nameCompare;
+      return a.name.localeCompare(b.name);
+    };
+
+    if (scope === 'all') {
+      const worldBooks = filtered.filter((b) => b.ownerCharacterAvatar == null);
+      const charBooks = filtered
+        .filter((b) => b.ownerCharacterAvatar != null)
+        .sort(byOwnerThenName);
+      return [...worldBooks, ...charBooks];
+    }
+
+    // 'character' and 'auto_memory'
+    return [...filtered].sort(byOwnerThenName);
+  }, [books, scope, characters]);
+
+  // Segment count badges for the filter bar.
+  const segmentCounts = useMemo(() => {
+    const scopes: LibraryScope[] = ['all', 'character', 'world', 'auto_memory'];
+    const counts = {} as Record<LibraryScope, number>;
+    for (const s of scopes) {
+      counts[s] = filterBooksByScope(books, s).length;
+    }
+    return counts;
+  }, [books]);
+
   const health = useMemo(() => {
     const profile = profileForProvider(activeProvider || '');
     const reports = books
@@ -461,6 +604,49 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
             </div>
           </div>
 
+          {/* Scope filter + entry search (Lorebook v2 Phase 3) */}
+          <div className="mb-3 space-y-2">
+            <LibraryFilterBar
+              scope={scope}
+              onScopeChange={(s) => {
+                setScope(s);
+                // The row being renamed may no longer be visible under the
+                // new scope — always clear rather than special-casing it.
+                setRenamingId(null);
+                setRenameValue('');
+              }}
+              counts={segmentCounts}
+            />
+            <div className="relative">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)] pointer-events-none"
+              />
+              <Input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search entries in all books..."
+                className="pl-9 pr-8"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+            {isSearching && (
+              <p className="text-xs text-[var(--color-text-secondary)]">
+                Searching entries in all books — the scope filter above is
+                ignored while searching.
+              </p>
+            )}
+          </div>
+
           <div className="flex gap-2 mb-3">
             <Input
               value={newBookName}
@@ -480,120 +666,75 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
             </Button>
           </div>
 
-          {globalBooks.length === 0 ? (
+          {isSearching ? (
+            <EntrySearchResults
+              hits={searchHits}
+              query={deferredQuery}
+              onOpenEntry={(bookId, entryId) => {
+                const book = books.find((b) => b.id === bookId);
+                if (book) {
+                  setEditingBook(book);
+                  setInitialEntryId(entryId);
+                }
+              }}
+            />
+          ) : scopedBooks.length === 0 ? (
             <div className="text-center py-10">
               <BookOpen
                 size={48}
                 className="mx-auto text-[var(--color-text-secondary)] mb-3"
               />
               <h3 className="text-sm font-medium text-[var(--color-text-primary)] mb-1">
-                No lorebooks yet
+                {EMPTY_STATE_COPY[scope].title}
               </h3>
               <p className="text-xs text-[var(--color-text-secondary)]">
-                Create one above, or import an existing World Info JSON.
+                {EMPTY_STATE_COPY[scope].body}
               </p>
-              {charOwnedCount > 0 && (
-                <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
-                  {charOwnedCount} character-embedded lorebook
-                  {charOwnedCount === 1 ? ' is' : 's are'} managed from the
-                  character editor.
-                </p>
-              )}
             </div>
           ) : (
             <ul className="space-y-2">
-              {globalBooks.map((book) => {
+              {scopedBooks.map((book) => {
                 const isActive = activeBookIds.includes(book.id);
                 const isRenaming = renamingId === book.id;
+                const ownerCharacter = book.ownerCharacterAvatar
+                  ? resolveCharacter(book.ownerCharacterAvatar)
+                  : null;
+                const bookAttachments = attachments.get(book.id) ?? EMPTY_ATTACHMENTS;
+                const tokenEstimate = tokenEstimatesByBookId.get(book.id) ?? 0;
                 return (
-                  <li
+                  <LibraryBookRow
                     key={book.id}
-                    className={`
-                      p-3 rounded-lg border transition-colors
-                      ${
-                        isActive
-                          ? 'bg-[var(--color-primary)]/10 border-[var(--color-primary)]'
-                          : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)]'
-                      }
-                    `}
-                  >
-                    <div className="flex items-center gap-2">
-                      <label className="flex items-center cursor-pointer flex-shrink-0">
-                        <input
-                          type="checkbox"
-                          checked={isActive}
-                          onChange={() => toggleBookActive(book.id)}
-                          className="w-4 h-4 accent-[var(--color-primary)]"
-                          aria-label={`${isActive ? 'Deactivate' : 'Activate'} ${book.name}`}
-                        />
-                      </label>
-                      {isRenaming ? (
-                        <input
-                          type="text"
-                          value={renameValue}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          onBlur={handleFinishRename}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleFinishRename();
-                            if (e.key === 'Escape') {
-                              setRenamingId(null);
-                              setRenameValue('');
-                            }
-                          }}
-                          autoFocus
-                          className="flex-1 px-2 py-1 text-sm bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]"
-                        />
-                      ) : (
-                        <button
-                          onClick={() => setEditingBook(book)}
-                          className="flex-1 min-w-0 text-left"
-                        >
-                          <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
-                            {book.name}
-                          </p>
-                          <p className="text-xs text-[var(--color-text-secondary)]">
-                            {book.entries.length} entr
-                            {book.entries.length === 1 ? 'y' : 'ies'}
-                            {isActive ? ' · active' : ''}
-                          </p>
-                        </button>
-                      )}
-                      <div className="flex items-center gap-0.5 flex-shrink-0">
-                        <button
-                          onClick={() => handleStartRename(book)}
-                          className="p-1.5 rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-secondary)]"
-                          title="Rename"
-                          aria-label="Rename lorebook"
-                        >
-                          <Edit2 size={14} />
-                        </button>
-                        <button
-                          onClick={() => duplicateBook(book.id)}
-                          className="p-1.5 rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-secondary)]"
-                          title="Duplicate"
-                          aria-label="Duplicate lorebook"
-                        >
-                          <Copy size={14} />
-                        </button>
-                        <button
-                          onClick={() => handleExport(book)}
-                          className="p-1.5 rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-secondary)]"
-                          title="Export JSON"
-                          aria-label="Export lorebook"
-                        >
-                          <Download size={14} />
-                        </button>
-                        <button
-                          onClick={() => setConfirmDelete(book)}
-                          className="p-1.5 rounded-lg text-[var(--color-text-secondary)] hover:text-red-400 hover:bg-red-500/10"
-                          title="Delete"
-                          aria-label="Delete lorebook"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  </li>
+                    book={book}
+                    isActive={isActive}
+                    ownerCharacter={ownerCharacter}
+                    attachments={bookAttachments}
+                    tokenEstimate={tokenEstimate}
+                    isRenaming={isRenaming}
+                    renameValue={renameValue}
+                    onRenameValueChange={setRenameValue}
+                    onFinishRename={handleFinishRename}
+                    onCancelRename={() => {
+                      setRenamingId(null);
+                      setRenameValue('');
+                    }}
+                    onStartRename={() => handleStartRename(book)}
+                    onToggleActive={() => toggleBookActive(book.id)}
+                    onOpen={() => {
+                      setEditingBook(book);
+                      setInitialEntryId(undefined);
+                    }}
+                    onDuplicate={() => duplicateBook(book.id)}
+                    onExport={() => handleExport(book)}
+                    onDelete={() => setConfirmDelete(book)}
+                    onOwnerChipClick={(avatar) => setEditingCharacterAvatar(avatar)}
+                    attachmentsSlot={
+                      <BookAttachmentChips
+                        attachments={bookAttachments}
+                        resolveCharacter={resolveCharacter}
+                        onCharacterClick={(avatar) => setEditingCharacterAvatar(avatar)}
+                      />
+                    }
+                  />
                 );
               })}
             </ul>
@@ -605,38 +746,54 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
             Lorebooks are stored locally. Active books are scanned against recent
             messages; matching entries are injected at their configured position.
           </p>
-          {globalBooks.length > 0 && charOwnedCount > 0 && (
-            <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
-              {charOwnedCount} character-embedded lorebook
-              {charOwnedCount === 1 ? '' : 's'} hidden (managed from the
-              character editor).
-            </p>
-          )}
         </section>
       </div>
 
       {editingBook && (
         <WorldInfoBookEditor
           isOpen={!!editingBook}
-          onClose={() => setEditingBook(null)}
+          onClose={() => {
+            setEditingBook(null);
+            setInitialEntryId(undefined);
+          }}
           book={books.find((b) => b.id === editingBook.id) || editingBook}
+          initialEntryId={initialEntryId}
         />
       )}
 
-      {confirmDelete && (
-        <ConfirmDialog
-          isOpen={!!confirmDelete}
-          onClose={() => setConfirmDelete(null)}
-          onConfirm={() => {
-            deleteBook(confirmDelete.id);
-            setConfirmDelete(null);
-          }}
-          title="Delete Lorebook"
-          message={`Delete "${confirmDelete.name}" and all its entries? This cannot be undone.`}
-          confirmLabel="Delete"
-          danger
-        />
-      )}
+      {confirmDelete && (() => {
+        const ownerChar = confirmDelete.ownerCharacterAvatar
+          ? resolveCharacter(confirmDelete.ownerCharacterAvatar)
+          : null;
+        const message = ownerChar
+          ? `Delete "${confirmDelete.name}" and all its entries? This cannot be undone. It will stop auto-activating in ${ownerChar.name}'s chats.`
+          : `Delete "${confirmDelete.name}" and all its entries? This cannot be undone.`;
+        return (
+          <ConfirmDialog
+            isOpen={!!confirmDelete}
+            onClose={() => setConfirmDelete(null)}
+            onConfirm={() => {
+              deleteBook(confirmDelete.id);
+              setConfirmDelete(null);
+            }}
+            title="Delete Lorebook"
+            message={message}
+            confirmLabel="Delete"
+            danger
+          />
+        );
+      })()}
+
+      {editingCharacterAvatar && (() => {
+        const character = characters.find((c) => c.avatar === editingCharacterAvatar);
+        return character ? (
+          <CharacterEdit
+            isOpen
+            character={character}
+            onClose={() => setEditingCharacterAvatar(null)}
+          />
+        ) : null;
+      })()}
 
       <ChatPickerModal
         isOpen={isChatPickerOpen}

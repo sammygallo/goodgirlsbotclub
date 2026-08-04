@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Edit2, Trash2, Check, X, ChevronRight } from 'lucide-react';
 import {
   useWorldInfoStore,
   humanizeCategory,
+  auditBookHealth,
   type WorldInfoBook,
   type WorldInfoEntry,
 } from '../../stores/worldInfoStore';
@@ -11,11 +12,19 @@ import { profileForProvider } from '../../utils/tokenizer';
 import { lintBook, worstSeverity, type LintFinding } from '../../utils/lorebookLint';
 import { Modal, Button, ConfirmDialog } from '../ui';
 import { WorldInfoEntryForm } from './WorldInfoEntryForm';
+import { BookHealthCard } from './BookHealthCard';
 
 interface WorldInfoBookEditorProps {
   isOpen: boolean;
   onClose: () => void;
   book: WorldInfoBook;
+  /**
+   * When set and it matches an entry.id in book.entries, open straight into
+   * edit mode for that entry (as if the user had clicked it) instead of the
+   * list view. Undefined, or no match in the current entries, leaves
+   * behavior unchanged (opens to the list view).
+   */
+  initialEntryId?: string;
 }
 
 const POSITION_LABELS: Record<string, string> = {
@@ -26,23 +35,62 @@ const POSITION_LABELS: Record<string, string> = {
   at_depth: '@ Depth',
 };
 
-export function WorldInfoBookEditor({ isOpen, onClose, book }: WorldInfoBookEditorProps) {
-  const { deleteEntry, updateEntry } = useWorldInfoStore();
+export function WorldInfoBookEditor({ isOpen, onClose, book, initialEntryId }: WorldInfoBookEditorProps) {
+  const { deleteEntry, updateEntry, tokenBudget } = useWorldInfoStore();
 
   const [editingEntry, setEditingEntry] = useState<WorldInfoEntry | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<WorldInfoEntry | null>(null);
 
   // Lint the whole book once per change (cross-entry rules need every entry in
-  // view) and index it by entry id for the per-row badge.
+  // view), index it by entry id for the per-row badge, and fold the book-level
+  // health audit + lint error/warning counts into the same pass so nothing
+  // recomputes lintBook a second time for BookHealthCard.
   const activeProvider = useSettingsStore((s) => s.activeProvider);
-  const lintByEntry = useMemo(() => {
+  const { lintByEntry, audit, lintErrorCount, lintWarningCount } = useMemo(() => {
+    const profile = profileForProvider(activeProvider || '');
     const map = new Map<string, LintFinding[]>();
-    for (const result of lintBook(book.entries, profileForProvider(activeProvider || ''))) {
+    let errorCount = 0;
+    let warningCount = 0;
+    for (const result of lintBook(book.entries, profile)) {
       map.set(result.entryId, result.findings);
+      const worst = worstSeverity(result.findings);
+      if (worst === 'error') errorCount++;
+      else if (worst === 'warning') warningCount++;
     }
-    return map;
-  }, [book.entries, activeProvider]);
+    return {
+      lintByEntry: map,
+      audit: auditBookHealth(book, profile),
+      lintErrorCount: errorCount,
+      lintWarningCount: warningCount,
+    };
+  }, [book, activeProvider]);
+
+  // Deep-link support: open straight into edit mode for a given entry (e.g.
+  // arriving from a notification or search result) instead of the list view.
+  // No-ops when initialEntryId is absent or doesn't match a current entry, so
+  // every existing caller (which never passes it) is unaffected.
+  //
+  // One-shot guard (appliedInitialEntryIdRef): book.entries gets a fresh array
+  // reference on every store mutation (updateEntry/deleteEntry always copy),
+  // so this effect's dependency array alone would re-fire on every Save/
+  // Delete/Restore inside the book — forcibly reopening the originally
+  // deep-linked entry's edit form and defeating normal navigation (e.g. Save
+  // no longer returns to the list). The ref remembers which initialEntryId
+  // has already been applied so a mutation-triggered re-run is a no-op; a
+  // genuinely new initialEntryId (a different search-result click) still
+  // applies normally.
+  const appliedInitialEntryIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!initialEntryId) return;
+    if (appliedInitialEntryIdRef.current === initialEntryId) return;
+    const match = book.entries.find((e) => e.id === initialEntryId);
+    if (match) {
+      setEditingEntry(match);
+      setIsCreating(false);
+      appliedInitialEntryIdRef.current = initialEntryId;
+    }
+  }, [initialEntryId, book.entries]);
 
   const handleFormClose = () => {
     setEditingEntry(null);
@@ -67,6 +115,12 @@ export function WorldInfoBookEditor({ isOpen, onClose, book }: WorldInfoBookEdit
           />
         ) : (
           <div className="space-y-3">
+            <BookHealthCard
+              audit={audit}
+              lintErrorCount={lintErrorCount}
+              lintWarningCount={lintWarningCount}
+              tokenBudget={tokenBudget}
+            />
             {book.entries.length === 0 ? (
               <div className="text-center py-10">
                 <p className="text-sm text-[var(--color-text-secondary)] mb-4">
