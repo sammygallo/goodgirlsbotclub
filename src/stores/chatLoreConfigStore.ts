@@ -8,7 +8,7 @@ import {
   shouldReuploadSection,
 } from '../utils/serverSettings';
 import type { ChatLoreConfig, EntryOverlay } from '../utils/worldInfoComposition';
-import { useWorldInfoStore } from './worldInfoStore';
+import { useWorldInfoStore, DEFAULT_ENTRY } from './worldInfoStore';
 import type { WorldInfoEntry, EntrySource } from './worldInfoStore';
 
 // ---------------------------------------------------------------------------
@@ -143,6 +143,84 @@ function legacyLinkedBookIds(chatFile: string): string[] {
   return useWorldInfoStore.getState().chatLinkedBookIds[chatFile] || [];
 }
 
+/**
+ * Shared "promotion" seed: the persisted config if one already exists,
+ * otherwise a fresh ChatLoreConfig synthesized from the legacy
+ * chatLinkedBookIds map. Used by both updateConfig and mutateConfig so the
+ * seeding rule only ever lives in one place.
+ */
+function seedBaseConfig(
+  chatFile: string,
+  existing: ChatLoreConfig | undefined
+): ChatLoreConfig {
+  return (
+    existing ?? {
+      chatFile,
+      linkedBookIds: [...legacyLinkedBookIds(chatFile)],
+      excludedEntryIds: {},
+      overlays: {},
+      localEntries: [],
+      updatedAt: 0,
+    }
+  );
+}
+
+/**
+ * Internal mutation helper — every method that needs to add/remove/replace
+ * something inside a chat's ChatLoreConfig (as opposed to updateConfig's
+ * public "patch merge" API, which can only add/overwrite keys) goes through
+ * here. Centralizes: seeding/promotion, the updatedAt stamp, dropping empty
+ * excludedEntryIds arrays, and the "nothing left, so remove the config"
+ * vacuous-drop rule (mirrors pruneBook's isNowEmpty check).
+ *
+ * Not part of the public store interface — callers reach it only through
+ * the named actions below.
+ */
+function mutateConfig(
+  chatFile: string,
+  fn: (cfg: ChatLoreConfig) => ChatLoreConfig
+): void {
+  const cur = useChatLoreConfigStore.getState().configs;
+  const base = seedBaseConfig(chatFile, cur[chatFile]);
+  const result = fn(base);
+  if (result === base) return; // fn declined to change anything
+
+  const now = Date.now();
+  const stamped: ChatLoreConfig = {
+    ...result,
+    chatFile,
+    updatedAt: now,
+  };
+
+  // Normalize: drop any excludedEntryIds key whose array is now empty.
+  const normalizedExcludedEntryIds: Record<string, string[]> = {};
+  for (const [bookId, ids] of Object.entries(stamped.excludedEntryIds)) {
+    if (Array.isArray(ids) && ids.length > 0) {
+      normalizedExcludedEntryIds[bookId] = ids;
+    }
+  }
+  const next: ChatLoreConfig = {
+    ...stamped,
+    excludedEntryIds: normalizedExcludedEntryIds,
+  };
+
+  const isVacuous =
+    next.linkedBookIds.length === 0 &&
+    Object.keys(next.excludedEntryIds).length === 0 &&
+    Object.keys(next.overlays).length === 0 &&
+    next.localEntries.length === 0;
+
+  const nextConfigs = { ...cur };
+  if (isVacuous) {
+    delete nextConfigs[chatFile];
+  } else {
+    nextConfigs[chatFile] = next;
+  }
+
+  saveConfigs(nextConfigs);
+  useChatLoreConfigStore.setState({ configs: nextConfigs });
+}
+
 // ---- Store ------------------------------------------------------------------
 
 interface ChatLoreConfigState {
@@ -176,6 +254,65 @@ interface ChatLoreConfigState {
 
   /** Called when a world-info book is deleted — scrubs every reference to it. */
   pruneBook: (bookId: string) => void;
+
+  /**
+   * Excludes (or un-excludes) a single entry from a linked/active book for
+   * this chat. Unlike updateConfig, this can actually remove an id — an
+   * empty resulting exclusion array is dropped by mutateConfig's normalize
+   * step.
+   */
+  setEntryExcluded: (
+    chatFile: string,
+    bookId: string,
+    entryId: string,
+    excluded: boolean
+  ) => void;
+
+  /**
+   * Bulk version of setEntryExcluded for an entire book. The caller supplies
+   * the book's current entry ids (this store never reaches into
+   * useWorldInfoStore to enumerate a book's entries itself).
+   */
+  setBookExcluded: (
+    chatFile: string,
+    bookId: string,
+    allEntryIds: string[],
+    excluded: boolean
+  ) => void;
+
+  /** Creates or replaces the overlay (fork) for overlay.baseEntryId. */
+  upsertOverlay: (chatFile: string, overlay: EntryOverlay) => void;
+
+  /** Deletes the overlay for baseEntryId, if any. No-op if absent. */
+  removeOverlay: (chatFile: string, baseEntryId: string) => void;
+
+  /**
+   * Creates a new chat-local world-info entry from DEFAULT_ENTRY + data,
+   * appends it to localEntries, and returns the created entry (the only
+   * method here with a return value other than void — callers need the new
+   * id immediately, e.g. to open it in an editor).
+   */
+  addLocalEntry: (
+    chatFile: string,
+    data?: Partial<Omit<WorldInfoEntry, 'id' | 'createdAt' | 'updatedAt'>>
+  ) => WorldInfoEntry;
+
+  /** Merges data onto an existing local entry by id. No-op if not found. */
+  updateLocalEntry: (
+    chatFile: string,
+    entryId: string,
+    data: Partial<Omit<WorldInfoEntry, 'id' | 'createdAt'>>
+  ) => void;
+
+  /** Removes a local entry by id. No-op if not found. */
+  removeLocalEntry: (chatFile: string, entryId: string) => void;
+
+  /**
+   * Clears excludedEntryIds/overlays/localEntries back to empty, but
+   * deliberately leaves linkedBookIds untouched — attaching a book is a
+   * linking decision, not something "reset" should undo.
+   */
+  resetCustomizations: (chatFile: string) => void;
 
   clearError: () => void;
 
@@ -214,19 +351,10 @@ export const useChatLoreConfigStore = create<ChatLoreConfigState>((set, get) => 
   updateConfig: (chatFile, patch) => {
     const now = Date.now();
     const cur = get().configs;
-    const existing = cur[chatFile];
     // First real write for this chat: seed from the legacy map (promotion).
     // The legacy map itself is left untouched — just no longer consulted for
     // this chatFile once a real config exists.
-    const base: ChatLoreConfig =
-      existing ?? {
-        chatFile,
-        linkedBookIds: [...legacyLinkedBookIds(chatFile)],
-        excludedEntryIds: {},
-        overlays: {},
-        localEntries: [],
-        updatedAt: 0,
-      };
+    const base: ChatLoreConfig = seedBaseConfig(chatFile, cur[chatFile]);
 
     const mergedExcludedEntryIds: Record<string, string[]> = {
       ...base.excludedEntryIds,
@@ -327,6 +455,101 @@ export const useChatLoreConfigStore = create<ChatLoreConfigState>((set, get) => 
     if (!anyChanged) return;
     saveConfigs(next);
     set({ configs: next });
+  },
+
+  setEntryExcluded: (chatFile, bookId, entryId, excluded) => {
+    mutateConfig(chatFile, (cfg) => {
+      const current = cfg.excludedEntryIds[bookId] ?? [];
+      const nextIds = excluded
+        ? current.includes(entryId)
+          ? current
+          : [...current, entryId]
+        : current.filter((id) => id !== entryId);
+
+      if (nextIds === current) return cfg; // already in the desired state
+
+      return {
+        ...cfg,
+        excludedEntryIds: { ...cfg.excludedEntryIds, [bookId]: nextIds },
+      };
+    });
+  },
+
+  setBookExcluded: (chatFile, bookId, allEntryIds, excluded) => {
+    mutateConfig(chatFile, (cfg) => ({
+      ...cfg,
+      excludedEntryIds: {
+        ...cfg.excludedEntryIds,
+        [bookId]: excluded ? [...allEntryIds] : [],
+      },
+    }));
+  },
+
+  upsertOverlay: (chatFile, overlay) => {
+    mutateConfig(chatFile, (cfg) => ({
+      ...cfg,
+      overlays: { ...cfg.overlays, [overlay.baseEntryId]: overlay },
+    }));
+  },
+
+  removeOverlay: (chatFile, baseEntryId) => {
+    mutateConfig(chatFile, (cfg) => {
+      if (!(baseEntryId in cfg.overlays)) return cfg;
+      const nextOverlays = { ...cfg.overlays };
+      delete nextOverlays[baseEntryId];
+      return { ...cfg, overlays: nextOverlays };
+    });
+  },
+
+  addLocalEntry: (chatFile, data) => {
+    const now = Date.now();
+    const entry: WorldInfoEntry = {
+      ...DEFAULT_ENTRY,
+      ...data,
+      id: `wi_local_${now}_${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mutateConfig(chatFile, (cfg) => ({
+      ...cfg,
+      localEntries: [...cfg.localEntries, entry],
+    }));
+    return entry;
+  },
+
+  updateLocalEntry: (chatFile, entryId, data) => {
+    mutateConfig(chatFile, (cfg) => {
+      const idx = cfg.localEntries.findIndex((e) => e.id === entryId);
+      if (idx === -1) return cfg;
+      const nextEntries = [...cfg.localEntries];
+      nextEntries[idx] = {
+        ...nextEntries[idx],
+        ...data,
+        id: nextEntries[idx].id,
+        createdAt: nextEntries[idx].createdAt,
+        updatedAt: Date.now(),
+      };
+      return { ...cfg, localEntries: nextEntries };
+    });
+  },
+
+  removeLocalEntry: (chatFile, entryId) => {
+    mutateConfig(chatFile, (cfg) => {
+      if (!cfg.localEntries.some((e) => e.id === entryId)) return cfg;
+      return {
+        ...cfg,
+        localEntries: cfg.localEntries.filter((e) => e.id !== entryId),
+      };
+    });
+  },
+
+  resetCustomizations: (chatFile) => {
+    mutateConfig(chatFile, (cfg) => ({
+      ...cfg,
+      excludedEntryIds: {},
+      overlays: {},
+      localEntries: [],
+    }));
   },
 
   clearError: () => set({ error: null }),

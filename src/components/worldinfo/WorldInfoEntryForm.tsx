@@ -6,16 +6,31 @@ import {
   type WorldInfoEntry,
   type WorldInfoPosition,
   type SelectiveLogic,
+  type EntryRevision,
 } from '../../stores/worldInfoStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { profileForProvider } from '../../utils/tokenizer';
-import { lintDraftInBook, type LintSeverity } from '../../utils/lorebookLint';
+import { lintDraftInBook, type LintFinding, type LintSeverity } from '../../utils/lorebookLint';
 import { Button, Input, TextArea } from '../ui';
+import { EntryHistory } from './EntryHistory';
 
 interface WorldInfoEntryFormProps {
   bookId: string;
   entry: WorldInfoEntry | null; // null = creating new
   onClose: () => void;
+  /**
+   * When provided, submit calls this INSTEAD OF the store's createEntry /
+   * updateEntry — same data shape, different destination. Used by chat-local
+   * (per-chat overlay) editing contexts that don't write straight to the
+   * book store. Omit for the existing store-backed behaviour.
+   */
+  onSave?: (data: Omit<WorldInfoEntry, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  /**
+   * When provided, used instead of the store-based book lookup wherever this
+   * form needs "the other entries in this book" (lint context, related-entry
+   * candidates). Omit to fall back to the existing bookId-keyed store lookup.
+   */
+  siblingEntries?: WorldInfoEntry[];
 }
 
 const POSITION_OPTIONS: { value: WorldInfoPosition; label: string; hint: string }[] = [
@@ -49,11 +64,20 @@ const LINT_SEVERITY_STYLES: Record<LintSeverity, { text: string; dot: string; la
   },
 };
 
-export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFormProps) {
+export function WorldInfoEntryForm({
+  bookId,
+  entry,
+  onClose,
+  onSave,
+  siblingEntries,
+}: WorldInfoEntryFormProps) {
   const { createEntry, updateEntry } = useWorldInfoStore();
-  const bookEntries = useWorldInfoStore(
+  // Store-based lookup, kept exactly as before — still the fallback when the
+  // caller doesn't pass siblingEntries.
+  const storeBookEntries = useWorldInfoStore(
     (s) => s.books.find((b) => b.id === bookId)?.entries ?? EMPTY_ENTRIES
   );
+  const bookEntries = siblingEntries ?? storeBookEntries;
 
   const [keys, setKeys] = useState('');
   const [content, setContent] = useState('');
@@ -249,20 +273,34 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
   );
 
   const activeProvider = useSettingsStore((s) => s.activeProvider);
-  // Linted against the whole book, not in isolation — the cross-entry rules
-  // (near-duplicate bodies, related links that no longer resolve) are exactly
-  // the ones the list badges and the health panel report, and a panel that
-  // said "No issues found" for a row badged CHECK sent authors looking for a
-  // problem the editor refused to name.
-  const findings = useMemo(
-    () =>
-      lintDraftInBook(
+
+  // Lint findings are computed on demand (Check health button) rather than
+  // on every keystroke — lintDraftInBook re-lints the whole book, and doing
+  // that per keystroke was expensive for no benefit since the findings are
+  // advisory-only and never gate saving. `against` records which draftEntry
+  // reference the findings were computed for, so the panel can tell the
+  // author when their draft has since changed (draftEntry is itself a
+  // useMemo, so a content edit produces a new reference).
+  const [lintRun, setLintRun] = useState<{
+    findings: LintFinding[];
+    against: WorldInfoEntry;
+  } | null>(null);
+
+  const handleCheckHealth = () => {
+    // Linted against the whole book, not in isolation — the cross-entry rules
+    // (near-duplicate bodies, related links that no longer resolve) are exactly
+    // the ones the list badges and the health panel report, and a panel that
+    // said "No issues found" for a row badged CHECK sent authors looking for a
+    // problem the editor refused to name.
+    setLintRun({
+      findings: lintDraftInBook(
         draftEntry,
         bookEntries,
         profileForProvider(activeProvider || '')
       ),
-    [draftEntry, bookEntries, activeProvider]
-  );
+      against: draftEntry,
+    });
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -272,9 +310,12 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
     if (!content.trim()) return;
     if (!constant && parsedKeys.length === 0) return;
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...data } = draftEntry;
 
-    if (entry) {
+    if (onSave) {
+      onSave(data);
+    } else if (entry) {
       updateEntry(bookId, entry.id, data);
     } else {
       createEntry(bookId, data);
@@ -283,6 +324,26 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
   };
 
   const canSubmit = content.trim().length > 0 && (constant || parsedKeys.length > 0);
+
+  // Restoring an older revision only reverts content — every other field
+  // stays whatever the author currently has open in the form. Routes through
+  // onSave when provided, same as the main submit path; falls back to the
+  // store's updateEntry otherwise. In practice a chat-local entry (edited via
+  // onSave) never has revisions to restore from, since it's never written by
+  // the store's updateEntry/createEntry revision tracking — the History
+  // section that calls this is gated on entry != null && entry.revisions.length > 0,
+  // so this branch is defensive rather than a path that's actually reachable
+  // today. EntryHistory itself gates the actual call behind a confirm.
+  const handleRestore = (rev: EntryRevision) => {
+    if (!entry) return;
+    if (onSave) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...data } = draftEntry;
+      onSave({ ...data, content: rev.prevContent });
+    } else {
+      updateEntry(bookId, entry.id, { content: rev.prevContent });
+    }
+  };
 
   // Category stays free-form so imports never lose data — surface any
   // nonstandard value (from the saved entry or current state) as an option.
@@ -734,37 +795,66 @@ export function WorldInfoEntryForm({ bookId, entry, onClose }: WorldInfoEntryFor
         </p>
       </div>
 
-      {/* Entry check — advisory only, never blocks saving */}
+      {/* Entry check — advisory only, never blocks saving. Run on demand
+          (not per keystroke) since lintDraftInBook re-lints the whole book. */}
       <div className="space-y-2 pt-3 border-t border-[var(--color-border)]">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">
-          Entry check
-        </h3>
-        {findings.length === 0 ? (
-          <p className="text-xs text-[var(--color-text-secondary)]">
-            No issues found.
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">
+            Entry check
+          </h3>
+          <Button type="button" variant="secondary" size="sm" onClick={handleCheckHealth}>
+            Check health
+          </Button>
+        </div>
+        {lintRun && lintRun.against !== draftEntry && (
+          <p className="text-xs italic text-[var(--color-text-secondary)]">
+            Draft changed since last check — run again.
           </p>
-        ) : (
-          <ul className="space-y-1">
-            {findings.map((f, i) => {
-              const style = LINT_SEVERITY_STYLES[f.severity];
-              return (
-                <li
-                  key={`${f.code}-${i}`}
-                  className={`flex items-start gap-2 text-xs ${style.text}`}
-                >
-                  <span
-                    className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${style.dot}`}
-                    aria-hidden="true"
-                  />
-                  <span className="min-w-0">
-                    <span className="font-medium">{style.label}:</span> {f.message}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+        )}
+        {lintRun && (
+          lintRun.findings.length === 0 ? (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              No issues found.
+            </p>
+          ) : (
+            <ul className="space-y-1">
+              {lintRun.findings.map((f, i) => {
+                const style = LINT_SEVERITY_STYLES[f.severity];
+                return (
+                  <li
+                    key={`${f.code}-${i}`}
+                    className={`flex items-start gap-2 text-xs ${style.text}`}
+                  >
+                    <span
+                      className={`mt-1 w-1.5 h-1.5 rounded-full flex-shrink-0 ${style.dot}`}
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0">
+                      <span className="font-medium">{style.label}:</span> {f.message}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )
         )}
       </div>
+
+      {/* History — only for an existing entry that actually has revisions */}
+      {entry && entry.revisions.length > 0 && (
+        <details className="group pt-3 border-t border-[var(--color-border)]">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
+            History
+          </summary>
+          <div className="mt-2">
+            <EntryHistory
+              revisions={entry.revisions}
+              currentContent={entry.content}
+              onRestore={handleRestore}
+            />
+          </div>
+        </details>
+      )}
 
       <div className="flex gap-3 pt-4 border-t border-[var(--color-border)]">
         <Button type="button" variant="secondary" onClick={onClose} className="flex-1">

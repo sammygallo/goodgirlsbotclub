@@ -14,13 +14,14 @@ import { UsageGauge } from './UsageGauge';
 import { ChatOptionsMenu } from './ChatOptionsMenu';
 import { BottomSheet } from '../ui/BottomSheet';
 import { ChatHistoryPanel } from './ChatHistoryPanel';
-import { ChatLorebookModal } from './ChatLorebookModal';
+import { ChatLorePanel } from './lore/ChatLorePanel';
 import { ChatStyleModal } from './ChatStyleModal';
 import { CHAT_STYLE_NONE } from '../../utils/chatStyles';
 import { GenerateLorebookModal } from '../worldinfo/GenerateLorebookModal';
 import { GenerateSceneModal } from './GenerateSceneModal';
 import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
+import { useChatLoreConfigStore } from '../../stores/chatLoreConfigStore';
 import { GroupChatControls } from './GroupChatControls';
 import { AuthorNote } from './AuthorNote';
 import { SummaryPanel } from './SummaryPanel';
@@ -263,9 +264,16 @@ export function ChatView() {
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [branchOpen, setBranchOpen] = useState(false);
   const [chatLorebookOpen, setChatLorebookOpen] = useState(false);
-  const chatLorebookCount = useWorldInfoStore((s) =>
+  // v2 chat-lore config (linkedBookIds) supersedes the legacy per-chat map
+  // once it exists for this chat; fall back to the legacy count until then.
+  const chatLoreV2LinkedCount = useChatLoreConfigStore((s) =>
+    currentChatFile ? s.configs[currentChatFile]?.linkedBookIds.length : undefined
+  );
+  const legacyChatLorebookCount = useWorldInfoStore((s) =>
     currentChatFile ? (s.chatLinkedBookIds[currentChatFile]?.length ?? 0) : 0
   );
+  const chatLorebookCount =
+    chatLoreV2LinkedCount !== undefined ? chatLoreV2LinkedCount : legacyChatLorebookCount;
   // Per-chat style: chat-linked preset/template ids. Subscribed reactively so
   // editing links in the Chat Style modal re-applies them while the chat is
   // open (the transient-load effects below depend on these).
@@ -1123,6 +1131,15 @@ export function ChatView() {
       </div>
     );
   }
+
+  // ChatLorePanel's characterAvatars: solo chat is the one selected
+  // character; group chat is every member. Derived from state ChatView
+  // already subscribes to above — no new store subscription.
+  const chatLoreCharacterAvatars = isGroupChatMode
+    ? groupChatCharacters.map((c) => c.avatar)
+    : selectedCharacter
+      ? [selectedCharacter.avatar]
+      : [];
 
   const membersLabel = groupChatCharacters.map((c) => c.name).join(', ');
   const groupTitle =
@@ -2188,12 +2205,13 @@ export function ChatView() {
         onClose={() => setIsHistoryPanelOpen(false)}
       />
 
-      {/* Chat Lorebooks modal (opened from chat options menu) */}
+      {/* Chat Lore panel (opened from chat options menu) */}
       {currentChatFile && (
-        <ChatLorebookModal
+        <ChatLorePanel
           isOpen={chatLorebookOpen}
           onClose={() => setChatLorebookOpen(false)}
           chatFile={currentChatFile}
+          characterAvatars={chatLoreCharacterAvatars}
         />
       )}
 
