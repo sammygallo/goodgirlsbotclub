@@ -38,7 +38,14 @@ interface ChatOptionsMenuProps {
   authorNote: ChatPanelState;
   summary: ChatPanelState & { enabled: boolean };
   branches: ChatPanelState & { count: number };
-  lorebook: ChatPanelState & { count: number };
+  /**
+   * `conflictCount` (optional) is the number of pending Auto Memory conflicts
+   * for this chat — purely an attention signal for the pill's amber dot; it
+   * does not change what the pill does when clicked (still opens
+   * ChatLorePanel). Conflict review itself lives in LoreConflictChip's Review
+   * button / the Library's per-book pill, not here.
+   */
+  lorebook: ChatPanelState & { count: number; conflictCount?: number };
 
   onStartNewChat: () => void;
   onManageChatFiles: () => void;
@@ -129,6 +136,8 @@ function MenuBody({
     isOpen: boolean;
     hasContent: boolean;
     onToggle: () => void;
+    /** True when this pill wants a small amber attention dot next to its label. */
+    attention?: boolean;
   }>;
   onStartNewChat: () => void;
   onManageChatFiles: () => void;
@@ -170,6 +179,12 @@ function MenuBody({
               >
                 <Icon size={11} />
                 <span>{panel.label}</span>
+                {panel.attention && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0"
+                    aria-hidden="true"
+                  />
+                )}
               </button>
             );
           })}
@@ -359,6 +374,7 @@ export function ChatOptionsMenu({
       isOpen: lorebook.isOpen,
       hasContent: lorebook.count > 0,
       onToggle: wrap(lorebook.onToggle),
+      attention: (lorebook.conflictCount ?? 0) > 0,
     },
   ];
 

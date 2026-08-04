@@ -18,13 +18,17 @@ const ACTION_VERBS: Record<RevisionAction, string> = {
   create: 'created',
   edit: 'edited',
   auto_update: 'auto-updated',
-  conflict_keep: 'resolved a conflict',
-  conflict_replace: 'resolved a conflict',
-  conflict_fork: 'resolved a conflict',
+  conflict_keep: 'kept this over a conflicting memory',
+  conflict_replace: 'replaced this with a conflicting memory',
+  conflict_fork: 'forked this over a conflicting memory',
 };
 
-/** Small dependency-free relative-time label — no calendar precision needed. */
-function relativeTime(ts: number): string {
+/**
+ * Small dependency-free relative-time label — no calendar precision needed.
+ * Exported so other components (e.g. a later per-chat overlay/forking view)
+ * can reuse the same formatting instead of reimplementing it.
+ */
+export function relativeTime(ts: number): string {
   const diffSec = Math.floor((Date.now() - ts) / 1000);
   if (diffSec < 45) return 'just now';
   const min = Math.floor(diffSec / 60);

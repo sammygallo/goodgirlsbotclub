@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { estimateTokens, type TokenizerProfile } from '../utils/tokenizer';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import { useChatLoreConfigStore } from './chatLoreConfigStore';
+import { useLoreConflictStore } from './loreConflictStore';
 import type {
   CharacterBookV2,
   CharacterBookEntryV2,
@@ -1532,12 +1533,18 @@ interface WorldInfoState {
   // Entry CRUD
   createEntry: (
     bookId: string,
-    data?: Partial<Omit<WorldInfoEntry, 'id' | 'createdAt' | 'updatedAt'>>
+    data?: Partial<Omit<WorldInfoEntry, 'id' | 'createdAt' | 'updatedAt'>>,
+    meta?: { sourceChatFile?: string }
   ) => WorldInfoEntry | null;
   updateEntry: (
     bookId: string,
     entryId: string,
-    data: Partial<Omit<WorldInfoEntry, 'id' | 'createdAt'>>
+    data: Partial<Omit<WorldInfoEntry, 'id' | 'createdAt'>>,
+    meta?: {
+      action?: RevisionAction;
+      sourceChatFile?: string;
+      recordRevision?: 'auto' | 'always';
+    }
   ) => void;
   deleteEntry: (bookId: string, entryId: string) => void;
 
@@ -1663,6 +1670,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       chatLinkedBookIds: chatNext,
     });
     useChatLoreConfigStore.getState().pruneBook(bookId);
+    useLoreConflictStore.getState().pruneBook(bookId);
   },
 
   duplicateBook: (bookId) => {
@@ -1696,7 +1704,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
     return copy;
   },
 
-  createEntry: (bookId, data) => {
+  createEntry: (bookId, data, meta) => {
     const book = get().books.find((b) => b.id === bookId);
     if (!book) {
       set({ error: 'Lorebook not found' });
@@ -1714,6 +1722,9 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
           authorHandle: currentHandle(),
           action: 'create',
           prevContent: '',
+          ...(meta?.sourceChatFile !== undefined
+            ? { sourceChatFile: meta.sourceChatFile }
+            : {}),
         },
       ],
       createdAt: now,
@@ -1729,7 +1740,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
     return entry;
   },
 
-  updateEntry: (bookId, entryId, data) => {
+  updateEntry: (bookId, entryId, data, meta) => {
     const now = Date.now();
     const next = get().books.map((b) => {
       if (b.id !== bookId) return b;
@@ -1740,12 +1751,17 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
           // Content changes get a revision record BEFORE the patch is
           // applied, so prevContent captures the pre-edit state.
           let revisions: EntryRevision[] = e.revisions;
-          if (data.content !== undefined && data.content !== e.content) {
+          const contentChanged =
+            data.content !== undefined && data.content !== e.content;
+          if (contentChanged || meta?.recordRevision === 'always') {
             const rev: EntryRevision = {
               ts: now,
               authorHandle: currentHandle(),
-              action: 'edit',
+              action: meta?.action ?? 'edit',
               prevContent: e.content,
+              ...(meta?.sourceChatFile !== undefined
+                ? { sourceChatFile: meta.sourceChatFile }
+                : {}),
             };
             revisions = [...e.revisions, rev].slice(-10);
           }

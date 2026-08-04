@@ -348,6 +348,38 @@ export function entryLabel(entry: WorldInfoEntry): string {
   return entry.comment || entry.keys[0] || entry.id;
 }
 
+/** One entry that reads as a near-duplicate of a candidate body. */
+export interface NearDuplicateHit {
+  entryId: string;
+  /** Jaccard similarity over content words (shared / union), 0..1. */
+  score: number;
+}
+
+/**
+ * Find entries in `entries` whose content reads as a near-duplicate of
+ * `content`, using the same tokenization and duplicate test as `lintBook`'s
+ * cross-entry dedup sweep. Results are sorted by score, highest first.
+ */
+export function findNearDuplicates(
+  content: string,
+  entries: WorldInfoEntry[]
+): NearDuplicateHit[] {
+  const words = contentWords(content);
+  if (words.size === 0) return [];
+
+  const hits: NearDuplicateHit[] = [];
+  for (const entry of entries) {
+    const entryWords = contentWords(entry.content);
+    if (entryWords.size === 0) continue;
+    if (!isNearDuplicate(words, entryWords)) continue;
+    const shared = intersectionSize(words, entryWords);
+    const union = words.size + entryWords.size - shared;
+    hits.push({ entryId: entry.id, score: union > 0 ? shared / union : 0 });
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits;
+}
+
 /**
  * Check every entry in a book, plus the cross-entry rules that need the
  * whole book in view: near-duplicate bodies (the standard's dedup sweep)
