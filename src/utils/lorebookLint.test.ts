@@ -39,6 +39,8 @@ function mkEntry(over: Partial<WorldInfoEntry> = {}): WorldInfoEntry {
     critical: false,
     category: 'world_rule',
     relatedIds: [],
+    source: 'manual',
+    revisions: [],
     createdAt: 0,
     updatedAt: 0,
     ...over,
