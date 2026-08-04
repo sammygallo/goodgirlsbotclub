@@ -14,6 +14,7 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import { useCharacterStore } from '../../stores/characterStore';
 import { usePersonaStore } from '../../stores/personaStore';
 import { useChatLoreConfigStore } from '../../stores/chatLoreConfigStore';
+import { useLoreConflictStore } from '../../stores/loreConflictStore';
 import {
   useWorldInfoStore,
   auditBookHealth,
@@ -38,6 +39,7 @@ import { ChatPickerModal, type ChatSelection } from './ChatPickerModal';
 import { GenerateLorebookModal } from './GenerateLorebookModal';
 import { LibraryFilterBar } from './LibraryFilterBar';
 import { LibraryBookRow } from './LibraryBookRow';
+import { ConflictResolutionSheet } from './ConflictResolutionSheet';
 import { BookAttachmentChips } from './BookAttachmentChips';
 import { EntrySearchResults } from './EntrySearchResults';
 import { CharacterEdit } from '../character/CharacterEdit';
@@ -110,10 +112,15 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
   const deferredQuery = useDeferredValue(searchQuery);
   const [editingCharacterAvatar, setEditingCharacterAvatar] = useState<string | null>(null);
 
+  // Lorebook v2 (Phase 4): which book (if any) currently has its Auto Memory
+  // conflict-resolution sheet open.
+  const [conflictSheetBookId, setConflictSheetBookId] = useState<string | null>(null);
+
   const chatConfigs = useChatLoreConfigStore((s) => s.configs);
   const characters = useCharacterStore((s) => s.characters);
   const linkedBookIdsByAvatar = useCharacterStore((s) => s.linkedBookIdsByAvatar);
   const personas = usePersonaStore((s) => s.personas);
+  const conflictRecords = useLoreConflictStore((s) => s.records);
 
   // "Generate from chat" flow: pick a chat → load its messages → review modal.
   const [isChatPickerOpen, setIsChatPickerOpen] = useState(false);
@@ -204,6 +211,16 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
     }
     return map;
   }, [books, activeProvider]);
+
+  // Pending Auto Memory conflict counts per book, for the library row's
+  // conflict pill (Lorebook v2 Phase 4).
+  const conflictCountsByBookId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const record of Object.values(conflictRecords)) {
+      map.set(record.bookId, (map.get(record.bookId) ?? 0) + 1);
+    }
+    return map;
+  }, [conflictRecords]);
 
   // Scope-filtered book list, with presentation-only ordering: world books
   // keep their existing array order; character-owned books (in 'all',
@@ -734,6 +751,8 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
                         onCharacterClick={(avatar) => setEditingCharacterAvatar(avatar)}
                       />
                     }
+                    conflictCount={conflictCountsByBookId.get(book.id) ?? 0}
+                    onResolveConflicts={() => setConflictSheetBookId(book.id)}
                   />
                 );
               })}
@@ -799,6 +818,12 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
         isOpen={isChatPickerOpen}
         onClose={() => setIsChatPickerOpen(false)}
         onSelect={handleChatSelected}
+      />
+
+      <ConflictResolutionSheet
+        isOpen={conflictSheetBookId !== null}
+        onClose={() => setConflictSheetBookId(null)}
+        scope={{ kind: 'book', bookId: conflictSheetBookId ?? '' }}
       />
 
       {genLoading && (

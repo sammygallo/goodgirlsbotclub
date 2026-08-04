@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Edit2, Copy, Download, Trash2, User, Globe, Sparkles } from 'lucide-react';
+import { Edit2, Copy, Download, Trash2, User, Globe, Sparkles, AlertTriangle } from 'lucide-react';
 import type { WorldInfoBook } from '../../stores/worldInfoStore';
 import type { BookAttachments } from '../../utils/bookAttachments';
 import { Avatar } from '../ui';
@@ -55,6 +55,15 @@ export interface LibraryBookRowProps {
   onOwnerChipClick?: (avatar: string) => void;
   /** Slot for a parent-composed <BookAttachmentChips> (or similar) node. */
   attachmentsSlot?: ReactNode;
+  /**
+   * Count of pending Auto Memory conflicts for this book (Lorebook v2 Phase
+   * 4). Optional and additive — omitted/0 renders nothing extra, so every
+   * existing caller is unaffected.
+   */
+  conflictCount?: number;
+  /** Opens this book's conflict-resolution sheet. Required alongside a
+   * truthy conflictCount for the pill to render. */
+  onResolveConflicts?: () => void;
 }
 
 export function LibraryBookRow({
@@ -75,6 +84,8 @@ export function LibraryBookRow({
   onDelete,
   onOwnerChipClick,
   attachmentsSlot,
+  conflictCount,
+  onResolveConflicts,
 }: LibraryBookRowProps) {
   const isCharacterOwned = book.ownerCharacterAvatar != null;
   const entryCountLabel = `${book.entries.length} entr${book.entries.length === 1 ? 'y' : 'ies'}`;
@@ -188,6 +199,19 @@ export function LibraryBookRow({
             <Sparkles size={12} />
             Auto
           </span>
+        )}
+
+        {!!conflictCount && onResolveConflicts && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onResolveConflicts();
+            }}
+            className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+          >
+            <AlertTriangle size={12} />
+            {conflictCount} conflict{conflictCount === 1 ? '' : 's'}
+          </button>
         )}
 
         <span

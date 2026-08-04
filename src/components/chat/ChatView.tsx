@@ -15,6 +15,8 @@ import { ChatOptionsMenu } from './ChatOptionsMenu';
 import { BottomSheet } from '../ui/BottomSheet';
 import { ChatHistoryPanel } from './ChatHistoryPanel';
 import { ChatLorePanel } from './lore/ChatLorePanel';
+import { LoreConflictChip } from './lore/LoreConflictChip';
+import { ConflictResolutionSheet } from '../worldinfo/ConflictResolutionSheet';
 import { ChatStyleModal } from './ChatStyleModal';
 import { CHAT_STYLE_NONE } from '../../utils/chatStyles';
 import { GenerateLorebookModal } from '../worldinfo/GenerateLorebookModal';
@@ -22,6 +24,7 @@ import { GenerateSceneModal } from './GenerateSceneModal';
 import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
 import { useChatLoreConfigStore } from '../../stores/chatLoreConfigStore';
+import { useLoreConflictStore } from '../../stores/loreConflictStore';
 import { GroupChatControls } from './GroupChatControls';
 import { AuthorNote } from './AuthorNote';
 import { SummaryPanel } from './SummaryPanel';
@@ -274,6 +277,17 @@ export function ChatView() {
   );
   const chatLorebookCount =
     chatLoreV2LinkedCount !== undefined ? chatLoreV2LinkedCount : legacyChatLorebookCount;
+  // Lorebook v2 Phase 4: Auto Memory conflict resolution sheet for this chat.
+  const [conflictSheetOpen, setConflictSheetOpen] = useState(false);
+  // Whole-map subscription (never a selector-derived array) — see
+  // LoreConflictChip.tsx's own comment on this store's React #185 discipline.
+  const loreConflictRecords = useLoreConflictStore((s) => s.records);
+  const chatConflictCount = useMemo(() => {
+    if (!currentChatFile) return 0;
+    return Object.values(loreConflictRecords).filter(
+      (r) => r.chatFile === currentChatFile
+    ).length;
+  }, [loreConflictRecords, currentChatFile]);
   // Per-chat style: chat-linked preset/template ids. Subscribed reactively so
   // editing links in the Chat Style modal re-applies them while the chat is
   // open (the transient-load effects below depend on these).
@@ -1881,6 +1895,14 @@ export function ChatView() {
               />
             )}
 
+            {/* Lorebook v2 Phase 4: Auto Memory conflict awareness pill. */}
+            {currentChatFile && (
+              <LoreConflictChip
+                chatFile={currentChatFile}
+                onReview={() => setConflictSheetOpen(true)}
+              />
+            )}
+
             <div ref={messagesEndRef} />
           </div>
         )}
@@ -2090,6 +2112,7 @@ export function ChatView() {
             isOpen: chatLorebookOpen,
             hasContent: chatLorebookCount > 0,
             count: chatLorebookCount,
+            conflictCount: chatConflictCount,
             onToggle: () => setChatLorebookOpen((v) => !v),
           }}
           onStartNewChat={() => startNewChat(selectedCharacter)}
@@ -2212,6 +2235,16 @@ export function ChatView() {
           onClose={() => setChatLorebookOpen(false)}
           chatFile={currentChatFile}
           characterAvatars={chatLoreCharacterAvatars}
+        />
+      )}
+
+      {/* Lorebook v2 Phase 4: Auto Memory conflict resolution sheet (opened
+          from the LoreConflictChip's Review button). */}
+      {currentChatFile && (
+        <ConflictResolutionSheet
+          isOpen={conflictSheetOpen}
+          onClose={() => setConflictSheetOpen(false)}
+          scope={{ kind: 'chat', chatFile: currentChatFile }}
         />
       )}
 

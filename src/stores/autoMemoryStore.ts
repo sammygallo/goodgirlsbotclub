@@ -25,6 +25,10 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import { api } from '../api/client';
 import { useSettingsStore } from './settingsStore';
 import { useWorldInfoStore } from './worldInfoStore';
+import type { WorldInfoEntry } from './worldInfoStore';
+import { useLoreConflictStore } from './loreConflictStore';
+import type { ConflictDetector } from './loreConflictStore';
+import { findNearDuplicates } from '../utils/lorebookLint';
 import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import type { CharacterInfo } from '../api/client';
 
@@ -98,7 +102,7 @@ interface AutoMemoryState {
     chatFile: string,
     character: CharacterInfo,
     messages: { name: string; isUser: boolean; isSystem: boolean; content: string }[]
-  ) => Promise<{ added: number }>;
+  ) => Promise<{ added: number; conflicts: number }>;
   clearError: () => void;
   initForUser: (handle: string) => void;
   resetUser: () => void;
@@ -151,12 +155,28 @@ async function* parseSSEStream(
   }
 }
 
-interface ExtractedFact {
+export interface ExtractedFact {
   keys: string[];
   content: string;
+  /**
+   * 1-based index into the numbered "Already known" digest sent for THIS
+   * extraction call, when the LLM says this fact contradicts/supersedes
+   * that digest item. Null when there's no self-reported conflict, or when
+   * the model returned something that isn't a valid in-range digest index
+   * (parsing degrades to null rather than dropping the fact — see
+   * parseFactsFromResponse).
+   */
+  conflictsWithIndex: number | null;
 }
 
-function parseFactsFromResponse(text: string): ExtractedFact[] {
+/**
+ * Parse the LLM's JSON-array response into facts. `digestSize` is the
+ * length of the numbered "Already known" digest sent in THIS call's prompt
+ * — it bounds which conflicts_with values are trusted as real digest
+ * indices; anything outside [1, digestSize], or not a plain integer,
+ * degrades to `conflictsWithIndex: null` without dropping the item.
+ */
+export function parseFactsFromResponse(text: string, digestSize: number): ExtractedFact[] {
   // The LLM may wrap JSON in fences or add prose. Find the first JSON array.
   const arrayMatch = text.match(/\[[\s\S]*\]/);
   if (!arrayMatch) return [];
@@ -174,15 +194,35 @@ function parseFactsFromResponse(text: string): ExtractedFact[] {
           : [];
       const content = typeof obj.content === 'string' ? obj.content.trim() : '';
       if (rawKeys.length === 0 || !content) continue;
+      const rawConflicts = obj.conflicts_with;
+      const conflictsWithIndex =
+        typeof rawConflicts === 'number' &&
+        Number.isInteger(rawConflicts) &&
+        rawConflicts >= 1 &&
+        rawConflicts <= digestSize
+          ? rawConflicts
+          : null;
       out.push({
         keys: rawKeys.map((k) => k.trim()).filter(Boolean),
         content,
+        conflictsWithIndex,
       });
     }
     return out;
   } catch {
     return [];
   }
+}
+
+/**
+ * Normalize a fact/entry body for the cheap identical-duplicate fast path:
+ * trim, lowercase, first 80 chars. Deliberately duplicated from
+ * loreConflictStore's own (unexported) norm80 rather than imported — same
+ * definition, kept local so this file's dedup check doesn't depend on
+ * another store's internals.
+ */
+function norm80(s: string): string {
+  return s.trim().toLowerCase().slice(0, 80);
 }
 
 const AUTO_MEMORY_BOOK_SUFFIX = ' — Auto Memory';
@@ -256,7 +296,7 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
       },
 
       extractFacts: async (chatFile, character, messages) => {
-        if (get().isExtracting) return { added: 0 };
+        if (get().isExtracting) return { added: 0, conflicts: 0 };
         set({ isExtracting: true, error: null });
 
         try {
@@ -265,7 +305,7 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
           const avatar = character.avatar || '';
           if (!avatar) {
             set({ isExtracting: false });
-            return { added: 0 };
+            return { added: 0, conflicts: 0 };
           }
 
           // Find or create the auto-memory book for this character. We
@@ -297,16 +337,22 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
           }
 
           // Build "already known" digest so the LLM doesn't repeat itself.
-          const knownDigest = book.entries
-            .slice(-30)
-            .map((e) => `- (${e.keys.join(', ')}) ${e.content}`)
+          // Numbered so a contradicting new fact can point back at a
+          // specific item via conflicts_with. digestEntries is captured
+          // here and resolved back into entry ids AFTER the LLM round-trip
+          // — never against a freshly-refetched book directly, since the
+          // book can change while the request is in flight (see the
+          // accept/route loop below).
+          const digestEntries = book.entries.slice(-30);
+          const knownDigest = digestEntries
+            .map((e, i) => `${i + 1}. (${e.keys.join(', ')}) ${e.content}`)
             .join('\n');
 
           // Use the last 30 non-system messages as the extraction window.
           const sample = messages.filter((m) => !m.isSystem).slice(-30);
           if (sample.length < 4) {
             set({ isExtracting: false });
-            return { added: 0 };
+            return { added: 0, conflicts: 0 };
           }
 
           const transcript = sample
@@ -317,10 +363,11 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
 
 Output rules:
 - Return ONLY a JSON array. No prose.
-- Each item: {"keys": ["keyword1", "keyword2"], "content": "fact in one sentence"}.
+- Each item: {"keys": ["keyword1", "keyword2"], "content": "fact in one sentence", "conflicts_with": null}.
 - Keys are short trigger words a future scan would look for to surface this fact.
 - Skip facts already covered by the "Already known" list.
 - Skip transient stuff (greetings, weather flavor, repeated ideas).
+- The "Already known" list below is numbered. If a new fact CONTRADICTS or SUPERSEDES a numbered item — the old fact can no longer be true alongside the new one — still output the new fact, and set "conflicts_with" to that item's number. Otherwise set "conflicts_with" to null.
 - If nothing new is worth recording, return [].`;
 
           const user = `Already known:
@@ -346,7 +393,7 @@ New canonical facts (JSON array):`;
               isExtracting: false,
               error: 'No response from API during extraction',
             });
-            return { added: 0 };
+            return { added: 0, conflicts: 0 };
           }
 
           let raw = '';
@@ -354,7 +401,7 @@ New canonical facts (JSON array):`;
             raw += token;
           }
 
-          const facts = parseFactsFromResponse(raw);
+          const facts = parseFactsFromResponse(raw, digestEntries.length);
           if (facts.length === 0) {
             // Mark this window as processed even on empty result so we
             // don't immediately retry on the next message.
@@ -363,28 +410,92 @@ New canonical facts (JSON array):`;
               lastByChatFile: { ...s.lastByChatFile, [chatFile]: total },
               isExtracting: false,
             }));
-            return { added: 0 };
+            return { added: 0, conflicts: 0 };
           }
 
-          // Dedupe: drop any fact whose content substring-matches an
-          // existing entry (case-insensitive prefix). Cheap and good
-          // enough for v1; semantic dedup is a follow-up.
-          const existingNorm = new Set(
-            book.entries.map((e) => e.content.trim().toLowerCase().slice(0, 80))
-          );
+          // Re-read the book fresh — entries may have changed while the LLM
+          // call was in flight (hand edits, another extraction run, a
+          // conflict resolution). Everything below resolves against this
+          // fresh snapshot, not the `book` reference captured before the
+          // round-trip.
+          const freshBook =
+            useWorldInfoStore.getState().books.find((b) => b.id === book.id) ?? book;
+
+          // Cheap first filter, unchanged in spirit from v1: drop any fact
+          // whose content substring-matches (case-insensitive, first-80-char
+          // prefix) an existing entry. Also seed it with every currently
+          // PENDING conflict's proposed content for this book, so the next
+          // extraction window doesn't re-propose (and re-record) a fact
+          // that's already awaiting user resolution.
+          const pendingConflicts = useLoreConflictStore.getState().pendingForBook(freshBook.id);
+          const existingNorm = new Set<string>([
+            ...freshBook.entries.map((e) => norm80(e.content)),
+            ...pendingConflicts.map((c) => norm80(c.proposedContent)),
+          ]);
+
           let added = 0;
+          let conflicts = 0;
           for (const fact of facts) {
-            const norm = fact.content.trim().toLowerCase().slice(0, 80);
-            if (existingNorm.has(norm)) continue;
-            existingNorm.add(norm);
-            useWorldInfoStore.getState().createEntry(book.id, {
-              keys: fact.keys,
-              content: fact.content,
-              comment: 'Auto-extracted',
-              // Machine-extracted recent-window facts are continuity
-              // notes by definition (see WI_CATEGORIES).
-              category: 'continuity_note',
-            });
+            const n = norm80(fact.content);
+            if (existingNorm.has(n)) continue;
+            existingNorm.add(n);
+
+            // Detection net 1 — the LLM's own self-reported conflict.
+            // Resolved back through the SAME digestEntries snapshot
+            // captured at prompt-build time (never against the
+            // freshly-refetched book directly), then re-checked against
+            // the fresh book in case that entry was deleted mid-round-trip.
+            // Net 1 takes strict precedence over net 2 below.
+            let target: WorldInfoEntry | undefined;
+            let detectedBy: ConflictDetector | undefined;
+            if (fact.conflictsWithIndex !== null) {
+              const snapshot = digestEntries[fact.conflictsWithIndex - 1];
+              const live = snapshot
+                ? freshBook.entries.find((e) => e.id === snapshot.id)
+                : undefined;
+              if (live) {
+                target = live;
+                detectedBy = 'llm';
+              }
+            }
+
+            // Detection net 2 — lexical near-duplicate fallback, only
+            // consulted when net 1 found nothing.
+            if (!target) {
+              const hits = findNearDuplicates(fact.content, freshBook.entries);
+              if (hits.length > 0) {
+                target = freshBook.entries.find((e) => e.id === hits[0].entryId);
+                detectedBy = 'lint';
+              }
+            }
+
+            if (target && detectedBy) {
+              useLoreConflictStore.getState().addConflict({
+                chatFile,
+                bookId: freshBook.id,
+                existingEntryId: target.id,
+                existingContentSnapshot: target.content,
+                proposedContent: fact.content,
+                proposedKeys: fact.keys,
+                detectedBy,
+              });
+              conflicts++;
+              continue;
+            }
+
+            useWorldInfoStore.getState().createEntry(
+              book.id,
+              {
+                keys: fact.keys,
+                content: fact.content,
+                comment: 'Auto-extracted',
+                // Machine-extracted recent-window facts are continuity
+                // notes by definition (see WI_CATEGORIES).
+                category: 'continuity_note',
+                source: 'auto_memory',
+              },
+              { sourceChatFile: chatFile }
+            );
             added++;
           }
 
@@ -393,13 +504,13 @@ New canonical facts (JSON array):`;
             lastByChatFile: { ...s.lastByChatFile, [chatFile]: total },
             isExtracting: false,
           }));
-          return { added };
+          return { added, conflicts };
         } catch (err) {
           set({
             error: err instanceof Error ? err.message : 'Extraction failed',
             isExtracting: false,
           });
-          return { added: 0 };
+          return { added: 0, conflicts: 0 };
         }
       },
     }),

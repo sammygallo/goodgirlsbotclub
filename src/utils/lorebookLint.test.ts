@@ -5,6 +5,8 @@ import {
   lintDraftInBook,
   worstSeverity,
   BODY_TOKEN_TARGET,
+  findNearDuplicates,
+  DUPLICATE_SIMILARITY,
 } from './lorebookLint';
 import type { WorldInfoEntry } from '../stores/worldInfoStore';
 
@@ -373,6 +375,71 @@ describe('lintBook — near-duplicate detection', () => {
     const started = performance.now();
     lintBook(many);
     expect(performance.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe('findNearDuplicates', () => {
+  it('returns a restatement pair at or above the near-dup similarity threshold', () => {
+    const original = mkEntry({
+      content: 'The keep at Dragonspire burned three winters ago during the siege.',
+    });
+    const hits = findNearDuplicates(
+      'Dragonspire keep burned down three winters ago, during the siege.',
+      [original]
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0].entryId).toBe(original.id);
+    expect(hits[0].score).toBeGreaterThanOrEqual(DUPLICATE_SIMILARITY);
+  });
+
+  it('catches a same-topic pair whose key claim is reversed despite heavy lexical overlap — this is the case Phase 4 exists for', () => {
+    // Only "broken" vs "repaired" differs; every other word (subject, sword,
+    // forge) is shared, so a lexical net alone (no semantics) still catches
+    // this even though the two sentences assert opposite facts.
+    const existing = mkEntry({
+      content: 'Kestrel\'s sword lies broken after the forge accident last winter.',
+    });
+    const hits = findNearDuplicates(
+      'Kestrel\'s sword lies repaired after the forge accident last winter.',
+      [existing]
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0].entryId).toBe(existing.id);
+    expect(hits[0].score).toBeGreaterThanOrEqual(DUPLICATE_SIMILARITY);
+  });
+
+  it('misses a same-subject pair with low overall lexical overlap — an accepted limitation of a lexical-only net (semantic overlap needs the LLM net, not this one)', () => {
+    const existing = mkEntry({ content: 'Ivy is the gardener.' });
+    const hits = findNearDuplicates('Ivy hates the rain.', [existing]);
+    expect(hits).toEqual([]);
+  });
+
+  it('returns nothing for empty content', () => {
+    const existing = mkEntry({ content: 'Some perfectly ordinary lore entry.' });
+    expect(findNearDuplicates('', [existing])).toEqual([]);
+  });
+
+  it('returns nothing for content that tokenizes to zero meaningful words', () => {
+    const existing = mkEntry({ content: 'Some perfectly ordinary lore entry.' });
+    expect(findNearDuplicates('!!! --- ...', [existing])).toEqual([]);
+  });
+
+  it('sorts multiple hits descending by score', () => {
+    const content = 'alpha bravo charlie delta echo foxtrot golf';
+    // Near-total match (adds one word) — highest score.
+    const closeMatch = mkEntry({
+      keys: ['k1'],
+      content: 'alpha bravo charlie delta echo foxtrot golf hotel',
+    });
+    // Wholly contained but much shorter — qualifies via containment, lower score.
+    const contained = mkEntry({ keys: ['k2'], content: 'alpha bravo charlie delta' });
+    // No meaningful overlap — not a hit at all.
+    const unrelated = mkEntry({ keys: ['k3'], content: 'zulu yankee xray whiskey' });
+
+    const hits = findNearDuplicates(content, [unrelated, contained, closeMatch]);
+
+    expect(hits.map((h) => h.entryId)).toEqual([closeMatch.id, contained.id]);
+    expect(hits[0].score).toBeGreaterThan(hits[1].score);
   });
 });
 
