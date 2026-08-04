@@ -339,6 +339,16 @@ function isNearDuplicate(a: Set<string>, b: Set<string>): boolean {
 }
 
 /**
+ * Human-readable label for an entry: its comment if non-empty, else its
+ * first key if it has any, else its id. Shared fallback chain for anywhere
+ * an entry needs a short display name — lint messages that reference a
+ * sibling entry (below), search results, etc.
+ */
+export function entryLabel(entry: WorldInfoEntry): string {
+  return entry.comment || entry.keys[0] || entry.id;
+}
+
+/**
  * Check every entry in a book, plus the cross-entry rules that need the
  * whole book in view: near-duplicate bodies (the standard's dedup sweep)
  * and related-entry links that cannot resolve.
@@ -361,7 +371,7 @@ export function lintBook(
 
   const label = (id: string) => {
     const target = entries.find((e) => e.id === id);
-    return target?.comment || target?.keys[0] || id;
+    return target ? entryLabel(target) : id;
   };
 
   // Near-duplicate bodies: two entries saying the same thing both fire and
