@@ -138,10 +138,22 @@ version exactly. If the upstream Alpine tag has moved to a newer 16.x
 that is fine (minor upgrades are in-place), but a different **major**
 version is a separate migration and must not ride along with this one.
 
-**If the build fails on missing clang/llvm**, the base image was built
-with LLVM support and PGXS is trying to emit bitcode despite
-`with_llvm=no`. Add `clang llvm-dev llvm` to the `apk add` line and copy
-`/usr/local/lib/postgresql/bitcode/vector*` in the final stage as well.
+**The build does fail on missing clang, and `with_llvm=no` does not
+prevent it** (confirmed 2026-08-05). `postgres:16-alpine` ships
+`with_llvm = yes` baked into its PGXS `Makefile.global`, and passing
+`with_llvm=no` on the make command line does not suppress the bitcode
+targets — `vector.so` links fine, then the build dies on `clang-21`.
+
+The fix is to install the toolchain and ship the bitcode. **The LLVM
+version is not interchangeable:** PGXS hardcodes `CLANG = clang-21` and
+`LLVM_BINPATH = /usr/lib/llvm21/bin`, while Alpine's unversioned
+`llvm-dev` is currently LLVM 22 — so `apk add clang llvm-dev llvm`
+(this document's original advice) installs the wrong major and still
+fails. Use `clang21 llvm21-dev`, and copy both
+`/usr/local/lib/postgresql/bitcode/vector.index.bc` and the
+`bitcode/vector/` directory in the final stage. See
+[docker/postgres/Dockerfile](../docker/postgres/Dockerfile) for the
+working version.
 
 ---
 

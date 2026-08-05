@@ -1,0 +1,105 @@
+# Builds and publishes the custom Postgres + pgvector image to GHCR.
+#
+# Deliberately NOT triggered on every push to main: unlike the frontend,
+# this image is the database. It should rebuild only when its Dockerfile
+# actually changes, so a routine app deploy can never quietly swap the
+# thing the pgdata volume is mounted into.
+#
+# See docs/pgvector-migration-plan.md for why this is built on the same
+# Alpine base as the stock image rather than using the published,
+# Debian-based pgvector images (musl -> glibc changes text collation and
+# silently corrupts B-tree indexes built under the old ordering).
+
+name: Publish Postgres pgvector Image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/postgres/**'
+      - '.github/workflows/docker-publish-postgres.yml'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ggbc-postgres
+  PG_VERSION: '16'
+  # Single source of truth: passed as a build arg AND used in the image
+  # tag, so a published tag can never claim a version the build did not
+  # actually compile.
+  PGVECTOR_VERSION: v0.8.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set lowercase image path
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          echo "IMAGE=${REGISTRY}/${OWNER,,}/${IMAGE_NAME}" >> "${GITHUB_ENV}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: docker/postgres
+          file: docker/postgres/Dockerfile
+          # The droplet is amd64. Build only that — this image is never
+          # run anywhere else, and emulated cross-builds of a C extension
+          # are slow for no benefit.
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            PG_VERSION=${{ env.PG_VERSION }}
+            PGVECTOR_VERSION=${{ env.PGVECTOR_VERSION }}
+          # Both a floating tag (readable) and an immutable one (deployable).
+          # docker-compose.yml pins the immutable tag: a floating tag makes
+          # rollback ambiguous, because "the previous image" stops being a
+          # thing you can name.
+          tags: |
+            ${{ env.IMAGE }}:${{ env.PG_VERSION }}-pgvector
+            ${{ env.IMAGE }}:${{ env.PG_VERSION }}-pgvector-${{ env.PGVECTOR_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Smoke-test the actual published amd64 artifact, not the local
+      # build. A green build only proves it compiled; this proves the
+      # extension loads and the server starts on the target platform.
+      - name: Verify the published image
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE}:${PG_VERSION}-pgvector-${PGVECTOR_VERSION}"
+          docker pull "$IMG"
+
+          echo "--- server version (must match production) ---"
+          docker run --rm "$IMG" postgres --version
+
+          docker run --rm -d --name pgverify -e POSTGRES_PASSWORD=verify "$IMG"
+          for _ in $(seq 1 30); do
+            docker exec pgverify pg_isready -U postgres >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          docker exec pgverify psql -U postgres -qc "CREATE EXTENSION vector;"
+          docker exec pgverify psql -U postgres -tc \
+            "SELECT extversion FROM pg_extension WHERE extname='vector';"
+          docker exec pgverify psql -U postgres -tc \
+            "SELECT '[1,2,3]'::vector <-> '[4,5,6]'::vector;"
+          docker rm -f pgverify

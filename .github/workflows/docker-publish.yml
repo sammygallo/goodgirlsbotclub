@@ -32,6 +32,11 @@ on:
       - 'docs/pgvector-migration-plan.md'
       - 'docs/v2/**'
       - '.gitignore'
+      # The database image and its own workflow. Nothing here can reach the
+      # Vite bundle (no `?raw` import can pull in a Dockerfile), and it has
+      # a dedicated publish workflow of its own.
+      - 'docker/postgres/**'
+      - '.github/workflows/docker-publish-postgres.yml'
   workflow_dispatch:
 
 env:
