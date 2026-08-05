@@ -16,7 +16,14 @@ services:
     # reach each other on 127.0.0.1 — postgres is on :5432, ggbc-backend
     # on :8001. nginx (running inside the frontend container) talks to
     # ggbc-backend directly on localhost.
-    image: postgres:16-alpine
+    # Stock postgres:16-alpine plus pgvector, compiled on that same Alpine
+    # base so this swap does not change libc, the collation provider, or
+    # the on-disk format — the pgdata volume is untouched by it. See
+    # docs/pgvector-migration-plan.md.
+    #
+    # Pinned to the immutable tag on purpose: the floating 16-pgvector tag
+    # would make "roll back to the previous image" un-nameable.
+    image: ghcr.io/sammygallo/ggbc-postgres:16-pgvector-v0.8.0
     network_mode: "service:frontend"
     environment:
       - POSTGRES_USER=ggbc
