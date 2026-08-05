@@ -1,7 +1,22 @@
 # pgvector migration plan (custom Alpine image)
 
-**Status:** proposed, not started
+**Status:** Phases 0–3 complete and deployed 2026-08-05. Phase 4 not started.
 **Written:** 2026-08-02
+
+Production runs `ghcr.io/sammygallo/ggbc-postgres:16-pgvector-v0.8.0` with
+the `vector` extension installed at 0.8.0 (alembic `0017_enable_pgvector`).
+Postgres is still 16.14 — no version drift rode along. No `vector` column
+exists anywhere yet, so the cheap rollback described below is still the
+real rollback.
+
+Two things this document originally got wrong were corrected in the course
+of running it: the `with_llvm=no` / LLVM-version remediation in Phase 1
+(see that section), and the fact that **CI has a Postgres image too**. The
+backend's `ci.yml` ran a stock `postgres:16-alpine` service, so the Phase 3
+migration failed the whole suite there before it could ever reach
+production. It is now pinned to the same immutable tag as
+`docker-compose.yml`. Any future phase that changes the database image has
+to change both.
 
 Adds the `vector` extension to production Postgres by replacing
 `postgres:16-alpine` with a custom image that has pgvector compiled in,
@@ -285,10 +300,15 @@ backup immediately before it.
 
 ## Checklist
 
-- [ ] Phase 0 — `pg_dump` off-box, DO snapshot, record `\dx` and version
-- [ ] Phase 1 — Dockerfile + workflow, build in CI, verify locally
-- [ ] Phase 2 — compose image swap, deploy, verify extension *available*
-- [ ] Phase 3 — `0017_enable_pgvector`, deploy, verify extension *installed*
+- [x] Phase 0 — `pg_dump` off-box (checksum-verified, `e2271465…`), DO
+      snapshot `ggbc-pre-pgvector-20260805` (19.16 GB), pre-state recorded
+      (`plpgsql` only, 16.14, `postgres:16-alpine`)
+- [x] Phase 1 — Dockerfile + workflow (#366), built in CI, smoke-tested on
+      the published amd64 artifact
+- [x] Phase 2 — compose image swap (#367), deployed, extension *available*
+      and not installed, no collation warnings, data intact
+- [x] Phase 3 — `0017_enable_pgvector` (ggbc-backend#51), deployed,
+      extension *installed*
 - [ ] Phase 4 — planned separately, starting from chat-history RAG
 
 Add `docs/pgvector-migration-plan.md` to the `paths-ignore` list in
