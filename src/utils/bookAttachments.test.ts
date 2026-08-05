@@ -305,3 +305,17 @@ describe('filterBooksByScope — character-owned books are no longer hidden (reg
     expect(filterBooksByScope(books, 'auto_memory')).not.toContain(book);
   });
 });
+
+describe("filterBooksByScope — 'shared' always returns empty", () => {
+  it("returns [] regardless of input — the Shared tab renders straight from the store's sharedBooks, never from a books array passed through here", () => {
+    const ownBook = mkBook({ visibility: 'private' });
+    // Even a book that LOOKS shared (visibility: 'shared') is still one of
+    // the caller's own books if it ended up in this function's `books`
+    // argument at all — filterBooksByScope has no access to the separate
+    // sharedBooks array, so 'shared' is unconditionally [].
+    const bookMarkedShared = mkBook({ visibility: 'shared', ownerHandle: 'alice' });
+
+    expect(filterBooksByScope([], 'shared')).toEqual([]);
+    expect(filterBooksByScope([ownBook, bookMarkedShared], 'shared')).toEqual([]);
+  });
+});

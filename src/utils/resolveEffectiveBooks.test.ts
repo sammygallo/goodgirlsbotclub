@@ -436,6 +436,96 @@ describe('resolveEffectiveBooks — determinism', () => {
   });
 });
 
+describe('resolveEffectiveBooks — Phase 5: shared books widened into the composition input', () => {
+  // These don't exercise sharing plumbing directly (resolveEffectiveBooks is
+  // pure and has no notion of "shared" — that's entirely a
+  // worldInfoStore.getComposableBooks() concern upstream). What they prove
+  // is that a book which LOOKS like something getComposableBooks() would
+  // produce (visibility: 'shared', ownerHandle another user's) — once fed
+  // in through the `books` argument like any call site now does — composes
+  // and activates exactly like any other book, through both activeBookIds
+  // and chatConfig.linkedBookIds.
+
+  it('activates a shared-only book (present in `books` but owned by another user) via activeBookIds', () => {
+    const entry = mkEntry({ keys: ['moonlit-ruins'], content: 'Lore about the moonlit ruins.' });
+    const sharedBook = mkBook([entry], {
+      ownerHandle: 'alice',
+      visibility: 'shared',
+    });
+    const books = [sharedBook];
+    const activeIds = [sharedBook.id];
+
+    const result = resolveEffectiveBooks(books, activeIds);
+    const matches = scanMessagesForEntries(
+      result.effectiveBooks,
+      result.effectiveActiveIds,
+      msgs('the party enters the moonlit-ruins'),
+      opts()
+    );
+
+    expect(matches.map((m) => m.entry.id)).toContain(entry.id);
+  });
+
+  it('activates a shared-only book via chatConfig.linkedBookIds (the "Shared with me" attach path)', () => {
+    const entry = mkEntry({ keys: ['starlit-cave'], content: 'Lore about the starlit cave.' });
+    const sharedBook = mkBook([entry], {
+      ownerHandle: 'bob',
+      visibility: 'shared',
+    });
+    const ownBook = mkBook([mkEntry({ keys: ['unrelated'] })]);
+    const books = [ownBook, sharedBook];
+    const activeIds = [ownBook.id];
+    const chatConfig = mkConfig({ linkedBookIds: [sharedBook.id] });
+
+    const result = resolveEffectiveBooks(books, activeIds, chatConfig);
+    expect(result.effectiveActiveIds).toContain(sharedBook.id);
+
+    const matches = scanMessagesForEntries(
+      result.effectiveBooks,
+      result.effectiveActiveIds,
+      msgs('deep inside the starlit-cave'),
+      opts()
+    );
+
+    expect(matches.map((m) => m.entry.id)).toContain(entry.id);
+  });
+
+  it('silently drops a linkedBookIds reference to a book absent from the composable universe (unshared/deleted/owner left group) — no throw, no match', () => {
+    const ownBook = mkBook([mkEntry({ keys: ['home-turf'] })]);
+    const books = [ownBook]; // the previously-shared book is simply gone
+    const activeIds = [ownBook.id];
+    const danglingSharedBookId = 'shared-book-no-longer-composable';
+    const chatConfig = mkConfig({ linkedBookIds: [danglingSharedBookId] });
+
+    // STEP B (linked-only fast path) doesn't itself filter dangling ids out
+    // of effectiveActiveIds — dedupe([...activeBookIds, ...linkedBookIds])
+    // just appends them. The dangling-reference contract is enforced one
+    // layer down, by scanMessagesForEntries filtering `books` (which
+    // legitimately doesn't contain the vanished book) against
+    // activeBookIds — so this is the case worth pinning down explicitly.
+    expect(() => resolveEffectiveBooks(books, activeIds, chatConfig)).not.toThrow();
+    const result = resolveEffectiveBooks(books, activeIds, chatConfig);
+    expect(result.effectiveActiveIds).toContain(danglingSharedBookId);
+    expect(result.effectiveBooks.some((b) => b.id === danglingSharedBookId)).toBe(false);
+
+    expect(() =>
+      scanMessagesForEntries(
+        result.effectiveBooks,
+        result.effectiveActiveIds,
+        msgs('anything at all'),
+        opts()
+      )
+    ).not.toThrow();
+    const matches = scanMessagesForEntries(
+      result.effectiveBooks,
+      result.effectiveActiveIds,
+      msgs('anything at all'),
+      opts()
+    );
+    expect(matches).toEqual([]);
+  });
+});
+
 describe('resolveEffectiveBooks — scanner integration smoke test', () => {
   it('feeds an effective-books result into scanMessagesForEntries: overlay changes matching, exclusion always suppresses, local constant always fires', () => {
     // Overlay changes an entry's keys, which changes whether it fires.

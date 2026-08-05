@@ -290,7 +290,7 @@ export function StoryTab({
         ? useChatLoreConfigStore.getState().getEffectiveConfig(fileName)
         : undefined;
       const { effectiveBooks, effectiveActiveIds } = resolveEffectiveBooks(
-        wi.books,
+        wi.getComposableBooks(),
         inheritedIds,
         chatConfig
       );

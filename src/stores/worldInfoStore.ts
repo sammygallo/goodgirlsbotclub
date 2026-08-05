@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { estimateTokens, type TokenizerProfile } from '../utils/tokenizer';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { api, type SharedWorldInfoBookDTO } from '../api/client';
 import { useChatLoreConfigStore } from './chatLoreConfigStore';
 import { useLoreConflictStore } from './loreConflictStore';
 import type {
@@ -1524,11 +1525,30 @@ interface WorldInfoState {
   tokenBudget: number;
   error: string | null;
 
+  // ---------------------------------------------------------------------
+  // Group-wide sharing (Phase 5) — in-memory only. Fetched fresh from
+  // GET /worldinfo/shared, never persisted: NOT part of PersistedShape,
+  // never passed to saveBooks, never written into the stm_worldinfo sync
+  // blob. Another user's lorebook lives on their own account; this client
+  // just caches a read-only view of it for the current session.
+  // ---------------------------------------------------------------------
+  sharedBooks: WorldInfoBook[];
+  sharedOwnerNameByHandle: Record<string, string | null>;
+  sharedBooksStatus: 'idle' | 'loading' | 'loaded' | 'error';
+  sharedBooksError: string | null;
+
   // Book CRUD
   createBook: (name: string) => WorldInfoBook;
   renameBook: (bookId: string, name: string) => void;
   deleteBook: (bookId: string) => void;
   duplicateBook: (bookId: string) => WorldInfoBook | null;
+  /**
+   * Sets a book's sharing state. No-op when the target is an Auto Memory
+   * book (`autoExtracted === true`) and `visibility === 'shared'` is
+   * requested — machine-extracted notes are never shareable, mirroring the
+   * server-side enforcement in the /worldinfo/shared endpoint.
+   */
+  setBookVisibility: (bookId: string, visibility: BookVisibility) => void;
 
   // Entry CRUD
   createEntry: (
@@ -1595,6 +1615,32 @@ interface WorldInfoState {
    * enabled — any subsequent mutation debounces a PUT back to the server.
    */
   fetchPrefs: () => Promise<void>;
+
+  /**
+   * Pull every book other users have marked shared from GET /worldinfo/shared
+   * and normalize into sharedBooks / sharedOwnerNameByHandle. Never throws -
+   * a failure (including a 404 if the backend endpoint hasn't deployed yet)
+   * lands in sharedBooksStatus/sharedBooksError instead.
+   */
+  fetchSharedBooks: () => Promise<void>;
+
+  /**
+   * Read-only view combining this user's own books with every shared book,
+   * deduplicated by id - the caller's own book wins on collision (e.g. a
+   * shared book id colliding with one of the viewer's own from a duplicate
+   * ST import). Pure read; not async, not persisted.
+   */
+  getComposableBooks: () => WorldInfoBook[];
+
+  /**
+   * Copies a book out of `sharedBooks` (another user's book) into this
+   * user's own `books`: deep-copies entries with fresh ids (remapping
+   * relatedIds via the same helper duplicateBook uses), and resets
+   * ownership/visibility so the copy behaves like any other owned book.
+   * Returns null when `sharedBookId` isn't currently present in
+   * `sharedBooks` (e.g. the sharer revoked it since the last fetch).
+   */
+  copySharedBook: (sharedBookId: string) => WorldInfoBook | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1622,6 +1668,11 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
   maxRecursionSteps: DEFAULT_MAX_RECURSION,
   tokenBudget: DEFAULT_TOKEN_BUDGET,
   error: null,
+
+  sharedBooks: [],
+  sharedOwnerNameByHandle: {},
+  sharedBooksStatus: 'idle',
+  sharedBooksError: null,
 
   createBook: (name) => {
     const trimmed = name.trim() || 'Untitled Lorebook';
@@ -1694,7 +1745,9 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       // scope is derived — recompute now that ownerCharacterAvatar is cleared.
       scope: 'world',
       ownerHandle: original.ownerHandle,
-      visibility: original.visibility,
+      // Always private, regardless of the original's visibility - duplicating
+      // a shared book must never silently create another shared copy.
+      visibility: 'private',
       createdAt: now,
       updatedAt: now,
     };
@@ -1702,6 +1755,20 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
     saveBooks(next);
     set({ books: next });
     return copy;
+  },
+
+  setBookVisibility: (bookId, visibility) => {
+    const target = get().books.find((b) => b.id === bookId);
+    if (!target) return;
+    // Auto Memory books are never shareable - mirrors server-side
+    // enforcement in the /worldinfo/shared endpoint, but the client must
+    // not even offer it.
+    if (target.autoExtracted === true && visibility === 'shared') return;
+    const next = get().books.map((b) =>
+      b.id === bookId ? { ...b, visibility, updatedAt: Date.now() } : b
+    );
+    saveBooks(next);
+    set({ books: next });
   },
 
   createEntry: (bookId, data, meta) => {
@@ -1984,9 +2051,65 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
     }
     saveChatLinkedBooks(next);
     set({ chatLinkedBookIds: next });
-    if (useChatLoreConfigStore.getState().getConfig(chatFileName) !== undefined) {
-      useChatLoreConfigStore.getState().updateConfig(chatFileName, { linkedBookIds: deduped });
+    const existingConfig = useChatLoreConfigStore.getState().getConfig(chatFileName);
+    if (existingConfig !== undefined) {
+      // The legacy map can only ever hold the caller's OWN book ids (see
+      // `allBookIds` above), so a v2 config link that points outside that
+      // set — e.g. a shared book attached straight into the config by
+      // AttachBookPicker's "Shared with me" section, which can't go through
+      // this legacy-map-validated path — isn't something this call was ever
+      // asked to touch. Preserve those instead of overwriting linkedBookIds
+      // wholesale, or attaching/detaching any of the viewer's own books
+      // afterward would silently drop the shared link.
+      const nonOwnLinked = existingConfig.linkedBookIds.filter(
+        (id) => !allBookIds.has(id)
+      );
+      useChatLoreConfigStore.getState().updateConfig(chatFileName, {
+        linkedBookIds: Array.from(new Set([...deduped, ...nonOwnLinked])),
+      });
     }
+  },
+
+  getComposableBooks: () => {
+    const own = get().books;
+    const ownIds = new Set(own.map((b) => b.id));
+    // Own books always win a collision (e.g. a shared book id colliding
+    // with one of the viewer's own from a duplicate ST import).
+    const sharedNonColliding = get().sharedBooks.filter((b) => !ownIds.has(b.id));
+    return [...own, ...sharedNonColliding];
+  },
+
+  copySharedBook: (sharedBookId) => {
+    const original = get().sharedBooks.find((b) => b.id === sharedBookId);
+    if (!original) return null;
+    const now = Date.now();
+    // Same fresh-id + relatedIds-remap dance as duplicateBook.
+    const idMap = new Map<string, string>();
+    const copiedEntries = original.entries.map((e) => {
+      const id = generateId('wi');
+      idMap.set(e.id, id);
+      return { ...e, id, createdAt: now, updatedAt: now };
+    });
+    const copy: WorldInfoBook = {
+      id: generateId('wibook'),
+      name: `${original.name} (copy)`,
+      entries: remapRelatedIds(copiedEntries, idMap),
+      ownerCharacterAvatar: null,
+      // scope is derived — recompute now that ownerCharacterAvatar is cleared.
+      scope: 'world',
+      ownerHandle: currentHandle(),
+      visibility: 'private',
+      // A copy is always hand-owned going forward, even if (defensively;
+      // auto-extracted books should never reach sharedBooks in the first
+      // place) the source was somehow flagged auto-extracted.
+      autoExtracted: undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const next = [...get().books, copy];
+    saveBooks(next);
+    set({ books: next });
+    return copy;
   },
 
   clearError: () => set({ error: null }),
@@ -2018,6 +2141,10 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       maxRecursionSteps: DEFAULT_MAX_RECURSION,
       tokenBudget: DEFAULT_TOKEN_BUDGET,
       error: null,
+      sharedBooks: [],
+      sharedOwnerNameByHandle: {},
+      sharedBooksStatus: 'idle',
+      sharedBooksError: null,
     });
   },
 
@@ -2045,6 +2172,10 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
             LOCAL_TS_KEY,
           ).catch(() => {});
         }
+        // Fire-and-forget: shared books are fetched independently of the
+        // user's own sync state and must never affect fetchPrefs's own
+        // success/error handling.
+        get().fetchSharedBooks().catch(() => {});
         return;
       }
 
@@ -2056,6 +2187,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
           snapshotForServer(get()) as unknown as Record<string, unknown>,
           LOCAL_TS_KEY,
         ).catch(() => {});
+        get().fetchSharedBooks().catch(() => {});
         return;
       }
 
@@ -2095,10 +2227,69 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
       }
       try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
       _persistEnabled = true;
+      // Fire-and-forget: shared books are fetched independently of the
+      // user's own sync state and must never affect fetchPrefs's own
+      // success/error handling.
+      get().fetchSharedBooks().catch(() => {});
     } catch {
       // Network failure — keep local state. Next mutation marks the section
       // dirty, so a future fetchPrefs will detect the local-newer case.
       _persistEnabled = true;
+    }
+  },
+
+  fetchSharedBooks: async () => {
+    set({ sharedBooksStatus: 'loading' });
+    try {
+      const dtos: SharedWorldInfoBookDTO[] = await api.listSharedWorldInfoBooks();
+      const normalizedBooks: WorldInfoBook[] = [];
+      const ownerNames: Record<string, string | null> = {};
+      for (const dto of dtos) {
+        if (!dto || typeof dto !== 'object') continue;
+        const rawBook = dto.book as Partial<WorldInfoBook> | null | undefined;
+        // Reject (skip, don't crash on) anything missing the fields the rest
+        // of this file assumes are always present.
+        if (
+          !rawBook ||
+          typeof rawBook !== 'object' ||
+          typeof rawBook.id !== 'string' ||
+          typeof rawBook.name !== 'string' ||
+          !Array.isArray(rawBook.entries)
+        ) {
+          continue;
+        }
+        // Reuse normalizeStoredBooks — same helper fetchPrefs uses to
+        // backfill fields a pre-update client's blob may be missing, and the
+        // same place scope gets recomputed from ownerCharacterAvatar rather
+        // than trusted from storage.
+        const [book] = normalizeStoredBooks(
+          [rawBook as WorldInfoBook],
+          dto.owner_handle
+        );
+        normalizedBooks.push({
+          ...book,
+          // Server-authoritative — the field inside the raw book JSON may be
+          // stale or absent; never trust it over the DTO's top-level value.
+          ownerHandle: dto.owner_handle,
+          // Server already filtered on this, but don't trust it blindly.
+          visibility: 'shared',
+        });
+        ownerNames[dto.owner_handle] = dto.owner_name ?? null;
+      }
+      set({
+        sharedBooks: normalizedBooks,
+        sharedOwnerNameByHandle: ownerNames,
+        sharedBooksStatus: 'loaded',
+        sharedBooksError: null,
+      });
+    } catch (err) {
+      // Never let this throw out of the action — including a 404 if the
+      // backend endpoint hasn't deployed yet.
+      set({
+        sharedBooksStatus: 'error',
+        sharedBooksError:
+          err instanceof Error ? err.message : 'Failed to load shared lorebooks',
+      });
     }
   },
 }));

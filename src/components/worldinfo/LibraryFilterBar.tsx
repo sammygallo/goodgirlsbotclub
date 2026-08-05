@@ -4,16 +4,17 @@ import type { LibraryScope } from '../../utils/bookAttachments';
 // Lorebook v2 — library scope filter bar
 // ---------------------------------------------------------------------------
 //
-// Four pill buttons ("All" / "Character" / "World" / "Auto Memory"), each
-// with a small count badge. Visually this follows the Sidebar's existing
-// "Tags" filter-pill precedent exactly (Sidebar.tsx, filter-controls row):
-// generic bg-[var(--color-primary)]/20 + text-[var(--color-primary)] tint
-// for the active segment, a solid bg-[var(--color-primary)] + text-white
-// pill for the count badge, and the same neutral/hover treatment for
-// inactive segments. We deliberately did NOT borrow the Sidebar's
-// "Favorites" yellow-star styling — that color is specific to the
-// favorites concept, whereas these four segments are generic filters just
-// like Sidebar's "Tags" pill, so "Tags" is the correct precedent to match.
+// Five pill buttons ("All" / "Character" / "World" / "Auto Memory" /
+// "Shared with me"), each with a small count badge. Visually this follows
+// the Sidebar's existing "Tags" filter-pill precedent exactly (Sidebar.tsx,
+// filter-controls row): generic bg-[var(--color-primary)]/20 +
+// text-[var(--color-primary)] tint for the active segment, a solid
+// bg-[var(--color-primary)] + text-white pill for the count badge, and the
+// same neutral/hover treatment for inactive segments. We deliberately did
+// NOT borrow the Sidebar's "Favorites" yellow-star styling — that color is
+// specific to the favorites concept, whereas these segments are generic
+// filters just like Sidebar's "Tags" pill, so "Tags" is the correct
+// precedent to match.
 
 export type { LibraryScope };
 
@@ -28,6 +29,7 @@ const SEGMENTS: { value: LibraryScope; label: string }[] = [
   { value: 'character', label: 'Character' },
   { value: 'world', label: 'World' },
   { value: 'auto_memory', label: 'Auto Memory' },
+  { value: 'shared', label: 'Shared with me' },
 ];
 
 export function LibraryFilterBar({ scope, onScopeChange, counts }: LibraryFilterBarProps) {

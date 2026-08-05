@@ -1,6 +1,8 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Edit2, Copy, Download, Trash2, User, Globe, Sparkles, AlertTriangle } from 'lucide-react';
-import type { WorldInfoBook } from '../../stores/worldInfoStore';
+import { useWorldInfoStore, type WorldInfoBook } from '../../stores/worldInfoStore';
+import { useAuthStore } from '../../stores/authStore';
+import { hasPermission } from '../../utils/permissions';
 import type { BookAttachments } from '../../utils/bookAttachments';
 import { Avatar } from '../ui';
 
@@ -34,6 +36,16 @@ import { Avatar } from '../ui';
 // `<div data-slot="attachments">` because a typed prop is discoverable at
 // the call site and doesn't require the integration step to go hunting for
 // a magic data attribute to portal into.
+//
+// Phase 5 (group sharing): `readOnly` renders a deliberately different,
+// much smaller row for a book that belongs to someone else (surfaced via
+// the store's `sharedBooks`) — see the branch near the bottom of this
+// component. Own-row-only affordances (rename/delete/export, the sharing
+// pill, conflict pill, attachment chips) never apply to another user's
+// book, so they're hidden outright rather than disabled. The sharing pill
+// itself (own rows only) reads `worldinfo:manage` and `sharedOwnerNameByHandle`
+// straight from their stores here rather than via props — there's no
+// existing prop seam for either, and both are cheap, render-only reads.
 
 export interface LibraryBookRowProps {
   book: WorldInfoBook;
@@ -64,6 +76,21 @@ export interface LibraryBookRowProps {
   /** Opens this book's conflict-resolution sheet. Required alongside a
    * truthy conflictCount for the pill to render. */
   onResolveConflicts?: () => void;
+  /**
+   * Renders this row read-only: another user's shared book, not one of the
+   * caller's own. Hides rename/delete/export, the sharing pill, the
+   * conflict pill, and attachment chips; adds an owner chip and a "Copy to
+   * my library" action instead. The own-row-only props above (isRenaming,
+   * onDuplicate, etc.) are simply ignored in this mode — still required so
+   * every existing call site stays unchanged, but the caller may pass inert
+   * placeholders (e.g. `isRenaming={false}`, `onDuplicate={() => {}}`) for a
+   * readOnly row. Defaults to false so every existing (own-book) caller is
+   * unaffected.
+   */
+  readOnly?: boolean;
+  /** Required (and only used) when `readOnly` — copies the shared book into
+   *  the caller's own library. */
+  onCopyToLibrary?: () => void;
 }
 
 export function LibraryBookRow({
@@ -86,9 +113,147 @@ export function LibraryBookRow({
   attachmentsSlot,
   conflictCount,
   onResolveConflicts,
+  readOnly = false,
+  onCopyToLibrary,
 }: LibraryBookRowProps) {
   const isCharacterOwned = book.ownerCharacterAvatar != null;
   const entryCountLabel = `${book.entries.length} entr${book.entries.length === 1 ? 'y' : 'ies'}`;
+
+  // Sharing pill (own rows only) + "shared by" chip (readOnly rows only)
+  // both need store state this component previously had no reason to read
+  // directly. Called unconditionally per rules-of-hooks even though only
+  // one branch below ends up using each.
+  const currentUser = useAuthStore((s) => s.currentUser);
+  const canManageSharing = hasPermission(currentUser, 'worldinfo:manage');
+  const setBookVisibility = useWorldInfoStore((s) => s.setBookVisibility);
+  const sharedOwnerNameByHandle = useWorldInfoStore((s) => s.sharedOwnerNameByHandle);
+  const [confirmingShare, setConfirmingShare] = useState(false);
+
+  if (readOnly) {
+    const ownerLabel = sharedOwnerNameByHandle[book.ownerHandle] ?? book.ownerHandle;
+    return (
+      <li className="p-3 rounded-lg border transition-colors bg-[var(--color-bg-tertiary)] border-[var(--color-border)]">
+        <div className="flex items-center gap-2">
+          <label className="flex items-center cursor-pointer flex-shrink-0">
+            <input
+              type="checkbox"
+              checked={isActive}
+              onChange={onToggleActive}
+              className="w-4 h-4 accent-[var(--color-primary)]"
+              aria-label={`${isActive ? 'Deactivate' : 'Activate'} ${book.name}`}
+            />
+          </label>
+          <button onClick={onOpen} className="flex-1 min-w-0 text-left">
+            <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
+              {book.name}
+            </p>
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              {entryCountLabel} · ~{tokenEstimate} tok
+              {isActive ? ' · active' : ''}
+            </p>
+          </button>
+          <div className="flex items-center gap-0.5 flex-shrink-0">
+            <button
+              onClick={onCopyToLibrary}
+              className="p-1.5 rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-secondary)]"
+              title="Copy to my library"
+              aria-label={`Copy ${book.name} to my library`}
+            >
+              <Copy size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* Badges row: scope / auto-extracted / shared-by owner chip. No
+            sharing pill, conflict pill, or attachment chips — none of that
+            is this viewer's to control on someone else's book. */}
+        <div className="mt-2 pl-0.5 flex flex-wrap items-center gap-1.5">
+          {book.scope === 'character' ? (
+            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-[var(--color-primary)]/10 text-[var(--color-primary)]">
+              <User size={12} />
+              Character
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]">
+              <Globe size={12} />
+              World
+            </span>
+          )}
+
+          {book.autoExtracted && (
+            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400">
+              <Sparkles size={12} />
+              Auto
+            </span>
+          )}
+
+          <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]">
+            <User size={12} />
+            {ownerLabel}
+          </span>
+        </div>
+      </li>
+    );
+  }
+
+  // Own-row sharing pill: inert (today's behavior) unless the viewer holds
+  // worldinfo:manage. Auto Memory books are never shareable — the pill is
+  // disabled with an explanatory title rather than hidden, so the user
+  // understands why. Sharing (private -> shared) asks for a lightweight
+  // inline confirmation first, since it exposes the book to everyone in the
+  // group; un-sharing (shared -> private) is a single click, no confirmation
+  // needed — it only ever narrows visibility.
+  const sharingPill = !canManageSharing ? (
+    <span
+      className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] cursor-default"
+      title="Sharing controls coming later"
+    >
+      {book.visibility}
+    </span>
+  ) : book.autoExtracted ? (
+    <span
+      className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] cursor-not-allowed"
+      title="Auto Memory books can't be shared — they're built from your private chats"
+    >
+      {book.visibility}
+    </span>
+  ) : confirmingShare ? (
+    <span className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400">
+      Share with everyone in your group?
+      <button
+        onClick={() => {
+          setBookVisibility(book.id, 'shared');
+          setConfirmingShare(false);
+        }}
+        className="font-semibold underline underline-offset-2"
+      >
+        Share
+      </button>
+      <button onClick={() => setConfirmingShare(false)} className="underline underline-offset-2">
+        Cancel
+      </button>
+    </span>
+  ) : (
+    <button
+      onClick={() =>
+        book.visibility === 'shared'
+          ? setBookVisibility(book.id, 'private')
+          : setConfirmingShare(true)
+      }
+      className={`text-xs px-2 py-0.5 rounded-full transition-colors ${
+        book.visibility === 'shared'
+          ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)]'
+          : 'bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-primary)]'
+      }`}
+      title={
+        book.visibility === 'shared'
+          ? 'Shared with your group — click to make private'
+          : 'Private — click to share with your group'
+      }
+    >
+      {book.visibility}
+    </button>
+  );
 
   return (
     <li
@@ -214,12 +379,7 @@ export function LibraryBookRow({
           </button>
         )}
 
-        <span
-          className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] cursor-default"
-          title="Sharing controls coming later"
-        >
-          {book.visibility}
-        </span>
+        {sharingPill}
 
         {ownerCharacter &&
           (onOwnerChipClick ? (

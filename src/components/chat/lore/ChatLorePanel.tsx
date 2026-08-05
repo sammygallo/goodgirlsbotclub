@@ -51,8 +51,14 @@ function BaseEntryViewer({
   entryId: string;
   onClose: () => void;
 }) {
+  // bookId can point at a shared book (e.g. resolving a 'viewBase' row for
+  // an entry inherited via a group member's shared book), so this must look
+  // across the composable universe, not just the viewer's own books.
+  // updateEntry below is self-limiting to the viewer's own books either way
+  // (it maps over get().books, a no-op for a foreign book id), so restoring
+  // a revision on a shared entry the viewer doesn't own silently does nothing.
   const entry = useWorldInfoStore((s) =>
-    s.books.find((b) => b.id === bookId)?.entries.find((e) => e.id === entryId)
+    s.getComposableBooks().find((b) => b.id === bookId)?.entries.find((e) => e.id === entryId)
   );
   const updateEntry = useWorldInfoStore((s) => s.updateEntry);
 
@@ -138,7 +144,22 @@ export function ChatLorePanel({ isOpen, onClose, chatFile, characterAvatars }: C
   const [saveAsBookName, setSaveAsBookName] = useState('');
 
   // ---- Store subscriptions --------------------------------------------
-  const books = useWorldInfoStore((s) => s.books);
+  // Composable = own books + the caller's group's shared books (own wins
+  // on id collision) — widens what resolveEffectiveBooks / buildChatLoreView
+  // can see without touching either, per Phase 1's purity contract.
+  // getComposableBooks() returns a fresh array each call, so it can't be
+  // called inside the selector itself (React #185: a fresh ref every call
+  // defeats useSyncExternalStore's snapshot check and re-renders forever).
+  // ChatLorePanel is mounted whenever a chat is open — not just while the
+  // modal is visually open — so this selector runs continuously; select the
+  // two stable underlying arrays instead and recompose with useMemo.
+  const ownBooks = useWorldInfoStore((s) => s.books);
+  const sharedBooksForCompose = useWorldInfoStore((s) => s.sharedBooks);
+  const books = useMemo(() => {
+    const ownIds = new Set(ownBooks.map((b) => b.id));
+    const sharedNonColliding = sharedBooksForCompose.filter((b) => !ownIds.has(b.id));
+    return [...ownBooks, ...sharedNonColliding];
+  }, [ownBooks, sharedBooksForCompose]);
   const activeBookIds = useWorldInfoStore((s) => s.activeBookIds);
   const legacyLinkedBookIds = useWorldInfoStore((s) => s.chatLinkedBookIds[chatFile] ?? EMPTY_IDS);
   const tokenBudget = useWorldInfoStore((s) => s.tokenBudget);
@@ -483,6 +504,7 @@ export function ChatLorePanel({ isOpen, onClose, chatFile, characterAvatars }: C
           <AttachBookPicker
             chatFile={chatFile}
             alreadyShownBookIds={allShownBookIds}
+            chatAttachedBookIds={effectiveConfig?.linkedBookIds ?? EMPTY_IDS}
             onClose={() => setView({ kind: 'list' })}
           />
         )}
