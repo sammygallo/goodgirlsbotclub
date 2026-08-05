@@ -6,7 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 // B3c-final removed SillyTavern; ggbc-backend is the only upstream now and
 // owns every route below (auth, sync, blobs, invitations, characters,
 // chats, generation, secrets, users, permissions, settings, extensions,
-// assets, live-portrait).
+// assets, live-portrait, worldinfo).
 //
 // Use 127.0.0.1 (not localhost) — node 18+ resolves localhost to IPv6 ::1
 // first, and Docker publishes 127.0.0.1:8001 IPv4-only, so the localhost
@@ -33,6 +33,7 @@ export default defineConfig({
       '/characters': proxyTarget,
       '/chats': proxyTarget,
       '/projects': proxyTarget,
+      '/worldinfo': proxyTarget,
       '/scripts': {
         ...proxyTarget,
         // Specific upstream-compat shim modules served from public/ must NOT
