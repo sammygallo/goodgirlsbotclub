@@ -12,6 +12,21 @@ vi.mock('../utils/serverSettings', () => ({
   shouldReuploadSection: vi.fn(() => false),
 }));
 
+// Only worldInfoStore's own sharing call (api.listSharedWorldInfoBooks) needs
+// to be deterministic. Everything else in api/client stays real via
+// importOriginal, per the autoMemoryStore.test.ts pattern.
+const listSharedWorldInfoBooks = vi.fn();
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/client')>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      listSharedWorldInfoBooks: (...args: unknown[]) => listSharedWorldInfoBooks(...args),
+    },
+  };
+});
+
 const {
   useWorldInfoStore,
   scanMessagesForEntries,
@@ -109,6 +124,16 @@ const resultIds = (r: { entry: WorldInfoEntry }[]) => r.map((m) => m.entry.id);
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+// vi.restoreAllMocks() above resets listSharedWorldInfoBooks to a no-op
+// (undefined return) after every test — reinstall a harmless default before
+// each so tests that don't care about sharing (i.e. most of this file)
+// don't trip fetchSharedBooks's "not iterable" guard when fetchPrefs fires
+// it fire-and-forget.
+beforeEach(() => {
+  listSharedWorldInfoBooks.mockReset();
+  listSharedWorldInfoBooks.mockResolvedValue([]);
 });
 
 describe('scanMessagesForEntries — activation basics', () => {
@@ -399,6 +424,52 @@ describe('store actions', () => {
     expect(after.entries.map((e) => e.id)).toEqual([source.id]);
     expect(after.entries[0].relatedIds).toEqual([]);
   });
+
+  it('setBookVisibility mutates visibility and bumps updatedAt', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1000);
+      const book = useWorldInfoStore.getState().createBook('Shareable');
+      expect(book.visibility).toBe('private');
+
+      vi.setSystemTime(2000);
+      useWorldInfoStore.getState().setBookVisibility(book.id, 'shared');
+
+      const after = useWorldInfoStore.getState().books.find((b) => b.id === book.id)!;
+      expect(after.visibility).toBe('shared');
+      expect(after.updatedAt).toBe(2000);
+      expect(after.updatedAt).toBeGreaterThan(book.updatedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('setBookVisibility no-ops when trying to share an autoExtracted book', () => {
+    const book = useWorldInfoStore.getState().createBook('Auto Memory');
+    // autoExtracted isn't settable through createBook — patch it directly,
+    // mirroring autoMemoryStore.test.ts's own setup for this flag.
+    useWorldInfoStore.setState((s) => ({
+      books: s.books.map((b) => (b.id === book.id ? { ...b, autoExtracted: true } : b)),
+    }));
+
+    useWorldInfoStore.getState().setBookVisibility(book.id, 'shared');
+
+    const after = useWorldInfoStore.getState().books.find((b) => b.id === book.id)!;
+    expect(after.visibility).toBe('private');
+  });
+
+  it('duplicateBook always produces a private copy, even from a shared original', () => {
+    const store = useWorldInfoStore.getState();
+    const book = store.createBook('Shared Original');
+    store.createEntry(book.id, { comment: 'entry' });
+    useWorldInfoStore.getState().setBookVisibility(book.id, 'shared');
+    expect(
+      useWorldInfoStore.getState().books.find((b) => b.id === book.id)!.visibility
+    ).toBe('shared');
+
+    const copy = useWorldInfoStore.getState().duplicateBook(book.id)!;
+    expect(copy.visibility).toBe('private');
+  });
 });
 
 describe('auditBookHealth', () => {
@@ -511,5 +582,166 @@ describe('fetchPrefs server-sync normalization', () => {
       opts()
     );
     expect(resultIds(result)).toEqual(['legacy1']);
+  });
+});
+
+describe('fetchSharedBooks', () => {
+  beforeEach(() => {
+    useWorldInfoStore.getState().resetUser();
+  });
+
+  it('normalizes well-formed DTOs and drops a malformed one without throwing', async () => {
+    const wellFormed = mkBook([mkEntry({ comment: 'shared entry' })], {
+      id: 'shared-book-1',
+      name: "Alice's Book",
+      ownerHandle: 'stale-handle', // must be overwritten by the DTO's owner_handle
+      visibility: 'private', // must be forced to 'shared'
+      scope: 'character', // wrong on purpose — scope must be re-derived, not trusted
+      ownerCharacterAvatar: null,
+    });
+    const malformed = { id: 'broken-book', name: 'Broken' }; // no entries array at all
+
+    listSharedWorldInfoBooks.mockResolvedValueOnce([
+      { owner_handle: 'alice', owner_name: 'Alice A.', book: wellFormed },
+      { owner_handle: 'bob', owner_name: null, book: malformed },
+    ]);
+
+    await expect(useWorldInfoStore.getState().fetchSharedBooks()).resolves.toBeUndefined();
+
+    const state = useWorldInfoStore.getState();
+    expect(state.sharedBooksStatus).toBe('loaded');
+    expect(state.sharedBooksError).toBeNull();
+    expect(state.sharedBooks).toHaveLength(1);
+    const [got] = state.sharedBooks;
+    expect(got.id).toBe('shared-book-1');
+    expect(got.visibility).toBe('shared');
+    expect(got.ownerHandle).toBe('alice');
+    expect(got.scope).toBe('world');
+    // Bob's malformed entry never made it in, so it never populates a name either.
+    expect(state.sharedOwnerNameByHandle).toEqual({ alice: 'Alice A.' });
+  });
+
+  it('sets sharedBooksStatus to error and does not throw when the API call rejects', async () => {
+    listSharedWorldInfoBooks.mockRejectedValueOnce(new Error('404 Not Found'));
+
+    await expect(useWorldInfoStore.getState().fetchSharedBooks()).resolves.toBeUndefined();
+
+    const state = useWorldInfoStore.getState();
+    expect(state.sharedBooksStatus).toBe('error');
+    expect(state.sharedBooksError).toBe('404 Not Found');
+    expect(state.sharedBooks).toEqual([]);
+  });
+});
+
+describe('getComposableBooks', () => {
+  beforeEach(() => {
+    useWorldInfoStore.getState().resetUser();
+  });
+
+  it('dedupes by id, with the caller\'s own book winning on collision', () => {
+    const store = useWorldInfoStore.getState();
+    const ownBook = store.createBook('Mine');
+    store.createEntry(ownBook.id, { comment: 'mine' });
+
+    const collidingShared = mkBook([mkEntry({ comment: 'not mine' })], {
+      id: ownBook.id, // collides with the viewer's own book id
+      name: 'Impostor',
+      ownerHandle: 'alice',
+      visibility: 'shared',
+    });
+    const uniqueShared = mkBook([mkEntry({ comment: 'shared-only' })], {
+      id: 'unique-shared-book',
+      name: 'Alice Lore',
+      ownerHandle: 'alice',
+      visibility: 'shared',
+    });
+    useWorldInfoStore.setState({ sharedBooks: [collidingShared, uniqueShared] });
+
+    const composed = useWorldInfoStore.getState().getComposableBooks();
+    expect(composed.map((b) => b.id).sort()).toEqual(
+      [ownBook.id, 'unique-shared-book'].sort()
+    );
+    const winner = composed.find((b) => b.id === ownBook.id)!;
+    // The viewer's own book wins the collision — its own entry, not the impostor's.
+    expect(winner.entries.map((e) => e.comment)).toEqual(['mine']);
+    expect(winner.name).toBe('Mine');
+  });
+});
+
+describe('copySharedBook', () => {
+  beforeEach(() => {
+    useWorldInfoStore.getState().resetUser();
+  });
+
+  it('copies a shared book into books as a fresh private, world-scope, "(copy)"-suffixed book', () => {
+    const target = mkEntry({ comment: 'target' });
+    const source = mkEntry({ comment: 'source', relatedIds: [target.id] });
+    const shared = mkBook([target, source], {
+      id: 'shared-book-1',
+      name: "Alice's Lore",
+      ownerHandle: 'alice',
+      visibility: 'shared',
+      ownerCharacterAvatar: 'alice-char.png',
+      scope: 'character',
+      autoExtracted: true, // defensive: even if somehow set, the copy must clear it
+    });
+    useWorldInfoStore.setState({ sharedBooks: [shared] });
+
+    const copy = useWorldInfoStore.getState().copySharedBook('shared-book-1');
+
+    expect(copy).not.toBeNull();
+    expect(copy!.name).toBe("Alice's Lore (copy)");
+    expect(copy!.visibility).toBe('private');
+    expect(copy!.scope).toBe('world');
+    expect(copy!.ownerCharacterAvatar).toBeNull();
+    expect(copy!.autoExtracted).toBeUndefined();
+    // ownerHandle becomes the copier's own handle, not the original owner's.
+    expect(copy!.ownerHandle).not.toBe('alice');
+
+    // relatedIds were remapped onto the copy's fresh entry ids, not left
+    // pointing at the original (still-shared) entries.
+    const copiedSource = copy!.entries.find((e) => e.comment === 'source')!;
+    const copiedTarget = copy!.entries.find((e) => e.comment === 'target')!;
+    expect(copiedSource.id).not.toBe(source.id);
+    expect(copiedSource.relatedIds).toEqual([copiedTarget.id]);
+
+    // Persisted into the caller's own books, not just returned.
+    const stateBooks = useWorldInfoStore.getState().books;
+    expect(stateBooks.map((b) => b.id)).toContain(copy!.id);
+    // The original shared book is untouched.
+    expect(useWorldInfoStore.getState().sharedBooks[0]).toEqual(shared);
+  });
+
+  it('returns null and makes no changes when the shared book id is not found', () => {
+    useWorldInfoStore.setState({ sharedBooks: [] });
+    const before = useWorldInfoStore.getState().books;
+
+    const copy = useWorldInfoStore.getState().copySharedBook('does-not-exist');
+
+    expect(copy).toBeNull();
+    expect(useWorldInfoStore.getState().books).toBe(before);
+  });
+});
+
+describe('resetUser — sharing state', () => {
+  it('clears sharedBooks/sharedOwnerNameByHandle/sharedBooksStatus/sharedBooksError to defaults', async () => {
+    useWorldInfoStore.getState().resetUser();
+    listSharedWorldInfoBooks.mockResolvedValueOnce([
+      {
+        owner_handle: 'alice',
+        owner_name: 'Alice A.',
+        book: mkBook([mkEntry()], { id: 'sb1', ownerHandle: 'alice', visibility: 'shared' }),
+      },
+    ]);
+    await useWorldInfoStore.getState().fetchSharedBooks();
+    expect(useWorldInfoStore.getState().sharedBooks).toHaveLength(1);
+
+    useWorldInfoStore.getState().resetUser();
+
+    const state = useWorldInfoStore.getState();
+    expect(state.sharedBooks).toEqual([]);
+    expect(state.sharedOwnerNameByHandle).toEqual({});
+    expect(state.sharedBooksStatus).toBe('idle');
+    expect(state.sharedBooksError).toBeNull();
   });
 });

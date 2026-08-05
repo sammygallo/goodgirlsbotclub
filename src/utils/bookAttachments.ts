@@ -41,7 +41,7 @@ export interface ComputeBookAttachmentsInput {
   legacyChatLinkedBookIds: Record<string, string[]>;
 }
 
-export type LibraryScope = 'all' | 'character' | 'world' | 'auto_memory';
+export type LibraryScope = 'all' | 'character' | 'world' | 'auto_memory' | 'shared';
 
 /**
  * Computes, for every book, who/what has it attached: its owning character
@@ -159,5 +159,11 @@ export function filterBooksByScope(
       return books.filter((b) => b.ownerCharacterAvatar == null);
     case 'auto_memory':
       return books.filter((b) => b.autoExtracted === true);
+    case 'shared':
+      // Exists only for switch exhaustiveness — the Shared tab in
+      // WorldInfoPage.tsx renders straight from the store's `sharedBooks`
+      // array, never from this function's `books` argument (which is
+      // always the caller's own books, and never contains shared ones).
+      return [];
   }
 }

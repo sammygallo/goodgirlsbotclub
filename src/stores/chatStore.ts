@@ -959,6 +959,11 @@ function buildConversationContext(
   // contributes its own bucket. The legacy chat-linked-books map is folded
   // in via resolveEffectiveBooks (chatConfig), not unioned directly here.
   const wiState = useWorldInfoStore.getState();
+  // Composition input is own books + the caller's group's shared books
+  // (own wins on id collision) — widens what resolveEffectiveBooks /
+  // scanMessagesForEntries can see without touching either, per Phase 1's
+  // purity contract.
+  const composableBooks = wiState.getComposableBooks();
   const charBookIds = useCharacterStore
     .getState()
     .getActiveBookIdsForCharacter(character.avatar || '');
@@ -974,7 +979,7 @@ function buildConversationContext(
     ? useChatLoreConfigStore.getState().getEffectiveConfig(ctxChatFile)
     : undefined;
   const { effectiveBooks, effectiveActiveIds } = resolveEffectiveBooks(
-    wiState.books,
+    composableBooks,
     inheritedBookIds,
     chatConfig
   );
@@ -1687,6 +1692,11 @@ export function buildGroupConversationContext(
   // different character, so the union can't pull a private book in on
   // membership alone.
   const wiState = useWorldInfoStore.getState();
+  // Composition input is own books + the caller's group's shared books
+  // (own wins on id collision) — widens what resolveEffectiveBooks /
+  // scanMessagesForEntries can see without touching either, per Phase 1's
+  // purity contract.
+  const composableBooks = wiState.getComposableBooks();
   const characterStoreState = useCharacterStore.getState();
   const memberBookIds = characters.flatMap((c) =>
     characterStoreState.getActiveBookIdsForCharacter(c.avatar || '')
@@ -1703,7 +1713,7 @@ export function buildGroupConversationContext(
     ? useChatLoreConfigStore.getState().getEffectiveConfig(groupChatFile)
     : undefined;
   const { effectiveBooks, effectiveActiveIds } = resolveEffectiveBooks(
-    wiState.books,
+    composableBooks,
     inheritedBookIds,
     chatConfig
   );
@@ -1768,7 +1778,7 @@ export function buildGroupConversationContext(
   // unlabelled block of that owner's lore would read as the current
   // speaker's — the same identity-bleed this attribution exists to prevent.
   const memberNameByOwnedBookId = new Map<string, string>();
-  for (const book of wiState.books) {
+  for (const book of composableBooks) {
     if (!book.ownerCharacterAvatar) continue;
     const owner =
       characters.find((c) => c.avatar === book.ownerCharacterAvatar) ??

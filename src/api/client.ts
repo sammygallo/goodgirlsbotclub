@@ -354,6 +354,13 @@ export interface UserHandleSummary {
   name: string;
 }
 
+/** One entry from GET /worldinfo/shared — another user's book they've marked shared. */
+export interface SharedWorldInfoBookDTO {
+  owner_handle: string;
+  owner_name: string | null;
+  book: unknown; // deliberately untyped here — worldInfoStore normalizes it, client.ts must not import store types
+}
+
 export interface CharacterInfo {
   name: string;
   avatar: string; // filename like "CharacterName.png"
@@ -743,6 +750,12 @@ export const api = {
       method: 'POST',
     });
     return Array.isArray(result) ? result : [];
+  },
+
+  /** GET /worldinfo/shared — every book other users have set to shared visibility. */
+  async listSharedWorldInfoBooks(): Promise<SharedWorldInfoBookDTO[]> {
+    const result = await apiRequest<{ books: SharedWorldInfoBookDTO[] }>('/worldinfo/shared');
+    return Array.isArray(result?.books) ? result.books : [];
   },
 
   // -----------------------------------------------------------------

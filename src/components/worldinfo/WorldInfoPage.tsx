@@ -8,6 +8,8 @@ import {
   Loader2,
   Search,
   X,
+  RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -72,6 +74,10 @@ const EMPTY_STATE_COPY: Record<LibraryScope, { title: string; body: string }> = 
     title: 'No auto-memory lorebooks yet',
     body: 'These are generated automatically as chats accumulate lore.',
   },
+  shared: {
+    title: 'Nothing shared with you yet',
+    body: 'Books your group members mark as shared appear here.',
+  },
 };
 
 export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
@@ -95,6 +101,11 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
     exportBookJson,
     importBookJson,
     clearError,
+    sharedBooks,
+    sharedBooksStatus,
+    sharedBooksError,
+    fetchSharedBooks,
+    copySharedBook,
   } = useWorldInfoStore();
 
   const [newBookName, setNewBookName] = useState('');
@@ -212,6 +223,23 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
     return map;
   }, [books, activeProvider]);
 
+  // Same per-book token estimate, computed over the Shared tab's books
+  // instead of the caller's own — sharedBooks is fetched/normalized
+  // separately (see fetchSharedBooks) and never mixed into `books`.
+  const sharedTokenEstimatesByBookId = useMemo(() => {
+    const profile = profileForProvider(activeProvider || '');
+    const map = new Map<string, number>();
+    for (const book of sharedBooks) {
+      let total = 0;
+      for (const entry of book.entries) {
+        if (!entry.enabled) continue;
+        total += estimateTokens(entry.content, profile);
+      }
+      map.set(book.id, total);
+    }
+    return map;
+  }, [sharedBooks, activeProvider]);
+
   // Pending Auto Memory conflict counts per book, for the library row's
   // conflict pill (Lorebook v2 Phase 4).
   const conflictCountsByBookId = useMemo(() => {
@@ -253,15 +281,18 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
     return [...filtered].sort(byOwnerThenName);
   }, [books, scope, characters]);
 
-  // Segment count badges for the filter bar.
+  // Segment count badges for the filter bar. 'shared' isn't a real
+  // filterBooksByScope filter (it always returns []) — its count comes from
+  // sharedBooks.length instead, same as the Shared tab's own content.
   const segmentCounts = useMemo(() => {
     const scopes: LibraryScope[] = ['all', 'character', 'world', 'auto_memory'];
     const counts = {} as Record<LibraryScope, number>;
     for (const s of scopes) {
       counts[s] = filterBooksByScope(books, s).length;
     }
+    counts.shared = sharedBooks.length;
     return counts;
-  }, [books]);
+  }, [books, sharedBooks]);
 
   const health = useMemo(() => {
     const profile = profileForProvider(activeProvider || '');
@@ -631,6 +662,13 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
                 // new scope — always clear rather than special-casing it.
                 setRenamingId(null);
                 setRenameValue('');
+                // Phase 5 staleness model: "last successful fetch until the
+                // user asks again" — fetch once on first entry into the tab,
+                // not on every switch back into it (the header refresh
+                // button below covers "ask again").
+                if (s === 'shared' && sharedBooksStatus === 'idle') {
+                  fetchSharedBooks();
+                }
               }}
               counts={segmentCounts}
             />
@@ -664,24 +702,45 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
             )}
           </div>
 
-          <div className="flex gap-2 mb-3">
-            <Input
-              value={newBookName}
-              onChange={(e) => setNewBookName(e.target.value)}
-              placeholder="New lorebook name..."
-              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-              className="flex-1"
-            />
-            <Button
-              onClick={handleCreate}
-              disabled={!newBookName.trim()}
-              className="shrink-0"
-              size="sm"
-            >
-              <Plus size={14} className="mr-1" />
-              Create
-            </Button>
-          </div>
+          {scope === 'shared' ? (
+            <div className="flex items-center justify-between mb-3 gap-2">
+              <p className="text-xs text-[var(--color-text-secondary)]">
+                Books your group members have marked shared.
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => fetchSharedBooks()}
+                disabled={sharedBooksStatus === 'loading'}
+                className="text-xs shrink-0"
+              >
+                <RefreshCw
+                  size={14}
+                  className={`mr-1 ${sharedBooksStatus === 'loading' ? 'animate-spin' : ''}`}
+                />
+                Refresh
+              </Button>
+            </div>
+          ) : (
+            <div className="flex gap-2 mb-3">
+              <Input
+                value={newBookName}
+                onChange={(e) => setNewBookName(e.target.value)}
+                placeholder="New lorebook name..."
+                onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                className="flex-1"
+              />
+              <Button
+                onClick={handleCreate}
+                disabled={!newBookName.trim()}
+                className="shrink-0"
+                size="sm"
+              >
+                <Plus size={14} className="mr-1" />
+                Create
+              </Button>
+            </div>
+          )}
 
           {isSearching ? (
             <EntrySearchResults
@@ -695,6 +754,85 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
                 }
               }}
             />
+          ) : scope === 'shared' ? (
+            sharedBooksStatus === 'loading' ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-sm text-[var(--color-text-secondary)]">
+                <Loader2 size={16} className="animate-spin" />
+                Loading shared lorebooks…
+              </div>
+            ) : sharedBooksStatus === 'error' ? (
+              <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={16} className="text-red-400 mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-red-400">
+                      {sharedBooksError || 'Could not load shared lorebooks.'}
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => fetchSharedBooks()}
+                      className="mt-2 text-xs"
+                    >
+                      <RefreshCw size={14} className="mr-1" />
+                      Retry
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : sharedBooks.length === 0 ? (
+              <div className="text-center py-10">
+                <BookOpen
+                  size={48}
+                  className="mx-auto text-[var(--color-text-secondary)] mb-3"
+                />
+                <h3 className="text-sm font-medium text-[var(--color-text-primary)] mb-1">
+                  {EMPTY_STATE_COPY.shared.title}
+                </h3>
+                <p className="text-xs text-[var(--color-text-secondary)]">
+                  {EMPTY_STATE_COPY.shared.body}
+                </p>
+              </div>
+            ) : (
+              <ul className="space-y-2">
+                {sharedBooks.map((book) => {
+                  const isActive = activeBookIds.includes(book.id);
+                  const tokenEstimate = sharedTokenEstimatesByBookId.get(book.id) ?? 0;
+                  return (
+                    <LibraryBookRow
+                      key={book.id}
+                      readOnly
+                      book={book}
+                      isActive={isActive}
+                      ownerCharacter={null}
+                      attachments={EMPTY_ATTACHMENTS}
+                      tokenEstimate={tokenEstimate}
+                      isRenaming={false}
+                      renameValue=""
+                      onRenameValueChange={() => {}}
+                      onFinishRename={() => {}}
+                      onCancelRename={() => {}}
+                      onStartRename={() => {}}
+                      onToggleActive={() => toggleBookActive(book.id)}
+                      onOpen={() => {
+                        setEditingBook(book);
+                        setInitialEntryId(undefined);
+                      }}
+                      onDuplicate={() => {}}
+                      onExport={() => {}}
+                      onDelete={() => {}}
+                      onCopyToLibrary={() => {
+                        const copy = copySharedBook(book.id);
+                        if (copy) {
+                          setImportNotice(`Copied "${copy.name}" to your library`);
+                          setTimeout(() => setImportNotice(null), 4000);
+                        }
+                      }}
+                    />
+                  );
+                })}
+              </ul>
+            )
           ) : scopedBooks.length === 0 ? (
             <div className="text-center py-10">
               <BookOpen
@@ -762,8 +900,9 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
 
         <section className="text-center py-4">
           <p className="text-xs text-[var(--color-text-secondary)]">
-            Lorebooks are stored locally. Active books are scanned against recent
-            messages; matching entries are injected at their configured position.
+            Lorebooks sync across your devices, and books you mark shared sync to
+            your group. Active books are scanned against recent messages;
+            matching entries are injected at their configured position.
           </p>
         </section>
       </div>
@@ -777,6 +916,14 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
           }}
           book={books.find((b) => b.id === editingBook.id) || editingBook}
           initialEntryId={initialEntryId}
+          // editingBook can come from the "Shared with me" tab's raw
+          // sharedBooks entry (see onOpen below), which won't be in the
+          // viewer's own `books` — createEntry/updateEntry/deleteEntry are
+          // either silent no-ops or, on an id collision, misdirected writes
+          // to one of the viewer's own books for an id absent from `books`,
+          // so gate every mutating control off the same own-books check
+          // used to resolve `book` just above.
+          readOnly={!books.some((b) => b.id === editingBook.id)}
         />
       )}
 
