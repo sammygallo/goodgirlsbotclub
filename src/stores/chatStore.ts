@@ -28,6 +28,7 @@ import {
 } from './worldInfoStore';
 import { useChatLoreConfigStore } from './chatLoreConfigStore';
 import { resolveEffectiveBooks } from '../utils/worldInfoComposition';
+import { tryServerRetrieval, commitServerRetrieval } from '../utils/serverRetrieval';
 import { parseEmotion, stripEmotionTag, type Emotion } from '../utils/emotions';
 import { dataUrlToPart, supportsVision } from '../utils/images';
 import { processMacros, type MacroContext } from '../utils/macros';
@@ -908,7 +909,17 @@ function buildConversationContext(
   character: CharacterInfo,
   availableEmotions?: string[],
   wiTimerOut?: WiScanOut,
-  ragContext?: string
+  ragContext?: string,
+  /**
+   * When provided (by a call site that awaited tryServerRetrieval and got a
+   * non-null result), used in place of the local scanMessagesForEntries
+   * call — see the assignment below. Everything downstream of
+   * matchedEntries (position grouping, macro substitution, persona-book
+   * tagging, fired-state telemetry) is source-agnostic and untouched either
+   * way. Undefined (the default) preserves today's behavior exactly: always
+   * scan locally.
+   */
+  serverMatchedEntries?: MatchedEntry[]
 ): {
   context: { role: 'user' | 'assistant' | 'system'; content: string }[];
   /** True when the newest message alone exceeded the configured token
@@ -991,7 +1002,15 @@ function buildConversationContext(
     budget: 0,
     pinnedOverBudget: false,
   };
-  const matchedEntries = scanMessagesForEntries(
+  // serverMatchedEntries, when present, already IS this turn's fully
+  // resolved activation result (server-side activation engine, budget-
+  // trimmed) — skip the local scan entirely rather than run both.
+  // wiScanReport stays at its zeroed default in that case: the server
+  // doesn't return a "what got budget-evicted" list, so the pinned-over-
+  // budget audit toast below simply can't fire for a server-path turn (a
+  // known, minor limitation — no wrong lore is injected, just that one
+  // audit signal is unavailable).
+  const matchedEntries = serverMatchedEntries ?? scanMessagesForEntries(
     effectiveBooks,
     effectiveActiveIds,
     messages,
@@ -2419,12 +2438,34 @@ function captureWiFired(
   currentTurn: number
 ) {
   if (!chatFile || !wiOut.fired || wiOut.fired.length === 0) return;
-  const map = wiFiredByFile.get(chatFile) ?? {};
-  recordWiFired(
-    map,
-    wiOut.fired.map((m) => ({ bookId: m.bookId, entryId: m.entry.id })),
-    currentTurn
+  // A server-path turn's wiOut.fired entries come from
+  // serverRetrieval.ts's dtoToMatchedEntry, whose entry.id/bookId are the
+  // backend's own freshly-minted UUIDs (LorebookEntryOut.id/lorebook_id).
+  // That scheme is permanently disjoint from the legacy wibook_/wi_-
+  // prefixed ids every local WorldInfoBook/WorldInfoEntry still uses
+  // (import-from-blob only preserves a genuine UUID id from the source
+  // blob; the client's own id generator never produces one) — there is no
+  // crosswalk back to the local id anywhere. Recording a fired entry under
+  // an id the local store doesn't recognize wouldn't be inert: the
+  // story-bible replay (src/utils/storyIngest/wiReplay.ts) builds its
+  // lookup keys from the LOCAL entry ids, so a mismatched-scheme key would
+  // sit unreachable — discarding the real measured telemetry — while the
+  // local entry's own key falls back to an approximate keyword replay, or
+  // gets wrongly marked as never having fired. Until entries carry a
+  // stable cross-scheme id, only persist telemetry for entries the local
+  // store can actually resolve by id.
+  const localEntryIds = new Set(
+    useWorldInfoStore
+      .getState()
+      .getComposableBooks()
+      .flatMap((b) => b.entries.map((e) => e.id))
   );
+  const fired = wiOut.fired
+    .filter((m) => localEntryIds.has(m.entry.id))
+    .map((m) => ({ bookId: m.bookId, entryId: m.entry.id }));
+  if (fired.length === 0) return;
+  const map = wiFiredByFile.get(chatFile) ?? {};
+  recordWiFired(map, fired, currentTurn);
   wiFiredByFile.set(chatFile, map);
 }
 
@@ -3378,6 +3419,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
       };
+      // Server-side lore retrieval is intentionally NOT used on this path.
+      // swipeRight deliberately excludes the message being re-swiped from
+      // both the local context window (contextMessages) and currentTurn,
+      // but tryServerRetrieval/POST /retrieval/context takes no window
+      // argument — the server always derives turn_no and its recall/
+      // keyword tail from the FULL persisted Chat.messages row, which
+      // still contains that message's old (pre-swipe) content at read
+      // time (nothing is truncated server-side for a swipe). That produces
+      // a server turn_no one ahead of currentTurn and a stale-text keyword
+      // scan the client-side path would never match, so this call site
+      // always falls back to the client-side scan rather than risk
+      // silently wrong or early-firing lore.
       const { context, overBudget } = buildConversationContext(contextMessages, character, availableEmotions, wiOut, ragCtx ?? undefined);
       const { provider, model } = getProviderAndModel();
       const generationOptions = getGenerationOptions();
@@ -3462,7 +3515,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }),
         }));
 
-        // Save
+        // Server-side lore retrieval is never used on this path (see the
+        // comment above buildConversationContext's call above) — swipe
+        // always advances the LOCAL timed-effect store, never the
+        // server-side one, so a swipe turn can never disagree with a
+        // send/edit turn on which store is authoritative for this chat.
         saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
       }
     } catch (error) {
@@ -3513,6 +3570,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activated: new Set<string>(),
       };
       const ragCtx = await resolveRagContext(messages, character.avatar || '', currentChatFile || undefined);
+      // Server-side lore retrieval is intentionally NOT used on this path.
+      // currentTurn above is deliberately count-1 (mirrors swipeRight,
+      // excluding the message being continued from the turn count), but
+      // tryServerRetrieval/POST /retrieval/context takes no turn argument —
+      // the server always derives turn_no by counting every AI message in
+      // the FULL persisted Chat.messages row, including the one being
+      // continued. That server turn_no would run one ahead of currentTurn,
+      // letting a delay-gated entry fire through the server path a turn
+      // earlier than the client-side engine would ever allow, so this call
+      // site always falls back to the client-side scan.
       const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined);
       // Append the continue instruction as a user turn, not a system one.
       // Gemini extracts system messages into its separate systemInstruction
@@ -3628,7 +3695,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         activated: new Set<string>(),
       };
       const ragCtx = await resolveRagContext(messages, character.avatar || '', currentChatFile || undefined);
-      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined);
+      // Server-side lore retrieval: eligibility-gated, always falls back to
+      // the client-side scan on any failure/ineligibility (see
+      // src/utils/serverRetrieval.ts). Content is safe to read server-side
+      // here — impersonate's `messages` is untouched this turn, matching
+      // what the server would re-read from the persisted Chat row. No
+      // commit call below (impersonate has never persisted WI timers — see
+      // the comment above wiOut — so there's nothing to mirror there).
+      const serverRetrieval = await tryServerRetrieval(character.avatar || '', currentChatFile || '');
+      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries);
       // User-role instruction so Gemini (which extracts system into a
       // separate systemInstruction field) doesn't leave contents[] ending
       // with an assistant turn and trip its 400. See continueMessage above
@@ -3839,12 +3914,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
       const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
+      // Server-side lore retrieval: eligibility-gated, always falls back to
+      // the client-side scan on any failure/ineligibility (see
+      // src/utils/serverRetrieval.ts). `updatedMessages` is provably in
+      // sync with the persisted Chat row here — saveChatToBackend just ran
+      // unconditionally above, before this try block.
+      const serverRetrieval = await tryServerRetrieval(character.avatar || '', currentChatFile || '');
       const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
       };
-      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined);
+      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries);
       const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
@@ -3927,7 +4008,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ),
           }));
 
-          saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+          // Mirrors the server's read/commit pair: when this turn used the
+          // server-side lore read, advance server-side timed-effect state
+          // via the commit endpoint (fire-and-forget, echoing back the
+          // read's own turnNo per its "echoed back rather than re-derived"
+          // contract) instead of the local saveWiTimers. Only reached after
+          // a confirmed-successful, non-empty generation — same gating as
+          // saveWiTimers always had.
+          if (serverRetrieval) {
+            commitServerRetrieval(
+              character.avatar || '',
+              currentChatFile || '',
+              serverRetrieval.turnNo,
+              serverRetrieval.activatedEntryIds
+            );
+          } else {
+            saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+          }
         }
       }
     } catch (error) {
@@ -4197,6 +4294,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const abortController = new AbortController();
     set({ messages: updatedMessages, isSending: true, isStreaming: false, error: null, abortController });
 
+    // Persist the edited/truncated messages immediately, before any
+    // server-side retrieval read. tryServerRetrieval's POST
+    // /retrieval/context call makes the backend re-read Chat.messages
+    // straight off the DB row (deliberately, to stay safe against a
+    // stale/forged tail) — if we called it before saving, the server would
+    // score lore against the OLD pre-edit, pre-truncation text instead of
+    // what the user just edited. Mirrors sendMessage's Fix #1 persist-
+    // before-retrieval ordering. allowTruncate=true because editing an
+    // earlier message drops everything after it, which can shrink the
+    // array below what's currently persisted.
+    await saveChatToBackend(updatedMessages, character, get().currentChatFile, false, undefined, true);
+
     try {
       const { currentChatFile } = get();
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
@@ -4207,7 +4316,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
       };
-      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined);
+      // Server-side lore retrieval: eligibility-gated, always falls back to
+      // the client-side scan on any failure/ineligibility (see
+      // src/utils/serverRetrieval.ts). Wired here too (not just
+      // sendMessage/impersonate) so edit-and-regenerate doesn't silently
+      // diverge from whichever timed-effect store (server vs local) the
+      // rest of the chat's turns are using — see the commit/save branch
+      // below. Safe to call now: updatedMessages was just persisted above,
+      // so the server's re-read of Chat.messages matches what's on screen.
+      const serverRetrieval = await tryServerRetrieval(character.avatar || '', currentChatFile || '');
+      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries);
       const { provider, model } = getProviderAndModel();
       const generationOptions = getGenerationOptions();
 
@@ -4293,7 +4411,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ),
           }));
 
-          saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+          // Mirrors sendMessage/swipeRight's read/commit pair — see the
+          // comment above wiOut in this function.
+          if (serverRetrieval) {
+            commitServerRetrieval(
+              character.avatar || '',
+              currentChatFile || '',
+              serverRetrieval.turnNo,
+              serverRetrieval.activatedEntryIds
+            );
+          } else {
+            saveWiTimers(currentChatFile || '', wiTimerActivated, currentTurn);
+          }
         }
       }
     } catch (error) {

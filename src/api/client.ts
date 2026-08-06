@@ -361,6 +361,35 @@ export interface SharedWorldInfoBookDTO {
   book: unknown; // deliberately untyped here — worldInfoStore normalizes it, client.ts must not import store types
 }
 
+/**
+ * One entry from POST /retrieval/context — the full flat WorldInfoEntry-
+ * shaped object (camelCase, matches app/schemas/lorebook.py's
+ * LorebookEntryOut) plus two additive, un-aliased backend fields:
+ * `lorebook_id` and `server_ts` (confirmed literal snake_case on the wire —
+ * LorebookEntryOut leaves them un-aliased deliberately, same as this repo's
+ * other sync-protocol responses). Deliberately loosely typed, same
+ * reasoning as SharedWorldInfoBookDTO above: src/utils/serverRetrieval.ts
+ * normalizes this into WorldInfoEntry/MatchedEntry; client.ts must not
+ * import store types.
+ */
+export interface RetrievalContextEntryDTO {
+  id: string;
+  lorebook_id: string;
+  server_ts: number;
+  [key: string]: unknown; // keys, content, comment, enabled, position, depth,
+  // order, keysSecondary, selective, selectiveLogic, scanDepth, probability,
+  // useProbability, group, groupOverride, groupWeight, preventRecursion,
+  // excludeRecursion, sticky, cooldown, delay, critical, category,
+  // relatedIds, source, revisions, createdAt, updatedAt
+}
+
+/** Response for POST /retrieval/context — see RetrievalContextEntryDTO. */
+export interface RetrievalContextDTO {
+  entries: RetrievalContextEntryDTO[];
+  turnNo: number;
+  activatedEntryIds: string[];
+}
+
 export interface CharacterInfo {
   name: string;
   avatar: string; // filename like "CharacterName.png"
@@ -756,6 +785,100 @@ export const api = {
   async listSharedWorldInfoBooks(): Promise<SharedWorldInfoBookDTO[]> {
     const result = await apiRequest<{ books: SharedWorldInfoBookDTO[] }>('/worldinfo/shared');
     return Array.isArray(result?.books) ? result.books : [];
+  },
+
+  // -----------------------------------------------------------------
+  // Retrieval (server-side lore activation — Phase 2 activation-engine
+  // parity, see ggbc-backend's app/routers/retrieval.py). Consumed by
+  // src/utils/serverRetrieval.ts, never directly by chatStore.ts.
+  // -----------------------------------------------------------------
+
+  /**
+   * POST /retrieval/context — pure read, never advances timed-effect state.
+   * `entries` is deliberately loosely typed (RetrievalContextEntryDTO):
+   * same reasoning as SharedWorldInfoBookDTO above — the caller
+   * (serverRetrieval.ts) normalizes into WorldInfoEntry/MatchedEntry;
+   * client.ts must not import store types.
+   */
+  async getRetrievalContext(
+    characterAvatar: string,
+    fileName: string,
+    budgetTokens: number,
+    signal?: AbortSignal,
+  ): Promise<RetrievalContextDTO> {
+    return apiRequest<RetrievalContextDTO>('/retrieval/context', {
+      method: 'POST',
+      body: JSON.stringify({ characterAvatar, fileName, budgetTokens }),
+      signal,
+    });
+  },
+
+  /**
+   * POST /retrieval/context/commit — the only call allowed to advance
+   * server-side timed-effect state. Fire-and-forget: 204 No Content, no
+   * response body (apiRequest's empty-text branch returns {} as T).
+   */
+  async commitRetrievalContext(
+    characterAvatar: string,
+    fileName: string,
+    turnNo: number,
+    activatedEntryIds: string[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await apiRequest<unknown>('/retrieval/context/commit', {
+      method: 'POST',
+      body: JSON.stringify({ characterAvatar, fileName, turnNo, activatedEntryIds }),
+      signal,
+    });
+  },
+
+  // -----------------------------------------------------------------
+  // One-time migration helpers (session-scoped guards live in
+  // serverRetrieval.ts, not here — this file only wraps the wire calls).
+  // -----------------------------------------------------------------
+
+  /**
+   * POST /lorebooks/import-from-blob — migrates the caller's legacy
+   * stm_worldinfo blob into native lorebook tables. Deliberately NO
+   * request body: the endpoint reads the caller's own stored blob
+   * server-side (a client-POSTed body would be rejected — LorebookImportIn
+   * uses extra="forbid"). Idempotent: already-imported books are skipped,
+   * never duplicated — safe to call repeatedly.
+   */
+  async importLorebooksFromBlob(signal?: AbortSignal): Promise<{
+    imported: string[];
+    skipped: string[];
+    entry_count: number;
+  }> {
+    return apiRequest('/lorebooks/import-from-blob', { method: 'POST', signal });
+  },
+
+  /**
+   * POST /chats/wi-timers/import — one-time migration of one chat's local
+   * WI timer blob (loadWiTimers(chatFile)'s return shape) into
+   * lorebook_entry_timed_state. NOTE: unlike the /retrieval/* endpoints
+   * above, this body is plain snake_case on the wire (WiTimersImportIn has
+   * no camelCase aliases — confirmed by reading app/schemas/chat.py) —
+   * matching every other /chats/* endpoint's existing convention in this
+   * file (see getChats/getChatWithHeader above), not the aliased
+   * convention the newer /retrieval/* and /lorebooks/* routes use.
+   * GREATEST-guarded upsert server-side — idempotent, safe to retry.
+   */
+  async importWiTimers(
+    characterAvatar: string,
+    fileName: string,
+    timers: Record<string, number>,
+    signal?: AbortSignal,
+  ): Promise<{ updated: number }> {
+    return apiRequest('/chats/wi-timers/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        character_avatar: characterAvatar,
+        file_name: fileName,
+        timers,
+      }),
+      signal,
+    });
   },
 
   // -----------------------------------------------------------------
