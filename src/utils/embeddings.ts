@@ -50,32 +50,3 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
   return denom === 0 ? 0 : dot / denom;
 }
-
-export interface ScoredChunk {
-  text: string;
-  score: number;
-  /** Name of the parent document — carried through for source provenance in injected chunks. */
-  docName: string;
-}
-
-/**
- * Find the top-K most similar chunks to `queryEmbedding`.
- * Only considers chunks that already have an embedding. The caller must
- * attach a `docName` to each input chunk (usually the parent document's name)
- * so the result carries source provenance back to the caller.
- */
-export function findTopK(
-  queryEmbedding: number[],
-  chunks: { text: string; embedding: number[]; docName: string }[],
-  k: number
-): ScoredChunk[] {
-  return chunks
-    .filter((c) => c.embedding.length > 0)
-    .map((c) => ({
-      text: c.text,
-      docName: c.docName,
-      score: cosineSimilarity(queryEmbedding, c.embedding),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k);
-}

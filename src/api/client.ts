@@ -446,8 +446,8 @@ export interface RetrievalContextEntryDTO {
   [key: string]: unknown; // keys, content, comment, enabled, position, depth,
   // order, keysSecondary, selective, selectiveLogic, scanDepth, probability,
   // useProbability, group, groupOverride, groupWeight, preventRecursion,
-  // excludeRecursion, sticky, cooldown, delay, critical, category,
-  // relatedIds, source, revisions, createdAt, updatedAt
+  // excludeRecursion, sticky, cooldown, delay, critical, semanticOnly,
+  // category, relatedIds, source, revisions, createdAt, updatedAt
 }
 
 /** Response for POST /retrieval/context — see RetrievalContextEntryDTO. */
@@ -1051,6 +1051,25 @@ export const api = {
     entry_count: number;
   }> {
     return apiRequest('/lorebooks/import-from-blob', { method: 'POST', signal });
+  },
+
+  /**
+   * POST /lorebooks/import-from-databank — migrates the caller's legacy
+   * stm_data_bank blob (Data Bank documents) into native lorebooks, one
+   * semantic-only entry per chunk. Same no-body / server-reads-its-own-blob
+   * contract as importLorebooksFromBlob. Idempotent across separate calls
+   * (an already-migrated document is skipped); a same-name collision
+   * WITHIN one call gets a numbered suffix rather than being dropped — see
+   * the endpoint's own docstring. Returns the created lorebook ids (not
+   * just names) so the caller can build its own "which of my books came
+   * from Data Bank" registry.
+   */
+  async importFromDatabank(signal?: AbortSignal): Promise<{
+    imported: Array<{ name: string; lorebook_id: string }>;
+    skipped: string[];
+    entry_count: number;
+  }> {
+    return apiRequest('/lorebooks/import-from-databank', { method: 'POST', signal });
   },
 
   /**

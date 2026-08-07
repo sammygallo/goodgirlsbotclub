@@ -55,7 +55,6 @@ import { usePromptTemplateStore } from './promptTemplateStore';
 import { getInstructTemplate, formatInstructPrompt } from '../utils/instructTemplates';
 import { useRegexScriptStore } from './regexScriptStore';
 import { applyRegexScripts, getActiveScripts } from '../utils/regexScripts';
-import { useDataBankStore } from './dataBankStore';
 import { useSummarizeStore } from './summarizeStore';
 import { useChatHistoryRagStore } from './chatHistoryRagStore';
 import { extensionRegistry } from '../extensions/registry';
@@ -827,20 +826,22 @@ function buildMacroContext(
 
 /**
  * Phase 8.5 — RAG helper.
- * Extracts the last user message from `messages` and queries two sources
- * for relevant context, run in parallel:
- *   1. The Data Bank (user-uploaded docs, scoped to `characterAvatar`)
- *   2. Chat-history embeddings for `chatFile` (older turns indexed
- *      semantically — recalls specific past moments without keeping them
- *      in raw history)
+ * Extracts the last user message from `messages` and queries chat-history
+ * embeddings for `chatFile` (older turns indexed semantically — recalls
+ * specific past moments without keeping them in raw history).
  *
- * Both sources are gated on the user's settings and an OpenAI embeddings
- * key. Each chunk is prefixed with provenance so the model can cite. Also
- * lazily ensures any new turns have been embedded before querying.
+ * Data Bank documents used to be a second source queried here; they're now
+ * native Lorebooks and flow through the same server-side
+ * `/retrieval/context` activation path as any other lorebook entry instead
+ * (see dataBankStore.ts's module docstring) — this helper only covers the
+ * source that's genuinely still client-side.
+ *
+ * Gated on the user's settings and an OpenAI embeddings key. Each chunk is
+ * prefixed with provenance so the model can cite. Also lazily ensures any
+ * new turns have been embedded before querying.
  */
 async function resolveRagContext(
   messages: ChatMessage[],
-  characterAvatar: string,
   chatFile?: string
 ): Promise<string | null> {
   const lastUser = [...messages].reverse().find((m) => m.isUser && !m.isSystem);
@@ -859,19 +860,11 @@ async function resolveRagContext(
     );
   }
 
-  const [dataBankChunks, historyChunks] = await Promise.all([
-    useDataBankStore
-      .getState()
-      .queryRelevantChunks(lastUser.content, characterAvatar),
-    chatFile
-      ? useChatHistoryRagStore.getState().queryTopK(chatFile, lastUser.content)
-      : Promise.resolve([] as Array<{ text: string; speaker: 'user' | 'assistant'; score: number }>),
-  ]);
+  const historyChunks = chatFile
+    ? await useChatHistoryRagStore.getState().queryTopK(chatFile, lastUser.content)
+    : ([] as Array<{ text: string; speaker: 'user' | 'assistant'; score: number }>);
 
   const parts: string[] = [];
-  for (const c of dataBankChunks) {
-    parts.push(`[From: ${c.docName}]\n${c.text}`);
-  }
   for (const m of historyChunks) {
     const who = m.speaker === 'user' ? 'User' : 'Character';
     parts.push(`[Earlier in chat — ${who}]\n${m.text}`);
@@ -2058,7 +2051,7 @@ async function generateGroupTurn(
   // Phase 8.5: resolve Data Bank / RAG chunks scoped to the current speaker.
   // In a group turn this means Seraphina's character-scoped docs only fire
   // on Seraphina's turn, which matches how solo chats scope per-character.
-  const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', get().currentChatFile || undefined);
+  const ragCtx = await resolveRagContext(updatedMessages, get().currentChatFile || undefined);
   // Phase 5.3: look up the group's card-handling mode so the builder knows
   // whether to produce a swap-style flat bullet list or a full per-member
   // block layout for join mode.
@@ -3413,7 +3406,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { currentChatFile } = get();
       const currentTurn = contextMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
-      const ragCtx = await resolveRagContext(contextMessages, character.avatar || '', currentChatFile || undefined);
+      const ragCtx = await resolveRagContext(contextMessages, currentChatFile || undefined);
       const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
@@ -3569,7 +3562,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timers: loadWiTimers(currentChatFile || ''),
         activated: new Set<string>(),
       };
-      const ragCtx = await resolveRagContext(messages, character.avatar || '', currentChatFile || undefined);
+      const ragCtx = await resolveRagContext(messages, currentChatFile || undefined);
       // Server-side lore retrieval is intentionally NOT used on this path.
       // currentTurn above is deliberately count-1 (mirrors swipeRight,
       // excluding the message being continued from the turn count), but
@@ -3694,7 +3687,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timers: loadWiTimers(currentChatFile || ''),
         activated: new Set<string>(),
       };
-      const ragCtx = await resolveRagContext(messages, character.avatar || '', currentChatFile || undefined);
+      const ragCtx = await resolveRagContext(messages, currentChatFile || undefined);
       // Server-side lore retrieval: eligibility-gated, always falls back to
       // the client-side scan on any failure/ineligibility (see
       // src/utils/serverRetrieval.ts). Content is safe to read server-side
@@ -3913,7 +3906,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { currentChatFile } = get();
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
-      const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
+      const ragCtx = await resolveRagContext(updatedMessages, currentChatFile || undefined);
       // Server-side lore retrieval: eligibility-gated, always falls back to
       // the client-side scan on any failure/ineligibility (see
       // src/utils/serverRetrieval.ts). `updatedMessages` is provably in
@@ -4310,7 +4303,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { currentChatFile } = get();
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
-      const ragCtx = await resolveRagContext(updatedMessages, character.avatar || '', currentChatFile || undefined);
+      const ragCtx = await resolveRagContext(updatedMessages, currentChatFile || undefined);
       const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),

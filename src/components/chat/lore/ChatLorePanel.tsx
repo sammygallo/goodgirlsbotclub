@@ -86,6 +86,8 @@ function BaseEntryViewer({
         <p className="text-xs text-[var(--color-text-secondary)] mb-2">
           {entry.constant ? (
             <em>No keywords (always active)</em>
+          ) : entry.semanticOnly ? (
+            <em>Semantic only (no keywords needed)</em>
           ) : entry.keys.length > 0 ? (
             entry.keys.map((k, i) => (
               <span

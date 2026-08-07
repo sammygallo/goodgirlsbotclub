@@ -39,6 +39,7 @@ function mkEntry(over: Partial<WorldInfoEntry> = {}): WorldInfoEntry {
     cooldown: 0,
     delay: 0,
     critical: false,
+    semanticOnly: false,
     category: 'world_rule',
     relatedIds: [],
     source: 'manual',
@@ -66,6 +67,15 @@ describe('lintEntry — entries that can never fire', () => {
 
   it('does not flag a constant entry for having no keys', () => {
     expect(codes(mkEntry({ keys: [], constant: true }))).not.toContain(
+      'no-trigger'
+    );
+  });
+
+  it('does not flag a semanticOnly entry for having no keys', () => {
+    // Auto-chunked Data Bank imports are keyless by design — they fire via
+    // the server's semantic/FTS recall, not this client-side keyword scan.
+    // Flagging them "can never fire" would be wrong, not just unhelpful.
+    expect(codes(mkEntry({ keys: [], semanticOnly: true }))).not.toContain(
       'no-trigger'
     );
   });

@@ -51,6 +51,7 @@ import {
 import { useCharacterStore } from '../stores/characterStore';
 import { useChatLoreConfigStore } from '../stores/chatLoreConfigStore';
 import { usePersonaStore } from '../stores/personaStore';
+import { ensureDataBankImportedAndIndexed } from '../stores/dataBankStore';
 
 // ---------------------------------------------------------------------------
 // Eligibility
@@ -214,6 +215,46 @@ async function ensureContentImported(signal: AbortSignal): Promise<boolean> {
   return contentImportInFlight;
 }
 
+/**
+ * Sibling to ensureContentImported for the Data Bank -> Lorebook migration
+ * (POST /lorebooks/import-from-databank) — closes the same first-turn race:
+ * a generation right after login can otherwise run through
+ * /retrieval/context before dataBankStore.ts's own fetchPrefs-driven
+ * migration has completed, silently missing just-migrated document content
+ * for that one turn.
+ *
+ * Delegates entirely to dataBankStore.ts's ensureDataBankImportedAndIndexed
+ * rather than calling the endpoint directly — that function is the shared
+ * entrypoint BOTH this trigger and dataBankStore's own fetchPrefs go
+ * through, on top of its own once-per-session guard, specifically so
+ * whichever of the two triggers actually performs the network call is also
+ * the one that updates the frontend's Data Bank registry (lorebookIds).
+ * Calling the endpoint straight from here (bypassing that shared function,
+ * as an earlier version of this code did) would let this trigger "win" the
+ * one-shot import on a slow/early login without ever recording it, leaving
+ * the Data Bank page permanently unable to show the migrated documents —
+ * see that function's own docstring for the full failure mode. No local
+ * guard/in-flight-dedup needed here anymore: the shared function's own
+ * guard already makes a second call in the same session an instant no-op.
+ *
+ * Unlike ensureContentImported, a failure here does NOT abort the whole
+ * tryServerRetrieval attempt for this turn (see the call site) — only
+ * Data-Bank-sourced entries would be missing, not the character's actual
+ * lorebooks, so falling all the way back to the client-side scan over a
+ * Data Bank migration hiccup would throw out retrieval for content that has
+ * nothing to do with it.
+ */
+async function ensureDataBankContentImported(): Promise<void> {
+  try {
+    await ensureDataBankImportedAndIndexed();
+  } catch (err) {
+    console.warn(
+      '[serverRetrieval] import-from-databank failed — Data Bank documents may be missing from server-side retrieval this turn',
+      err
+    );
+  }
+}
+
 const timerImportSucceededChats = new Set<string>();
 const timerImportInFlight = new Map<string, Promise<boolean>>();
 
@@ -364,6 +405,7 @@ function dtoToMatchedEntry(dto: RetrievalContextEntryDTO): MatchedEntry | null {
     cooldown: num(dto.cooldown, 0),
     delay: num(dto.delay, 0),
     critical: bool(dto.critical, false),
+    semanticOnly: bool(dto.semanticOnly, false),
     category: str(dto.category, ''),
     relatedIds: strArr(dto.relatedIds),
     source,
@@ -423,6 +465,8 @@ export async function tryServerRetrieval(
 
     const contentOk = await ensureContentImported(signal);
     if (!contentOk) return null;
+
+    await ensureDataBankContentImported();
 
     const timersOk = await ensureTimersImported(chatFile, characterAvatar, signal);
     if (!timersOk) return null;

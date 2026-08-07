@@ -224,6 +224,8 @@ export function WorldInfoBookEditor({ isOpen, onClose, book, initialEntryId, rea
                         <p className="text-xs text-[var(--color-text-secondary)] mb-1">
                           {entry.constant ? (
                             <em>No keywords (always active)</em>
+                          ) : entry.semanticOnly ? (
+                            <em>Semantic only (no keywords needed)</em>
                           ) : entry.keys.length > 0 ? (
                             entry.keys.map((k, i) => (
                               <span
@@ -351,6 +353,10 @@ function ReadOnlyEntryDetail({
         {entry.constant ? (
           <p className="text-sm text-[var(--color-text-secondary)] italic">
             No keywords (always active)
+          </p>
+        ) : entry.semanticOnly ? (
+          <p className="text-sm text-[var(--color-text-secondary)] italic">
+            Semantic only — activates on meaning, not keywords (server-side retrieval)
           </p>
         ) : entry.keys.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">

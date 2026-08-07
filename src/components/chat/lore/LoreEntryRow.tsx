@@ -87,6 +87,8 @@ export function LoreEntryRow({ row, onAction }: LoreEntryRowProps) {
       <p className="text-xs text-[var(--color-text-secondary)] mb-1.5">
         {effective.constant ? (
           <em>No keywords (always active)</em>
+        ) : effective.semanticOnly ? (
+          <em>Semantic only (no keywords needed)</em>
         ) : effective.keys.length > 0 ? (
           effective.keys.map((k, i) => (
             <span

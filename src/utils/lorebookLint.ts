@@ -110,7 +110,14 @@ export function lintEntry(
     });
   }
 
-  if (!entry.constant && keys.length === 0) {
+  // semanticOnly entries (e.g. auto-chunked Data Bank imports) are keyless
+  // by design — they fire via the SERVER's semantic/FTS recall
+  // (/retrieval/context), which this client-side scanner has no equivalent
+  // of. Flagging them as "can never fire" would be simply wrong: they do
+  // fire, just not through the local keyword scan this lint models. (They
+  // also can't be critical — semanticOnly + critical is rejected server-side
+  // — so the critical branch below is unreachable for them regardless.)
+  if (!entry.constant && !entry.semanticOnly && keys.length === 0) {
     findings.push({
       code: 'no-trigger',
       severity: 'error',

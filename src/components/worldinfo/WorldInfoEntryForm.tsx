@@ -3,6 +3,7 @@ import {
   useWorldInfoStore,
   WI_CATEGORIES,
   humanizeCategory,
+  auditBookHealth,
   type WorldInfoEntry,
   type WorldInfoPosition,
   type SelectiveLogic,
@@ -12,6 +13,7 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import { profileForProvider } from '../../utils/tokenizer';
 import { lintDraftInBook, type LintFinding, type LintSeverity } from '../../utils/lorebookLint';
 import { Button, Input, TextArea } from '../ui';
+import { showToastGlobal } from '../ui/Toast';
 import { EntryHistory } from './EntryHistory';
 
 interface WorldInfoEntryFormProps {
@@ -224,6 +226,14 @@ export function WorldInfoEntryForm({
       cooldown,
       delay,
       critical,
+      // Not editable via this form (no UI control — see the module-level
+      // note on WorldInfoEntry.semanticOnly; a hand-authored entry setting
+      // this without empty keys would be misleading, and the migration
+      // that produces semantic_only entries never goes through this form).
+      // Carries the existing entry's value through unchanged, same as
+      // source/revisions below, so editing an already-migrated Data Bank
+      // entry here doesn't silently clear its semanticOnly flag.
+      semanticOnly: entry?.semanticOnly ?? false,
       category,
       relatedIds,
       // source/revisions aren't editable via this form; carry the existing
@@ -242,6 +252,7 @@ export function WorldInfoEntryForm({
       entry?.updatedAt,
       entry?.source,
       entry?.revisions,
+      entry?.semanticOnly,
       keys,
       content,
       comment,
@@ -302,13 +313,48 @@ export function WorldInfoEntryForm({
     });
   };
 
+  // Proactive non-evictable-budget guard: warns (never blocks) right at save
+  // time when this entry is constant/critical, instead of only finding out
+  // reactively the next time a generation happens to scan this book (see
+  // chatStore.ts's own wiScanReport.pinnedOverBudget toast, which this
+  // mirrors the wording of). Reads useWorldInfoStore.getState() directly —
+  // not the reactive hook — because it must see the state AFTER the
+  // createEntry/updateEntry call just below finished its synchronous
+  // set({books: next}), not whatever was current when this component last
+  // rendered. Only meaningful when this book is actually active (an
+  // inactive book's pinned entries don't count toward anyone's budget,
+  // same as the reactive scan's own semantics) and skipped entirely for
+  // the onSave-override path (chat-local editing bypasses the store, so
+  // there's no bookId-keyed book here to audit).
+  const warnIfPinnedOverBudget = (savedEntryIsPinned: boolean) => {
+    if (!savedEntryIsPinned) return;
+    const state = useWorldInfoStore.getState();
+    if (!state.activeBookIds.includes(bookId)) return;
+    if (state.tokenBudget <= 0) return;
+    const profile = profileForProvider(activeProvider || '');
+    const pinnedTotal = state.books
+      .filter((b) => state.activeBookIds.includes(b.id))
+      .reduce((sum, b) => sum + auditBookHealth(b, profile).pinnedTokens, 0);
+    if (pinnedTotal > state.tokenBudget) {
+      showToastGlobal(
+        `Constant + critical lore across your active books (~${pinnedTotal} tokens) now exceeds the World Info budget (${state.tokenBudget}). Raise the budget or demote entries.`,
+        'warning'
+      );
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     // Stop propagation so the submit event doesn't bubble through the React portal
     // tree to CharacterEdit's outer form, which would save + close the character editor.
     e.stopPropagation();
     if (!content.trim()) return;
-    if (!constant && parsedKeys.length === 0) return;
+    // semanticOnly entries (e.g. Data Bank imports) are legitimately keyless,
+    // same as constant ones — see the semanticOnly field comment on
+    // WorldInfoEntry. Without this, a Data Bank-created entry could never be
+    // re-saved through this form at all (the Save button would stay disabled
+    // forever), even though nothing else about it changed.
+    if (!constant && !draftEntry.semanticOnly && parsedKeys.length === 0) return;
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...data } = draftEntry;
@@ -317,13 +363,17 @@ export function WorldInfoEntryForm({
       onSave(data);
     } else if (entry) {
       updateEntry(bookId, entry.id, data);
+      warnIfPinnedOverBudget(data.constant || data.critical);
     } else {
       createEntry(bookId, data);
+      warnIfPinnedOverBudget(data.constant || data.critical);
     }
     onClose();
   };
 
-  const canSubmit = content.trim().length > 0 && (constant || parsedKeys.length > 0);
+  const canSubmit =
+    content.trim().length > 0 &&
+    (constant || draftEntry.semanticOnly || parsedKeys.length > 0);
 
   // Restoring an older revision only reverts content — every other field
   // stays whatever the author currently has open in the form. Routes through

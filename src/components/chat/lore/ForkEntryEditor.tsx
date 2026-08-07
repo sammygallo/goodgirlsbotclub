@@ -307,7 +307,14 @@ export function ForkEntryEditor({ chatFile, bookId, entryId, onClose }: ForkEntr
   };
 
   const parsedKeys = parseCsv(keys);
-  const canSave = content.trim().length > 0 && (constant || parsedKeys.length > 0);
+  // semanticOnly entries (e.g. Data Bank imports) are legitimately keyless,
+  // same as constant ones — not editable via this form (no UI control), so
+  // read it straight off base rather than tracking separate local state.
+  // Without this, forking/editing a Data Bank-created entry here would
+  // permanently disable Save.
+  const canSave =
+    content.trim().length > 0 &&
+    (constant || base.semanticOnly || parsedKeys.length > 0);
 
   return (
     <div className="space-y-4">

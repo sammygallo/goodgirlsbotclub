@@ -1,10 +1,14 @@
 /**
  * Phase 8.5 — Data Bank / RAG
  *
- * Lets users upload or paste plain-text documents, chunk + embed them via
- * OpenAI's text-embedding-3-small model, and manage per-character or global
- * scope. Embedded chunks are automatically injected into the system prompt at
- * generation time based on relevance to the user's last message.
+ * Lets users upload or paste plain-text documents, which are chunked and
+ * turned into a native Lorebook (one book per document, one semantic-only
+ * entry per chunk — see worldInfoStore.ts's `semanticOnly` field and
+ * dataBankStore.ts's module docstring). Embedding happens automatically,
+ * server-side, once entries exist; there's no separate "embed" step or
+ * client-side similarity search anymore — relevant chunks are injected the
+ * same way any other lorebook entry is, via the server's hybrid
+ * (keyword+semantic+FTS) activation engine.
  */
 
 import { useRef, useState } from 'react';
@@ -16,14 +20,13 @@ import {
   FileText,
   Globe,
   Key,
-  Loader2,
   Plus,
   Trash2,
   User,
-  Zap,
 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
-import { useDataBankStore, embeddingsConfigured, type DataBankDocument } from '../../stores/dataBankStore';
+import { useDataBankStore, embeddingsConfigured } from '../../stores/dataBankStore';
+import { useWorldInfoStore, type WorldInfoBook } from '../../stores/worldInfoStore';
 import { useChatHistoryRagStore } from '../../stores/chatHistoryRagStore';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -171,17 +174,17 @@ function AddDocumentForm({ onAdd, characters }: AddFormProps) {
 // ---------------------------------------------------------------------------
 
 interface DocCardProps {
-  doc: DataBankDocument;
-  isEmbedding: boolean;
-  hasApiKey: boolean;
-  onEmbed: (id: string) => void;
+  book: WorldInfoBook;
   onDelete: (id: string) => void;
   characterName?: string;
 }
 
-function DocCard({ doc, isEmbedding, hasApiKey, onEmbed, onDelete, characterName }: DocCardProps) {
+function DocCard({ book, onDelete, characterName }: DocCardProps) {
   const [showContent, setShowContent] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const chunkCount = book.entries.length;
+  const preview = book.entries.map((e) => e.content).join('\n\n');
 
   return (
     <div className="bg-[var(--color-bg-secondary)] rounded-lg overflow-hidden">
@@ -193,27 +196,21 @@ function DocCard({ doc, isEmbedding, hasApiKey, onEmbed, onDelete, characterName
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-[var(--color-text-primary)] truncate">
-              {doc.name}
+              {book.name}
             </span>
             {/* Scope badge */}
             <span
               className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
-                doc.scope === 'global'
+                book.scope === 'world'
                   ? 'bg-blue-500/15 text-blue-400'
                   : 'bg-purple-500/15 text-purple-400'
               }`}
             >
-              {doc.scope === 'global' ? 'global' : characterName ?? doc.characterAvatar ?? 'character'}
+              {book.scope === 'world' ? 'global' : characterName ?? book.ownerCharacterAvatar ?? 'character'}
             </span>
-            {/* Embedded badge */}
-            {doc.isEmbedded && (
-              <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-green-500/15 text-green-400">
-                embedded
-              </span>
-            )}
           </div>
           <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-            {doc.chunks.length} chunk{doc.chunks.length !== 1 ? 's' : ''} · {doc.content.length.toLocaleString()} chars
+            {chunkCount} chunk{chunkCount !== 1 ? 's' : ''}
           </p>
         </div>
 
@@ -228,23 +225,11 @@ function DocCard({ doc, isEmbedding, hasApiKey, onEmbed, onDelete, characterName
             {showContent ? <EyeOff size={15} /> : <Eye size={15} />}
           </button>
 
-          {/* Embed button */}
-          {!doc.isEmbedded && (
-            <button
-              onClick={() => onEmbed(doc.id)}
-              disabled={isEmbedding || !hasApiKey}
-              title={hasApiKey ? 'Embed document' : 'Set an OpenAI API key first'}
-              className="p-1.5 rounded-lg text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-primary)] transition-colors disabled:opacity-40"
-            >
-              {isEmbedding ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
-            </button>
-          )}
-
           {/* Delete */}
           {confirmDelete ? (
             <div className="flex items-center gap-1">
               <button
-                onClick={() => { onDelete(doc.id); setConfirmDelete(false); }}
+                onClick={() => { onDelete(book.id); setConfirmDelete(false); }}
                 className="text-xs px-2 py-1 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
               >
                 Confirm
@@ -272,7 +257,7 @@ function DocCard({ doc, isEmbedding, hasApiKey, onEmbed, onDelete, characterName
       {showContent && (
         <div className="px-4 pb-3">
           <pre className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-tertiary)] rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap font-mono">
-            {doc.content.slice(0, 2000)}{doc.content.length > 2000 ? '\n…' : ''}
+            {preview.slice(0, 2000)}{preview.length > 2000 ? '\n…' : ''}
           </pre>
         </div>
       )}
@@ -286,14 +271,9 @@ function DocCard({ doc, isEmbedding, hasApiKey, onEmbed, onDelete, characterName
 
 export function DataBankPage(_props?: { params?: Record<string, string> }) {
   const { goBack } = useSettingsPanelStore();
-  const {
-    documents,
-    embeddingIds,
-    setEmbeddingsApiKey,
-    addDocument,
-    deleteDocument,
-    embedDocument,
-  } = useDataBankStore();
+  const { lorebookIds, setEmbeddingsApiKey, addDocument, deleteDocument } = useDataBankStore();
+  const books = useWorldInfoStore((s) => s.books);
+  const documents = books.filter((b) => lorebookIds.includes(b.id));
 
   const characters = useCharacterStore((s) => s.characters);
   const secrets = useSettingsStore((s) => s.secrets);
@@ -303,26 +283,17 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
 
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
-  const [embedError, setEmbedError] = useState<string | null>(null);
+  const [keyError, setKeyError] = useState<string | null>(null);
 
   const handleSaveKey = async () => {
     const v = apiKeyInput.trim();
     if (!v) return;
-    setEmbedError(null);
+    setKeyError(null);
     try {
       await setEmbeddingsApiKey(v);
       setApiKeyInput('');
     } catch (e) {
-      setEmbedError(e instanceof Error ? e.message : 'Failed to save key');
-    }
-  };
-
-  const handleEmbed = async (id: string) => {
-    setEmbedError(null);
-    try {
-      await embedDocument(id);
-    } catch (e) {
-      setEmbedError(e instanceof Error ? e.message : 'Embedding failed');
+      setKeyError(e instanceof Error ? e.message : 'Failed to save key');
     }
   };
 
@@ -366,9 +337,10 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
             </h2>
           </div>
           <p className="text-xs text-[var(--color-text-secondary)]">
-            Required to embed documents and perform similarity search. Uses{' '}
+            Required for documents to become searchable. Uses{' '}
             <span className="font-mono">text-embedding-3-small</span>. Stored securely on the
-            server; the key never reaches your browser.
+            server; the key never reaches your browser. Embedding happens automatically in the
+            background once a document is added — no separate step needed.
           </p>
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -394,22 +366,18 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
               Save
             </Button>
           </div>
+          {keyError && (
+            <p className="text-xs text-red-400">{keyError}</p>
+          )}
           {hasKey && (
             <p className="text-xs text-green-400">
-              Embeddings key configured. Documents can now be embedded.
+              Embeddings key configured. New documents will be searchable shortly after adding.
             </p>
           )}
         </section>
 
         {/* Chat memory — semantic retrieval over past chat turns */}
         <ChatHistoryRagSection />
-
-        {/* Embed error */}
-        {embedError && (
-          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
-            {embedError}
-          </div>
-        )}
 
         {/* Documents */}
         <div className="space-y-2">
@@ -425,15 +393,12 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
             </p>
           )}
 
-          {documents.map((doc) => (
+          {documents.map((book) => (
             <DocCard
-              key={doc.id}
-              doc={doc}
-              isEmbedding={embeddingIds.has(doc.id)}
-              hasApiKey={hasKey}
-              onEmbed={handleEmbed}
+              key={book.id}
+              book={book}
               onDelete={deleteDocument}
-              characterName={doc.characterAvatar ? charByAvatar[doc.characterAvatar] : undefined}
+              characterName={book.ownerCharacterAvatar ? charByAvatar[book.ownerCharacterAvatar] : undefined}
             />
           ))}
 
@@ -444,13 +409,14 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
         <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-2">
           <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">How it works</h2>
           <ul className="text-xs text-[var(--color-text-secondary)] space-y-1 list-disc list-inside">
-            <li>Upload or paste documents (lore, wiki pages, character backstory, etc.)</li>
-            <li>Click ⚡ to embed a document — this calls OpenAI once per chunk</li>
+            <li>Upload or paste documents (lore, wiki pages, character backstory, etc.) — each becomes its own lorebook, one entry per chunk</li>
+            <li>Chunks embed automatically in the background; no manual step</li>
             <li>At generation time, the most relevant chunks are automatically injected into the system prompt</li>
             <li>
               <span className="text-blue-400">Global</span> documents are available in every chat;{' '}
               <span className="text-purple-400">character</span> documents are only used when chatting with that character
             </li>
+            <li>Each document also shows up in the World Info page like any other lorebook, where you can edit its entries directly</li>
           </ul>
         </section>
       </div>

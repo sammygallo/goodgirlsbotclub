@@ -1,112 +1,49 @@
 /**
  * Phase 8.5 — Data Bank / RAG
  *
- * Stores documents (plain text or .md/.txt uploads), chunks them, and
- * optionally embeds the chunks via OpenAI's text-embedding-3-small model.
+ * Paste/upload text (plain text or .md/.txt), chunk it, and create a native
+ * Lorebook (one book per document, one semantic-only LorebookEntry per
+ * chunk — see worldInfoStore.ts's `semanticOnly` field). Retrieval is no
+ * longer this store's concern: once entries exist server-side, the
+ * background embedding worker embeds them and the native hybrid
+ * (keyword+semantic+FTS) activation engine (`/retrieval/context`) picks
+ * them up the same way it does any other lorebook entry — no separate
+ * client-side query/injection path.
  *
- * At generation time the last user message is embedded and the most relevant
- * chunks from in-scope documents are injected into the system prompt.
+ * This store now owns two things only:
+ *  1. `addDocument`/`deleteDocument` — a thin, Data-Bank-flavored front end
+ *     over `worldInfoStore.ts`'s native CRUD (`createBookWithEntries`/
+ *     `deleteBook`), so paste/upload stays a one-call action instead of the
+ *     caller hand-assembling chunks + entries itself.
+ *  2. A small index (`stm_data_bank_index` — a NEW server section,
+ *     deliberately NOT the legacy `stm_data_bank` blob, see the module
+ *     docstring on `fetchPrefs` below) of which of the user's lorebook ids
+ *     came from a Data Bank upload, purely so `DataBankPage.tsx` can show a
+ *     filtered "your documents" view instead of the user's whole library.
  *
- * Scope:
- *   'global'    — available in every chat
- *   'character' — only available when `characterAvatar` matches
+ * The legacy `stm_data_bank` blob (old documents + client-computed
+ * embedding vectors) is migrated once, automatically, via
+ * `ensureDataBankImported` below, and is never written to again — new
+ * uploads go straight to native Lorebooks.
  *
- * Persistence: localStorage under `stm:data-bank`.
- * Embeddings are included in the persisted blob (they're ~6 KB/chunk).
+ * Persistence: localStorage under `stm:data-bank-index`.
  */
 
 import { create } from 'zustand';
 import { chunkText } from '../utils/chunker';
-import { getEmbedding, findTopK } from '../utils/embeddings';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
-import { settingsApi, SECRET_KEYS, type SecretsResponse } from '../api/client';
+import { api, settingsApi, SECRET_KEYS, type SecretsResponse } from '../api/client';
 import { useSettingsStore } from './settingsStore';
+import { useWorldInfoStore, type WorldInfoEntry } from './worldInfoStore';
 
 // ---------------------------------------------------------------------------
-// Types
+// Embeddings-key gate — unchanged by the native-Lorebook cutover. The SAME
+// secret (api_key_openai_embeddings, falling back to api_key_openai) is what
+// the server-side background embedding worker uses to embed newly-created
+// entries (app/workers/embeddings.py) — this store just surfaces whether
+// one is configured so DataBankPage can warn "documents won't be searchable
+// until you add a key," same message, different (now server-side) consumer.
 // ---------------------------------------------------------------------------
-
-export interface DocumentChunk {
-  id: string;
-  text: string;
-  /** Empty array until the document has been embedded. */
-  embedding: number[];
-}
-
-export interface DataBankDocument {
-  id: string;
-  name: string;
-  scope: 'global' | 'character';
-  /** Set when scope === 'character'. */
-  characterAvatar?: string;
-  /** Raw source text (kept for re-chunking / display). */
-  content: string;
-  chunks: DocumentChunk[];
-  /** True once all chunks have embeddings. */
-  isEmbedded: boolean;
-  createdAt: number;
-}
-
-interface DataBankState {
-  documents: DataBankDocument[];
-  /** IDs of documents currently being embedded (transient, not persisted). */
-  embeddingIds: Set<string>;
-
-  /**
-   * Store the OpenAI embeddings key as a server-side secret
-   * (`api_key_openai_embeddings`). The key is never persisted in the browser;
-   * the backend embeddings proxy resolves it. Refreshes settingsStore secrets.
-   */
-  setEmbeddingsApiKey: (key: string) => Promise<void>;
-
-  /** Add a document and chunk it. Returns the new document's id. */
-  addDocument: (
-    name: string,
-    content: string,
-    scope: 'global' | 'character',
-    characterAvatar?: string
-  ) => string;
-
-  deleteDocument: (id: string) => void;
-
-  /**
-   * Embed all chunks of a document via the backend embeddings proxy.
-   * Throws if no embeddings key is configured server-side.
-   */
-  embedDocument: (id: string) => Promise<void>;
-
-  /**
-   * Find the top-K most relevant chunks for `query` across all in-scope
-   * documents (global + those matching `characterAvatar`).
-   *
-   * Returns an array of {text, docName} objects sorted by relevance, or [] if
-   * no embedded documents are in scope, no embeddings key is configured, or the
-   * proxy call fails. Each result carries its parent document's name so callers
-   * can attribute the source when injecting into a prompt.
-   */
-  queryRelevantChunks: (
-    query: string,
-    characterAvatar?: string,
-    topK?: number
-  ) => Promise<Array<{ text: string; docName: string }>>;
-
-  /** A3.1d — pull /sync/section/stm_data_bank and reconcile. */
-  fetchPrefs: () => Promise<void>;
-  /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
-  resetUser: () => void;
-}
-
-// ---------------------------------------------------------------------------
-// Persistence
-// ---------------------------------------------------------------------------
-
-const STORAGE_KEY = 'stm:data-bank';
-const SERVER_KEY = 'stm_data_bank';
-const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
-
-/** Legacy localStorage key the embeddings secret used to live under (now moved
- *  server-side). Kept only so resetUser can purge leftovers on upgrade. */
-const LEGACY_EMBED_KEY_STORAGE = 'stm:data-bank-embed-key';
 
 /** True if the embeddings proxy will find a usable key server-side: a dedicated
  *  embeddings secret or the chat OpenAI key it falls back to — set either as the
@@ -131,14 +68,82 @@ export function hasEmbeddingsKey(): boolean {
   return embeddingsConfigured(s.secrets, s.globalSecrets, s.globalSharingEnabled);
 }
 
+// ---------------------------------------------------------------------------
+// Data Bank document index
+// ---------------------------------------------------------------------------
+
+interface DataBankState {
+  /** Lorebook ids created via addDocument (or the legacy-blob migration) —
+   *  purely a display filter, never source of truth for the books/entries
+   *  themselves (that's worldInfoStore.ts, same as any other lorebook). */
+  lorebookIds: string[];
+
+  /**
+   * Store the OpenAI embeddings key as a server-side secret
+   * (`api_key_openai_embeddings`). The key is never persisted in the browser;
+   * the backend embeddings proxy resolves it. Refreshes settingsStore secrets.
+   */
+  setEmbeddingsApiKey: (key: string) => Promise<void>;
+
+  /**
+   * Chunk `content` and create one native Lorebook (semanticOnly entries,
+   * one per chunk) via worldInfoStore's createBookWithEntries. Synchronous
+   * optimistic write + fire-and-forget background sync, matching every
+   * worldInfoStore book-creation action — NOT a new async contract.
+   * Returns the new book's id.
+   */
+  addDocument: (
+    name: string,
+    content: string,
+    scope: 'global' | 'character',
+    characterAvatar?: string
+  ) => string;
+
+  /** Deletes the underlying lorebook (via worldInfoStore.deleteBook) and
+   *  drops it from this store's index. */
+  deleteDocument: (id: string) => void;
+
+  /** A3.1d — pull /sync/section/stm_data_bank_index and reconcile; also
+   *  runs the one-time legacy-blob migration (see module docstring). */
+  fetchPrefs: () => Promise<void>;
+  /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
+  resetUser: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+const STORAGE_KEY = 'stm:data-bank-index';
+// Deliberately a NEW section name, not the legacy `stm_data_bank` blob.
+// worldInfoStore.fetchPrefs() and this store's fetchPrefs() fire
+// independently/unordered from authStore.ts (checkAuth/login/register all
+// fire-and-forget every store's fetchPrefs in one block) — if this store
+// reused `stm_data_bank` for the new (much smaller) index shape, its own
+// "no stored data yet -> seed the server" branch could overwrite the
+// ORIGINAL blob before the independently-timed migration call below has
+// read it. Leaving the legacy blob at its own untouched section name (never
+// written here again) makes that race impossible, and mirrors how
+// import_lorebooks_from_blob already leaves stm_worldinfo untouched after
+// migrating it.
+const SERVER_KEY = 'stm_data_bank_index';
+const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
+
+/** Legacy localStorage key the embeddings secret used to live under (now moved
+ *  server-side). Kept only so resetUser can purge leftovers on upgrade. */
+const LEGACY_EMBED_KEY_STORAGE = 'stm:data-bank-embed-key';
+/** Pre-cutover localStorage cache key (full documents + stripped embeddings).
+ *  Purged on resetUser; never read by this version of the store. */
+const LEGACY_DOCUMENTS_STORAGE_KEY = 'stm:data-bank';
+
 interface PersistedShape {
-  documents: DataBankDocument[];
+  lorebookIds: string[];
 }
 
 let _persistEnabled = false;
 let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-function schedulePersist(documents: DataBankDocument[]): void {
+function schedulePersist(lorebookIds: string[]): void {
   if (!_persistEnabled) return;
   try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
@@ -146,49 +151,63 @@ function schedulePersist(documents: DataBankDocument[]): void {
     _persistTimer = null;
     patchServerKey(
       SERVER_KEY,
-      { documents } as unknown as Record<string, unknown>,
+      { lorebookIds } as unknown as Record<string, unknown>,
       LOCAL_TS_KEY,
     ).catch(() => {});
   }, 500);
 }
 
-function loadFromStorage(): DataBankDocument[] {
+function loadFromStorage(): string[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as PersistedShape;
-      return parsed.documents ?? [];
+      return Array.isArray(parsed.lorebookIds) ? parsed.lorebookIds : [];
     }
   } catch { /* ignore */ }
   return [];
 }
 
-/**
- * Drop the embedding vectors (~6 KB/chunk) before caching to localStorage —
- * they're the heavy, rebuildable part and the authoritative copy lives in the
- * server section (schedulePersist pushes the full documents). The in-memory
- * state keeps the vectors; fetchPrefs re-hydrates them from the server on the
- * next load. Text/metadata stay cached for instant render.
- */
-function stripEmbeddings(documents: DataBankDocument[]): DataBankDocument[] {
-  return documents.map((d) => ({
-    ...d,
-    chunks: d.chunks.map((c) => (c.embedding.length ? { ...c, embedding: [] } : c)),
-  }));
-}
-
-function writeCache(documents: DataBankDocument[]): void {
+function writeCache(lorebookIds: string[]): void {
   try {
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ documents: stripEmbeddings(documents) } satisfies PersistedShape),
+      JSON.stringify({ lorebookIds } satisfies PersistedShape),
     );
   } catch { /* ignore */ }
 }
 
-function saveToStorage(documents: DataBankDocument[]) {
-  writeCache(documents);
-  schedulePersist(documents); // full documents (with embeddings) go to the server
+function saveIndex(lorebookIds: string[]): void {
+  writeCache(lorebookIds);
+  schedulePersist(lorebookIds);
+}
+
+// ---------------------------------------------------------------------------
+// One-time legacy-blob migration bootstrap — same shape/guard idiom as
+// worldInfoStore.ts's ensureBlobImported (module-level in-memory flag, reset
+// on failure and on resetUser so a second user in the same browser session
+// gets their own attempt). Deliberately does NOT touch this store's state
+// directly — folding the result into the index is `ensureDataBankImportedAndIndexed`'s
+// job (defined after the store below, since it needs `useDataBankStore` in
+// scope), which is the single shared entrypoint BOTH this store's own
+// fetchPrefs and serverRetrieval.ts's first-turn trigger call — see that
+// function's docstring for why routing both callers through it (rather
+// than each updating the registry from its own copy of the result) matters.
+// ---------------------------------------------------------------------------
+
+let _databankImportAttempted = false;
+
+async function ensureDataBankImported(): Promise<Array<{ name: string; lorebook_id: string }>> {
+  if (_databankImportAttempted) return [];
+  _databankImportAttempted = true;
+  try {
+    const result = await api.importFromDatabank();
+    return result.imported;
+  } catch (err) {
+    _databankImportAttempted = false;
+    console.warn('[dataBankStore] import-from-databank failed', err);
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,8 +215,7 @@ function saveToStorage(documents: DataBankDocument[]) {
 // ---------------------------------------------------------------------------
 
 export const useDataBankStore = create<DataBankState>((set, get) => ({
-  documents: loadFromStorage(),
-  embeddingIds: new Set(),
+  lorebookIds: loadFromStorage(),
 
   setEmbeddingsApiKey: async (key) => {
     const trimmed = key.trim();
@@ -207,150 +225,121 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
   },
 
   addDocument: (name, content, scope, characterAvatar) => {
-    const id = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const rawChunks = chunkText(content);
-    const chunks: DocumentChunk[] = rawChunks.map((text, i) => ({
-      id: `${id}_chunk_${i}`,
-      text,
-      embedding: [],
-    }));
-    const doc: DataBankDocument = {
-      id,
-      name: name.trim() || 'Untitled',
-      scope,
-      characterAvatar: scope === 'character' ? characterAvatar : undefined,
-      content,
-      chunks,
-      isEmbedded: false,
-      createdAt: Date.now(),
-    };
-    const documents = [...get().documents, doc];
-    saveToStorage(documents);
-    set({ documents });
-    return id;
+    const trimmedName = name.trim() || 'Untitled';
+    const chunks = chunkText(content);
+    const entries: Array<Partial<Omit<WorldInfoEntry, 'id' | 'createdAt' | 'updatedAt'>>> =
+      chunks.map((text, i) => ({
+        content: text,
+        comment: `chunk ${i + 1} of ${trimmedName}`,
+        keys: [],
+        semanticOnly: true,
+        source: 'import',
+      }));
+    const ownerCharacterAvatar = scope === 'character' ? characterAvatar ?? null : null;
+    const book = useWorldInfoStore
+      .getState()
+      .createBookWithEntries(trimmedName, entries, ownerCharacterAvatar);
+
+    const lorebookIds = [...get().lorebookIds, book.id];
+    saveIndex(lorebookIds);
+    set({ lorebookIds });
+    return book.id;
   },
 
   deleteDocument: (id) => {
-    const documents = get().documents.filter((d) => d.id !== id);
-    saveToStorage(documents);
-    set({ documents });
-  },
-
-  embedDocument: async (id) => {
-    if (!hasEmbeddingsKey()) throw new Error('No embeddings API key configured. Set one in Data Bank settings.');
-
-    const doc = get().documents.find((d) => d.id === id);
-    if (!doc) return;
-
-    set((s) => ({ embeddingIds: new Set([...s.embeddingIds, id]) }));
-
-    try {
-      const chunks = await Promise.all(
-        doc.chunks.map(async (chunk) => {
-          // Skip chunks that already have embeddings
-          if (chunk.embedding.length > 0) return chunk;
-          const embedding = await getEmbedding(chunk.text);
-          return { ...chunk, embedding };
-        })
-      );
-
-      const updatedDoc: DataBankDocument = { ...doc, chunks, isEmbedded: true };
-      const documents = get().documents.map((d) => (d.id === id ? updatedDoc : d));
-      saveToStorage(documents);
-      set({ documents });
-    } finally {
-      set((s) => {
-        const next = new Set(s.embeddingIds);
-        next.delete(id);
-        return { embeddingIds: next };
-      });
-    }
-  },
-
-  queryRelevantChunks: async (query, characterAvatar, topK = 3) => {
-    if (!hasEmbeddingsKey()) return [];
-
-    const { documents } = get();
-
-    // Collect all chunks from in-scope, embedded documents
-    const inScope = documents.filter(
-      (d) =>
-        d.isEmbedded &&
-        (d.scope === 'global' ||
-          (d.scope === 'character' && d.characterAvatar === characterAvatar))
-    );
-
-    if (inScope.length === 0) return [];
-
-    // Attach docName from the parent document at flatten time so retrieval
-    // results can be attributed back to their source for provenance.
-    const allChunks = inScope.flatMap((d) =>
-      d.chunks.map((c) => ({ ...c, docName: d.name }))
-    );
-    if (allChunks.length === 0) return [];
-
-    try {
-      const queryEmbedding = await getEmbedding(query);
-      const results = findTopK(queryEmbedding, allChunks, topK);
-      // Only return chunks with at least weak relevance (score > 0.3)
-      return results
-        .filter((r) => r.score > 0.3)
-        .map((r) => ({ text: r.text, docName: r.docName }));
-    } catch {
-      // Fail silently so generation still proceeds without RAG
-      return [];
-    }
+    useWorldInfoStore.getState().deleteBook(id);
+    const lorebookIds = get().lorebookIds.filter((bookId) => bookId !== id);
+    saveIndex(lorebookIds);
+    set({ lorebookIds });
   },
 
   resetUser: () => {
-    set({ documents: [], embeddingIds: new Set() });
+    set({ lorebookIds: [] });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(LEGACY_DOCUMENTS_STORAGE_KEY); } catch { /* ignore */ }
     // Legacy: older builds stored the embeddings key in localStorage; purge it.
     try { localStorage.removeItem(LEGACY_EMBED_KEY_STORAGE); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
+    _databankImportAttempted = false;
   },
 
   fetchPrefs: async () => {
     try {
       const settings = await getSettingsBlob();
       const stored = settings[SERVER_KEY] as
-        | { documents?: DataBankDocument[]; _ts?: number }
+        | (PersistedShape & { _ts?: number })
         | undefined;
       const serverTs = Number(stored?._ts || 0);
 
       if (!stored) {
         _persistEnabled = true;
-        const documents = get().documents;
-        if (documents.length > 0) {
+        const lorebookIds = get().lorebookIds;
+        if (lorebookIds.length > 0) {
           patchServerKey(
             SERVER_KEY,
-            { documents } as unknown as Record<string, unknown>,
+            { lorebookIds } as unknown as Record<string, unknown>,
             LOCAL_TS_KEY,
           ).catch(() => {});
         }
-        return;
-      }
-
-      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
+      } else if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         _persistEnabled = true;
         patchServerKey(
           SERVER_KEY,
-          { documents: get().documents } as unknown as Record<string, unknown>,
+          { lorebookIds: get().lorebookIds } as unknown as Record<string, unknown>,
           LOCAL_TS_KEY,
         ).catch(() => {});
-        return;
+      } else {
+        _persistEnabled = false;
+        const lorebookIds = Array.isArray(stored.lorebookIds) ? stored.lorebookIds : [];
+        writeCache(lorebookIds);
+        try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
+        set({ lorebookIds });
+        _persistEnabled = true;
       }
-
-      _persistEnabled = false;
-      const documents = Array.isArray(stored.documents) ? stored.documents : [];
-      // In-memory keeps the server's embeddings; the localStorage cache strips
-      // them (writeCache) to stay KB-scale.
-      writeCache(documents);
-      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
-      set({ documents, embeddingIds: new Set() });
-      _persistEnabled = true;
     } catch {
       _persistEnabled = true;
     }
+
+    try {
+      await ensureDataBankImportedAndIndexed();
+    } catch {
+      // ensureDataBankImported already handles its own retry guard/logging.
+    }
   },
 }));
+
+/**
+ * Shared entrypoint for the one-time Data Bank -> Lorebook migration.
+ * There are TWO independent, unordered triggers for it: this store's own
+ * fetchPrefs (above, fired at login) and serverRetrieval.ts's first-turn
+ * safety net (fired lazily, only once a chat generation is actually
+ * eligible for server-side retrieval). Whichever fires first "wins" the
+ * one-shot server-side import (ensureDataBankImported's own guard, plus
+ * the backend's idempotent skip-if-already-exists) — routing BOTH
+ * triggers through this single function is what guarantees whichever one
+ * actually performs the network call is also the one that updates
+ * lorebookIds. Without this, a loser-takes-nothing bug is real and
+ * permanent: the trigger that loses the race always sees an empty
+ * `imported` list (everything already migrated), so if it were the only
+ * one updating the registry, the registry could end up NEVER populated
+ * for that user — the books would exist and work fine for retrieval, but
+ * would silently vanish from the Data Bank page forever.
+ */
+export async function ensureDataBankImportedAndIndexed(): Promise<void> {
+  const migrated = await ensureDataBankImported();
+  if (migrated.length === 0) return;
+  const migratedIds = migrated.map((b) => b.lorebook_id);
+  const current = useDataBankStore.getState().lorebookIds;
+  const lorebookIds = Array.from(new Set([...current, ...migratedIds]));
+  saveIndex(lorebookIds);
+  useDataBankStore.setState({ lorebookIds });
+  // Refresh worldInfoStore's book list so the just-migrated books show up
+  // without waiting for the next login. Best-effort: if this fails, the
+  // books still exist server-side (the migration endpoint already
+  // committed them) and will surface on the next successful native-books
+  // fetch regardless.
+  useWorldInfoStore
+    .getState()
+    .fetchPrefs()
+    .catch(() => {});
+}

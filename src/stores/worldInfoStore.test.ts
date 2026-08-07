@@ -483,6 +483,36 @@ describe('store actions', () => {
     expect(copiedSource.relatedIds).toEqual([copiedTarget.id]);
   });
 
+  it('createBookWithEntries creates a book with all entries default-filled', () => {
+    const store = useWorldInfoStore.getState();
+    const book = store.createBookWithEntries('Data Bank Doc', [
+      { content: 'chunk one', comment: 'chunk 1 of Data Bank Doc', keys: [], semanticOnly: true, source: 'import' },
+      { content: 'chunk two', comment: 'chunk 2 of Data Bank Doc', keys: [], semanticOnly: true, source: 'import' },
+    ]);
+    expect(book.name).toBe('Data Bank Doc');
+    expect(book.ownerCharacterAvatar).toBeNull();
+    expect(book.scope).toBe('world');
+    expect(book.entries).toHaveLength(2);
+    expect(book.entries[0].content).toBe('chunk one');
+    expect(book.entries[0].semanticOnly).toBe(true);
+    expect(book.entries[0].keys).toEqual([]);
+    expect(book.entries[0].id).toBeTruthy();
+    expect(book.entries[0].id).not.toBe(book.entries[1].id);
+    expect(book.entries[0].revisions).toHaveLength(1);
+    expect(book.entries[0].revisions[0].action).toBe('create');
+    // Unset fields fall back to DEFAULT_ENTRY, same as a plain createEntry call.
+    expect(book.entries[0].position).toBe(DEFAULT_ENTRY.position);
+    expect(book.entries[0].enabled).toBe(true);
+    expect(book.entries[0].critical).toBe(false);
+  });
+
+  it('createBookWithEntries scopes to a character when ownerCharacterAvatar is given', () => {
+    const store = useWorldInfoStore.getState();
+    const book = store.createBookWithEntries('Char Doc', [{ content: 'x' }], 'ivy.png');
+    expect(book.ownerCharacterAvatar).toBe('ivy.png');
+    expect(book.scope).toBe('character');
+  });
+
   it('deleteEntry strips related links pointing at the deleted entry', () => {
     const store = useWorldInfoStore.getState();
     const book = store.createBook('Cleanup');

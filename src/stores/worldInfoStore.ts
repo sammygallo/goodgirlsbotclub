@@ -121,6 +121,18 @@ export interface WorldInfoEntry {
    * trigger source for high-stakes lore).
    */
   critical: boolean;
+  /**
+   * When true, this entry has no meaningful keyword triggers by design and
+   * activates purely on the server's semantic/FTS recall (an auto-chunked
+   * Data Bank import is the main producer of these — see dataBankStore.ts).
+   * Mutually exclusive with `critical` (enforced server-side, both at the
+   * schema and DB layer) — a fuzzy semantic match can't also promise
+   * "never evict." Purely a validation/authoring-intent marker; it does
+   * NOT change local activation behavior (this app's own scan is
+   * keyword-only — semantic-only activation only ever happens server-side
+   * via /retrieval/context).
+   */
+  semanticOnly: boolean;
   /** Authoring category tag (see WI_CATEGORIES). Free-form; '' = untagged. */
   category: string;
   /**
@@ -273,6 +285,7 @@ export const DEFAULT_ENTRY: Omit<
   cooldown: 0,
   delay: 0,
   critical: false,
+  semanticOnly: false,
   category: '',
   relatedIds: [],
   source: 'manual',
@@ -316,6 +329,7 @@ function normalizeStoredBooks(
         cooldown: e.cooldown ?? 0,
         delay: e.delay ?? 0,
         critical: e.critical === true,
+        semanticOnly: e.semanticOnly === true,
         category: typeof e.category === 'string' ? e.category : '',
         relatedIds: Array.isArray(e.relatedIds)
           ? e.relatedIds.filter((id) => typeof id === 'string')
@@ -538,6 +552,7 @@ interface StEntry {
   // GGBC extensions (ignored by SillyTavern, round-tripped by us).
   ggbcId?: string;
   critical?: boolean;
+  semanticOnly?: boolean;
   category?: string;
   relatedIds?: string[];
   ggbcSource?: EntrySource;
@@ -626,6 +641,7 @@ export function entryFromStFormat(raw: StEntry): WorldInfoEntry {
     cooldown: typeof raw.cooldown === 'number' && raw.cooldown > 0 ? Math.floor(raw.cooldown) : 0,
     delay: typeof raw.delay === 'number' && raw.delay > 0 ? Math.floor(raw.delay) : 0,
     critical: raw.critical === true,
+    semanticOnly: raw.semanticOnly === true,
     category: typeof raw.category === 'string' ? raw.category : '',
     // Source-file ids; bookFromStFormat remaps these onto the fresh ids.
     relatedIds: pickStringArray(raw.relatedIds),
@@ -692,6 +708,7 @@ export function entryToStFormat(
     addMemo: !!entry.comment,
     ggbcId: entry.id,
     critical: entry.critical,
+    semanticOnly: entry.semanticOnly,
     category: entry.category,
     relatedIds: entry.relatedIds,
     ggbcSource: entry.source,
@@ -770,6 +787,7 @@ interface CharacterBookExtensions {
   // GGBC extensions (round-tripped through the card, ignored elsewhere).
   ggbc_id?: string;
   critical?: boolean;
+  semantic_only?: boolean;
   category?: string;
   related_ids?: string[];
   ggbc_source?: EntrySource;
@@ -857,6 +875,7 @@ export function entryFromCharacterBookV2(
     cooldown: typeof ext.cooldown === 'number' && ext.cooldown > 0 ? Math.floor(ext.cooldown) : 0,
     delay: typeof ext.delay === 'number' && ext.delay > 0 ? Math.floor(ext.delay) : 0,
     critical: ext.critical === true,
+    semanticOnly: ext.semantic_only === true,
     category: typeof ext.category === 'string' ? ext.category : '',
     relatedIds: pickStringArray(ext.related_ids),
     source,
@@ -888,6 +907,7 @@ export function entryToCharacterBookV2(
     delay: entry.delay,
     ggbc_id: entry.id,
     critical: entry.critical,
+    semantic_only: entry.semanticOnly,
     category: entry.category,
     related_ids: entry.relatedIds,
     ggbc_source: entry.source,
@@ -1554,6 +1574,21 @@ interface WorldInfoState {
 
   // Book CRUD
   createBook: (name: string) => WorldInfoBook;
+  /**
+   * Creates a book with its entries already populated in one call — the
+   * generalization of createCharacterBook's body that any "one document ->
+   * one book with N entries" caller needs (currently: dataBankStore.ts's
+   * addDocument, one LorebookEntry per chunk). Each entry in `entries` gets
+   * DEFAULT_ENTRY-filled, a minted id, and a single 'create' revision, the
+   * same as a plain createEntry call — callers only need to supply the
+   * fields that differ from the default. `ownerCharacterAvatar` null/omitted
+   * makes a standalone world book, matching createBook's own default scope.
+   */
+  createBookWithEntries: (
+    name: string,
+    entries: Array<Partial<Omit<WorldInfoEntry, 'id' | 'createdAt' | 'updatedAt'>>>,
+    ownerCharacterAvatar?: string | null
+  ) => WorldInfoBook;
   renameBook: (bookId: string, name: string) => void;
   deleteBook: (bookId: string) => void;
   duplicateBook: (bookId: string) => WorldInfoBook | null;
@@ -1776,6 +1811,7 @@ function entryToWirePayload(entry: WorldInfoEntry): Record<string, unknown> {
     cooldown: entry.cooldown,
     delay: entry.delay,
     critical: entry.critical,
+    semanticOnly: entry.semanticOnly,
     category: entry.category,
     relatedIds: entry.relatedIds,
     source: entry.source,
@@ -1832,6 +1868,7 @@ function normalizeNativeEntry(dto: LorebookEntryDTO): WorldInfoEntry {
     cooldown: typeof dto.cooldown === 'number' && dto.cooldown > 0 ? Math.floor(dto.cooldown) : 0,
     delay: typeof dto.delay === 'number' && dto.delay > 0 ? Math.floor(dto.delay) : 0,
     critical: dto.critical === true,
+    semanticOnly: dto.semanticOnly === true,
     category: typeof dto.category === 'string' ? dto.category : '',
     relatedIds: pickStringArray(dto.relatedIds),
     source,
@@ -2597,6 +2634,43 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
         entries: [],
         ownerCharacterAvatar: null,
         scope: 'world',
+        ownerHandle: currentHandle(),
+        visibility: 'private',
+        createdAt: now,
+        updatedAt: now,
+      };
+      const next = [...get().books, book];
+      saveBooks(next);
+      set({ books: next });
+      syncNewBookWithEntries(book);
+      return book;
+    },
+
+    createBookWithEntries: (name, entryData, ownerCharacterAvatar = null) => {
+      const trimmed = name.trim() || 'Untitled Lorebook';
+      const now = Date.now();
+      const entries: WorldInfoEntry[] = entryData.map((data) => ({
+        ...DEFAULT_ENTRY,
+        ...data,
+        id: crypto.randomUUID(),
+        source: data.source ?? 'manual',
+        revisions: [
+          {
+            ts: now,
+            authorHandle: currentHandle(),
+            action: 'create',
+            prevContent: '',
+          },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      }));
+      const book: WorldInfoBook = {
+        id: crypto.randomUUID(),
+        name: trimmed,
+        entries,
+        ownerCharacterAvatar,
+        scope: ownerCharacterAvatar != null ? 'character' : 'world',
         ownerHandle: currentHandle(),
         visibility: 'private',
         createdAt: now,
