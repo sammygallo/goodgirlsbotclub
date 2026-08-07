@@ -10,8 +10,10 @@ import {
   type EntryRevision,
 } from '../../stores/worldInfoStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { embeddingsConfigured } from '../../stores/dataBankStore';
 import { profileForProvider } from '../../utils/tokenizer';
 import { lintDraftInBook, type LintFinding, type LintSeverity } from '../../utils/lorebookLint';
+import { api, type LorebookSearchHit } from '../../api/client';
 import { Button, Input, TextArea } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import { EntryHistory } from './EntryHistory';
@@ -311,6 +313,49 @@ export function WorldInfoEntryForm({
       ),
       against: draftEntry,
     });
+  };
+
+  // Duplicate-entry nudge — advisory only, same on-demand shape as Check
+  // health above (a button, not per-keystroke): POST /lorebooks/search
+  // makes a real, non-free OpenAI embeddings call server-side per request
+  // (see searchLorebooks's own docstring in src/api/client.ts), so this
+  // must never fire automatically while the author is still typing.
+  // Requires an embeddings key (same one Data Bank/chat-memory-recall use)
+  // — the endpoint 400s outright without one, so the button is disabled
+  // and the reason shown rather than letting every click fail confusingly.
+  const secrets = useSettingsStore((s) => s.secrets);
+  const globalSecrets = useSettingsStore((s) => s.globalSecrets);
+  const globalSharingEnabled = useSettingsStore((s) => s.globalSharingEnabled);
+  const hasEmbeddingsKey = embeddingsConfigured(secrets, globalSecrets, globalSharingEnabled);
+
+  const [dupRun, setDupRun] = useState<{
+    hits: LorebookSearchHit[];
+    against: WorldInfoEntry;
+  } | null>(null);
+  const [dupChecking, setDupChecking] = useState(false);
+  const [dupError, setDupError] = useState<string | null>(null);
+
+  const handleCheckDuplicates = async () => {
+    if (!content.trim() || dupChecking) return;
+    setDupChecking(true);
+    setDupError(null);
+    try {
+      const hits = await api.searchLorebooks(draftEntry.content, {
+        lorebookIds: [bookId],
+        limit: 4,
+      });
+      // Editing an existing entry would otherwise just find itself — the
+      // search endpoint has no "exclude this id" param, so filter client-side.
+      const filtered = hits
+        .filter((h) => h.entry.id !== entry?.id)
+        .slice(0, 3);
+      setDupRun({ hits: filtered, against: draftEntry });
+    } catch (e) {
+      setDupError(e instanceof Error ? e.message : 'Duplicate check failed');
+      setDupRun(null);
+    } finally {
+      setDupChecking(false);
+    }
   };
 
   // Proactive non-evictable-budget guard: warns (never blocks) right at save
@@ -887,6 +932,68 @@ export function WorldInfoEntryForm({
               })}
             </ul>
           )
+        )}
+      </div>
+
+      {/* Similar entries — advisory only, never blocks saving. Run on demand:
+          unlike Entry check above, this costs a real OpenAI embeddings call,
+          so it's never triggered automatically. */}
+      <div className="space-y-2 pt-3 border-t border-[var(--color-border)]">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-secondary)]">
+            Similar entries
+          </h3>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={handleCheckDuplicates}
+            disabled={!content.trim() || !hasEmbeddingsKey || dupChecking}
+          >
+            {dupChecking ? 'Checking…' : 'Check for duplicates'}
+          </Button>
+        </div>
+        {!hasEmbeddingsKey && (
+          <p className="text-xs italic text-[var(--color-text-secondary)]">
+            Requires an OpenAI embeddings key (Settings → Data Bank) to compare against existing lore.
+          </p>
+        )}
+        {dupError && <p className="text-xs text-red-400">{dupError}</p>}
+        {dupRun && dupRun.against !== draftEntry && (
+          <p className="text-xs italic text-[var(--color-text-secondary)]">
+            Draft changed since last check — run again.
+          </p>
+        )}
+        {dupRun && dupRun.hits.length === 0 && (
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            No similar entries found.
+          </p>
+        )}
+        {dupRun && dupRun.hits.length > 0 && (
+          <ul className="space-y-1.5">
+            {dupRun.hits.map((hit) => {
+              const label =
+                (typeof hit.entry.comment === 'string' && hit.entry.comment) ||
+                (Array.isArray(hit.entry.keys) && typeof hit.entry.keys[0] === 'string'
+                  ? hit.entry.keys[0]
+                  : '') ||
+                'Untitled entry';
+              const preview = typeof hit.entry.content === 'string' ? hit.entry.content : '';
+              return (
+                <li
+                  key={hit.entry.id}
+                  className="text-xs rounded-lg border border-amber-500/30 bg-amber-500/5 p-2"
+                >
+                  <span className="font-medium text-amber-400">Similar: {label}</span>
+                  {preview && (
+                    <p className="mt-1 text-[var(--color-text-secondary)] line-clamp-2">
+                      {preview}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
 

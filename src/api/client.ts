@@ -390,6 +390,22 @@ export interface LorebookWithEntriesDTO extends LorebookDTO {
   entries: LorebookEntryDTO[];
 }
 
+/**
+ * One ranked result from POST /lorebooks/search (LorebookSearchHit).
+ * `score` is a fused RRF rank, only meaningful relative to other hits in
+ * the SAME response — never compare it across two different search calls.
+ * The three per-signal scores are `null` (not `0`) when that signal didn't
+ * fire for this entry at all, e.g. `semanticScore` is null for an entry
+ * with no embedding yet, not "scored a semantic zero".
+ */
+export interface LorebookSearchHit {
+  entry: LorebookEntryDTO;
+  score: number;
+  keywordScore?: number | null;
+  semanticScore?: number | null;
+  ftsScore?: number | null;
+}
+
 /** 409 body for PUT /lorebooks/{id} (LorebookConflictDetail). */
 export interface LorebookConflict {
   error: string;
@@ -985,6 +1001,34 @@ export const api = {
       `/lorebooks/${encodeURIComponent(lorebookId)}/entries/${encodeURIComponent(entryId)}`,
       { method: 'DELETE' }
     );
+  },
+
+  /**
+   * POST /lorebooks/search — ranked hybrid (keyword+semantic+FTS) search
+   * over the caller's own visible lorebook entries. Unlike every other
+   * lorebook call above, this makes a REAL, non-free OpenAI embeddings
+   * call server-side per request (see `_embed_search_query` in
+   * app/routers/lorebooks.py) — never call this on every keystroke; gate
+   * it behind an explicit, deliberate trigger. Throws (via apiRequest) on
+   * any failure, including a 400 when the caller has no OpenAI embeddings
+   * key configured at all — callers should treat that as "the feature
+   * quietly isn't available right now", not an error worth surfacing
+   * loudly, since search is advisory, never required.
+   */
+  async searchLorebooks(
+    query: string,
+    opts?: { lorebookIds?: string[]; limit?: number; minScore?: number }
+  ): Promise<LorebookSearchHit[]> {
+    const result = await apiRequest<{ hits: LorebookSearchHit[] }>('/lorebooks/search', {
+      method: 'POST',
+      body: JSON.stringify({
+        query,
+        ...(opts?.lorebookIds ? { lorebookIds: opts.lorebookIds } : {}),
+        ...(opts?.limit ? { limit: opts.limit } : {}),
+        ...(opts?.minScore !== undefined ? { minScore: opts.minScore } : {}),
+      }),
+    });
+    return Array.isArray(result?.hits) ? result.hits : [];
   },
 
   // -----------------------------------------------------------------
