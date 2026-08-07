@@ -22,10 +22,25 @@ vi.mock('./lovenseStore', () => ({
   useLovenseStore: { getState: () => ({}), subscribe: () => () => {} },
 }));
 
-// Only autoMemoryStore's own LLM call needs to be deterministic. Everything
-// else in api/client (settingsApi, PROVIDERS, apiRequest, etc. — pulled in
-// transitively by settingsStore/characterStore/chatStore/authStore) stays
-// real via importOriginal, so those modules don't break from a partial mock.
+// autoMemoryStore's extraction flow drives worldInfoStore's createCharacterBook
+// / createEntry, which now (Phase 3a) fire native /lorebooks network calls in
+// the background. Mock that whole CRUD surface — mirrors
+// worldInfoStore.test.ts's own mock exactly, and for the same reason its
+// comment gives: an unmocked call would fall through to a real fetch(), which
+// happens to reject on Node's inability to resolve a bare relative URL, and a
+// test that passes by accident on that rejection's timing (rather than by an
+// explicit deterministic mock) is exactly the kind of thing that turns into a
+// flaky suite later — relying on it once already made the pre-existing test
+// below order-dependent on exactly how many microtask turns extractFacts's
+// own SSE-stream consumption happens to take.
+const listLorebooks = vi.fn();
+const getLorebook = vi.fn();
+const createLorebook = vi.fn();
+const updateLorebook = vi.fn();
+const deleteLorebook = vi.fn();
+const createLorebookEntry = vi.fn();
+const updateLorebookEntry = vi.fn();
+const deleteLorebookEntry = vi.fn();
 const generateMessage = vi.fn();
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -33,6 +48,14 @@ vi.mock('../api/client', async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
+      listLorebooks: (...args: unknown[]) => listLorebooks(...args),
+      getLorebook: (...args: unknown[]) => getLorebook(...args),
+      createLorebook: (...args: unknown[]) => createLorebook(...args),
+      updateLorebook: (...args: unknown[]) => updateLorebook(...args),
+      deleteLorebook: (...args: unknown[]) => deleteLorebook(...args),
+      createLorebookEntry: (...args: unknown[]) => createLorebookEntry(...args),
+      updateLorebookEntry: (...args: unknown[]) => updateLorebookEntry(...args),
+      deleteLorebookEntry: (...args: unknown[]) => deleteLorebookEntry(...args),
       generateMessage: (...args: unknown[]) => generateMessage(...args),
     },
   };
@@ -69,9 +92,59 @@ class MemoryStorage {
   }
 }
 
+// Deterministic stand-ins for the native lorebook CRUD surface — echo the
+// payload back with a fabricated server_ts, matching worldInfoStore.test.ts's
+// own defaults exactly, so applyServer*Meta has something sane to apply.
+let mockServerTs = 0;
+
 beforeEach(() => {
   globalThis.localStorage = new MemoryStorage() as unknown as Storage;
   generateMessage.mockReset();
+  mockServerTs = 0;
+  listLorebooks.mockReset();
+  listLorebooks.mockResolvedValue([]);
+  getLorebook.mockReset();
+  getLorebook.mockResolvedValue({ id: '', ownerHandle: '', server_ts: 0, entries: [] });
+  createLorebook.mockReset();
+  createLorebook.mockImplementation(async (payload: Record<string, unknown>) => ({
+    ownerHandle: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...payload,
+    server_ts: ++mockServerTs,
+  }));
+  updateLorebook.mockReset();
+  updateLorebook.mockImplementation(async (id: string, payload: Record<string, unknown>) => ({
+    ownerHandle: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...payload,
+    id,
+    server_ts: ++mockServerTs,
+  }));
+  deleteLorebook.mockReset();
+  deleteLorebook.mockResolvedValue(undefined);
+  createLorebookEntry.mockReset();
+  createLorebookEntry.mockImplementation(async (bookId: string, payload: Record<string, unknown>) => ({
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...payload,
+    lorebook_id: bookId,
+    server_ts: ++mockServerTs,
+  }));
+  updateLorebookEntry.mockReset();
+  updateLorebookEntry.mockImplementation(
+    async (bookId: string, entryId: string, payload: Record<string, unknown>) => ({
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...payload,
+      id: entryId,
+      lorebook_id: bookId,
+      server_ts: ++mockServerTs,
+    })
+  );
+  deleteLorebookEntry.mockReset();
+  deleteLorebookEntry.mockResolvedValue(undefined);
   useWorldInfoStore.getState().resetUser();
   useLoreConflictStore.getState().resetUser();
   useAutoMemoryStore.getState().resetUser();
@@ -324,5 +397,79 @@ describe('extractFacts — end-to-end with a mocked LLM response', () => {
     // Exactly the original pending record carries this proposed content —
     // the matching fact did not spawn a second one.
     expect(records.filter((r) => r.proposedContent === pendingProposed)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractFacts — first-ever run for a brand-new character (no pre-existing
+// Auto Memory book).
+//
+// This is the specific path the test above never exercises: it pre-creates
+// the book (and flips autoExtracted) before calling extractFacts, so it
+// never touches the `if (!book) { ... createCharacterBook ... }` branch.
+// Phase 3a made createCharacterBook/createEntry native-backed (optimistic
+// local write + background network call) — this test pins down that the
+// book minted mid-extraction is immediately visible in the store's
+// synchronous state, not only after the background sync resolves, since
+// extractFacts's own post-round-trip `useWorldInfoStore.getState().books
+// .find((b) => b.id === book.id)` lookup (and any other same-tick caller)
+// depends on that.
+// ---------------------------------------------------------------------------
+
+describe('extractFacts — first run for a fresh character (no pre-existing book)', () => {
+  it('creates the Auto Memory book synchronously (findable by id and by ownerCharacterAvatar+autoExtracted immediately), sets autoExtracted, and appends the new entry into it', async () => {
+    // Sanity: nothing owned by this avatar exists yet.
+    expect(
+      useWorldInfoStore.getState().books.find((b) => b.ownerCharacterAvatar === AVATAR)
+    ).toBeUndefined();
+
+    const llmFacts = [
+      {
+        keys: ['debut'],
+        content: 'Ivy mentioned this is the first time she has told anyone about the lighthouse.',
+        conflicts_with: null,
+      },
+    ];
+    generateMessage.mockResolvedValueOnce(sseStreamFor(JSON.stringify(llmFacts)));
+
+    const result = await useAutoMemoryStore
+      .getState()
+      .extractFacts(CHAT_FILE, character(), transcript());
+
+    expect(result).toEqual({ added: 1, conflicts: 0 });
+
+    // The book must exist, be owned by the right character, and be flagged
+    // autoExtracted — all synchronously true by the time extractFacts
+    // resolves (no separate fetch/rehydrate step required).
+    const book = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.ownerCharacterAvatar === AVATAR && b.autoExtracted === true);
+    expect(book).toBeDefined();
+    expect(book!.name).toBe(`Ivy${' — Auto Memory'}`);
+    // Auto Memory books must stay private — the backend CHECK constraint
+    // (lorebooks_auto_extracted_private_check) requires it, and this must
+    // hold regardless of the fact that the book's id is a client-minted
+    // UUID rather than a server-assigned one.
+    expect(book!.visibility).toBe('private');
+    expect(book!.entries).toHaveLength(1);
+    expect(book!.entries[0].content).toBe(
+      'Ivy mentioned this is the first time she has told anyone about the lighthouse.'
+    );
+
+    // A second extraction on the same character must reuse the SAME book,
+    // not mint a second one — createCharacterBook's own dedup-by-avatar
+    // plus the autoExtracted-scoped find at the top of extractFacts must
+    // agree on which book is "the" Auto Memory book.
+    generateMessage.mockResolvedValueOnce(sseStreamFor(JSON.stringify([
+      { keys: ['second'], content: 'A second, distinct fact about the same night.', conflicts_with: null },
+    ])));
+    await useAutoMemoryStore.getState().extractFacts(CHAT_FILE, character(), transcript());
+
+    const booksForAvatar = useWorldInfoStore
+      .getState()
+      .books.filter((b) => b.ownerCharacterAvatar === AVATAR);
+    expect(booksForAvatar).toHaveLength(1);
+    expect(booksForAvatar[0].id).toBe(book!.id);
+    expect(booksForAvatar[0].entries).toHaveLength(2);
   });
 });

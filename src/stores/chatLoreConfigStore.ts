@@ -8,7 +8,15 @@ import {
   shouldReuploadSection,
 } from '../utils/serverSettings';
 import type { ChatLoreConfig, EntryOverlay } from '../utils/worldInfoComposition';
-import { useWorldInfoStore, DEFAULT_ENTRY } from './worldInfoStore';
+import {
+  useWorldInfoStore,
+  DEFAULT_ENTRY,
+  legacyIdRemapReady,
+  resolveLegacyBookId,
+  resolveLegacyEntryId,
+  remapLegacyBookId,
+  remapLegacyEntryId,
+} from './worldInfoStore';
 import type { WorldInfoEntry, EntrySource } from './worldInfoStore';
 
 // ---------------------------------------------------------------------------
@@ -322,6 +330,28 @@ interface ChatLoreConfigState {
 
   /** Mirrors worldInfoStore.ts's fetchPrefs three-branch sync logic exactly. */
   fetchPrefs: () => Promise<void>;
+
+  /**
+   * One-time-per-login remap of every id this store persists that's keyed
+   * off a book/entry id minted before worldInfoStore's native-CRUD cutover:
+   * every config's linkedBookIds, excludedEntryIds (both the bookId keys and
+   * the entryId values), and overlays (both the entryId key and the
+   * baseBookId/baseEntryId fields). Uses worldInfoStore's
+   * resolveLegacyBookId/resolveLegacyEntryId for linkedBookIds/
+   * excludedEntryIds (which DROP a confidently-unresolvable id — see those
+   * functions' docs), but overlays only ever apply a confident remap
+   * (remapLegacyBookId/remapLegacyEntryId directly) and never drop, so a
+   * genuinely orphaned overlay is left exactly as-is for
+   * resolveEffectiveBooks' existing promote-to-local-entry handling to pick
+   * up, unchanged (see worldInfoComposition.ts).
+   *
+   * Synchronous and idempotent — a second call once everything is already
+   * current is a true no-op (no `set()`, no localStorage write, no server
+   * patch). Called automatically from fetchPrefs once legacyIdRemapReady()
+   * resolves; exposed on the store so callers (and tests) can invoke it
+   * directly without driving the full async fetchPrefs/login flow.
+   */
+  remapLegacyIds: () => void;
 }
 
 export const useChatLoreConfigStore = create<ChatLoreConfigState>((set, get) => ({
@@ -595,10 +625,7 @@ export const useChatLoreConfigStore = create<ChatLoreConfigState>((set, get) => 
             LOCAL_TS_KEY,
           ).catch(() => {});
         }
-        return;
-      }
-
-      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
+      } else if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
         // Local has unconfirmed mutations — push them and keep local state.
         _persistEnabled = true;
         patchServerKey(
@@ -606,30 +633,177 @@ export const useChatLoreConfigStore = create<ChatLoreConfigState>((set, get) => 
           get().configs as unknown as Record<string, unknown>,
           LOCAL_TS_KEY,
         ).catch(() => {});
-        return;
+      } else {
+        // Server has newer (or equal) state — apply it. Normalize first: the
+        // blob may have been written by an older/future client missing fields
+        // (or lacking them entirely), and localEntries in particular is
+        // dereferenced throughout the scanner/UI.
+        _persistEnabled = false;
+        const handle = _currentHandle;
+        const configs = normalizeStoredConfigs(stored);
+        set({ configs });
+        // Cache to localStorage so the next cold load is instant.
+        if (handle) {
+          try {
+            localStorage.setItem(scopedKey(CONFIGS_KEY, handle), JSON.stringify(configs));
+          } catch { /* ignore */ }
+        }
+        try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
+        _persistEnabled = true;
       }
-
-      // Server has newer (or equal) state — apply it. Normalize first: the
-      // blob may have been written by an older/future client missing fields
-      // (or lacking them entirely), and localEntries in particular is
-      // dereferenced throughout the scanner/UI.
-      _persistEnabled = false;
-      const handle = _currentHandle;
-      const configs = normalizeStoredConfigs(stored);
-      set({ configs });
-      // Cache to localStorage so the next cold load is instant.
-      if (handle) {
-        try {
-          localStorage.setItem(scopedKey(CONFIGS_KEY, handle), JSON.stringify(configs));
-        } catch { /* ignore */ }
-      }
-      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
-      _persistEnabled = true;
     } catch {
       // Network failure — keep local state. Next mutation marks the section
       // dirty, so a future fetchPrefs will detect the local-newer case.
       _persistEnabled = true;
     }
+
+    // One-time-per-login legacy-id remap (see remapLegacyIds' own docstring).
+    // Fired regardless of which branch above ran — even on a pure
+    // network-failure fallthrough, whatever configs are already in local
+    // state may still carry pre-cutover ids and deserve a remap attempt.
+    // Deliberately NOT awaited: nothing here depends on it completing before
+    // fetchPrefs itself resolves (mirrors how fetchPrefs is always called
+    // fire-and-forget from authStore.ts), and legacyIdRemapReady() may not
+    // resolve until worldInfoStore's OWN fetchPrefs (a separate, concurrent
+    // call from authStore) finishes — awaiting it here would make this
+    // store's login sequencing depend on another store's, which neither
+    // store's fetchPrefs contract promises today.
+    legacyIdRemapReady()
+      .then(() => get().remapLegacyIds())
+      .catch(() => {});
+  },
+
+  remapLegacyIds: () => {
+    const cur = get().configs;
+    let anyChanged = false;
+    const nextConfigs: Record<string, ChatLoreConfig> = {};
+
+    for (const [chatFile, cfg] of Object.entries(cur)) {
+      let changed = false;
+
+      // 1. linkedBookIds — book ids only. A confidently-unresolvable id is
+      // dropped: there's no salvage value in keeping a dangling book link.
+      const seenLinked = new Set<string>();
+      const nextLinkedBookIds: string[] = [];
+      for (const id of cfg.linkedBookIds) {
+        const resolved = resolveLegacyBookId(id);
+        if (resolved === null) {
+          console.warn(
+            `[chatLoreConfigStore] dropping unresolvable linkedBookIds entry "${id}" for chat "${chatFile}"`
+          );
+          changed = true;
+          continue;
+        }
+        if (resolved !== id) changed = true;
+        if (seenLinked.has(resolved)) {
+          changed = true;
+          continue;
+        }
+        seenLinked.add(resolved);
+        nextLinkedBookIds.push(resolved);
+      }
+
+      // 2. excludedEntryIds — bookId -> entryId[]. Remap the book id key,
+      // then each entry id within it. A confidently-unresolvable book or
+      // entry is dropped: an exclusion for something that no longer exists
+      // has zero effect either way (resolveEffectiveBooks only ever
+      // consults exclusions for entries it's actually iterating), so
+      // there's nothing to lose by pruning it — unlike overlays below.
+      const nextExcludedEntryIds: Record<string, string[]> = {};
+      for (const [bookId, entryIds] of Object.entries(cfg.excludedEntryIds)) {
+        const resolvedBookId = resolveLegacyBookId(bookId);
+        if (resolvedBookId === null) {
+          console.warn(
+            `[chatLoreConfigStore] dropping unresolvable excludedEntryIds book "${bookId}" for chat "${chatFile}"`
+          );
+          changed = true;
+          continue;
+        }
+        if (resolvedBookId !== bookId) changed = true;
+
+        const seenEntries = new Set<string>();
+        const nextEntryIds: string[] = [];
+        for (const entryId of entryIds) {
+          const resolvedEntryId = resolveLegacyEntryId(resolvedBookId, entryId);
+          if (resolvedEntryId === null) {
+            console.warn(
+              `[chatLoreConfigStore] dropping unresolvable excludedEntryIds entry "${entryId}" (book "${bookId}") for chat "${chatFile}"`
+            );
+            changed = true;
+            continue;
+          }
+          if (resolvedEntryId !== entryId) changed = true;
+          if (seenEntries.has(resolvedEntryId)) {
+            changed = true;
+            continue;
+          }
+          seenEntries.add(resolvedEntryId);
+          nextEntryIds.push(resolvedEntryId);
+        }
+
+        if (nextEntryIds.length > 0) {
+          // Two old book ids remapping onto the same new one is not
+          // expected, but merge defensively rather than let the second
+          // silently clobber the first.
+          nextExcludedEntryIds[resolvedBookId] = nextExcludedEntryIds[resolvedBookId]
+            ? Array.from(new Set([...nextExcludedEntryIds[resolvedBookId], ...nextEntryIds]))
+            : nextEntryIds;
+        } else if (entryIds.length > 0) {
+          changed = true; // every entry in this book's list got dropped
+        }
+      }
+
+      // 3. overlays — entryId -> overlay { baseBookId, baseEntryId, ... }.
+      // ONLY a confident remap is ever applied here — never dropped based on
+      // "not currently found." An overlay whose base entry can't be matched
+      // may be a genuine orphan (the base entry was deleted, not just
+      // migrated), and resolveEffectiveBooks already has dedicated
+      // promote-to-local-entry handling for exactly that case — but only if
+      // the overlay keeps pointing at the SAME base id it always has, so it
+      // can still recognize a truly-migrated one that this pass DID map.
+      const nextOverlays: Record<string, EntryOverlay> = {};
+      for (const [entryKey, overlay] of Object.entries(cfg.overlays)) {
+        const mappedBookId = remapLegacyBookId(overlay.baseBookId);
+        const mappedEntryId = remapLegacyEntryId(overlay.baseEntryId);
+        const nextBookId = mappedBookId ?? overlay.baseBookId;
+        const nextEntryId = mappedEntryId ?? overlay.baseEntryId;
+        const fieldsChanged =
+          nextBookId !== overlay.baseBookId || nextEntryId !== overlay.baseEntryId;
+        if (fieldsChanged || entryKey !== nextEntryId) changed = true;
+        nextOverlays[nextEntryId] = fieldsChanged
+          ? { ...overlay, baseBookId: nextBookId, baseEntryId: nextEntryId }
+          : overlay;
+      }
+
+      if (!changed) {
+        nextConfigs[chatFile] = cfg;
+        continue;
+      }
+      anyChanged = true;
+
+      const nextCfg: ChatLoreConfig = {
+        ...cfg,
+        linkedBookIds: nextLinkedBookIds,
+        excludedEntryIds: nextExcludedEntryIds,
+        overlays: nextOverlays,
+        updatedAt: Date.now(),
+      };
+
+      const isVacuous =
+        nextCfg.linkedBookIds.length === 0 &&
+        Object.keys(nextCfg.excludedEntryIds).length === 0 &&
+        Object.keys(nextCfg.overlays).length === 0 &&
+        nextCfg.localEntries.length === 0;
+
+      if (!isVacuous) {
+        nextConfigs[chatFile] = nextCfg;
+      }
+      // else: drop entirely — mirrors mutateConfig's vacuous-drop rule.
+    }
+
+    if (!anyChanged) return; // true no-op: no set(), no persistence write
+    saveConfigs(nextConfigs);
+    set({ configs: nextConfigs });
   },
 }));
 

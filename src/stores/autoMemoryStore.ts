@@ -324,16 +324,34 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
             // character-owned book; auto-extracted entries coexist with
             // hand-curated ones, distinguished by their `Auto-extracted`
             // comment field).
+            //
+            // `autoExtracted: true` is passed straight into
+            // createCharacterBook so the flag is baked into the book's
+            // very FIRST create request (see bookToWirePayload /
+            // create_lorebook) rather than patched into local state
+            // afterward — a local-only patch never reaches the server, so
+            // the sharing-protection this flag backs (auto-extracted
+            // books can never be shared, both client- and server-side)
+            // would silently regress to unprotected on the next login/
+            // reload once fetchPrefs re-normalizes from the server's own
+            // (still-false) row.
             const created = wiStore.createCharacterBook(
               avatar,
-              `${character.name}${AUTO_MEMORY_BOOK_SUFFIX}`
+              `${character.name}${AUTO_MEMORY_BOOK_SUFFIX}`,
+              true
             );
-            useWorldInfoStore.setState((s) => ({
-              books: s.books.map((b) =>
-                b.id === created.id ? { ...b, autoExtracted: true } : b
-              ),
-            }));
-            book = { ...created, autoExtracted: true };
+            if (created.autoExtracted === true) {
+              book = created;
+            } else {
+              // createCharacterBook's "reuse an existing embedded book"
+              // branch: the character already had a hand-curated book
+              // under this avatar, so no new book was created and the
+              // flag above was never applied. Persist it onto that
+              // EXISTING row now via a real network write (not just a
+              // local patch) — see markBookAutoExtracted's docstring.
+              wiStore.markBookAutoExtracted(created.id);
+              book = { ...created, autoExtracted: true };
+            }
           }
 
           // Build "already known" digest so the LLM doesn't repeat itself.

@@ -17,6 +17,8 @@ import { normalizeCard, type NormalizeOptions } from '../utils/characterNormaliz
 import {
   useWorldInfoStore,
   bookToCharacterBookV2,
+  legacyIdRemapReady,
+  resolveLegacyBookId,
 } from './worldInfoStore';
 import { useCharacterOwnershipStore } from './characterOwnershipStore';
 import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
@@ -162,6 +164,19 @@ interface CharacterState {
   setLinkedBookIds: (avatar: string, ids: string[]) => void;
   /** Pull character→book links from the server after login and reconcile. */
   fetchLinkedBooks: () => Promise<void>;
+  /**
+   * One-time-per-login remap of every linkedBookIdsByAvatar entry from a
+   * pre-cutover local id to worldInfoStore's native-table id (see
+   * resolveLegacyBookId there). The character-lorebook UI only ever offers
+   * the viewer's OWN books here (never a shared one, see
+   * CharacterLorebookSection.tsx), so this only needs the own-books view —
+   * no dependency on sharedBooks having loaded. Synchronous and idempotent:
+   * a second call once every id is already current is a true no-op (no
+   * `set()`, no localStorage write, no server patch). Called automatically
+   * from fetchLinkedBooks once legacyIdRemapReady() resolves; exposed
+   * directly so tests can invoke it without driving the full login flow.
+   */
+  remapLinkedBookIds: () => void;
   /** Pull favorite characters from the server after login and reconcile. */
   fetchFavorites: () => Promise<void>;
   /**
@@ -788,19 +803,70 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       if (shouldReuploadSection(LINKED_BOOKS_LOCAL_TS_KEY, serverTs)) {
         // Local has links that never confirmed to the server — re-upload.
         patchLinkedBooksServer(get().linkedBookIdsByAvatar).catch(() => {});
-        return;
+      } else if (section) {
+        const links = section.links;
+        if (links && typeof links === 'object' && !Array.isArray(links)) {
+          const map = links as Record<string, string[]>;
+          saveLinkedBooks(map);
+          try { recordServerTs(LINKED_BOOKS_LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
+          set({ linkedBookIdsByAvatar: map });
+        }
       }
-
-      if (!section) return; // No server state and no newer local — keep local.
-
-      const links = section.links;
-      if (links && typeof links === 'object' && !Array.isArray(links)) {
-        const map = links as Record<string, string[]>;
-        saveLinkedBooks(map);
-        try { recordServerTs(LINKED_BOOKS_LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
-        set({ linkedBookIdsByAvatar: map });
-      }
+      // else: no server state and no newer local — keep local as-is.
     } catch { /* non-fatal — localStorage values remain active */ }
+
+    // One-time-per-login legacy-id remap (see remapLinkedBookIds' own
+    // docstring). Fired regardless of the branch above — even a pure
+    // network-failure fallthrough leaves whatever's already in local state
+    // worth a remap attempt. Not awaited, for the same reason
+    // chatLoreConfigStore's equivalent call isn't: nothing here needs it to
+    // finish before fetchLinkedBooks itself resolves, and every fetchPrefs/
+    // fetchLinkedBooks call is already fire-and-forget from authStore.ts.
+    legacyIdRemapReady()
+      .then(() => get().remapLinkedBookIds())
+      .catch(() => {});
+  },
+
+  remapLinkedBookIds: () => {
+    const { linkedBookIdsByAvatar } = get();
+    let anyChanged = false;
+    const next: Record<string, string[]> = {};
+
+    for (const [avatar, ids] of Object.entries(linkedBookIdsByAvatar)) {
+      const seen = new Set<string>();
+      const nextIds: string[] = [];
+      let changed = false;
+      for (const id of ids) {
+        const resolved = resolveLegacyBookId(id);
+        if (resolved === null) {
+          console.warn(
+            `[characterStore] dropping unresolvable linkedBookIdsByAvatar entry "${id}" for avatar "${avatar}"`
+          );
+          changed = true;
+          continue;
+        }
+        if (resolved !== id) changed = true;
+        if (seen.has(resolved)) {
+          changed = true;
+          continue;
+        }
+        seen.add(resolved);
+        nextIds.push(resolved);
+      }
+
+      if (nextIds.length > 0) {
+        next[avatar] = nextIds;
+      } else if (ids.length > 0) {
+        changed = true; // dropped to empty -> avatar key removed
+      }
+      if (changed) anyChanged = true;
+    }
+
+    if (!anyChanged) return; // true no-op: no set(), no persistence write
+    saveLinkedBooks(next);
+    set({ linkedBookIdsByAvatar: next });
+    markLinkedBooksDirty();
+    patchLinkedBooksServer(next).catch(() => {});
   },
 
   fetchFavorites: async () => {

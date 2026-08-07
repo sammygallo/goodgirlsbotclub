@@ -12,10 +12,23 @@ vi.mock('../utils/serverSettings', () => ({
   shouldReuploadSection: vi.fn(() => false),
 }));
 
-// Only worldInfoStore's own sharing call (api.listSharedWorldInfoBooks) needs
-// to be deterministic. Everything else in api/client stays real via
+// worldInfoStore's mutators now fire native /lorebooks network calls in the
+// background (Phase 3a) — mock the whole CRUD surface so tests never depend
+// on a real fetch() (which would reject on Node's inability to resolve a
+// bare relative URL anyway, but relying on that accident rather than an
+// explicit deterministic mock is exactly the kind of thing that turns into
+// a flaky suite later). Everything else in api/client stays real via
 // importOriginal, per the autoMemoryStore.test.ts pattern.
 const listSharedWorldInfoBooks = vi.fn();
+const importLorebooksFromBlob = vi.fn();
+const listLorebooks = vi.fn();
+const getLorebook = vi.fn();
+const createLorebook = vi.fn();
+const updateLorebook = vi.fn();
+const deleteLorebook = vi.fn();
+const createLorebookEntry = vi.fn();
+const updateLorebookEntry = vi.fn();
+const deleteLorebookEntry = vi.fn();
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
@@ -23,6 +36,15 @@ vi.mock('../api/client', async (importOriginal) => {
     api: {
       ...actual.api,
       listSharedWorldInfoBooks: (...args: unknown[]) => listSharedWorldInfoBooks(...args),
+      importLorebooksFromBlob: (...args: unknown[]) => importLorebooksFromBlob(...args),
+      listLorebooks: (...args: unknown[]) => listLorebooks(...args),
+      getLorebook: (...args: unknown[]) => getLorebook(...args),
+      createLorebook: (...args: unknown[]) => createLorebook(...args),
+      updateLorebook: (...args: unknown[]) => updateLorebook(...args),
+      deleteLorebook: (...args: unknown[]) => deleteLorebook(...args),
+      createLorebookEntry: (...args: unknown[]) => createLorebookEntry(...args),
+      updateLorebookEntry: (...args: unknown[]) => updateLorebookEntry(...args),
+      deleteLorebookEntry: (...args: unknown[]) => deleteLorebookEntry(...args),
     },
   };
 });
@@ -126,14 +148,66 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// vi.restoreAllMocks() above resets listSharedWorldInfoBooks to a no-op
-// (undefined return) after every test — reinstall a harmless default before
-// each so tests that don't care about sharing (i.e. most of this file)
-// don't trip fetchSharedBooks's "not iterable" guard when fetchPrefs fires
-// it fire-and-forget.
+// vi.restoreAllMocks() above resets every mock to a no-op (undefined
+// return) after every test — reinstall harmless defaults before each so
+// tests that don't care about server sync (i.e. most of this file) don't
+// trip a "not iterable"/thenable-of-undefined crash when a mutator's
+// background sync or fetchPrefs fires fire-and-forget. Create/update echo
+// the payload back with a fabricated server_ts so applyServer*Meta has
+// something sane to apply; none of these defaults are awaited by the tests
+// that don't explicitly care about them (see the "store actions" describe
+// block: it asserts on the synchronous optimistic-local result only).
+let mockServerTs = 0;
 beforeEach(() => {
+  mockServerTs = 0;
   listSharedWorldInfoBooks.mockReset();
   listSharedWorldInfoBooks.mockResolvedValue([]);
+  importLorebooksFromBlob.mockReset();
+  importLorebooksFromBlob.mockResolvedValue({ imported: [], skipped: [], entry_count: 0 });
+  listLorebooks.mockReset();
+  listLorebooks.mockResolvedValue([]);
+  getLorebook.mockReset();
+  getLorebook.mockResolvedValue({ id: '', ownerHandle: '', server_ts: 0, entries: [] });
+  createLorebook.mockReset();
+  createLorebook.mockImplementation(async (payload: Record<string, unknown>) => ({
+    ownerHandle: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...payload,
+    server_ts: ++mockServerTs,
+  }));
+  updateLorebook.mockReset();
+  updateLorebook.mockImplementation(async (id: string, payload: Record<string, unknown>) => ({
+    ownerHandle: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...payload,
+    id,
+    server_ts: ++mockServerTs,
+  }));
+  deleteLorebook.mockReset();
+  deleteLorebook.mockResolvedValue(undefined);
+  createLorebookEntry.mockReset();
+  createLorebookEntry.mockImplementation(async (bookId: string, payload: Record<string, unknown>) => ({
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...payload,
+    lorebook_id: bookId,
+    server_ts: ++mockServerTs,
+  }));
+  updateLorebookEntry.mockReset();
+  updateLorebookEntry.mockImplementation(
+    async (bookId: string, entryId: string, payload: Record<string, unknown>) => ({
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...payload,
+      id: entryId,
+      lorebook_id: bookId,
+      server_ts: ++mockServerTs,
+    })
+  );
+  deleteLorebookEntry.mockReset();
+  deleteLorebookEntry.mockResolvedValue(undefined);
 });
 
 describe('scanMessagesForEntries — activation basics', () => {
@@ -518,70 +592,196 @@ describe('auditBookHealth', () => {
   });
 });
 
-describe('fetchPrefs server-sync normalization', () => {
-  it('backfills new fields on books written by a pre-update client', async () => {
+// A full, valid LorebookEntryDTO fixture — every field normalizeNativeEntry
+// reads, so tests that only care about a couple of overridden fields don't
+// have to restate the other ~25.
+function mkEntryDto(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'dto-entry',
+    lorebook_id: 'dto-book',
+    server_ts: 1,
+    keys: [],
+    content: '',
+    comment: '',
+    enabled: true,
+    constant: false,
+    caseSensitive: false,
+    position: 'before_char',
+    depth: 4,
+    order: 100,
+    keysSecondary: [],
+    selective: false,
+    selectiveLogic: 'AND_ANY',
+    scanDepth: null,
+    probability: 100,
+    useProbability: false,
+    group: '',
+    groupOverride: false,
+    groupWeight: 100,
+    preventRecursion: false,
+    excludeRecursion: false,
+    sticky: 0,
+    cooldown: 0,
+    delay: 0,
+    critical: false,
+    category: '',
+    relatedIds: [],
+    source: 'manual',
+    revisions: [],
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  };
+}
+
+function mkBookDto(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'dto-book',
+    ownerHandle: 'alice',
+    server_ts: 1,
+    name: 'DTO Book',
+    ownerCharacterAvatar: null,
+    autoExtracted: false,
+    visibility: 'private',
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  };
+}
+
+describe('fetchPrefs — native lorebook bootstrap (Phase 3a)', () => {
+  it('applies activeBookIds/chatLinkedBookIds/scan settings from the blob, and books/entries from the native API', async () => {
     const serverSettings = await import('../utils/serverSettings');
-    const oldShapeEntry = {
-      id: 'legacy1',
-      keys: ['dragon'],
-      content: 'legacy lore',
-      comment: '',
-      enabled: true,
-      constant: false,
-      caseSensitive: false,
-      position: 'before_char',
-      depth: 4,
-      order: 100,
-      keysSecondary: [],
-      selective: false,
-      selectiveLogic: 'AND_ANY',
-      scanDepth: null,
-      probability: 100,
-      useProbability: false,
-      group: '',
-      groupOverride: false,
-      groupWeight: 100,
-      preventRecursion: false,
-      excludeRecursion: false,
-      // No sticky/cooldown/delay/critical/category/relatedIds — the shape an
-      // older client synced to the server.
-      createdAt: 0,
-      updatedAt: 0,
-    };
     vi.mocked(serverSettings.getSettingsBlob).mockResolvedValueOnce({
       stm_worldinfo: {
-        books: [
-          {
-            id: 'legacybook',
-            name: 'Legacy',
-            entries: [oldShapeEntry],
-            createdAt: 0,
-            updatedAt: 0,
-          },
-        ],
-        activeBookIds: ['legacybook'],
-        chatLinkedBookIds: {},
-        scanDepth: 4,
-        maxRecursionSteps: 3,
-        tokenBudget: 1024,
+        activeBookIds: ['native-book-1'],
+        chatLinkedBookIds: { 'chat.jsonl': ['native-book-1'] },
+        scanDepth: 6,
+        maxRecursionSteps: 2,
+        tokenBudget: 2048,
         _ts: 123,
       },
+    });
+    listLorebooks.mockResolvedValueOnce([
+      mkBookDto({ id: 'native-book-1', name: 'Native Book' }),
+    ]);
+    getLorebook.mockResolvedValueOnce({
+      ...mkBookDto({ id: 'native-book-1', name: 'Native Book' }),
+      entries: [
+        mkEntryDto({
+          id: 'native-entry-1',
+          lorebook_id: 'native-book-1',
+          keys: ['dragon'],
+          content: 'lore',
+        }),
+      ],
+    });
+
+    useWorldInfoStore.getState().resetUser();
+    await useWorldInfoStore.getState().fetchPrefs();
+
+    const state = useWorldInfoStore.getState();
+    // Blob-backed fields — unchanged mechanism.
+    expect(state.activeBookIds).toEqual(['native-book-1']);
+    expect(state.chatLinkedBookIds).toEqual({ 'chat.jsonl': ['native-book-1'] });
+    expect(state.scanDepth).toBe(6);
+    expect(state.maxRecursionSteps).toBe(2);
+    expect(state.tokenBudget).toBe(2048);
+
+    // Books/entries — native API, NOT the blob (the blob has no `books` key
+    // at all in this fixture, and even if it did, it must never be read).
+    expect(state.books).toHaveLength(1);
+    expect(state.books[0].id).toBe('native-book-1');
+    const entry = state.books[0].entries[0];
+    expect(entry.id).toBe('native-entry-1');
+    expect(entry.relatedIds).toEqual([]);
+    expect(entry.critical).toBe(false);
+
+    // The scanner must not crash on the native-sourced book.
+    const result = scanMessagesForEntries(
+      state.books,
+      ['native-book-1'],
+      msgs('a dragon appears'),
+      opts()
+    );
+    expect(resultIds(result)).toEqual(['native-entry-1']);
+  });
+
+  it('degrades a malformed/partial entry DTO to safe defaults instead of crashing', async () => {
+    listLorebooks.mockResolvedValueOnce([mkBookDto({ id: 'b1' })]);
+    getLorebook.mockResolvedValueOnce({
+      ...mkBookDto({ id: 'b1' }),
+      // Only the required identifiers — every other field missing/malformed,
+      // the shape a future backend rollback or a corrupt response could
+      // produce. normalizeNativeEntry must default, never throw.
+      entries: [{ id: 'e1', lorebook_id: 'b1', server_ts: 1, position: 'not-a-real-position' }],
     });
     useWorldInfoStore.getState().resetUser();
     await useWorldInfoStore.getState().fetchPrefs();
     const entry = useWorldInfoStore.getState().books[0].entries[0];
+    expect(entry.keys).toEqual([]);
     expect(entry.relatedIds).toEqual([]);
     expect(entry.critical).toBe(false);
     expect(entry.category).toBe('');
     expect(entry.sticky).toBe(0);
-    // And the scanner must not crash on the normalized book.
-    const result = scanMessagesForEntries(
-      useWorldInfoStore.getState().books,
-      ['legacybook'],
-      msgs('a dragon appears'),
-      opts()
-    );
-    expect(resultIds(result)).toEqual(['legacy1']);
+    expect(entry.position).toBe('before_char');
+  });
+});
+
+describe('legacy id remap (Phase 3a migration)', () => {
+  it('maps an old-id book/entry onto its native-fetched counterpart by (scope, name) and content signature', async () => {
+    const { remapLegacyBookId, remapLegacyEntryId } = await import('./worldInfoStore');
+    useWorldInfoStore.getState().resetUser();
+    // Simulate the pre-cutover local snapshot initForUser would have
+    // hydrated from the localStorage cache — old, non-UUID ids that
+    // predate this cutover shipping.
+    useWorldInfoStore.setState({
+      books: [
+        mkBook(
+          [mkEntry({ id: 'wi_old_1', comment: 'c', content: 'text', keys: ['a'] })],
+          { id: 'wibook_old_1', name: 'Shared Lore', ownerCharacterAvatar: null }
+        ),
+      ],
+    });
+    listLorebooks.mockResolvedValueOnce([
+      mkBookDto({ id: 'uuid-book-1', name: 'Shared Lore' }),
+    ]);
+    getLorebook.mockResolvedValueOnce({
+      ...mkBookDto({ id: 'uuid-book-1', name: 'Shared Lore' }),
+      entries: [
+        mkEntryDto({
+          id: 'uuid-entry-1',
+          lorebook_id: 'uuid-book-1',
+          comment: 'c',
+          content: 'text',
+          keys: ['a'],
+        }),
+      ],
+    });
+
+    await useWorldInfoStore.getState().fetchPrefs();
+
+    expect(remapLegacyBookId('wibook_old_1')).toBe('uuid-book-1');
+    expect(remapLegacyEntryId('wi_old_1')).toBe('uuid-entry-1');
+    expect(remapLegacyBookId('never-seen-id')).toBeNull();
+    expect(remapLegacyEntryId('never-seen-id')).toBeNull();
+  });
+
+  it('leaves a book unmapped when no native book matches its (scope, name)', async () => {
+    useWorldInfoStore.getState().resetUser();
+    useWorldInfoStore.setState({
+      books: [mkBook([], { id: 'wibook_orphan', name: 'Never Imported' })],
+    });
+    listLorebooks.mockResolvedValueOnce([mkBookDto({ id: 'uuid-1', name: 'Unrelated' })]);
+    getLorebook.mockResolvedValueOnce({
+      ...mkBookDto({ id: 'uuid-1', name: 'Unrelated' }),
+      entries: [],
+    });
+
+    const { remapLegacyBookId } = await import('./worldInfoStore');
+    await useWorldInfoStore.getState().fetchPrefs();
+
+    expect(remapLegacyBookId('wibook_orphan')).toBeNull();
   });
 });
 

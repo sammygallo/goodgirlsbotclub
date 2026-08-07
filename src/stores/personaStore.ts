@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
+import { legacyIdRemapReady, resolveLegacyBookId } from './worldInfoStore';
 
 // Where the persona description is injected in the prompt
 export type PersonaDescriptionPosition =
@@ -204,6 +205,20 @@ interface PersonaState {
 
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
+
+  /**
+   * One-time-per-login remap of every Persona.linkedBookIds entry from a
+   * pre-cutover local id to worldInfoStore's native-table id (see
+   * resolveLegacyBookId there). PersonaForm only ever offers the viewer's
+   * OWN books here (never a shared one), so this only needs the own-books
+   * view — no dependency on sharedBooks having loaded. Synchronous and
+   * idempotent: a second call once every id is already current is a true
+   * no-op (no `set()`, no localStorage write, no server patch). Called
+   * automatically from fetchPrefs once legacyIdRemapReady() resolves;
+   * exposed directly so tests can invoke it without driving the full login
+   * flow.
+   */
+  remapLinkedBookIds: () => void;
 }
 
 export const usePersonaStore = create<PersonaState>((set, get) => {
@@ -397,6 +412,42 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
 
     clearError: () => set({ error: null }),
 
+    remapLinkedBookIds: () => {
+      const { personas } = get();
+      let anyChanged = false;
+      const nextPersonas = personas.map((p) => {
+        if (!p.linkedBookIds || p.linkedBookIds.length === 0) return p;
+        const seen = new Set<string>();
+        const nextIds: string[] = [];
+        let changed = false;
+        for (const id of p.linkedBookIds) {
+          const resolved = resolveLegacyBookId(id);
+          if (resolved === null) {
+            console.warn(
+              `[personaStore] dropping unresolvable linkedBookIds entry "${id}" from persona "${p.id}"`
+            );
+            changed = true;
+            continue;
+          }
+          if (resolved !== id) changed = true;
+          if (seen.has(resolved)) {
+            changed = true;
+            continue;
+          }
+          seen.add(resolved);
+          nextIds.push(resolved);
+        }
+        if (!changed) return p;
+        anyChanged = true;
+        return { ...p, linkedBookIds: nextIds, updatedAt: Date.now() };
+      });
+
+      if (!anyChanged) return; // true no-op: no set(), no persistence write
+      savePersonas(nextPersonas);
+      set({ personas: nextPersonas });
+      syncToServer(nextPersonas, get().activePersonaId, get().locks);
+    },
+
     fetchPrefs: async () => {
       try {
         const settings = await getSettingsBlob();
@@ -406,52 +457,61 @@ export const usePersonaStore = create<PersonaState>((set, get) => {
         if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
           const { personas, activePersonaId, locks } = get();
           syncToServer(personas, activePersonaId, locks);
-          return;
+        } else if (stored) {
+          const serverPersonas = (stored.personas as PersonaForServer[] | undefined) ?? [];
+          const serverActiveId = (stored.activePersonaId as string | null) ?? null;
+          const serverLocks = (stored.locks as PersonaLocks | undefined) ?? { byCharacter: {}, byChat: {} };
+
+          // Re-attach avatarDataUrls. Local cache wins for personas the user
+          // has already loaded on this device; for others (e.g. just signed in
+          // on a new device) fetch from /blobs/persona-avatar/{id}.
+          const localAvatars: Record<string, string> = {};
+          for (const p of get().personas) {
+            if (p.avatarDataUrl) localAvatars[p.id] = p.avatarDataUrl;
+          }
+          const restoredPersonas: Persona[] = serverPersonas.map((p) => ({
+            ...p,
+            ...(localAvatars[p.id] ? { avatarDataUrl: localAvatars[p.id] } : {}),
+          }));
+
+          savePersonas(restoredPersonas);
+          saveActivePersonaId(serverActiveId);
+          saveLocks(serverLocks);
+          try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
+          set({ personas: restoredPersonas, activePersonaId: serverActiveId, locks: serverLocks });
+
+          // Fire off /blobs fetches for the personas missing a local avatar.
+          // These resolve asynchronously and patch into store state as they
+          // complete — no UI blocking, no loading spinner.
+          const missingAvatarIds = restoredPersonas
+            .filter((p) => !p.avatarDataUrl)
+            .map((p) => p.id);
+          for (const id of missingAvatarIds) {
+            fetchAvatarBlob(id)
+              .then((dataUrl) => {
+                if (!dataUrl) return;
+                const next = get().personas.map((p) =>
+                  p.id === id ? { ...p, avatarDataUrl: dataUrl } : p
+                );
+                savePersonas(next);
+                set({ personas: next });
+              })
+              .catch(() => {});
+          }
         }
-
-        if (!stored) return;
-
-        const serverPersonas = (stored.personas as PersonaForServer[] | undefined) ?? [];
-        const serverActiveId = (stored.activePersonaId as string | null) ?? null;
-        const serverLocks = (stored.locks as PersonaLocks | undefined) ?? { byCharacter: {}, byChat: {} };
-
-        // Re-attach avatarDataUrls. Local cache wins for personas the user
-        // has already loaded on this device; for others (e.g. just signed in
-        // on a new device) fetch from /blobs/persona-avatar/{id}.
-        const localAvatars: Record<string, string> = {};
-        for (const p of get().personas) {
-          if (p.avatarDataUrl) localAvatars[p.id] = p.avatarDataUrl;
-        }
-        const restoredPersonas: Persona[] = serverPersonas.map((p) => ({
-          ...p,
-          ...(localAvatars[p.id] ? { avatarDataUrl: localAvatars[p.id] } : {}),
-        }));
-
-        savePersonas(restoredPersonas);
-        saveActivePersonaId(serverActiveId);
-        saveLocks(serverLocks);
-        try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
-        set({ personas: restoredPersonas, activePersonaId: serverActiveId, locks: serverLocks });
-
-        // Fire off /blobs fetches for the personas missing a local avatar.
-        // These resolve asynchronously and patch into store state as they
-        // complete — no UI blocking, no loading spinner.
-        const missingAvatarIds = restoredPersonas
-          .filter((p) => !p.avatarDataUrl)
-          .map((p) => p.id);
-        for (const id of missingAvatarIds) {
-          fetchAvatarBlob(id)
-            .then((dataUrl) => {
-              if (!dataUrl) return;
-              const next = get().personas.map((p) =>
-                p.id === id ? { ...p, avatarDataUrl: dataUrl } : p
-              );
-              savePersonas(next);
-              set({ personas: next });
-            })
-            .catch(() => {});
-        }
+        // else: no server state and no newer local — keep local as-is.
       } catch { /* non-fatal */ }
+
+      // One-time-per-login legacy-id remap (see remapLinkedBookIds' own
+      // docstring). Fired regardless of the branch above. Not awaited: no
+      // caller needs it to finish before fetchPrefs itself resolves, and
+      // legacyIdRemapReady() may not resolve until worldInfoStore's own
+      // (separate, concurrent) fetchPrefs call finishes — every fetchPrefs
+      // call across every store is already fire-and-forget from
+      // authStore.ts, so this doesn't change that contract.
+      legacyIdRemapReady()
+        .then(() => get().remapLinkedBookIds())
+        .catch(() => {});
     },
   };
 });

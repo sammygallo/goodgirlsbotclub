@@ -362,6 +362,73 @@ export interface SharedWorldInfoBookDTO {
 }
 
 /**
+ * A lorebook row from the native /lorebooks API (LorebookOut, camelCase —
+ * matches app/schemas/lorebook.py's aliases). Deliberately loosely typed,
+ * same reasoning as SharedWorldInfoBookDTO/RetrievalContextEntryDTO above:
+ * worldInfoStore.ts normalizes this defensively into WorldInfoBook;
+ * client.ts must not import store types. `id`/`ownerHandle`/`server_ts` are
+ * pulled out explicitly because every caller needs them unconditionally
+ * (id to key on, server_ts to thread back as the next PUT's baseTs).
+ */
+export interface LorebookDTO {
+  id: string;
+  ownerHandle: string;
+  server_ts: number;
+  [key: string]: unknown; // name, ownerCharacterAvatar, autoExtracted, scope,
+  // visibility, createdAt, updatedAt
+}
+
+/**
+ * A lorebook entry row from the native /lorebooks API (LorebookEntryOut) —
+ * same shape/reasoning as RetrievalContextEntryDTO, reused here rather than
+ * redeclared since the two endpoints share the exact wire shape.
+ */
+export type LorebookEntryDTO = RetrievalContextEntryDTO;
+
+/** GET /lorebooks/{id} — a LorebookDTO with its nested entries. */
+export interface LorebookWithEntriesDTO extends LorebookDTO {
+  entries: LorebookEntryDTO[];
+}
+
+/** 409 body for PUT /lorebooks/{id} (LorebookConflictDetail). */
+export interface LorebookConflict {
+  error: string;
+  current_ts: number;
+  current: LorebookDTO | null;
+}
+
+/** Thrown by api.updateLorebook on a 409 so the store can reconcile against
+ *  the authoritative row instead of clobbering it. Mirrors ProjectConflictError. */
+export class LorebookConflictError extends Error {
+  conflict: LorebookConflict;
+  constructor(conflict: LorebookConflict) {
+    super('lorebook write conflict');
+    this.name = 'LorebookConflictError';
+    this.conflict = conflict;
+  }
+}
+
+/** 409 body for PUT /lorebooks/{id}/entries/{entry_id} (LorebookEntryConflictDetail). */
+export interface LorebookEntryConflict {
+  error: string;
+  current_ts: number;
+  current: LorebookEntryDTO | null;
+}
+
+/** Thrown by api.updateLorebookEntry on a 409. Mirrors LorebookConflictError —
+ *  a separate class (not reused) because a book-level and an entry-level
+ *  conflict are distinct concerns, same reasoning as the backend's two
+ *  separate *ConflictDetail schemas. */
+export class LorebookEntryConflictError extends Error {
+  conflict: LorebookEntryConflict;
+  constructor(conflict: LorebookEntryConflict) {
+    super('lorebook entry write conflict');
+    this.name = 'LorebookEntryConflictError';
+    this.conflict = conflict;
+  }
+}
+
+/**
  * One entry from POST /retrieval/context — the full flat WorldInfoEntry-
  * shaped object (camelCase, matches app/schemas/lorebook.py's
  * LorebookEntryOut) plus two additive, un-aliased backend fields:
@@ -785,6 +852,139 @@ export const api = {
   async listSharedWorldInfoBooks(): Promise<SharedWorldInfoBookDTO[]> {
     const result = await apiRequest<{ books: SharedWorldInfoBookDTO[] }>('/worldinfo/shared');
     return Array.isArray(result?.books) ? result.books : [];
+  },
+
+  // -----------------------------------------------------------------
+  // Native lorebook CRUD (Phase 3a) — worldInfoStore.ts's system of record
+  // for books/entries. Consumed only by worldInfoStore.ts, never directly
+  // by components (matches every other store-owned resource in this file).
+  // -----------------------------------------------------------------
+
+  /** GET /lorebooks — every book the caller owns, no nested entries. */
+  async listLorebooks(): Promise<LorebookDTO[]> {
+    const result = await apiRequest<LorebookDTO[]>('/lorebooks');
+    return Array.isArray(result) ? result : [];
+  },
+
+  /** GET /lorebooks/{id} — one book with its nested entries. */
+  async getLorebook(id: string): Promise<LorebookWithEntriesDTO> {
+    return apiRequest<LorebookWithEntriesDTO>(`/lorebooks/${encodeURIComponent(id)}`);
+  },
+
+  /**
+   * POST /lorebooks. `payload.id`, when a genuine UUID, is honored as the
+   * row's actual primary key (idempotent on retry — 200 with the existing
+   * row rather than a 409 — see create_lorebook's docstring in
+   * app/routers/lorebooks.py); apiRequest treats 200 and 201 identically,
+   * so no special-casing is needed here for the idempotent-retry status.
+   */
+  async createLorebook(payload: Record<string, unknown>): Promise<LorebookDTO> {
+    return apiRequest<LorebookDTO>('/lorebooks', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /**
+   * PUT /lorebooks/{id} — full replace of name/ownerCharacterAvatar/visibility
+   * (no partial-patch semantics server-side; callers must always send all
+   * three). Optimistic concurrency via `payload.baseTs`; a stale write
+   * throws LorebookConflictError carrying the authoritative current row
+   * (apiRequest would otherwise collapse the 409 body into a useless
+   * generic Error) — mirrors projectsApi.update exactly.
+   */
+  async updateLorebook(id: string, payload: Record<string, unknown>): Promise<LorebookDTO> {
+    const token = await getCsrfToken();
+    const response = await fetch(`/lorebooks/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': token,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (response.status === 409) {
+      const body = await response.json().catch(() => ({}));
+      const detail = (body?.detail ?? body) as Partial<LorebookConflict>;
+      throw new LorebookConflictError({
+        error: typeof detail?.error === 'string' ? detail.error : 'conflict',
+        current_ts: typeof detail?.current_ts === 'number' ? detail.current_ts : 0,
+        current: (detail?.current as LorebookDTO | undefined) ?? null,
+      });
+    }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err?.error || err?.detail || err?.message || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+
+  /** DELETE /lorebooks/{id} — idempotent (a not-found/not-owned id still 204s). */
+  async deleteLorebook(id: string): Promise<void> {
+    await apiRequest<Record<string, never>>(`/lorebooks/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  /** POST /lorebooks/{id}/entries — same client-id / idempotent-retry contract as createLorebook. */
+  async createLorebookEntry(
+    lorebookId: string,
+    payload: Record<string, unknown>
+  ): Promise<LorebookEntryDTO> {
+    return apiRequest<LorebookEntryDTO>(
+      `/lorebooks/${encodeURIComponent(lorebookId)}/entries`,
+      { method: 'POST', body: JSON.stringify(payload) }
+    );
+  },
+
+  /**
+   * PUT /lorebooks/{id}/entries/{entry_id} — full replace of the entry's
+   * ~19 extra-JSONB fields (callers must send the complete WorldInfoEntry
+   * shape, not a partial patch). Same 409 handling as updateLorebook.
+   */
+  async updateLorebookEntry(
+    lorebookId: string,
+    entryId: string,
+    payload: Record<string, unknown>
+  ): Promise<LorebookEntryDTO> {
+    const token = await getCsrfToken();
+    const response = await fetch(
+      `/lorebooks/${encodeURIComponent(lorebookId)}/entries/${encodeURIComponent(entryId)}`,
+      {
+        method: 'PUT',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': token,
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+
+    if (response.status === 409) {
+      const body = await response.json().catch(() => ({}));
+      const detail = (body?.detail ?? body) as Partial<LorebookEntryConflict>;
+      throw new LorebookEntryConflictError({
+        error: typeof detail?.error === 'string' ? detail.error : 'conflict',
+        current_ts: typeof detail?.current_ts === 'number' ? detail.current_ts : 0,
+        current: (detail?.current as LorebookEntryDTO | undefined) ?? null,
+      });
+    }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err?.error || err?.detail || err?.message || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+
+  /** DELETE /lorebooks/{id}/entries/{entry_id} — idempotent. */
+  async deleteLorebookEntry(lorebookId: string, entryId: string): Promise<void> {
+    await apiRequest<Record<string, never>>(
+      `/lorebooks/${encodeURIComponent(lorebookId)}/entries/${encodeURIComponent(entryId)}`,
+      { method: 'DELETE' }
+    );
   },
 
   // -----------------------------------------------------------------

@@ -1,7 +1,15 @@
 import { create } from 'zustand';
 import { estimateTokens, type TokenizerProfile } from '../utils/tokenizer';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
-import { api, type SharedWorldInfoBookDTO } from '../api/client';
+import {
+  api,
+  LorebookConflictError,
+  LorebookEntryConflictError,
+  type SharedWorldInfoBookDTO,
+  type LorebookDTO,
+  type LorebookEntryDTO,
+  type LorebookWithEntriesDTO,
+} from '../api/client';
 import { useChatLoreConfigStore } from './chatLoreConfigStore';
 import { useLoreConflictStore } from './loreConflictStore';
 import type {
@@ -127,6 +135,15 @@ export interface WorldInfoEntry {
   revisions: EntryRevision[];
   createdAt: number;
   updatedAt: number;
+  /**
+   * Optimistic-concurrency token from the native /lorebooks API's
+   * `server_ts` column — undefined until the first successful native sync
+   * (create/update response, or a native fetch). Threaded back as `baseTs`
+   * on the next PUT; a mismatch there means another device/tab wrote first.
+   * Never persisted to the legacy stm_worldinfo blob (books/entries no
+   * longer live there at all — see the module-level sync-contract note).
+   */
+  serverTs?: number;
 }
 
 /**
@@ -183,6 +200,8 @@ export interface WorldInfoBook {
   visibility: BookVisibility;
   createdAt: number;
   updatedAt: number;
+  /** Same optimistic-concurrency token as WorldInfoEntry.serverTs — see there. */
+  serverTs?: number;
 }
 
 const BOOKS_KEY = 'sillytavern_worldinfo_books_v1';
@@ -461,10 +480,6 @@ function saveTokenBudget(budget: number) {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 // ---- SillyTavern lorebook format interop --------------------------------
 //
 // ST stores WI as { entries: { "<uid>": { uid, key[], keysecondary[], comment,
@@ -574,7 +589,7 @@ export function entryFromStFormat(raw: StEntry): WorldInfoEntry {
       ? 'auto_memory'
       : 'import';
   return {
-    id: generateId('wi'),
+    id: crypto.randomUUID(),
     keys: pickStringArray(raw.key),
     content: typeof raw.content === 'string' ? raw.content : '',
     comment,
@@ -706,7 +721,7 @@ export function bookFromStFormat(name: string, raw: StBook): WorldInfoBook {
   });
   const ownerCharacterAvatar: string | null = null;
   return {
-    id: generateId('wibook'),
+    id: crypto.randomUUID(),
     name: raw.name || name || 'Imported Lorebook',
     entries: remapRelatedIds(entries, idMap),
     ownerCharacterAvatar,
@@ -805,7 +820,7 @@ export function entryFromCharacterBookV2(
       : 'import';
 
   return {
-    id: generateId('wi'),
+    id: crypto.randomUUID(),
     keys: pickStringArray(raw.keys),
     content: typeof raw.content === 'string' ? raw.content : '',
     comment,
@@ -913,7 +928,7 @@ export function bookFromCharacterBookV2(
     return entry;
   });
   return {
-    id: generateId('wibook'),
+    id: crypto.randomUUID(),
     name: raw.name || fallbackName || 'Character Lorebook',
     entries: remapRelatedIds(entries, idMap),
     ownerCharacterAvatar,
@@ -1590,10 +1605,34 @@ interface WorldInfoState {
     raw: CharacterBookV2,
     fallbackName: string
   ) => WorldInfoBook;
-  /** Creates a fresh empty book already owned by the given character. */
-  createCharacterBook: (ownerAvatar: string, name: string) => WorldInfoBook;
+  /**
+   * Creates a fresh empty book already owned by the given character. When
+   * `autoExtracted` is true, the book is created WITH the flag already
+   * set (so the very first POST carries it — see bookToWirePayload) rather
+   * than patched in after the fact. Ignored (existing book returned
+   * as-is) when a book for this avatar already exists — see
+   * markBookAutoExtracted for retroactively flagging that case instead.
+   */
+  createCharacterBook: (
+    ownerAvatar: string,
+    name: string,
+    autoExtracted?: boolean
+  ) => WorldInfoBook;
   getCharacterBook: (ownerAvatar: string) => WorldInfoBook | null;
   deleteCharacterBook: (ownerAvatar: string) => void;
+  /**
+   * Persist the auto-extracted flag onto an EXISTING book (one-way ratchet
+   * — see update_lorebook's docstring; the backend never lets this un-set
+   * once true). No-op if the book is already flagged locally. Used by
+   * autoMemoryStore.extractFacts when its first extraction for a
+   * character lands on an already-existing hand-curated embedded book
+   * (createCharacterBook's "reuse" branch) rather than creating a fresh
+   * one — that book was already synced with autoExtracted=false, so a
+   * purely-local patch (this store's old behavior) left the SERVER row
+   * unprotected: GET /worldinfo/shared's own defense-in-depth filter
+   * trusts the DB column, not local client state.
+   */
+  markBookAutoExtracted: (bookId: string) => void;
 
   // Chat-scoped lorebooks
   getChatLinkedBookIds: (chatFileName: string) => string[];
@@ -1607,12 +1646,24 @@ interface WorldInfoState {
   resetUser: () => void;
 
   /**
-   * Pull this user's lorebook state from ggbc-backend's /sync/section/{name}.
-   *
-   * Migration on first call: if the server has no record yet, push the
-   * current localStorage state up as the initial sync (so users who built
-   * up lorebooks pre-A3 don't lose them). After this returns, autosave is
-   * enabled — any subsequent mutation debounces a PUT back to the server.
+   * Two independent legs (Phase 3a):
+   *  1. activeBookIds/chatLinkedBookIds/scan settings, from ggbc-backend's
+   *     /sync/section/{name} blob — same mechanism as before. Migration on
+   *     first call: if the server has no record yet, push the current
+   *     localStorage state up as the initial sync. After this returns,
+   *     autosave is enabled for these fields — any subsequent mutation
+   *     debounces a PUT back to the server.
+   *  2. books/entries, from the native /lorebooks API — the system of
+   *     record now, not the blob. Runs a one-time (per session)
+   *     import-from-blob bootstrap, fetches the current native state, and
+   *     populates the legacy id remap (remapLegacyBookId/remapLegacyEntryId)
+   *     before applying it to `books`.
+   * A failure in leg 1 never blocks leg 2 or vice versa. After both, this
+   * also (3) awaits fetchSharedBooks, (4) remaps chatLinkedBookIds/
+   * activeBookIds in place (remapChatLinkedAndActiveBookIds), then (5) opens
+   * the legacyIdRemapReady() gate — the signal chatLoreConfigStore/
+   * characterStore/personaStore wait on before running their own one-time
+   * remap pass over whatever book/entry ids they persist.
    */
   fetchPrefs: () => Promise<void>;
 
@@ -1650,8 +1701,17 @@ interface WorldInfoState {
 const SERVER_KEY = 'stm_worldinfo';
 const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 
+/**
+ * Phase 3a: `books` is deliberately ABSENT from this shape now. Native
+ * `/lorebooks` (books + entries) is the system of record going forward —
+ * the stm_worldinfo blob only still carries activeBookIds/chatLinkedBookIds/
+ * scan settings, none of which have a native-table home. A pre-cutover
+ * client's blob may still have a `books` field on it (harmless — fetchPrefs
+ * reads it ONLY as a one-time remap candidate source, see
+ * buildLegacyIdRemap, never applies it to state), and this type simply
+ * doesn't describe that field since nothing here writes it anymore.
+ */
 interface PersistedShape {
-  books: WorldInfoBook[];
   activeBookIds: string[];
   chatLinkedBookIds: Record<string, string[]>;
   scanDepth: number;
@@ -1659,640 +1719,1752 @@ interface PersistedShape {
   tokenBudget: number;
 }
 
-export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
-  // Start empty; populated by initForUser once the authenticated user is known.
-  books: [],
-  activeBookIds: [],
-  chatLinkedBookIds: loadChatLinkedBooks(),
-  scanDepth: DEFAULT_SCAN_DEPTH,
-  maxRecursionSteps: DEFAULT_MAX_RECURSION,
-  tokenBudget: DEFAULT_TOKEN_BUDGET,
-  error: null,
+// ---------------------------------------------------------------------------
+// Native /lorebooks wire conversion (Phase 3a). Every WorldInfoEntry field
+// maps 1:1 onto LorebookEntryIn's wire names (app/schemas/lorebook.py's
+// aliases match this file's own camelCase field names exactly), so these
+// converters are near-trivial — no translation table needed, unlike the
+// ST/CharacterBookV2 interop above.
+// ---------------------------------------------------------------------------
 
-  sharedBooks: [],
-  sharedOwnerNameByHandle: {},
-  sharedBooksStatus: 'idle',
-  sharedBooksError: null,
+/** Build the POST /lorebooks payload for a brand-new book. `id` is honored
+ *  by the backend (via _coerce_uuid) as the row's actual primary key, and
+ *  the create is idempotent on retry — see api.createLorebook's docstring.
+ *  `autoExtracted` is included only when explicitly true (never sent as an
+ *  explicit false — matches the one-way-ratchet contract create_lorebook/
+ *  update_lorebook now enforce server-side; omitting it entirely for an
+ *  ordinary book is equivalent, since the server's own default is false).
+ *  See createCharacterBook for why this needs to be set correctly in the
+ *  very FIRST create request, not patched in after the fact. */
+function bookToWirePayload(book: WorldInfoBook): Record<string, unknown> {
+  return {
+    id: book.id,
+    name: book.name,
+    ownerCharacterAvatar: book.ownerCharacterAvatar,
+    visibility: book.visibility,
+    ...(book.autoExtracted === true ? { autoExtracted: true } : {}),
+  };
+}
 
-  createBook: (name) => {
-    const trimmed = name.trim() || 'Untitled Lorebook';
-    const now = Date.now();
-    const book: WorldInfoBook = {
-      id: generateId('wibook'),
-      name: trimmed,
-      entries: [],
-      ownerCharacterAvatar: null,
-      scope: 'world',
-      ownerHandle: currentHandle(),
-      visibility: 'private',
-      createdAt: now,
-      updatedAt: now,
-    };
-    const next = [...get().books, book];
-    saveBooks(next);
-    set({ books: next });
-    return book;
-  },
+/** Build the POST/PUT entry payload. Used for both create (as-is) and
+ *  update (spread + baseTs added by the caller) since the two share the
+ *  exact same full-object wire shape server-side. */
+function entryToWirePayload(entry: WorldInfoEntry): Record<string, unknown> {
+  return {
+    id: entry.id,
+    keys: entry.keys,
+    content: entry.content,
+    comment: entry.comment,
+    enabled: entry.enabled,
+    constant: entry.constant,
+    caseSensitive: entry.caseSensitive,
+    position: entry.position,
+    depth: entry.depth,
+    order: entry.order,
+    keysSecondary: entry.keysSecondary,
+    selective: entry.selective,
+    selectiveLogic: entry.selectiveLogic,
+    scanDepth: entry.scanDepth,
+    probability: entry.probability,
+    useProbability: entry.useProbability,
+    group: entry.group,
+    groupOverride: entry.groupOverride,
+    groupWeight: entry.groupWeight,
+    preventRecursion: entry.preventRecursion,
+    excludeRecursion: entry.excludeRecursion,
+    sticky: entry.sticky,
+    cooldown: entry.cooldown,
+    delay: entry.delay,
+    critical: entry.critical,
+    category: entry.category,
+    relatedIds: entry.relatedIds,
+    source: entry.source,
+    revisions: entry.revisions,
+  };
+}
 
-  renameBook: (bookId, name) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    const next = get().books.map((b) =>
-      b.id === bookId ? { ...b, name: trimmed, updatedAt: Date.now() } : b
-    );
-    saveBooks(next);
-    set({ books: next });
-  },
+const VALID_POSITIONS_SET: readonly WorldInfoPosition[] = [
+  'before_char', 'after_char', 'before_an', 'after_an', 'at_depth',
+];
+const VALID_LOGIC_SET: readonly SelectiveLogic[] = [
+  'AND_ANY', 'AND_ALL', 'NOT_ANY', 'NOT_ALL',
+];
 
-  deleteBook: (bookId) => {
-    const next = get().books.filter((b) => b.id !== bookId);
-    const activeNext = get().activeBookIds.filter((id) => id !== bookId);
-    const chatNext: Record<string, string[]> = {};
-    for (const [k, ids] of Object.entries(get().chatLinkedBookIds)) {
-      const filtered = ids.filter((id) => id !== bookId);
-      if (filtered.length > 0) chatNext[k] = filtered;
+/**
+ * Normalize one native LorebookEntryOut-shaped DTO into a full
+ * WorldInfoEntry. Defensive same as serverRetrieval.ts's dtoToMatchedEntry —
+ * the server already validated this shape, but it's never trusted blindly
+ * here either (a malformed/stale row must degrade gracefully, not crash the
+ * whole book fetch).
+ */
+function normalizeNativeEntry(dto: LorebookEntryDTO): WorldInfoEntry {
+  const position = VALID_POSITIONS_SET.includes(dto.position as WorldInfoPosition)
+    ? (dto.position as WorldInfoPosition)
+    : 'before_char';
+  const selectiveLogic = VALID_LOGIC_SET.includes(dto.selectiveLogic as SelectiveLogic)
+    ? (dto.selectiveLogic as SelectiveLogic)
+    : 'AND_ANY';
+  const source = isValidEntrySource(dto.source) ? dto.source : 'manual';
+  return {
+    id: String(dto.id),
+    keys: pickStringArray(dto.keys),
+    content: typeof dto.content === 'string' ? dto.content : '',
+    comment: typeof dto.comment === 'string' ? dto.comment : '',
+    enabled: dto.enabled !== false,
+    constant: dto.constant === true,
+    caseSensitive: dto.caseSensitive === true,
+    position,
+    depth: typeof dto.depth === 'number' ? dto.depth : DEFAULT_ENTRY.depth,
+    order: typeof dto.order === 'number' ? dto.order : DEFAULT_ENTRY.order,
+    keysSecondary: pickStringArray(dto.keysSecondary),
+    selective: dto.selective === true,
+    selectiveLogic,
+    scanDepth: typeof dto.scanDepth === 'number' ? dto.scanDepth : null,
+    probability: typeof dto.probability === 'number' ? clamp(dto.probability, 0, 100) : 100,
+    useProbability: dto.useProbability === true,
+    group: typeof dto.group === 'string' ? dto.group : '',
+    groupOverride: dto.groupOverride === true,
+    groupWeight:
+      typeof dto.groupWeight === 'number' && dto.groupWeight > 0 ? dto.groupWeight : 100,
+    preventRecursion: dto.preventRecursion === true,
+    excludeRecursion: dto.excludeRecursion === true,
+    sticky: typeof dto.sticky === 'number' && dto.sticky > 0 ? Math.floor(dto.sticky) : 0,
+    cooldown: typeof dto.cooldown === 'number' && dto.cooldown > 0 ? Math.floor(dto.cooldown) : 0,
+    delay: typeof dto.delay === 'number' && dto.delay > 0 ? Math.floor(dto.delay) : 0,
+    critical: dto.critical === true,
+    category: typeof dto.category === 'string' ? dto.category : '',
+    relatedIds: pickStringArray(dto.relatedIds),
+    source,
+    revisions: Array.isArray(dto.revisions) ? (dto.revisions as EntryRevision[]) : [],
+    createdAt: typeof dto.createdAt === 'number' ? dto.createdAt : Date.now(),
+    updatedAt: typeof dto.updatedAt === 'number' ? dto.updatedAt : Date.now(),
+    serverTs: typeof dto.server_ts === 'number' ? dto.server_ts : undefined,
+  };
+}
+
+/** Normalize one native LorebookWithEntriesOut-shaped DTO into a full WorldInfoBook. */
+function normalizeNativeBook(dto: LorebookWithEntriesDTO): WorldInfoBook {
+  const ownerCharacterAvatar =
+    typeof dto.ownerCharacterAvatar === 'string' ? dto.ownerCharacterAvatar : null;
+  return {
+    id: String(dto.id),
+    name: typeof dto.name === 'string' ? dto.name : 'Untitled Lorebook',
+    entries: Array.isArray(dto.entries) ? dto.entries.map(normalizeNativeEntry) : [],
+    ownerCharacterAvatar,
+    autoExtracted: dto.autoExtracted === true ? true : undefined,
+    // scope is derived — recompute from ownerCharacterAvatar, never trust
+    // the DTO's own `scope` field blindly (same discipline as every other
+    // normalizer in this file).
+    scope: ownerCharacterAvatar != null ? 'character' : 'world',
+    ownerHandle: typeof dto.ownerHandle === 'string' ? dto.ownerHandle : currentHandle(),
+    visibility: dto.visibility === 'shared' ? 'shared' : 'private',
+    createdAt: typeof dto.createdAt === 'number' ? dto.createdAt : Date.now(),
+    updatedAt: typeof dto.updatedAt === 'number' ? dto.updatedAt : Date.now(),
+    serverTs: typeof dto.server_ts === 'number' ? dto.server_ts : undefined,
+  };
+}
+
+/**
+ * One-time (session-scoped) migration bootstrap: import-from-blob is
+ * idempotent and repeatable server-side, but there's no reason to call it
+ * more than once per logged-in session. Reset by resetUser (logout) so a
+ * second user logging into the same browser session gets their OWN import
+ * attempt, not a skipped no-op inherited from the previous account.
+ *
+ * Deliberately a SEPARATE guard from serverRetrieval.ts's own
+ * ensureContentImported/contentImportSucceeded, not a shared one: that
+ * guard gates the first ELIGIBLE chat turn, this one gates the first
+ * fetchPrefs (i.e. login) — the two can legitimately race on a fresh
+ * login, which is fine, since the backend endpoint is idempotent either way.
+ */
+let _blobImportAttempted = false;
+
+async function ensureBlobImported(): Promise<void> {
+  if (_blobImportAttempted) return;
+  _blobImportAttempted = true;
+  try {
+    await api.importLorebooksFromBlob();
+  } catch (err) {
+    // Allow a retry on the next fetchPrefs call in this same session — a
+    // failed import would otherwise permanently hide any never-migrated
+    // book with no recovery short of a full page reload.
+    _blobImportAttempted = false;
+    console.warn('[worldInfoStore] import-from-blob failed', err);
+  }
+}
+
+/**
+ * Fetch every native book with its entries. GET /lorebooks has no
+ * entries-inclusive bulk variant, so this is list + N parallel per-book
+ * GETs — acceptable at this app's scale (a handful of books per user).
+ * A single book's entry-fetch failing doesn't drop the whole book: it
+ * falls back to the list-level metadata with zero entries, so the book at
+ * least stays visible/selectable rather than vanishing outright.
+ */
+async function fetchNativeBooks(): Promise<WorldInfoBook[]> {
+  const rows = await api.listLorebooks();
+  return Promise.all(
+    rows.map(async (row) => {
+      try {
+        return normalizeNativeBook(await api.getLorebook(String(row.id)));
+      } catch (err) {
+        console.warn('[worldInfoStore] failed to fetch entries for lorebook', row.id, err);
+        return normalizeNativeBook({ ...row, entries: [] } as LorebookWithEntriesDTO);
+      }
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Legacy id remap (Phase 3a migration). Exported for the next step
+// (chatLoreConfigStore / characterStore / personaStore / AttachBookPicker)
+// to translate any locally-persisted reference minted before this cutover.
+// Populated once per fetchPrefs call by buildLegacyIdRemap, called AFTER
+// the native fetch and BEFORE `books` is applied to state — see fetchPrefs
+// itself for the exact ordering guarantee.
+// ---------------------------------------------------------------------------
+
+const _legacyBookIdMap = new Map<string, string>();
+const _legacyEntryIdMap = new Map<string, string>();
+
+/**
+ * Translate a book id that predates this cutover (minted by the old
+ * `generateId('wibook')` scheme, still sitting in some other store's
+ * persisted state) into its current native-table id. Returns null when
+ * `oldId` has no known remap: either it's already current (nothing to
+ * remap), or it couldn't be matched — see buildLegacyIdRemap's matching
+ * strategy and its documented limits. Safe to call before the first
+ * fetchPrefs completes (returns null for everything until then).
+ */
+export function remapLegacyBookId(oldId: string): string | null {
+  return _legacyBookIdMap.get(oldId) ?? null;
+}
+
+/** Same as remapLegacyBookId, for entry ids. */
+export function remapLegacyEntryId(oldId: string): string | null {
+  return _legacyEntryIdMap.get(oldId) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Legacy id remap readiness + higher-level resolve helpers (Phase 3a step 2).
+// Consumers (chatLoreConfigStore / characterStore / personaStore) need more
+// than the raw remap lookup above: they need to know WHEN it's safe to make
+// a final "keep / remap / drop" decision, and a "confidently gone" verdict
+// requires knowing the fetches that populate `books`/`sharedBooks` actually
+// succeeded — a network hiccup at login must never look identical to "this
+// book was deleted" and silently destroy a user's real reference.
+// ---------------------------------------------------------------------------
+
+/** True once this session's fetchPrefs has applied a SUCCESSFUL native
+ *  /lorebooks fetch to `books` (not the "keep last known local state on
+ *  failure" fallback). Reset on resetUser. */
+let _nativeBooksFetchSucceeded = false;
+
+let _resolveLegacyIdRemapReady: () => void = () => {};
+let _legacyIdRemapReadyPromise: Promise<void> = new Promise((resolve) => {
+  _resolveLegacyIdRemapReady = resolve;
+});
+
+function resetLegacyIdRemapReadyGate(): void {
+  _legacyIdRemapReadyPromise = new Promise((resolve) => {
+    _resolveLegacyIdRemapReady = resolve;
+  });
+}
+
+/**
+ * Resolves once, per login session, after fetchPrefs has settled BOTH the
+ * native books fetch (success or failure) AND fetchSharedBooks (success or
+ * failure) — see fetchPrefs. Dependent stores must await this before running
+ * their own one-time legacy-id remap pass, or resolveLegacyBookId/
+ * resolveLegacyEntryId below would be judging against a not-yet-loaded (or
+ * partially-loaded) view of books/sharedBooks. Reset on resetUser (logout)
+ * so the next login gets its own fresh gate rather than one already resolved
+ * by the previous account.
+ */
+export function legacyIdRemapReady(): Promise<void> {
+  return _legacyIdRemapReadyPromise;
+}
+
+/**
+ * True only when both the native-books fetch and the shared-books fetch
+ * succeeded this session. Gates whether "not found anywhere" is trusted as
+ * "confidently gone" (safe to drop) versus merely ambiguous (a fetch
+ * failure fell back to stale/partial local data — keep the reference
+ * unchanged rather than risk destroying it, it'll be re-evaluated on a
+ * future login once the fetch actually succeeds).
+ */
+export function canConfidentlyDropUnresolvedLegacyIds(): boolean {
+  return (
+    _nativeBooksFetchSucceeded &&
+    useWorldInfoStore.getState().sharedBooksStatus === 'loaded'
+  );
+}
+
+/**
+ * Resolve a (possibly legacy) book id to what a dependent store should use
+ * going forward:
+ *  - a confident remap exists (buildLegacyIdRemap matched it) -> the new id.
+ *  - no remap, but the id is confirmed present in books ∪ sharedBooks as-is
+ *    -> the same id, unchanged.
+ *  - no remap, not currently found anywhere -> null (the caller should drop
+ *    the reference) IF canConfidentlyDropUnresolvedLegacyIds() is true;
+ *    otherwise the id is returned unchanged (ambiguous, not confidently
+ *    gone — never dropped on an unreliable read).
+ * Must only be called after legacyIdRemapReady() has resolved.
+ */
+export function resolveLegacyBookId(id: string): string | null {
+  const mapped = remapLegacyBookId(id);
+  if (mapped) return mapped;
+  const state = useWorldInfoStore.getState();
+  if (state.books.some((b) => b.id === id) || state.sharedBooks.some((b) => b.id === id)) {
+    return id;
+  }
+  return canConfidentlyDropUnresolvedLegacyIds() ? null : id;
+}
+
+/**
+ * Same idea as resolveLegacyBookId, for an entry id scoped to a book id the
+ * caller has ALREADY resolved via resolveLegacyBookId (pass the RESOLVED id,
+ * not the original). If that book itself can't be found at all — only
+ * possible on an unreliable read, since a book resolveLegacyBookId returned
+ * non-null for is otherwise guaranteed present — the entry id is kept
+ * unchanged rather than dropped, for the same reason.
+ *
+ * Deliberately NOT used for entry-overlay base ids (see
+ * chatLoreConfigStore.ts's remapLegacyIds): an overlay whose base entry
+ * can't be matched may be a genuine orphan, which resolveEffectiveBooks
+ * already has dedicated promote-to-local-entry handling for — that handling
+ * only works if the overlay keeps referencing the SAME base id it always
+ * has, so overlays only ever apply a confident remap and never drop.
+ */
+export function resolveLegacyEntryId(resolvedBookId: string, entryId: string): string | null {
+  const state = useWorldInfoStore.getState();
+  const book =
+    state.books.find((b) => b.id === resolvedBookId) ??
+    state.sharedBooks.find((b) => b.id === resolvedBookId);
+  if (!book) return canConfidentlyDropUnresolvedLegacyIds() ? null : entryId;
+
+  const mapped = remapLegacyEntryId(entryId);
+  if (mapped && book.entries.some((e) => e.id === mapped)) return mapped;
+  if (book.entries.some((e) => e.id === entryId)) return entryId;
+  return canConfidentlyDropUnresolvedLegacyIds() ? null : entryId;
+}
+
+/**
+ * Best-effort content signature used to pair an old-id entry with its
+ * native-fetched counterpart when the id itself can't be trusted to match
+ * (see buildLegacyIdRemap). comment+content+sorted-keys is unique enough
+ * for a hand-authored lorebook in practice; a genuine collision (two
+ * entries with byte-identical comment/content/keys) just leaves one of the
+ * pair unmapped rather than silently mismapped — matched greedily below.
+ */
+function entrySignature(e: WorldInfoEntry): string {
+  return JSON.stringify([e.comment, e.content, [...e.keys].sort()]);
+}
+
+/**
+ * Populate _legacyBookIdMap/_legacyEntryIdMap by pairing `oldBooks` (the
+ * last locally-known state, id-keyed by the pre-cutover `generateId`
+ * scheme, or a legacy synced blob's `books` field) against `newBooks` (the
+ * just-fetched native-table state).
+ *
+ * Books are grouped by (ownerCharacterAvatar, name) — the same scope key
+ * `import_lorebooks_from_blob` itself matches on, server-side — then
+ * matched against `newBooks`' single surviving row for that key. This is
+ * exact for world-scoped books (DB-unique per user via
+ * `lorebooks_user_name_world_uq`) and reliable for character-embedded
+ * books (this codebase's own invariant: at most one embedded book per
+ * avatar, enforced by createCharacterBook/upsertCharacterBook) — PROVIDED
+ * `oldBooks` itself never has two DIFFERENT books sharing that key. Unlike
+ * the native tables, nothing in createBook/renameBook ever enforced that
+ * pre-cutover, so two genuinely distinct old books legitimately CAN share
+ * a scope key (two books both named "Notes", say). When that happens,
+ * `import_lorebooks_from_blob` only ever created ONE surviving row for the
+ * pair (the loser is silently recorded in its own `skipped` return value,
+ * which nothing on the frontend reads) — so blindly mapping BOTH old ids
+ * onto that one surviving `match` would misattribute the loser's
+ * persona/character/chat references onto a book they were never actually
+ * linked to. Guarded against below: a scope-key group with more than one
+ * old book only gets a remap when content-signature overlap against
+ * `match.entries` picks a single unambiguous winner; every other book in
+ * that group is left unmapped, which lets `resolveLegacyBookId` fall
+ * through to its own "unresolved" handling (dropped once confidently
+ * gone, kept ambiguous otherwise) instead of silently pointing a stale
+ * reference at the wrong book's content.
+ *
+ * Entries within a matched book pair are matched by content signature
+ * (see entrySignature) — there is no server-recorded old-id -> new-id
+ * trail for entries that went through import-from-blob before this
+ * cutover shipped (the migration endpoint mints/preserves ids without
+ * reporting a mapping back), so this is a best-effort heuristic, not a
+ * guarantee: a book containing two entries with byte-identical
+ * comment/content/keys leaves one of the pair unmapped (never mismapped)
+ * rather than resolving the ambiguity by guessing.
+ */
+function buildLegacyIdRemap(oldBooks: WorldInfoBook[], newBooks: WorldInfoBook[]): void {
+  _legacyBookIdMap.clear();
+  _legacyEntryIdMap.clear();
+  const newByScopeKey = new Map<string, WorldInfoBook>();
+  for (const nb of newBooks) {
+    newByScopeKey.set(`${nb.ownerCharacterAvatar ?? ''}::${nb.name}`, nb);
+  }
+
+  const oldByScopeKey = new Map<string, WorldInfoBook[]>();
+  for (const ob of oldBooks) {
+    const key = `${ob.ownerCharacterAvatar ?? ''}::${ob.name}`;
+    const group = oldByScopeKey.get(key);
+    if (group) group.push(ob);
+    else oldByScopeKey.set(key, [ob]);
+  }
+
+  for (const [key, group] of oldByScopeKey) {
+    const match = newByScopeKey.get(key);
+    if (!match) continue;
+
+    let winner: WorldInfoBook;
+    if (group.length === 1) {
+      winner = group[0];
+    } else {
+      // Ambiguous: two or more old books share this scope key, but only
+      // one of them can be `match`'s actual predecessor. Disambiguate by
+      // entry-content overlap — the old book sharing the most entries
+      // (by content signature) with `match` is the winner, but ONLY if
+      // that's a clear, non-zero, untied lead; otherwise every book in
+      // the group is left unmapped rather than guessed at.
+      const matchSigs = new Set(match.entries.map(entrySignature));
+      let bestScore = -1;
+      let bestBook: WorldInfoBook | null = null;
+      let tie = false;
+      for (const ob of group) {
+        const score = ob.entries.reduce(
+          (n, e) => n + (matchSigs.has(entrySignature(e)) ? 1 : 0),
+          0
+        );
+        if (score > bestScore) {
+          bestScore = score;
+          bestBook = ob;
+          tie = false;
+        } else if (score === bestScore) {
+          tie = true;
+        }
+      }
+      if (tie || bestScore <= 0 || !bestBook) {
+        console.warn(
+          `[worldInfoStore] ${group.length} legacy books share scope key "${key}" with no unambiguous content match — leaving all unmapped`
+        );
+        continue;
+      }
+      winner = bestBook;
     }
-    saveBooks(next);
-    saveActiveBooks(activeNext);
-    saveChatLinkedBooks(chatNext);
-    set({
-      books: next,
-      activeBookIds: activeNext,
-      chatLinkedBookIds: chatNext,
-    });
-    useChatLoreConfigStore.getState().pruneBook(bookId);
-    useLoreConflictStore.getState().pruneBook(bookId);
-  },
 
-  duplicateBook: (bookId) => {
-    const original = get().books.find((b) => b.id === bookId);
-    if (!original) return null;
-    const now = Date.now();
-    // Duplicates are always standalone globals so they don't collide with
-    // the original character's embedded-book link.
-    const idMap = new Map<string, string>();
-    const copiedEntries = original.entries.map((e) => {
-      const id = generateId('wi');
-      idMap.set(e.id, id);
-      return { ...e, id, createdAt: now, updatedAt: now };
-    });
-    const copy: WorldInfoBook = {
-      id: generateId('wibook'),
-      name: `${original.name} (Copy)`,
-      // Related-entry links must point at the copies, not the originals.
-      entries: remapRelatedIds(copiedEntries, idMap),
-      ownerCharacterAvatar: null,
-      // scope is derived — recompute now that ownerCharacterAvatar is cleared.
-      scope: 'world',
-      ownerHandle: original.ownerHandle,
-      // Always private, regardless of the original's visibility - duplicating
-      // a shared book must never silently create another shared copy.
-      visibility: 'private',
-      createdAt: now,
-      updatedAt: now,
-    };
-    const next = [...get().books, copy];
-    saveBooks(next);
-    set({ books: next });
-    return copy;
-  },
+    if (match.id !== winner.id) _legacyBookIdMap.set(winner.id, match.id);
 
-  setBookVisibility: (bookId, visibility) => {
-    const target = get().books.find((b) => b.id === bookId);
-    if (!target) return;
-    // Auto Memory books are never shareable - mirrors server-side
-    // enforcement in the /worldinfo/shared endpoint, but the client must
-    // not even offer it.
-    if (target.autoExtracted === true && visibility === 'shared') return;
-    const next = get().books.map((b) =>
-      b.id === bookId ? { ...b, visibility, updatedAt: Date.now() } : b
-    );
-    saveBooks(next);
-    set({ books: next });
-  },
-
-  createEntry: (bookId, data, meta) => {
-    const book = get().books.find((b) => b.id === bookId);
-    if (!book) {
-      set({ error: 'Lorebook not found' });
-      return null;
+    const newEntriesBySig = new Map<string, WorldInfoEntry[]>();
+    for (const ne of match.entries) {
+      const sig = entrySignature(ne);
+      const list = newEntriesBySig.get(sig);
+      if (list) list.push(ne);
+      else newEntriesBySig.set(sig, [ne]);
     }
-    const now = Date.now();
-    const entry: WorldInfoEntry = {
-      ...DEFAULT_ENTRY,
-      ...(data || {}),
-      id: generateId('wi'),
-      source: data?.source ?? 'manual',
-      revisions: [
-        {
-          ts: now,
-          authorHandle: currentHandle(),
-          action: 'create',
-          prevContent: '',
-          ...(meta?.sourceChatFile !== undefined
-            ? { sourceChatFile: meta.sourceChatFile }
-            : {}),
-        },
-      ],
-      createdAt: now,
-      updatedAt: now,
-    };
-    const next = get().books.map((b) =>
-      b.id === bookId
-        ? { ...b, entries: [...b.entries, entry], updatedAt: now }
-        : b
-    );
-    saveBooks(next);
-    set({ books: next });
-    return entry;
-  },
+    const usedNewIds = new Set<string>();
+    for (const oe of winner.entries) {
+      const candidates = newEntriesBySig.get(entrySignature(oe));
+      if (!candidates) continue;
+      const next = candidates.find((c) => !usedNewIds.has(c.id));
+      if (!next) continue;
+      usedNewIds.add(next.id);
+      if (next.id !== oe.id) _legacyEntryIdMap.set(oe.id, next.id);
+    }
+  }
+}
 
-  updateEntry: (bookId, entryId, data, meta) => {
-    const now = Date.now();
-    const next = get().books.map((b) => {
-      if (b.id !== bookId) return b;
-      return {
-        ...b,
-        entries: b.entries.map((e) => {
-          if (e.id !== entryId) return e;
-          // Content changes get a revision record BEFORE the patch is
-          // applied, so prevContent captures the pre-edit state.
-          let revisions: EntryRevision[] = e.revisions;
-          const contentChanged =
-            data.content !== undefined && data.content !== e.content;
-          if (contentChanged || meta?.recordRevision === 'always') {
-            const rev: EntryRevision = {
-              ts: now,
-              authorHandle: currentHandle(),
-              action: meta?.action ?? 'edit',
-              prevContent: e.content,
-              ...(meta?.sourceChatFile !== undefined
-                ? { sourceChatFile: meta.sourceChatFile }
-                : {}),
+function clearLegacyIdRemap(): void {
+  _legacyBookIdMap.clear();
+  _legacyEntryIdMap.clear();
+}
+
+/**
+ * One-time-per-login remap of the two book-id-keyed fields this store still
+ * owns directly on the legacy stm_worldinfo blob: chatLinkedBookIds (the
+ * legacy per-chat extra-book map — see getChatLinkedBookIds/
+ * setChatLinkedBookIds and AttachBookPicker.tsx) and activeBookIds (the
+ * globally-active set, toggleable from the Shared tab too — see
+ * WorldInfoPage.tsx — so it CAN legitimately hold a shared book id, unlike
+ * chatLinkedBookIds which setChatLinkedBookIds restricts to the caller's own
+ * books). Called from fetchPrefs once both native books and shared books
+ * have settled (see canConfidentlyDropUnresolvedLegacyIds).
+ *
+ * Idempotent: a second call once every id is already current/confirmed is a
+ * true no-op — no `set()`, no localStorage write, no server patch (the
+ * subscribe-based autosave below only fires on an actual `set()`).
+ */
+function remapChatLinkedAndActiveBookIds(): void {
+  const state = useWorldInfoStore.getState();
+
+  const remapIdList = (ids: string[], context: string): { next: string[]; changed: boolean } => {
+    const seen = new Set<string>();
+    const next: string[] = [];
+    let changed = false;
+    for (const id of ids) {
+      const resolved = resolveLegacyBookId(id);
+      if (resolved === null) {
+        console.warn(`[worldInfoStore] dropping unresolvable ${context} book id`, id);
+        changed = true;
+        continue;
+      }
+      if (resolved !== id) changed = true;
+      if (seen.has(resolved)) {
+        changed = true;
+        continue;
+      }
+      seen.add(resolved);
+      next.push(resolved);
+    }
+    return { next, changed };
+  };
+
+  const { next: nextActive, changed: activeChanged } = remapIdList(
+    state.activeBookIds,
+    'activeBookIds'
+  );
+
+  let chatLinkedChanged = false;
+  const nextChatLinked: Record<string, string[]> = {};
+  for (const [chatFile, ids] of Object.entries(state.chatLinkedBookIds)) {
+    const { next: nextIds, changed: idsChanged } = remapIdList(ids, `chatLinkedBookIds[${chatFile}]`);
+    const droppedToEmpty = nextIds.length === 0 && ids.length > 0;
+    if (nextIds.length > 0) nextChatLinked[chatFile] = nextIds;
+    if (idsChanged || droppedToEmpty) chatLinkedChanged = true;
+  }
+
+  if (!activeChanged && !chatLinkedChanged) return;
+
+  if (activeChanged) saveActiveBooks(nextActive);
+  if (chatLinkedChanged) saveChatLinkedBooks(nextChatLinked);
+  useWorldInfoStore.setState({
+    activeBookIds: activeChanged ? nextActive : state.activeBookIds,
+    chatLinkedBookIds: chatLinkedChanged ? nextChatLinked : state.chatLinkedBookIds,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Conflict-retry PUT helpers — mirror patchServerKey's one-retry
+// reconcile-and-resend pattern (serverSettings.ts), scoped per-row instead
+// of per-section: on a 409, re-apply the SAME local delta on top of the
+// server's authoritative current state once, then give up (the caller
+// restores its own pre-mutation local snapshot and surfaces the error).
+// ---------------------------------------------------------------------------
+
+interface BookPutFields {
+  name: string;
+  ownerCharacterAvatar: string | null;
+  visibility: BookVisibility;
+  /** One-way ratchet (update_lorebook only ever honors a client-sent
+   *  `true`; a `false` — or this field simply being omitted — never
+   *  downgrades an already-true row). Optional and left undefined by
+   *  every existing caller (renameBook/setBookVisibility/
+   *  syncCharacterBookReplace): `desired`'s spread drops an undefined key
+   *  entirely (JSON.stringify never sends it), which the server's own
+   *  schema default (false) treats identically to "don't touch this
+   *  field" given the ratchet only ever assigns true. Only
+   *  markBookAutoExtracted's patch sets this explicitly. */
+  autoExtracted?: boolean;
+}
+
+/**
+ * PUT /lorebooks/{id} with the full-replace gotcha handled correctly:
+ * always sends all three of name/ownerCharacterAvatar/visibility
+ * (update_lorebook has no partial-patch semantics), where `patch` is the
+ * ONE field this mutator actually intends to change and `base` supplies
+ * the other two's current value. On a 409, `patch` is re-applied onto the
+ * conflict's authoritative `current` (not onto our own stale `base`) so an
+ * unrelated field that changed on another device is never silently
+ * stomped.
+ */
+async function putBookWithRetry(
+  bookId: string,
+  base: BookPutFields,
+  patch: Partial<BookPutFields>,
+  baseTs: number | undefined
+): Promise<LorebookDTO> {
+  let desired: BookPutFields = { ...base, ...patch };
+  let ts = baseTs;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await api.updateLorebook(bookId, { ...desired, baseTs: ts ?? null });
+    } catch (err) {
+      if (err instanceof LorebookConflictError && attempt === 0 && err.conflict.current) {
+        const c = err.conflict.current;
+        const current: BookPutFields = {
+          name: typeof c.name === 'string' ? c.name : desired.name,
+          ownerCharacterAvatar:
+            typeof c.ownerCharacterAvatar === 'string' ? c.ownerCharacterAvatar : null,
+          visibility: c.visibility === 'shared' ? 'shared' : 'private',
+        };
+        desired = { ...current, ...patch };
+        ts = err.conflict.current_ts;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('unreachable: putBookWithRetry exhausted its retry loop');
+}
+
+/**
+ * PUT /lorebooks/{id}/entries/{id} with the merge-then-full-replace gotcha
+ * handled: `desired` is the full entry to send on the FIRST attempt
+ * (already merged with the caller's intended patch by the mutator); on a
+ * 409, `patch` is re-applied onto the conflict's authoritative `current`
+ * entry instead of onto our own stale copy.
+ */
+async function putEntryWithRetry(
+  bookId: string,
+  entryId: string,
+  desired: WorldInfoEntry,
+  patch: Partial<WorldInfoEntry>,
+  baseTs: number | undefined
+): Promise<LorebookEntryDTO> {
+  let payload: Record<string, unknown> = { ...entryToWirePayload(desired), baseTs: baseTs ?? null };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await api.updateLorebookEntry(bookId, entryId, payload);
+    } catch (err) {
+      if (err instanceof LorebookEntryConflictError && attempt === 0 && err.conflict.current) {
+        const current = normalizeNativeEntry(err.conflict.current);
+        const merged: WorldInfoEntry = { ...current, ...patch, id: entryId };
+        payload = { ...entryToWirePayload(merged), baseTs: err.conflict.current_ts };
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('unreachable: putEntryWithRetry exhausted its retry loop');
+}
+
+export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
+  // -------------------------------------------------------------------------
+  // Local-state mutation helpers shared by every native-synced mutator's
+  // background success/rollback handlers. All are id-scoped (never replace
+  // the whole `books` array with a stale snapshot) so a concurrent, unrelated
+  // edit made while a network call was in flight is never clobbered.
+  // -------------------------------------------------------------------------
+
+  function removeBookLocally(bookId: string) {
+    set((s) => {
+      const next = s.books.filter((b) => b.id !== bookId);
+      saveBooks(next);
+      return { books: next };
+    });
+  }
+
+  function restoreBookLocally(bookId: string, prevBook: WorldInfoBook) {
+    set((s) => {
+      const next = s.books.map((b) => (b.id === bookId ? prevBook : b));
+      saveBooks(next);
+      return { books: next };
+    });
+  }
+
+  function removeEntryLocally(bookId: string, entryId: string) {
+    set((s) => {
+      const next = s.books.map((b) =>
+        b.id !== bookId ? b : { ...b, entries: b.entries.filter((e) => e.id !== entryId) }
+      );
+      saveBooks(next);
+      return { books: next };
+    });
+  }
+
+  function restoreEntryLocally(bookId: string, entryId: string, prevEntry: WorldInfoEntry) {
+    set((s) => {
+      const next = s.books.map((b) =>
+        b.id !== bookId
+          ? b
+          : { ...b, entries: b.entries.map((e) => (e.id === entryId ? prevEntry : e)) }
+      );
+      saveBooks(next);
+      return { books: next };
+    });
+  }
+
+  /** Patch just serverTs/createdAt onto the CURRENT (not a stale snapshot)
+   *  local book after a successful create/update response — never blindly
+   *  overwrites the whole object, so a newer local edit made while the
+   *  network call was in flight survives. */
+  function applyServerBookMeta(bookId: string, dto: LorebookDTO) {
+    set((s) => {
+      const next = s.books.map((b) => {
+        if (b.id !== bookId) return b;
+        return {
+          ...b,
+          serverTs: typeof dto.server_ts === 'number' ? dto.server_ts : b.serverTs,
+          createdAt: typeof dto.createdAt === 'number' ? (dto.createdAt as number) : b.createdAt,
+        };
+      });
+      saveBooks(next);
+      return { books: next };
+    });
+  }
+
+  /** Same as applyServerBookMeta, for one entry inside one book. */
+  function applyServerEntryMeta(bookId: string, entryId: string, dto: LorebookEntryDTO) {
+    set((s) => {
+      const next = s.books.map((b) => {
+        if (b.id !== bookId) return b;
+        return {
+          ...b,
+          entries: b.entries.map((e) => {
+            if (e.id !== entryId) return e;
+            return {
+              ...e,
+              serverTs: typeof dto.server_ts === 'number' ? dto.server_ts : e.serverTs,
+              createdAt:
+                typeof dto.createdAt === 'number' ? (dto.createdAt as number) : e.createdAt,
             };
-            revisions = [...e.revisions, rev].slice(-10);
+          }),
+        };
+      });
+      saveBooks(next);
+      return { books: next };
+    });
+  }
+
+  /**
+   * Background-sync a freshly-created local book (and its entries, if any)
+   * to the native API: POST the book first (entry POSTs target
+   * /lorebooks/{lorebook_id}/entries, which needs the parent row to exist),
+   * then POST every entry in parallel. On the book POST failing, the whole
+   * book is rolled back locally (nothing could have synced without it). On
+   * an individual entry POST failing, only that ONE entry rolls back — the
+   * book itself did get created successfully, so there's no reason to lose
+   * the rest of it too. Reused by createBook, duplicateBook, importBookJson,
+   * copySharedBook, and createCharacterBook — every "create a book (+ N
+   * entries)" mutator.
+   */
+  function syncNewBookWithEntries(book: WorldInfoBook) {
+    api
+      .createLorebook(bookToWirePayload(book))
+      .then((bookDto) => {
+        applyServerBookMeta(book.id, bookDto);
+        return Promise.all(
+          book.entries.map((e) =>
+            api
+              .createLorebookEntry(book.id, entryToWirePayload(e))
+              .then((entryDto) => {
+                applyServerEntryMeta(book.id, e.id, entryDto);
+                return null;
+              })
+              .catch((err) => {
+                console.warn('[worldInfoStore] failed to create entry on server', err);
+                removeEntryLocally(book.id, e.id);
+                return e;
+              })
+          )
+        );
+      })
+      .then((results) => {
+        const failed = results.filter((e): e is WorldInfoEntry => e !== null);
+        if (failed.length === 0) return;
+        // Aggregate rather than overwrite: with N entries failing in
+        // parallel via Promise.all, each entry's own .catch used to
+        // independently call set({error}) — only the LAST one to settle
+        // ever survived in the single shared `error` field, silently
+        // discarding every other failure's detail (and the overall
+        // count). See the Phase 3a review finding this guards against.
+        set({
+          error:
+            failed.length === 1
+              ? `Failed to save 1 entry in "${book.name}"`
+              : `Failed to save ${failed.length} entries in "${book.name}"`,
+        });
+      })
+      .catch((err) => {
+        console.warn('[worldInfoStore] failed to create lorebook on server', err);
+        removeBookLocally(book.id);
+        set({ error: err instanceof Error ? err.message : 'Failed to save lorebook to server' });
+      });
+  }
+
+  /**
+   * Background-sync a character-embedded book's wholesale replace (the
+   * upsertCharacterBook "existing book found" branch): PUT the book's
+   * name (full-replace, preserving visibility/ownerCharacterAvatar), then
+   * delete every previously-existing native entry and recreate the fresh
+   * set — mirrors the local wholesale `entries: fresh.entries` replace
+   * exactly, since character-embedded books are re-imported wholesale, not
+   * diffed. No local rollback on failure: the local swap already replaced
+   * the book the character-import flow is actively showing progress for,
+   * and reverting mid-way (with entry deletes potentially already fired)
+   * would recreate the exact "silently stale" bug this cutover exists to
+   * fix. The user can re-run the import to retry.
+   */
+  function syncCharacterBookReplace(prevBook: WorldInfoBook, updatedBook: WorldInfoBook) {
+    (async () => {
+      try {
+        const bookDto = await putBookWithRetry(
+          updatedBook.id,
+          {
+            name: prevBook.name,
+            ownerCharacterAvatar: prevBook.ownerCharacterAvatar,
+            visibility: prevBook.visibility,
+          },
+          { name: updatedBook.name },
+          prevBook.serverTs
+        );
+        applyServerBookMeta(updatedBook.id, bookDto);
+
+        const deleteResults = await Promise.all(
+          prevBook.entries.map((e) =>
+            api
+              .deleteLorebookEntry(updatedBook.id, e.id)
+              .then(() => null)
+              .catch((err) => {
+                console.warn('[worldInfoStore] failed to delete stale character-book entry', err);
+                return e;
+              })
+          )
+        );
+        const createResults = await Promise.all(
+          updatedBook.entries.map((e) =>
+            api
+              .createLorebookEntry(updatedBook.id, entryToWirePayload(e))
+              .then((entryDto) => {
+                applyServerEntryMeta(updatedBook.id, e.id, entryDto);
+                return null;
+              })
+              .catch((err) => {
+                console.warn('[worldInfoStore] failed to create character-book entry', err);
+                return e;
+              })
+          )
+        );
+
+        const failedDeletes = deleteResults.filter((e): e is WorldInfoEntry => e !== null);
+        const failedCreates = createResults.filter((e): e is WorldInfoEntry => e !== null);
+        if (failedDeletes.length > 0 || failedCreates.length > 0) {
+          // Deliberately still no local rollback (see this function's own
+          // docstring above) — but every OTHER mutator in this file
+          // surfaces a partial failure via set({error}), and this one
+          // previously didn't: each entry failure was only a console.warn,
+          // invisible to the user, who was left with a book silently
+          // missing entries relative to what the local (already-shown,
+          // already-dismissed) UI told them got imported. See the
+          // Phase 3a review finding this guards against.
+          const parts: string[] = [];
+          if (failedCreates.length > 0) {
+            parts.push(
+              `${failedCreates.length} entr${failedCreates.length === 1 ? 'y' : 'ies'} failed to save`
+            );
           }
-          return { ...e, ...data, revisions, updatedAt: now };
-        }),
+          if (failedDeletes.length > 0) {
+            parts.push(
+              `${failedDeletes.length} stale entr${failedDeletes.length === 1 ? 'y' : 'ies'} could not be removed`
+            );
+          }
+          set({
+            error: `Failed to fully sync "${updatedBook.name}": ${parts.join(' and ')}. Re-import the character to retry.`,
+          });
+        }
+      } catch (err) {
+        console.warn('[worldInfoStore] failed to sync character-book replace', err);
+        set({ error: err instanceof Error ? err.message : 'Failed to sync character lorebook' });
+      }
+    })();
+  }
+
+  return {
+    // Start empty; populated by initForUser once the authenticated user is known.
+    books: [],
+    activeBookIds: [],
+    chatLinkedBookIds: loadChatLinkedBooks(),
+    scanDepth: DEFAULT_SCAN_DEPTH,
+    maxRecursionSteps: DEFAULT_MAX_RECURSION,
+    tokenBudget: DEFAULT_TOKEN_BUDGET,
+    error: null,
+
+    sharedBooks: [],
+    sharedOwnerNameByHandle: {},
+    sharedBooksStatus: 'idle',
+    sharedBooksError: null,
+
+    createBook: (name) => {
+      const trimmed = name.trim() || 'Untitled Lorebook';
+      const now = Date.now();
+      const book: WorldInfoBook = {
+        id: crypto.randomUUID(),
+        name: trimmed,
+        entries: [],
+        ownerCharacterAvatar: null,
+        scope: 'world',
+        ownerHandle: currentHandle(),
+        visibility: 'private',
+        createdAt: now,
         updatedAt: now,
       };
-    });
-    saveBooks(next);
-    set({ books: next });
-  },
-
-  deleteEntry: (bookId, entryId) => {
-    const now = Date.now();
-    const next = get().books.map((b) =>
-      b.id === bookId
-        ? {
-            ...b,
-            entries: b.entries
-              .filter((e) => e.id !== entryId)
-              // Drop related-entry links that pointed at the deleted entry.
-              .map((e) =>
-                e.relatedIds.includes(entryId)
-                  ? {
-                      ...e,
-                      relatedIds: e.relatedIds.filter((id) => id !== entryId),
-                      updatedAt: now,
-                    }
-                  : e
-              ),
-            updatedAt: now,
-          }
-        : b
-    );
-    saveBooks(next);
-    set({ books: next });
-  },
-
-  setBookActive: (bookId, active) => {
-    const cur = get().activeBookIds;
-    const has = cur.includes(bookId);
-    let next = cur;
-    if (active && !has) next = [...cur, bookId];
-    else if (!active && has) next = cur.filter((id) => id !== bookId);
-    else return;
-    saveActiveBooks(next);
-    set({ activeBookIds: next });
-  },
-
-  toggleBookActive: (bookId) => {
-    const cur = get().activeBookIds;
-    const next = cur.includes(bookId)
-      ? cur.filter((id) => id !== bookId)
-      : [...cur, bookId];
-    saveActiveBooks(next);
-    set({ activeBookIds: next });
-  },
-
-  setScanDepth: (depth) => {
-    const d = Math.max(1, Math.min(50, Math.floor(depth)));
-    saveScanDepth(d);
-    set({ scanDepth: d });
-  },
-
-  setMaxRecursionSteps: (steps) => {
-    const n = Math.max(0, Math.min(10, Math.floor(steps)));
-    saveMaxRecursion(n);
-    set({ maxRecursionSteps: n });
-  },
-
-  setTokenBudget: (budget) => {
-    const n = Math.max(0, Math.min(32768, Math.floor(budget)));
-    saveTokenBudget(n);
-    set({ tokenBudget: n });
-  },
-
-  exportBookJson: (bookId) => {
-    const book = get().books.find((b) => b.id === bookId);
-    if (!book) return null;
-    return JSON.stringify(bookToStFormat(book), null, 2);
-  },
-
-  importBookJson: (json, fallbackName, ownerAvatar) => {
-    try {
-      const parsed = JSON.parse(json) as StBook;
-      if (!parsed || typeof parsed !== 'object') {
-        set({ error: 'Invalid lorebook JSON' });
-        return null;
-      }
-      // Accept either { entries: ... } (ST format) OR a bare object where
-      // the top level is the entries map.
-      let book: WorldInfoBook;
-      if ('entries' in parsed && parsed.entries) {
-        book = bookFromStFormat(fallbackName || 'Imported Lorebook', parsed);
-      } else {
-        // Treat the whole object as an entries map.
-        book = bookFromStFormat(fallbackName || 'Imported Lorebook', {
-          entries: parsed as unknown as Record<string, StEntry>,
-        });
-      }
-      // When an owner avatar is provided the imported book becomes that
-      // character's embedded book. Embedded books are 1-per-character, so
-      // any existing embedded book for the same owner is replaced.
-      if (ownerAvatar) {
-        book.ownerCharacterAvatar = ownerAvatar;
-        // scope is derived — recompute alongside ownerCharacterAvatar.
-        book.scope = 'character';
-        const existing = get().books.find(
-          (b) => b.ownerCharacterAvatar === ownerAvatar
-        );
-        const without = existing
-          ? get().books.filter((b) => b.id !== existing.id)
-          : get().books;
-        const next = [...without, book];
-        saveBooks(next);
-        set({ books: next, error: null });
-        return book;
-      }
       const next = [...get().books, book];
       saveBooks(next);
-      set({ books: next, error: null });
+      set({ books: next });
+      syncNewBookWithEntries(book);
       return book;
-    } catch (err) {
-      set({
-        error: err instanceof Error ? err.message : 'Failed to parse JSON',
-      });
-      return null;
-    }
-  },
+    },
 
-  upsertCharacterBook: (ownerAvatar, raw, fallbackName) => {
-    const existing = get().books.find(
-      (b) => b.ownerCharacterAvatar === ownerAvatar
-    );
-    const now = Date.now();
-    if (existing) {
-      // Preserve the book id (keeps linked-books references stable) and
-      // swap in the freshly-parsed entries + name.
-      const fresh = bookFromCharacterBookV2(raw, fallbackName, ownerAvatar);
-      const updated: WorldInfoBook = {
-        ...existing,
-        name: fresh.name,
-        entries: fresh.entries,
-        ownerCharacterAvatar: ownerAvatar,
-        // scope is derived — recompute alongside ownerCharacterAvatar.
-        scope: ownerAvatar != null ? 'character' : 'world',
-        updatedAt: now,
-      };
+    renameBook: (bookId, name) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const prev = get().books.find((b) => b.id === bookId);
+      if (!prev) return;
+      const now = Date.now();
       const next = get().books.map((b) =>
-        b.id === existing.id ? updated : b
+        b.id === bookId ? { ...b, name: trimmed, updatedAt: now } : b
       );
       saveBooks(next);
       set({ books: next });
-      return updated;
-    }
-    const book = bookFromCharacterBookV2(raw, fallbackName, ownerAvatar);
-    const next = [...get().books, book];
-    saveBooks(next);
-    set({ books: next });
-    return book;
-  },
-
-  createCharacterBook: (ownerAvatar, name) => {
-    // If a book already owned by this character exists, return it rather than
-    // creating a second — the model is one embedded book per character.
-    const existing = get().books.find(
-      (b) => b.ownerCharacterAvatar === ownerAvatar
-    );
-    if (existing) return existing;
-    const trimmed = name.trim() || 'Character Lorebook';
-    const now = Date.now();
-    const book: WorldInfoBook = {
-      id: generateId('wibook'),
-      name: trimmed,
-      entries: [],
-      ownerCharacterAvatar: ownerAvatar,
-      // scope is derived — compute inline rather than trusting a caller.
-      scope: ownerAvatar != null ? 'character' : 'world',
-      ownerHandle: currentHandle(),
-      visibility: 'private',
-      createdAt: now,
-      updatedAt: now,
-    };
-    const next = [...get().books, book];
-    saveBooks(next);
-    set({ books: next });
-    return book;
-  },
-
-  getCharacterBook: (ownerAvatar) => {
-    return (
-      get().books.find((b) => b.ownerCharacterAvatar === ownerAvatar) || null
-    );
-  },
-
-  deleteCharacterBook: (ownerAvatar) => {
-    const existing = get().books.find(
-      (b) => b.ownerCharacterAvatar === ownerAvatar
-    );
-    if (!existing) return;
-    const next = get().books.filter((b) => b.id !== existing.id);
-    const activeNext = get().activeBookIds.filter((id) => id !== existing.id);
-    saveBooks(next);
-    saveActiveBooks(activeNext);
-    set({ books: next, activeBookIds: activeNext });
-  },
-
-  getChatLinkedBookIds: (chatFileName) => {
-    return get().chatLinkedBookIds[chatFileName] || [];
-  },
-
-  setChatLinkedBookIds: (chatFileName, ids) => {
-    const allBookIds = new Set(get().books.map((b) => b.id));
-    const deduped = Array.from(new Set(ids.filter((id) => allBookIds.has(id))));
-    const next = { ...get().chatLinkedBookIds };
-    if (deduped.length === 0) {
-      delete next[chatFileName];
-    } else {
-      next[chatFileName] = deduped;
-    }
-    saveChatLinkedBooks(next);
-    set({ chatLinkedBookIds: next });
-    const existingConfig = useChatLoreConfigStore.getState().getConfig(chatFileName);
-    if (existingConfig !== undefined) {
-      // The legacy map can only ever hold the caller's OWN book ids (see
-      // `allBookIds` above), so a v2 config link that points outside that
-      // set — e.g. a shared book attached straight into the config by
-      // AttachBookPicker's "Shared with me" section, which can't go through
-      // this legacy-map-validated path — isn't something this call was ever
-      // asked to touch. Preserve those instead of overwriting linkedBookIds
-      // wholesale, or attaching/detaching any of the viewer's own books
-      // afterward would silently drop the shared link.
-      const nonOwnLinked = existingConfig.linkedBookIds.filter(
-        (id) => !allBookIds.has(id)
-      );
-      useChatLoreConfigStore.getState().updateConfig(chatFileName, {
-        linkedBookIds: Array.from(new Set([...deduped, ...nonOwnLinked])),
-      });
-    }
-  },
-
-  getComposableBooks: () => {
-    const own = get().books;
-    const ownIds = new Set(own.map((b) => b.id));
-    // Own books always win a collision (e.g. a shared book id colliding
-    // with one of the viewer's own from a duplicate ST import).
-    const sharedNonColliding = get().sharedBooks.filter((b) => !ownIds.has(b.id));
-    return [...own, ...sharedNonColliding];
-  },
-
-  copySharedBook: (sharedBookId) => {
-    const original = get().sharedBooks.find((b) => b.id === sharedBookId);
-    if (!original) return null;
-    const now = Date.now();
-    // Same fresh-id + relatedIds-remap dance as duplicateBook.
-    const idMap = new Map<string, string>();
-    const copiedEntries = original.entries.map((e) => {
-      const id = generateId('wi');
-      idMap.set(e.id, id);
-      return { ...e, id, createdAt: now, updatedAt: now };
-    });
-    const copy: WorldInfoBook = {
-      id: generateId('wibook'),
-      name: `${original.name} (copy)`,
-      entries: remapRelatedIds(copiedEntries, idMap),
-      ownerCharacterAvatar: null,
-      // scope is derived — recompute now that ownerCharacterAvatar is cleared.
-      scope: 'world',
-      ownerHandle: currentHandle(),
-      visibility: 'private',
-      // A copy is always hand-owned going forward, even if (defensively;
-      // auto-extracted books should never reach sharedBooks in the first
-      // place) the source was somehow flagged auto-extracted.
-      autoExtracted: undefined,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const next = [...get().books, copy];
-    saveBooks(next);
-    set({ books: next });
-    return copy;
-  },
-
-  clearError: () => set({ error: null }),
-
-  initForUser: (handle) => {
-    _currentHandle = handle;
-    // Hydrate from localStorage first so the UI has something to show before
-    // fetchPrefs returns. fetchPrefs will overlay the server state if newer.
-    _persistEnabled = false;
-    set({
-      books: loadBooks(handle),
-      activeBookIds: loadActiveBooks(handle),
-      chatLinkedBookIds: loadChatLinkedBooks(handle),
-      scanDepth: loadScanDepth(handle),
-      maxRecursionSteps: loadMaxRecursion(handle),
-      tokenBudget: loadTokenBudget(handle),
-      error: null,
-    });
-  },
-
-  resetUser: () => {
-    _persistEnabled = false;
-    _currentHandle = null;
-    set({
-      books: [],
-      activeBookIds: [],
-      chatLinkedBookIds: {},
-      scanDepth: DEFAULT_SCAN_DEPTH,
-      maxRecursionSteps: DEFAULT_MAX_RECURSION,
-      tokenBudget: DEFAULT_TOKEN_BUDGET,
-      error: null,
-      sharedBooks: [],
-      sharedOwnerNameByHandle: {},
-      sharedBooksStatus: 'idle',
-      sharedBooksError: null,
-    });
-  },
-
-  fetchPrefs: async () => {
-    try {
-      const settings = await getSettingsBlob();
-      const stored = settings[SERVER_KEY] as
-        | (PersistedShape & { _ts?: number })
-        | undefined;
-      const serverTs = Number(stored?._ts || 0);
-
-      if (!stored) {
-        // First-ever sync for this user — seed the server with the
-        // localStorage state we just loaded in initForUser.
-        _persistEnabled = true;
-        const s = get();
-        const hasAnything =
-          s.books.length > 0 ||
-          s.activeBookIds.length > 0 ||
-          Object.keys(s.chatLinkedBookIds).length > 0;
-        if (hasAnything) {
-          patchServerKey(
-            SERVER_KEY,
-            snapshotForServer(s) as unknown as Record<string, unknown>,
-            LOCAL_TS_KEY,
-          ).catch(() => {});
-        }
-        // Fire-and-forget: shared books are fetched independently of the
-        // user's own sync state and must never affect fetchPrefs's own
-        // success/error handling.
-        get().fetchSharedBooks().catch(() => {});
-        return;
-      }
-
-      if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
-        // Local has unconfirmed mutations — push them and keep local state.
-        _persistEnabled = true;
-        patchServerKey(
-          SERVER_KEY,
-          snapshotForServer(get()) as unknown as Record<string, unknown>,
-          LOCAL_TS_KEY,
-        ).catch(() => {});
-        get().fetchSharedBooks().catch(() => {});
-        return;
-      }
-
-      // Server has newer (or equal) state — apply it. Normalize first: the
-      // blob may have been written by an older client without the newer
-      // entry fields.
-      _persistEnabled = false;
-      const handle = _currentHandle;
-      const books = normalizeStoredBooks(
-        Array.isArray(stored.books) ? stored.books : []
-      );
-      const activeBookIds = Array.isArray(stored.activeBookIds)
-        ? stored.activeBookIds
-        : [];
-      const chatLinkedBookIds =
-        stored.chatLinkedBookIds && typeof stored.chatLinkedBookIds === 'object'
-          ? stored.chatLinkedBookIds
-          : {};
-      set({
-        books,
-        activeBookIds,
-        chatLinkedBookIds,
-        scanDepth: stored.scanDepth ?? DEFAULT_SCAN_DEPTH,
-        maxRecursionSteps: stored.maxRecursionSteps ?? DEFAULT_MAX_RECURSION,
-        tokenBudget: stored.tokenBudget ?? DEFAULT_TOKEN_BUDGET,
-      });
-      // Cache to localStorage so the next cold load is instant.
-      if (handle) {
-        try {
-          localStorage.setItem(scopedKey(BOOKS_KEY, handle), JSON.stringify(books));
-          localStorage.setItem(scopedKey(ACTIVE_BOOKS_KEY, handle), JSON.stringify(activeBookIds));
-          localStorage.setItem(scopedKey(CHAT_LINKED_BOOKS_KEY, handle), JSON.stringify(chatLinkedBookIds));
-          localStorage.setItem(scopedKey(SCAN_DEPTH_KEY, handle), String(stored.scanDepth ?? DEFAULT_SCAN_DEPTH));
-          localStorage.setItem(scopedKey(MAX_RECURSION_KEY, handle), String(stored.maxRecursionSteps ?? DEFAULT_MAX_RECURSION));
-          localStorage.setItem(scopedKey(TOKEN_BUDGET_KEY, handle), String(stored.tokenBudget ?? DEFAULT_TOKEN_BUDGET));
-        } catch { /* ignore */ }
-      }
-      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
-      _persistEnabled = true;
-      // Fire-and-forget: shared books are fetched independently of the
-      // user's own sync state and must never affect fetchPrefs's own
-      // success/error handling.
-      get().fetchSharedBooks().catch(() => {});
-    } catch {
-      // Network failure — keep local state. Next mutation marks the section
-      // dirty, so a future fetchPrefs will detect the local-newer case.
-      _persistEnabled = true;
-    }
-  },
-
-  fetchSharedBooks: async () => {
-    set({ sharedBooksStatus: 'loading' });
-    try {
-      const dtos: SharedWorldInfoBookDTO[] = await api.listSharedWorldInfoBooks();
-      const normalizedBooks: WorldInfoBook[] = [];
-      const ownerNames: Record<string, string | null> = {};
-      for (const dto of dtos) {
-        if (!dto || typeof dto !== 'object') continue;
-        const rawBook = dto.book as Partial<WorldInfoBook> | null | undefined;
-        // Reject (skip, don't crash on) anything missing the fields the rest
-        // of this file assumes are always present.
-        if (
-          !rawBook ||
-          typeof rawBook !== 'object' ||
-          typeof rawBook.id !== 'string' ||
-          typeof rawBook.name !== 'string' ||
-          !Array.isArray(rawBook.entries)
-        ) {
-          continue;
-        }
-        // Reuse normalizeStoredBooks — same helper fetchPrefs uses to
-        // backfill fields a pre-update client's blob may be missing, and the
-        // same place scope gets recomputed from ownerCharacterAvatar rather
-        // than trusted from storage.
-        const [book] = normalizeStoredBooks(
-          [rawBook as WorldInfoBook],
-          dto.owner_handle
-        );
-        normalizedBooks.push({
-          ...book,
-          // Server-authoritative — the field inside the raw book JSON may be
-          // stale or absent; never trust it over the DTO's top-level value.
-          ownerHandle: dto.owner_handle,
-          // Server already filtered on this, but don't trust it blindly.
-          visibility: 'shared',
+      putBookWithRetry(
+        bookId,
+        { name: prev.name, ownerCharacterAvatar: prev.ownerCharacterAvatar, visibility: prev.visibility },
+        { name: trimmed },
+        prev.serverTs
+      )
+        .then((dto) => applyServerBookMeta(bookId, dto))
+        .catch((err) => {
+          console.warn('[worldInfoStore] failed to rename lorebook on server', err);
+          restoreBookLocally(bookId, prev);
+          set({ error: err instanceof Error ? err.message : 'Failed to rename lorebook' });
         });
-        ownerNames[dto.owner_handle] = dto.owner_name ?? null;
+    },
+
+    deleteBook: (bookId) => {
+      const prevBook = get().books.find((b) => b.id === bookId);
+      if (!prevBook) return;
+      const wasActive = get().activeBookIds.includes(bookId);
+      const chatFilesLinked = Object.entries(get().chatLinkedBookIds)
+        .filter(([, ids]) => ids.includes(bookId))
+        .map(([chatFile]) => chatFile);
+
+      const next = get().books.filter((b) => b.id !== bookId);
+      const activeNext = get().activeBookIds.filter((id) => id !== bookId);
+      const chatNext: Record<string, string[]> = {};
+      for (const [k, ids] of Object.entries(get().chatLinkedBookIds)) {
+        const filtered = ids.filter((id) => id !== bookId);
+        if (filtered.length > 0) chatNext[k] = filtered;
       }
+      saveBooks(next);
+      saveActiveBooks(activeNext);
+      saveChatLinkedBooks(chatNext);
       set({
-        sharedBooks: normalizedBooks,
-        sharedOwnerNameByHandle: ownerNames,
-        sharedBooksStatus: 'loaded',
+        books: next,
+        activeBookIds: activeNext,
+        chatLinkedBookIds: chatNext,
+      });
+
+      // The cross-store prune below (chatLoreConfigStore/loreConflictStore)
+      // strips real data — per-chat overlays and pending Auto Memory
+      // conflict records — that DOES still reference this book id, and
+      // both stores autosave any change to the server within ~300ms (see
+      // their own subscribe-based autosave), independent of whether the
+      // DELETE below actually succeeds. Pruning unconditionally BEFORE
+      // confirming the delete (the previous order here) meant a failed
+      // delete left the book alive server-side while that overlay/conflict
+      // data was already gone for good, both locally and on the server,
+      // with no way to reconstruct it. So: prune only AFTER the delete is
+      // confirmed; on failure, roll back the local removal above instead
+      // (id-scoped, not a full-array restore, so a concurrent unrelated
+      // edit made while the request was in flight isn't clobbered) and
+      // surface the error, matching every other mutator in this file
+      // rather than the previous silent console.warn-only handling. See
+      // the Phase 3a review findings this guards against.
+      api.deleteLorebook(bookId).then(
+        () => {
+          useChatLoreConfigStore.getState().pruneBook(bookId);
+          useLoreConflictStore.getState().pruneBook(bookId);
+        },
+        (err) => {
+          console.warn('[worldInfoStore] failed to delete lorebook on server', err);
+          set((s) => {
+            const books = s.books.some((b) => b.id === bookId) ? s.books : [...s.books, prevBook];
+            const activeBookIds =
+              wasActive && !s.activeBookIds.includes(bookId)
+                ? [...s.activeBookIds, bookId]
+                : s.activeBookIds;
+            let chatLinkedBookIds = s.chatLinkedBookIds;
+            if (chatFilesLinked.length > 0) {
+              chatLinkedBookIds = { ...s.chatLinkedBookIds };
+              for (const chatFile of chatFilesLinked) {
+                const ids = chatLinkedBookIds[chatFile] || [];
+                if (!ids.includes(bookId)) chatLinkedBookIds[chatFile] = [...ids, bookId];
+              }
+            }
+            saveBooks(books);
+            saveActiveBooks(activeBookIds);
+            saveChatLinkedBooks(chatLinkedBookIds);
+            return {
+              books,
+              activeBookIds,
+              chatLinkedBookIds,
+              error: err instanceof Error ? err.message : 'Failed to delete lorebook',
+            };
+          });
+        }
+      );
+    },
+
+    duplicateBook: (bookId) => {
+      const original = get().books.find((b) => b.id === bookId);
+      if (!original) return null;
+      const now = Date.now();
+      // Duplicates are always standalone globals so they don't collide with
+      // the original character's embedded-book link.
+      const idMap = new Map<string, string>();
+      const copiedEntries = original.entries.map((e) => {
+        const id = crypto.randomUUID();
+        idMap.set(e.id, id);
+        return { ...e, id, createdAt: now, updatedAt: now, serverTs: undefined };
+      });
+      const copy: WorldInfoBook = {
+        id: crypto.randomUUID(),
+        name: `${original.name} (Copy)`,
+        // Related-entry links must point at the copies, not the originals.
+        entries: remapRelatedIds(copiedEntries, idMap),
+        ownerCharacterAvatar: null,
+        // scope is derived — recompute now that ownerCharacterAvatar is cleared.
+        scope: 'world',
+        ownerHandle: original.ownerHandle,
+        // Always private, regardless of the original's visibility - duplicating
+        // a shared book must never silently create another shared copy.
+        visibility: 'private',
+        createdAt: now,
+        updatedAt: now,
+      };
+      const next = [...get().books, copy];
+      saveBooks(next);
+      set({ books: next });
+      syncNewBookWithEntries(copy);
+      return copy;
+    },
+
+    setBookVisibility: (bookId, visibility) => {
+      const target = get().books.find((b) => b.id === bookId);
+      if (!target) return;
+      // Auto Memory books are never shareable - mirrors server-side
+      // enforcement in the /worldinfo/shared endpoint, but the client must
+      // not even offer it.
+      if (target.autoExtracted === true && visibility === 'shared') return;
+      const now = Date.now();
+      const next = get().books.map((b) =>
+        b.id === bookId ? { ...b, visibility, updatedAt: now } : b
+      );
+      saveBooks(next);
+      set({ books: next });
+      putBookWithRetry(
+        bookId,
+        { name: target.name, ownerCharacterAvatar: target.ownerCharacterAvatar, visibility: target.visibility },
+        { visibility },
+        target.serverTs
+      )
+        .then((dto) => applyServerBookMeta(bookId, dto))
+        .catch((err) => {
+          console.warn('[worldInfoStore] failed to set lorebook visibility on server', err);
+          restoreBookLocally(bookId, target);
+          set({ error: err instanceof Error ? err.message : 'Failed to update lorebook sharing' });
+        });
+    },
+
+    markBookAutoExtracted: (bookId) => {
+      const target = get().books.find((b) => b.id === bookId);
+      if (!target || target.autoExtracted === true) return;
+      const now = Date.now();
+      const next = get().books.map((b) =>
+        b.id === bookId ? { ...b, autoExtracted: true, updatedAt: now } : b
+      );
+      saveBooks(next);
+      set({ books: next });
+      putBookWithRetry(
+        bookId,
+        { name: target.name, ownerCharacterAvatar: target.ownerCharacterAvatar, visibility: target.visibility },
+        { autoExtracted: true },
+        target.serverTs
+      )
+        .then((dto) => applyServerBookMeta(bookId, dto))
+        .catch((err) => {
+          // Deliberately NOT rolled back locally, unlike every other
+          // mutator's failure handler: this flag only ever ADDS
+          // restriction (blocks sharing), so keeping it optimistically
+          // true client-side is the safer failure mode even if the
+          // server write didn't land — reverting to false would re-open
+          // the sharing UI for a book that's genuinely auto-extracted
+          // just because of a transient network error. The residual gap
+          // this leaves (the server's own auto_extracted column staying
+          // false until a retry succeeds) is logged so it's not silently
+          // invisible.
+          console.warn('[worldInfoStore] failed to persist auto-extracted flag on server', err);
+          set({ error: err instanceof Error ? err.message : 'Failed to update lorebook flag' });
+        });
+    },
+
+    createEntry: (bookId, data, meta) => {
+      const book = get().books.find((b) => b.id === bookId);
+      if (!book) {
+        set({ error: 'Lorebook not found' });
+        return null;
+      }
+      const now = Date.now();
+      const entry: WorldInfoEntry = {
+        ...DEFAULT_ENTRY,
+        ...(data || {}),
+        id: crypto.randomUUID(),
+        source: data?.source ?? 'manual',
+        revisions: [
+          {
+            ts: now,
+            authorHandle: currentHandle(),
+            action: 'create',
+            prevContent: '',
+            ...(meta?.sourceChatFile !== undefined
+              ? { sourceChatFile: meta.sourceChatFile }
+              : {}),
+          },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      };
+      const next = get().books.map((b) =>
+        b.id === bookId
+          ? { ...b, entries: [...b.entries, entry], updatedAt: now }
+          : b
+      );
+      saveBooks(next);
+      set({ books: next });
+      api
+        .createLorebookEntry(bookId, entryToWirePayload(entry))
+        .then((dto) => applyServerEntryMeta(bookId, entry.id, dto))
+        .catch((err) => {
+          console.warn('[worldInfoStore] failed to create entry on server', err);
+          removeEntryLocally(bookId, entry.id);
+          set({ error: err instanceof Error ? err.message : 'Failed to create lorebook entry' });
+        });
+      return entry;
+    },
+
+    updateEntry: (bookId, entryId, data, meta) => {
+      const now = Date.now();
+      let prevEntry: WorldInfoEntry | undefined;
+      let nextEntry: WorldInfoEntry | undefined;
+      const next = get().books.map((b) => {
+        if (b.id !== bookId) return b;
+        return {
+          ...b,
+          entries: b.entries.map((e) => {
+            if (e.id !== entryId) return e;
+            prevEntry = e;
+            // Content changes get a revision record BEFORE the patch is
+            // applied, so prevContent captures the pre-edit state.
+            let revisions: EntryRevision[] = e.revisions;
+            const contentChanged =
+              data.content !== undefined && data.content !== e.content;
+            if (contentChanged || meta?.recordRevision === 'always') {
+              const rev: EntryRevision = {
+                ts: now,
+                authorHandle: currentHandle(),
+                action: meta?.action ?? 'edit',
+                prevContent: e.content,
+                ...(meta?.sourceChatFile !== undefined
+                  ? { sourceChatFile: meta.sourceChatFile }
+                  : {}),
+              };
+              revisions = [...e.revisions, rev].slice(-10);
+            }
+            nextEntry = { ...e, ...data, revisions, updatedAt: now };
+            return nextEntry;
+          }),
+          updatedAt: now,
+        };
+      });
+      saveBooks(next);
+      set({ books: next });
+      if (!prevEntry || !nextEntry) return; // entry not found locally — nothing to sync
+      putEntryWithRetry(bookId, entryId, nextEntry, data, prevEntry.serverTs)
+        .then((dto) => applyServerEntryMeta(bookId, entryId, dto))
+        .catch((err) => {
+          console.warn('[worldInfoStore] failed to update entry on server', err);
+          restoreEntryLocally(bookId, entryId, prevEntry as WorldInfoEntry);
+          set({ error: err instanceof Error ? err.message : 'Failed to save lorebook entry' });
+        });
+    },
+
+    deleteEntry: (bookId, entryId) => {
+      const now = Date.now();
+      const prevBook = get().books.find((b) => b.id === bookId);
+      const siblingsToPatch: WorldInfoEntry[] = [];
+      const next = get().books.map((b) =>
+        b.id === bookId
+          ? {
+              ...b,
+              entries: b.entries
+                .filter((e) => e.id !== entryId)
+                // Drop related-entry links that pointed at the deleted entry.
+                .map((e) => {
+                  if (!e.relatedIds.includes(entryId)) return e;
+                  const trimmed = {
+                    ...e,
+                    relatedIds: e.relatedIds.filter((id) => id !== entryId),
+                    updatedAt: now,
+                  };
+                  siblingsToPatch.push(trimmed);
+                  return trimmed;
+                }),
+              updatedAt: now,
+            }
+          : b
+      );
+      saveBooks(next);
+      set({ books: next });
+      api.deleteLorebookEntry(bookId, entryId).then(
+        () => {
+          // Best-effort persistence of each trimmed sibling's relatedIds —
+          // the local trim is already correct now that the delete is
+          // confirmed, so a failure here is logged only, never rolled
+          // back: reverting would resurrect a dangling reference the
+          // scanner already treats as absent anyway (see
+          // scanMessagesForEntries's dangling-id handling).
+          for (const sibling of siblingsToPatch) {
+            putEntryWithRetry(bookId, sibling.id, sibling, { relatedIds: sibling.relatedIds }, sibling.serverTs)
+              .then((dto) => applyServerEntryMeta(bookId, sibling.id, dto))
+              .catch((err) => {
+                console.warn('[worldInfoStore] failed to persist trimmed relatedIds', err);
+              });
+          }
+        },
+        (err) => {
+          console.warn('[worldInfoStore] failed to delete entry on server', err);
+          set({ error: err instanceof Error ? err.message : 'Failed to delete lorebook entry on server' });
+          // Roll back the WHOLE book (entry removal + sibling relatedIds
+          // trim together — restoreBookLocally, the same helper
+          // renameBook/setBookVisibility already use on their own failure
+          // paths) rather than just the one entry: the delete never
+          // actually happened server-side, so silently leaving it gone
+          // locally would make it vanish from the editor now and reappear
+          // un-announced on the next login/reload once fetchPrefs
+          // refetches native books. See the Phase 3a review finding this
+          // guards against.
+          if (prevBook) restoreBookLocally(bookId, prevBook);
+        }
+      );
+    },
+
+    setBookActive: (bookId, active) => {
+      const cur = get().activeBookIds;
+      const has = cur.includes(bookId);
+      let next = cur;
+      if (active && !has) next = [...cur, bookId];
+      else if (!active && has) next = cur.filter((id) => id !== bookId);
+      else return;
+      saveActiveBooks(next);
+      set({ activeBookIds: next });
+    },
+
+    toggleBookActive: (bookId) => {
+      const cur = get().activeBookIds;
+      const next = cur.includes(bookId)
+        ? cur.filter((id) => id !== bookId)
+        : [...cur, bookId];
+      saveActiveBooks(next);
+      set({ activeBookIds: next });
+    },
+
+    setScanDepth: (depth) => {
+      const d = Math.max(1, Math.min(50, Math.floor(depth)));
+      saveScanDepth(d);
+      set({ scanDepth: d });
+    },
+
+    setMaxRecursionSteps: (steps) => {
+      const n = Math.max(0, Math.min(10, Math.floor(steps)));
+      saveMaxRecursion(n);
+      set({ maxRecursionSteps: n });
+    },
+
+    setTokenBudget: (budget) => {
+      const n = Math.max(0, Math.min(32768, Math.floor(budget)));
+      saveTokenBudget(n);
+      set({ tokenBudget: n });
+    },
+
+    exportBookJson: (bookId) => {
+      const book = get().books.find((b) => b.id === bookId);
+      if (!book) return null;
+      return JSON.stringify(bookToStFormat(book), null, 2);
+    },
+
+    importBookJson: (json, fallbackName, ownerAvatar) => {
+      try {
+        const parsed = JSON.parse(json) as StBook;
+        if (!parsed || typeof parsed !== 'object') {
+          set({ error: 'Invalid lorebook JSON' });
+          return null;
+        }
+        // Accept either { entries: ... } (ST format) OR a bare object where
+        // the top level is the entries map.
+        let book: WorldInfoBook;
+        if ('entries' in parsed && parsed.entries) {
+          book = bookFromStFormat(fallbackName || 'Imported Lorebook', parsed);
+        } else {
+          // Treat the whole object as an entries map.
+          book = bookFromStFormat(fallbackName || 'Imported Lorebook', {
+            entries: parsed as unknown as Record<string, StEntry>,
+          });
+        }
+        // When an owner avatar is provided the imported book becomes that
+        // character's embedded book. Embedded books are 1-per-character, so
+        // any existing embedded book for the same owner is replaced.
+        if (ownerAvatar) {
+          book.ownerCharacterAvatar = ownerAvatar;
+          // scope is derived — recompute alongside ownerCharacterAvatar.
+          book.scope = 'character';
+          const existing = get().books.find(
+            (b) => b.ownerCharacterAvatar === ownerAvatar
+          );
+          const without = existing
+            ? get().books.filter((b) => b.id !== existing.id)
+            : get().books;
+          const next = [...without, book];
+          saveBooks(next);
+          set({ books: next, error: null });
+          if (existing) {
+            // The local replace above already removed the old book; mirror
+            // that server-side. Fire-and-forget, same reasoning as
+            // deleteBook — the DELETE is idempotent and low-risk.
+            api.deleteLorebook(existing.id).catch((err) => {
+              console.warn('[worldInfoStore] failed to delete replaced character book on server', err);
+            });
+          }
+          syncNewBookWithEntries(book);
+          return book;
+        }
+        const next = [...get().books, book];
+        saveBooks(next);
+        set({ books: next, error: null });
+        syncNewBookWithEntries(book);
+        return book;
+      } catch (err) {
+        set({
+          error: err instanceof Error ? err.message : 'Failed to parse JSON',
+        });
+        return null;
+      }
+    },
+
+    upsertCharacterBook: (ownerAvatar, raw, fallbackName) => {
+      const existing = get().books.find(
+        (b) => b.ownerCharacterAvatar === ownerAvatar
+      );
+      const now = Date.now();
+      if (existing) {
+        // Preserve the book id (keeps linked-books references stable) and
+        // swap in the freshly-parsed entries + name.
+        const fresh = bookFromCharacterBookV2(raw, fallbackName, ownerAvatar);
+        const updated: WorldInfoBook = {
+          ...existing,
+          name: fresh.name,
+          entries: fresh.entries,
+          ownerCharacterAvatar: ownerAvatar,
+          // scope is derived — recompute alongside ownerCharacterAvatar.
+          scope: ownerAvatar != null ? 'character' : 'world',
+          updatedAt: now,
+        };
+        const next = get().books.map((b) =>
+          b.id === existing.id ? updated : b
+        );
+        saveBooks(next);
+        set({ books: next });
+        // Wholesale replace (PUT book + delete-all-then-recreate entries) —
+        // background, not awaited: this store's public API stays fully
+        // synchronous (see the module report on why an awaited variant
+        // would require plumbing through characterStore.ts, out of scope
+        // for this step).
+        syncCharacterBookReplace(existing, updated);
+        return updated;
+      }
+      const book = bookFromCharacterBookV2(raw, fallbackName, ownerAvatar);
+      const next = [...get().books, book];
+      saveBooks(next);
+      set({ books: next });
+      syncNewBookWithEntries(book);
+      return book;
+    },
+
+    createCharacterBook: (ownerAvatar, name, autoExtracted) => {
+      // If a book already owned by this character exists, return it rather than
+      // creating a second — the model is one embedded book per character.
+      // Note: autoExtracted is NOT applied here even if requested — see
+      // markBookAutoExtracted for retroactively flagging an existing book.
+      const existing = get().books.find(
+        (b) => b.ownerCharacterAvatar === ownerAvatar
+      );
+      if (existing) return existing;
+      const trimmed = name.trim() || 'Character Lorebook';
+      const now = Date.now();
+      const book: WorldInfoBook = {
+        id: crypto.randomUUID(),
+        name: trimmed,
+        entries: [],
+        ownerCharacterAvatar: ownerAvatar,
+        // scope is derived — compute inline rather than trusting a caller.
+        scope: ownerAvatar != null ? 'character' : 'world',
+        ownerHandle: currentHandle(),
+        visibility: 'private',
+        ...(autoExtracted === true ? { autoExtracted: true } : {}),
+        createdAt: now,
+        updatedAt: now,
+      };
+      const next = [...get().books, book];
+      saveBooks(next);
+      set({ books: next });
+      // autoExtracted (when requested) is already baked into `book` above,
+      // so the very first POST this fires carries it — see
+      // bookToWirePayload. No separate patch-after-create needed.
+      syncNewBookWithEntries(book);
+      return book;
+    },
+
+    getCharacterBook: (ownerAvatar) => {
+      return (
+        get().books.find((b) => b.ownerCharacterAvatar === ownerAvatar) || null
+      );
+    },
+
+    deleteCharacterBook: (ownerAvatar) => {
+      const existing = get().books.find(
+        (b) => b.ownerCharacterAvatar === ownerAvatar
+      );
+      if (!existing) return;
+      const next = get().books.filter((b) => b.id !== existing.id);
+      const activeNext = get().activeBookIds.filter((id) => id !== existing.id);
+      saveBooks(next);
+      saveActiveBooks(activeNext);
+      set({ books: next, activeBookIds: activeNext });
+      api.deleteLorebook(existing.id).catch((err) => {
+        console.warn('[worldInfoStore] failed to delete character lorebook on server', err);
+      });
+    },
+
+    getChatLinkedBookIds: (chatFileName) => {
+      return get().chatLinkedBookIds[chatFileName] || [];
+    },
+
+    setChatLinkedBookIds: (chatFileName, ids) => {
+      const allBookIds = new Set(get().books.map((b) => b.id));
+      const deduped = Array.from(new Set(ids.filter((id) => allBookIds.has(id))));
+      const next = { ...get().chatLinkedBookIds };
+      if (deduped.length === 0) {
+        delete next[chatFileName];
+      } else {
+        next[chatFileName] = deduped;
+      }
+      saveChatLinkedBooks(next);
+      set({ chatLinkedBookIds: next });
+      const existingConfig = useChatLoreConfigStore.getState().getConfig(chatFileName);
+      if (existingConfig !== undefined) {
+        // The legacy map can only ever hold the caller's OWN book ids (see
+        // `allBookIds` above), so a v2 config link that points outside that
+        // set — e.g. a shared book attached straight into the config by
+        // AttachBookPicker's "Shared with me" section, which can't go through
+        // this legacy-map-validated path — isn't something this call was ever
+        // asked to touch. Preserve those instead of overwriting linkedBookIds
+        // wholesale, or attaching/detaching any of the viewer's own books
+        // afterward would silently drop the shared link.
+        const nonOwnLinked = existingConfig.linkedBookIds.filter(
+          (id) => !allBookIds.has(id)
+        );
+        useChatLoreConfigStore.getState().updateConfig(chatFileName, {
+          linkedBookIds: Array.from(new Set([...deduped, ...nonOwnLinked])),
+        });
+      }
+    },
+
+    getComposableBooks: () => {
+      const own = get().books;
+      const ownIds = new Set(own.map((b) => b.id));
+      // Own books always win a collision (e.g. a shared book id colliding
+      // with one of the viewer's own from a duplicate ST import).
+      const sharedNonColliding = get().sharedBooks.filter((b) => !ownIds.has(b.id));
+      return [...own, ...sharedNonColliding];
+    },
+
+    copySharedBook: (sharedBookId) => {
+      const original = get().sharedBooks.find((b) => b.id === sharedBookId);
+      if (!original) return null;
+      const now = Date.now();
+      // Same fresh-id + relatedIds-remap dance as duplicateBook.
+      const idMap = new Map<string, string>();
+      const copiedEntries = original.entries.map((e) => {
+        const id = crypto.randomUUID();
+        idMap.set(e.id, id);
+        return { ...e, id, createdAt: now, updatedAt: now, serverTs: undefined };
+      });
+      const copy: WorldInfoBook = {
+        id: crypto.randomUUID(),
+        name: `${original.name} (copy)`,
+        entries: remapRelatedIds(copiedEntries, idMap),
+        ownerCharacterAvatar: null,
+        // scope is derived — recompute now that ownerCharacterAvatar is cleared.
+        scope: 'world',
+        ownerHandle: currentHandle(),
+        visibility: 'private',
+        // A copy is always hand-owned going forward, even if (defensively;
+        // auto-extracted books should never reach sharedBooks in the first
+        // place) the source was somehow flagged auto-extracted.
+        autoExtracted: undefined,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const next = [...get().books, copy];
+      saveBooks(next);
+      set({ books: next });
+      syncNewBookWithEntries(copy);
+      return copy;
+    },
+
+    clearError: () => set({ error: null }),
+
+    initForUser: (handle) => {
+      _currentHandle = handle;
+      // Hydrate from localStorage first so the UI has something to show before
+      // fetchPrefs returns. fetchPrefs will overlay the server state if newer.
+      _persistEnabled = false;
+      set({
+        books: loadBooks(handle),
+        activeBookIds: loadActiveBooks(handle),
+        chatLinkedBookIds: loadChatLinkedBooks(handle),
+        scanDepth: loadScanDepth(handle),
+        maxRecursionSteps: loadMaxRecursion(handle),
+        tokenBudget: loadTokenBudget(handle),
+        error: null,
+      });
+    },
+
+    resetUser: () => {
+      _persistEnabled = false;
+      _currentHandle = null;
+      // Session-scoped migration guards are per-user — reset them so a
+      // second account logging into the same browser session gets its own
+      // import attempt and its own remap pass, not one inherited (and
+      // wrongly skipped/stale) from the previous account.
+      _blobImportAttempted = false;
+      _nativeBooksFetchSucceeded = false;
+      clearLegacyIdRemap();
+      resetLegacyIdRemapReadyGate();
+      set({
+        books: [],
+        activeBookIds: [],
+        chatLinkedBookIds: {},
+        scanDepth: DEFAULT_SCAN_DEPTH,
+        maxRecursionSteps: DEFAULT_MAX_RECURSION,
+        tokenBudget: DEFAULT_TOKEN_BUDGET,
+        error: null,
+        sharedBooks: [],
+        sharedOwnerNameByHandle: {},
+        sharedBooksStatus: 'idle',
         sharedBooksError: null,
       });
-    } catch (err) {
-      // Never let this throw out of the action — including a 404 if the
-      // backend endpoint hasn't deployed yet.
-      set({
-        sharedBooksStatus: 'error',
-        sharedBooksError:
-          err instanceof Error ? err.message : 'Failed to load shared lorebooks',
-      });
-    }
-  },
-}));
+    },
+
+    /**
+     * Pulls activeBookIds/chatLinkedBookIds/scan settings from the
+     * stm_worldinfo blob (unchanged mechanism), and books/entries from the
+     * native /lorebooks API (Phase 3a — the blob no longer carries them at
+     * all). The two legs are independent: a blob-fetch hiccup must never
+     * block loading books (they live in a completely different system of
+     * record now), so each has its own try/catch.
+     *
+     * Native leg, in order: (1) ensureBlobImported — one-time-per-session
+     * idempotent bootstrap of any book that was never migrated off the
+     * blob; (2) fetchNativeBooks — the current, authoritative books+entries;
+     * (3) buildLegacyIdRemap — pairs whatever old-id-keyed books were known
+     * locally (this store's own pre-fetch `books` state, plus the blob's
+     * own `books` field if this browser/account still has one) against the
+     * freshly-fetched native set, populating remapLegacyBookId/
+     * remapLegacyEntryId for the next step's stores to consume; (4) only
+     * THEN is `books` applied to state. This ordering is the guarantee the
+     * next step can rely on: by the time this Promise resolves, the remap
+     * for every book/entry present in this call's old-state snapshot is
+     * already populated, strictly before the id it replaces stops being
+     * referenced anywhere in `books`.
+     */
+    fetchPrefs: async () => {
+      const oldBooksSnapshot = get().books;
+      let legacyBlobBooksForRemap: WorldInfoBook[] = [];
+
+      try {
+        const settings = await getSettingsBlob();
+        const stored = settings[SERVER_KEY] as
+          | (PersistedShape & { books?: unknown; _ts?: number })
+          | undefined;
+        const serverTs = Number(stored?._ts || 0);
+        if (Array.isArray(stored?.books)) {
+          legacyBlobBooksForRemap = normalizeStoredBooks(stored.books as WorldInfoBook[]);
+        }
+
+        if (!stored) {
+          // First-ever sync for this user — seed the server with the
+          // localStorage state we just loaded in initForUser.
+          _persistEnabled = true;
+          const s = get();
+          const hasAnything =
+            s.activeBookIds.length > 0 || Object.keys(s.chatLinkedBookIds).length > 0;
+          if (hasAnything) {
+            patchServerKey(
+              SERVER_KEY,
+              snapshotForServer(s) as unknown as Record<string, unknown>,
+              LOCAL_TS_KEY,
+            ).catch(() => {});
+          }
+        } else if (shouldReuploadSection(LOCAL_TS_KEY, serverTs)) {
+          // Local has unconfirmed mutations — push them and keep local state.
+          _persistEnabled = true;
+          patchServerKey(
+            SERVER_KEY,
+            snapshotForServer(get()) as unknown as Record<string, unknown>,
+            LOCAL_TS_KEY,
+          ).catch(() => {});
+        } else {
+          // Server has newer (or equal) state — apply it.
+          _persistEnabled = false;
+          const handle = _currentHandle;
+          const activeBookIds = Array.isArray(stored.activeBookIds)
+            ? stored.activeBookIds
+            : [];
+          const chatLinkedBookIds =
+            stored.chatLinkedBookIds && typeof stored.chatLinkedBookIds === 'object'
+              ? stored.chatLinkedBookIds
+              : {};
+          set({
+            activeBookIds,
+            chatLinkedBookIds,
+            scanDepth: stored.scanDepth ?? DEFAULT_SCAN_DEPTH,
+            maxRecursionSteps: stored.maxRecursionSteps ?? DEFAULT_MAX_RECURSION,
+            tokenBudget: stored.tokenBudget ?? DEFAULT_TOKEN_BUDGET,
+          });
+          // Cache to localStorage so the next cold load is instant.
+          if (handle) {
+            try {
+              localStorage.setItem(scopedKey(ACTIVE_BOOKS_KEY, handle), JSON.stringify(activeBookIds));
+              localStorage.setItem(scopedKey(CHAT_LINKED_BOOKS_KEY, handle), JSON.stringify(chatLinkedBookIds));
+              localStorage.setItem(scopedKey(SCAN_DEPTH_KEY, handle), String(stored.scanDepth ?? DEFAULT_SCAN_DEPTH));
+              localStorage.setItem(scopedKey(MAX_RECURSION_KEY, handle), String(stored.maxRecursionSteps ?? DEFAULT_MAX_RECURSION));
+              localStorage.setItem(scopedKey(TOKEN_BUDGET_KEY, handle), String(stored.tokenBudget ?? DEFAULT_TOKEN_BUDGET));
+            } catch { /* ignore */ }
+          }
+          try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
+          _persistEnabled = true;
+        }
+      } catch {
+        // Network failure — keep local blob-backed state. Next mutation
+        // marks the section dirty, so a future fetchPrefs will detect the
+        // local-newer case. The native leg below is independent and still
+        // attempted even when this leg fails.
+        _persistEnabled = true;
+      }
+
+      try {
+        await ensureBlobImported();
+        const nativeBooks = await fetchNativeBooks();
+        const oldBooksById = new Map<string, WorldInfoBook>();
+        for (const b of oldBooksSnapshot) oldBooksById.set(b.id, b);
+        // The blob's own (pre-cutover) `books` field, if this account still
+        // has one, wins on id collision — it's the cross-device source of
+        // truth for a fresh browser whose localStorage cache is empty.
+        for (const b of legacyBlobBooksForRemap) oldBooksById.set(b.id, b);
+        buildLegacyIdRemap(Array.from(oldBooksById.values()), nativeBooks);
+        saveBooks(nativeBooks);
+        set({ books: nativeBooks });
+        _nativeBooksFetchSucceeded = true;
+      } catch (err) {
+        console.warn(
+          '[worldInfoStore] failed to load native lorebooks — keeping last known local state',
+          err
+        );
+      }
+
+      // Shared books: independent of everything above (a failure here must
+      // never affect fetchPrefs's own success/error handling — fetchSharedBooks
+      // itself never throws, see its own docstring). AWAITED (unlike before
+      // this migration) because legacyIdRemapReady below must not resolve
+      // until sharedBooks is settled too — canConfidentlyDropUnresolvedLegacyIds
+      // otherwise couldn't tell "this book is a shared one that hasn't loaded
+      // yet" apart from "this book is genuinely gone," and a dependent
+      // store's remap pass would risk wrongly dropping a live shared-book
+      // reference. No production caller awaits fetchPrefs() itself (every
+      // fetchPrefs() call in authStore.ts is fire-and-forget), so this added
+      // latency before fetchPrefs's OWN promise resolves is not observable
+      // to anything that matters.
+      await get().fetchSharedBooks().catch(() => {});
+
+      // One-time-per-login remap of the two book-id-keyed fields this store
+      // still owns directly (chatLinkedBookIds/activeBookIds) — see
+      // remapChatLinkedAndActiveBookIds. Must run before the readiness gate
+      // opens, so a consumer awaiting legacyIdRemapReady() never observes a
+      // half-remapped intermediate state.
+      remapChatLinkedAndActiveBookIds();
+      _resolveLegacyIdRemapReady();
+    },
+
+    fetchSharedBooks: async () => {
+      set({ sharedBooksStatus: 'loading' });
+      try {
+        const dtos: SharedWorldInfoBookDTO[] = await api.listSharedWorldInfoBooks();
+        const normalizedBooks: WorldInfoBook[] = [];
+        const ownerNames: Record<string, string | null> = {};
+        for (const dto of dtos) {
+          if (!dto || typeof dto !== 'object') continue;
+          const rawBook = dto.book as Partial<WorldInfoBook> | null | undefined;
+          // Reject (skip, don't crash on) anything missing the fields the rest
+          // of this file assumes are always present.
+          if (
+            !rawBook ||
+            typeof rawBook !== 'object' ||
+            typeof rawBook.id !== 'string' ||
+            typeof rawBook.name !== 'string' ||
+            !Array.isArray(rawBook.entries)
+          ) {
+            continue;
+          }
+          // Reuse normalizeStoredBooks — same helper fetchPrefs uses to
+          // backfill fields a pre-update client's blob may be missing, and the
+          // same place scope gets recomputed from ownerCharacterAvatar rather
+          // than trusted from storage.
+          const [book] = normalizeStoredBooks(
+            [rawBook as WorldInfoBook],
+            dto.owner_handle
+          );
+          normalizedBooks.push({
+            ...book,
+            // Server-authoritative — the field inside the raw book JSON may be
+            // stale or absent; never trust it over the DTO's top-level value.
+            ownerHandle: dto.owner_handle,
+            // Server already filtered on this, but don't trust it blindly.
+            visibility: 'shared',
+          });
+          ownerNames[dto.owner_handle] = dto.owner_name ?? null;
+        }
+        set({
+          sharedBooks: normalizedBooks,
+          sharedOwnerNameByHandle: ownerNames,
+          sharedBooksStatus: 'loaded',
+          sharedBooksError: null,
+        });
+      } catch (err) {
+        // Never let this throw out of the action — including a 404 if the
+        // backend endpoint hasn't deployed yet.
+        set({
+          sharedBooksStatus: 'error',
+          sharedBooksError:
+            err instanceof Error ? err.message : 'Failed to load shared lorebooks',
+        });
+      }
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Subscribe-based autosave (debounced) — set up after the store exists so
@@ -2302,9 +3474,15 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => ({
 let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 let _persistEnabled = false;
 
+/**
+ * Phase 3a: `books` is deliberately NOT part of this snapshot — the native
+ * /lorebooks tables are the system of record for books/entries now, synced
+ * per-mutator (see createBook/updateEntry/etc. above), not via this
+ * whole-store blob PATCH. Only the fields that still live in the
+ * stm_worldinfo blob are sent.
+ */
 function snapshotForServer(s: WorldInfoState): PersistedShape {
   return {
-    books: s.books,
     activeBookIds: s.activeBookIds,
     chatLinkedBookIds: s.chatLinkedBookIds,
     scanDepth: s.scanDepth,
@@ -2314,6 +3492,17 @@ function snapshotForServer(s: WorldInfoState): PersistedShape {
 }
 
 useWorldInfoStore.subscribe((state) => {
+  // Unconditional local-cache safety net: every mutator above already calls
+  // saveBooks() itself, but a handful of call sites elsewhere in the app
+  // (e.g. autoMemoryStore's autoExtracted flip) intentionally reach in via
+  // useWorldInfoStore.setState(...) directly, bypassing this store's own
+  // mutators entirely. Without this, such a change would survive only in
+  // memory for the current tab — this restores "survives a reload in this
+  // browser" parity with what the old whole-store blob autosave used to
+  // provide (cross-device sync for that specific case remains a known gap;
+  // see this cutover's report for why — the backend has no client-facing
+  // way to set `auto_extracted` on an existing row at all yet).
+  saveBooks(state.books);
   if (!_persistEnabled) return;
   try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
