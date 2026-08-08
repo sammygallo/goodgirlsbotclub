@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { BookOpen, Download, FileImage, FileJson, Copy, UserCircle, Globe, Lock, Loader2, Wand2, Link2, Unlink, ArrowRightLeft } from 'lucide-react';
+import { BookOpen, Download, FileImage, FileJson, Copy, UserCircle, Globe, Lock, Loader2, Wand2, Link2, Unlink, ArrowRightLeft, History } from 'lucide-react';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useCharacterOwnershipStore } from '../../stores/characterOwnershipStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -7,6 +7,7 @@ import { hasPermission } from '../../utils/permissions';
 import { spritesApi, type CharacterInfo } from '../../api/client';
 import { Modal, Button, Input, TextArea, ImageUpload, ExpressionUpload, TagInput, HelpTip } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
+import { cardToCharacterInfo, type CharacterCardV2, type CharacterExportData } from '../../utils/characterCard';
 import { AlternateGreetingsEditor } from './AlternateGreetingsEditor';
 import { CharacterLorebookSection } from './CharacterLorebookSection';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
@@ -18,6 +19,22 @@ import { useLivePortraitStore } from '../../stores/livePortraitStore';
 import { useGenerationStore } from '../../stores/generationStore';
 import { usePromptTemplateStore } from '../../stores/promptTemplateStore';
 import { estimateTokens } from '../../utils/tokenizer';
+
+/** Import provenance written by CharacterImport.tsx into
+ *  `data.extensions.ggbc.import`. Read-only here — this component only
+ *  ever repopulates the form from it, never writes it. */
+interface ImportProvenance {
+  version: number;
+  imported_at: string;
+  source_format: string;
+  original_card: CharacterCardV2 | CharacterExportData | null;
+  fixes_applied?: Array<{ finding: string; pass: string; field: string }>;
+}
+
+function getImportProvenance(character: CharacterInfo): ImportProvenance | null {
+  const ggbc = character.data?.extensions?.ggbc as { import?: ImportProvenance } | undefined;
+  return ggbc?.import ?? null;
+}
 
 interface CharacterEditProps {
   isOpen: boolean;
@@ -279,6 +296,43 @@ export function CharacterEdit({
     onConvertToPersona?.(character);
   };
 
+  const importProvenance = getImportProvenance(character);
+
+  /** Repopulate the form from the card exactly as it was parsed at import
+   *  time, before any deterministic/AI fix touched it. Non-destructive —
+   *  this only changes in-progress form state; nothing is persisted until
+   *  the user reviews and hits Save. */
+  const handleRestoreOriginalImport = () => {
+    if (!importProvenance?.original_card) return;
+    const info = cardToCharacterInfo(importProvenance.original_card);
+
+    setFormData({
+      name: info.name || '',
+      description: info.description || info.data?.description || '',
+      personality: info.personality || info.data?.personality || '',
+      firstMessage: info.first_mes || info.data?.first_mes || '',
+      scenario: info.scenario || info.data?.scenario || '',
+      exampleMessages: info.mes_example || info.data?.mes_example || '',
+      creatorNotes: info.creator_notes || info.data?.creator_notes || '',
+      creator: info.creator || info.data?.creator || '',
+      tags: info.tags || info.data?.tags || [],
+    });
+    setAlternateGreetings(info.alternate_greetings || info.data?.alternate_greetings || []);
+    setCharacterVersion(info.character_version || info.data?.character_version || '');
+    setSystemPromptOverride(info.system_prompt || info.data?.system_prompt || '');
+    setPostHistoryInstructions(
+      info.post_history_instructions || info.data?.post_history_instructions || ''
+    );
+    const depthPrompt = info.data?.extensions?.depth_prompt;
+    setDepthPromptPrompt(depthPrompt?.prompt || '');
+    setDepthPromptDepth(depthPrompt?.depth ?? 4);
+    setDepthPromptRole((depthPrompt?.role as 'system' | 'user' | 'assistant') || 'system');
+    const restoredTalkativeness = info.data?.extensions?.talkativeness;
+    setTalkativeness(typeof restoredTalkativeness === 'string' ? restoredTalkativeness : '0.5');
+
+    showToastGlobal('Restored the original imported text — review and Save to keep it.', 'info');
+  };
+
   const handleToggleVisibility = async () => {
     const next = visibility === 'global' ? 'personal' : 'global';
     setIsTogglingVisibility(true);
@@ -303,6 +357,31 @@ export function CharacterEdit({
           onImageSelect={setAvatarFile}
           label="Avatar"
         />
+
+        {/* Import provenance — only shown for characters imported after this
+            landed; a manually-created or pre-existing character has none. */}
+        {importProvenance?.original_card && (
+          <div className="p-3 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg flex items-center justify-between gap-3 text-sm">
+            <div className="flex items-center gap-2 min-w-0 text-[var(--color-text-secondary)]">
+              <History size={14} className="shrink-0" />
+              <span className="truncate">
+                Imported {new Date(importProvenance.imported_at).toLocaleDateString()}
+                {importProvenance.fixes_applied && importProvenance.fixes_applied.length > 0
+                  ? ` · ${importProvenance.fixes_applied.length} fix${importProvenance.fixes_applied.length === 1 ? '' : 'es'} applied`
+                  : ''}
+              </span>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleRestoreOriginalImport}
+              className="shrink-0"
+            >
+              Restore original import
+            </Button>
+          </div>
+        )}
 
         {/* Character Actions */}
         <div className="grid grid-cols-2 gap-2">
