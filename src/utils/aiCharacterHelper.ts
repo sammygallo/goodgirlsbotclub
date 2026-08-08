@@ -1,4 +1,4 @@
-import { api } from '../api/client';
+import { generateOnce } from './llm/generate';
 import { useSettingsStore } from '../stores/settingsStore';
 
 export type AIHelperAction = 'polish' | 'reformat' | 'suggest';
@@ -24,77 +24,34 @@ const FIELD_LABELS: Record<keyof CharacterFieldsSnapshot, string> = {
   exampleMessages: 'Example Messages',
 };
 
-async function* parseSSEStream(
-  stream: ReadableStream<Uint8Array>,
-): AsyncGenerator<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed === 'data: [DONE]') continue;
-        if (trimmed.startsWith('data: ')) {
-          const data = trimmed.slice(6);
-          if (!data || data === '[DONE]') continue;
-          try {
-            const json = JSON.parse(data);
-            const content =
-              json.choices?.[0]?.delta?.content ||
-              json.choices?.[0]?.text ||
-              json.delta?.text ||
-              (json.type === 'content_block_delta' ? json.delta?.text : null) ||
-              json.content ||
-              json.message?.content?.[0]?.text ||
-              '';
-            if (content) yield content;
-          } catch {
-            if (data.length > 0 && data !== 'undefined') yield data;
-          }
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 async function generateCompletion(
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  // Pin the raw active provider/model rather than leaving them for
+  // generateOnce to resolve. Omitting them would opt this single-field
+  // helper into the resolver's Claude-only-key auto-switch (a persisted,
+  // app-wide settings change) as a side effect of clicking "Polish" on a
+  // form field — this helper never had that behavior before the move to
+  // the shared generation utility, and this phase isn't meant to add any
+  // new AI-affecting behavior anywhere.
   const { activeProvider, activeModel } = useSettingsStore.getState();
-  const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt },
-  ];
-  const stream = await api.generateMessage(
-    messages,
-    'CharacterHelper',
-    activeProvider,
-    activeModel,
-    signal,
+  const text = await generateOnce(
+    [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    { provider: activeProvider, model: activeModel, label: 'CharacterHelper', signal }
   );
-  if (!stream) throw new Error('No response from AI');
-
-  let text = '';
-  for await (const token of parseSSEStream(stream)) text += token;
   return stripWrappingMarkers(text.trim());
 }
 
 /** Models sometimes echo the field label, surround the answer in quotes, or
  *  prepend "Here is the polished version:". Trim those defensive wrappers so
- *  the result drops cleanly into a textarea. */
-function stripWrappingMarkers(text: string): string {
+ *  the result drops cleanly into a textarea. Exported for reuse by other
+ *  plain-text card-editing passes (import fixes, wizard refinements). */
+export function stripWrappingMarkers(text: string): string {
   let out = text;
   out = out.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '');
   out = out.replace(/^(here(?:\s+is|'s)|sure|certainly|of course)[^\n]*[:.]\s*\n?/i, '');

@@ -12,7 +12,8 @@
  * and (2) results are returned as drafts rather than written directly.
  */
 
-import { api } from '../api/client';
+import { generateOnce } from './llm/generate';
+import { extractJsonObjects } from './llm/json';
 import { estimateTokens } from './tokenizer';
 
 export interface DraftLorebookEntry {
@@ -143,69 +144,6 @@ function countProcessedMessages(
   return processed;
 }
 
-// ---------------------------------------------------------------------------
-// SSE stream parsing — copied to match the convention already used by
-// summarizeStore and autoMemoryStore (both keep a local copy). Kept identical
-// so behavior matches the rest of the app's generation paths.
-// ---------------------------------------------------------------------------
-
-async function* parseSSEStream(
-  stream: ReadableStream<Uint8Array>
-): AsyncGenerator<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed === 'data: [DONE]') continue;
-        if (trimmed.startsWith('data: ')) {
-          const data = trimmed.slice(6);
-          if (!data || data === '[DONE]') continue;
-          let json;
-          try {
-            json = JSON.parse(data);
-          } catch {
-            if (data.length > 0 && data !== 'undefined') yield data;
-            continue;
-          }
-          // Surface backend/provider errors that arrive mid-stream (e.g.
-          // "temperature is deprecated for this model") instead of silently
-          // yielding nothing — otherwise the caller mistakes a failed
-          // generation for an empty result ("No lore found").
-          if (json?.error) {
-            const msg =
-              typeof json.error === 'string'
-                ? json.error
-                : json.error.message || 'Generation failed';
-            throw new Error(msg);
-          }
-          const content =
-            json.choices?.[0]?.delta?.content ||
-            json.choices?.[0]?.text ||
-            json.delta?.text ||
-            (json.type === 'content_block_delta' ? json.delta?.text : null) ||
-            json.content ||
-            json.message?.content?.[0]?.text ||
-            '';
-          if (content) yield content;
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 /** Category values from the pre-taxonomy prompt (and old saved drafts),
  *  mapped onto the canonical set. Keys are lowercase. */
 const LEGACY_CATEGORY_MAP: Record<string, string> = {
@@ -236,43 +174,6 @@ function entryFromObject(obj: Record<string, unknown>): DraftLorebookEntry | nul
   const keys = rawKeys.map((k) => k.trim()).filter(Boolean);
   if (keys.length === 0 || !content) return null;
   return { keys, content, category: normalizeCategory(obj.category) };
-}
-
-/**
- * Pull complete top-level `{...}` objects out of arbitrary text via brace
- * matching (string/escape aware). Unlike a single `JSON.parse` of the whole
- * array, this survives truncated output (finish_reason "length") — a cut-off
- * final object is simply skipped instead of discarding everything before it.
- */
-function extractJsonObjects(text: string): string[] {
-  const objs: string[] = [];
-  let depth = 0;
-  let start = -1;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === '\\') esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === '{') {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (ch === '}') {
-      if (depth > 0) {
-        depth--;
-        if (depth === 0 && start >= 0) {
-          objs.push(text.slice(start, i + 1));
-          start = -1;
-        }
-      }
-    }
-  }
-  return objs;
 }
 
 /**
@@ -377,28 +278,21 @@ export async function extractLorebookEntries(
       knownDigest = knownDigest.slice(-DIGEST_TOTAL_CHARS);
     }
 
-    const stream = await api.generateMessage(
+    const raw = await generateOnce(
       [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: buildUserPrompt(chunks[i], knownDigest) },
       ],
-      characterName,
-      provider,
-      model,
-      signal,
-      // Entry lists are long; the default 1024 truncates mid-array and the
-      // whole chunk's output is lost. Give the model room to finish.
-      { maxTokens: 8192 }
+      {
+        label: characterName,
+        provider,
+        model,
+        signal,
+        // Entry lists are long; the default 1024 truncates mid-array and the
+        // whole chunk's output is lost. Give the model room to finish.
+        maxTokens: 8192,
+      }
     );
-
-    if (!stream) {
-      throw new Error('No response from the model during extraction.');
-    }
-
-    let raw = '';
-    for await (const token of parseSSEStream(stream)) {
-      raw += token;
-    }
 
     for (const entry of parseEntriesFromResponse(raw)) {
       const norm = entry.content.trim().toLowerCase().slice(0, 80);

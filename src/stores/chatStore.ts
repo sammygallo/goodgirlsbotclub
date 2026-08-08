@@ -53,6 +53,7 @@ import {
 import { useUsageStore } from './usageStore';
 import { usePromptTemplateStore } from './promptTemplateStore';
 import { getInstructTemplate, formatInstructPrompt } from '../utils/instructTemplates';
+import { getProviderAndModel, getGenerationOptions } from '../utils/llm/resolve';
 import { useRegexScriptStore } from './regexScriptStore';
 import { applyRegexScripts, getActiveScripts } from '../utils/regexScripts';
 import { useSummarizeStore } from './summarizeStore';
@@ -2173,42 +2174,8 @@ async function generateGroupTurn(
   return get().isSending;
 }
 
-// Helper: get provider/model with auto-switch
-function getProviderAndModel(): { provider: string; model: string } {
-  const { activeProvider, activeModel, secrets, globalSecrets, globalSharingEnabled } = useSettingsStore.getState();
-
-  let provider = activeProvider;
-  let model = activeModel;
-
-  // Helper: check if a key exists in personal or global secrets
-  const hasKey = (key: string) => {
-    if (Array.isArray(secrets[key]) && secrets[key].length > 0) return true;
-    if (globalSharingEnabled && Array.isArray(globalSecrets[key]) && globalSecrets[key].length > 0) return true;
-    return false;
-  };
-
-  if (!provider || provider === 'openai') {
-    const hasOpenAI = hasKey('api_key_openai');
-    const hasClaude = hasKey('api_key_claude');
-    if (!hasOpenAI && hasClaude) {
-      provider = 'claude';
-      model = 'claude-sonnet-4-20250514';
-      useSettingsStore.setState({ activeProvider: provider, activeModel: model });
-      // Rescue the context budget. Users land on Claude (200k window) via this
-      // silent auto-switch but keep the legacy 8192-token default, which on a
-      // long thread trims away the whole conversation and yields empty/failed
-      // turns. Raise it to a sane-but-cost-conscious window — only when still
-      // at/below the old default, so a user's own larger choice is untouched.
-      // The guard self-clears after the first bump, so this runs at most once.
-      const gen = useGenerationStore.getState();
-      if (gen.context.maxTokens <= 8192) {
-        gen.setContext({ maxTokens: 32768 });
-      }
-    }
-  }
-
-  return { provider, model };
-}
+// getProviderAndModel / getGenerationOptions moved to utils/llm/resolve.ts so
+// one-off generation utilities resolve settings identically to a chat turn.
 
 function getFallbackProviderAndModel(): { provider: string; model: string } | null {
   const { fallbackProvider, fallbackModel } = useSettingsStore.getState();
@@ -2236,36 +2203,6 @@ async function generateWithFallback(
     const stream = await api.generateMessage(messages, characterName, fallback.provider, fallback.model, signal, generationOptions, images, textCompletionMode);
     return { stream, usedFallback: true };
   }
-}
-
-// Helper: build generation options from the current sampler + instruct config.
-function getGenerationOptions(): GenerationOptions {
-  const { sampler, instruct } = useGenerationStore.getState();
-  const combinedStops = [...sampler.stopStrings];
-
-  if (instruct.enabled) {
-    const tpl = getInstructTemplate(instruct.templateId);
-    if (tpl) {
-      for (const s of tpl.stopStrings) {
-        if (!combinedStops.includes(s)) combinedStops.push(s);
-      }
-    }
-    for (const s of instruct.extraStopStrings) {
-      if (s && !combinedStops.includes(s)) combinedStops.push(s);
-    }
-  }
-
-  return {
-    temperature: sampler.temperature,
-    maxTokens: sampler.maxTokens,
-    topP: sampler.topP,
-    topK: sampler.topK,
-    minP: sampler.minP,
-    frequencyPenalty: sampler.frequencyPenalty,
-    presencePenalty: sampler.presencePenalty,
-    repetitionPenalty: sampler.repetitionPenalty,
-    stopStrings: combinedStops,
-  };
 }
 
 // Helper: optionally convert message array into a single instruct-mode message
