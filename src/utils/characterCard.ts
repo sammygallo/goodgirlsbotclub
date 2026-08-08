@@ -69,6 +69,9 @@ export interface CharacterCardV2 {
     post_history_instructions?: string;
     alternate_greetings?: string[];
     character_book?: CharacterBookV2;
+    /** V3-only. Preserved through import/export once present; export only
+     *  ever sets it to [] when the card never had one. */
+    group_only_greetings?: string[];
     extensions?: {
       depth_prompt?: {
         prompt?: string;
@@ -107,14 +110,49 @@ export interface CharacterExportData {
 }
 
 /**
+ * Book-level fields that don't survive the native-lorebook round trip: the
+ * backend's Lorebook table has fixed columns, not a free-form slot for
+ * `description`/`scan_depth`/`token_budget`/`recursive_scanning`/book-level
+ * `extensions`. When these are known (stashed in import provenance — see
+ * Phase 1), pass them here so an export doesn't silently drop metadata the
+ * original card had.
+ */
+export interface CharacterBookMeta {
+  description?: string;
+  scan_depth?: number;
+  token_budget?: number;
+  recursive_scanning?: boolean;
+  extensions?: Record<string, unknown>;
+}
+
+function mergeBookMeta(
+  book: CharacterBookV2 | undefined,
+  meta: CharacterBookMeta | undefined
+): CharacterBookV2 | undefined {
+  if (!book || !meta) return book;
+  return {
+    ...book,
+    description: book.description ?? meta.description,
+    scan_depth: book.scan_depth ?? meta.scan_depth,
+    token_budget: book.token_budget ?? meta.token_budget,
+    recursive_scanning: book.recursive_scanning ?? meta.recursive_scanning,
+    extensions: { ...(meta.extensions || {}), ...(book.extensions || {}) },
+  };
+}
+
+/**
  * Convert CharacterInfo to Character Card V2 format.
  *
  * If the caller supplies `characterBook`, it is embedded at
- * `data.character_book` so the V2 card is self-contained.
+ * `data.character_book` so the V2 card is self-contained. Any card-data key
+ * we don't explicitly normalize (V3-only fields, third-party extension
+ * namespaces) is carried through untouched via `extraCardData`, so a saved
+ * character exports with everything it was imported with.
  */
 export function characterToCardV2(
   character: CharacterInfo,
-  characterBook?: CharacterBookV2
+  characterBook?: CharacterBookV2,
+  bookMeta?: CharacterBookMeta
 ): CharacterCardV2 {
   const extensions: CharacterCardV2['data']['extensions'] = {
     ...(character.data?.extensions || {}),
@@ -132,10 +170,13 @@ export function characterToCardV2(
     extensions.talkativeness = talkativeness;
   }
 
+  const mergedBook = mergeBookMeta(characterBook, bookMeta);
+
   return {
     spec: 'chara_card_v2',
     spec_version: '2.0',
     data: {
+      ...extraCardData((character.data || {}) as Record<string, unknown>),
       name: character.name || '',
       description: character.description || character.data?.description || '',
       personality: character.personality || character.data?.personality || '',
@@ -150,9 +191,39 @@ export function characterToCardV2(
       post_history_instructions:
         character.post_history_instructions || character.data?.post_history_instructions || '',
       alternate_greetings: character.alternate_greetings || character.data?.alternate_greetings || [],
-      ...(characterBook ? { character_book: characterBook } : {}),
+      ...(mergedBook ? { character_book: mergedBook } : {}),
       extensions,
-    },
+    } as CharacterCardV2['data'],
+  };
+}
+
+/**
+ * Convert CharacterInfo to a Character Card V3 object.
+ *
+ * V3 shares the same core fields as V2 (built via `characterToCardV2`) plus
+ * V3-only markers. This exists so the PNG `ccv3` chunk carries a genuinely
+ * versioned card instead of a V2 payload mislabeled as V3 — the previous
+ * behavior wrote the same v2 JSON into both chunks, which a strict V3
+ * reader sees as self-contradicting (`spec: 'chara_card_v3'` claimed by the
+ * keyword, `spec_version: '2.0'` claimed by the payload).
+ */
+export function characterToCardV3(
+  character: CharacterInfo,
+  characterBook?: CharacterBookV2,
+  bookMeta?: CharacterBookMeta
+): CharacterCardV2 {
+  const v2 = characterToCardV2(character, characterBook, bookMeta);
+  const existingGroupGreetings = (v2.data as Record<string, unknown>).group_only_greetings;
+  return {
+    ...v2,
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: {
+      ...v2.data,
+      group_only_greetings: Array.isArray(existingGroupGreetings)
+        ? (existingGroupGreetings as string[])
+        : [],
+    } as CharacterCardV2['data'],
   };
 }
 
@@ -255,14 +326,77 @@ function isCharacterCardV2(card: CharacterCardV2 | CharacterExportData): card is
 }
 
 /**
+ * Talkativeness as the string our card shape stores. SillyTavern writes it
+ * as a NUMBER (0.5); accepting only strings silently dropped it from every
+ * real ST card.
+ */
+function coerceTalkativeness(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+/**
+ * Flatten a legacy V1 card object into CharacterExportData. Shared by the
+ * PNG and JSON import paths — they previously diverged, with the PNG branch
+ * dropping character_version, system_prompt, post_history_instructions,
+ * alternate_greetings, depth_prompt, and talkativeness.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function v1ToExportData(data: Record<string, any>): CharacterExportData {
+  return {
+    name: data.name || data.char_name || '',
+    description: data.description || '',
+    personality: data.personality || '',
+    first_mes: data.first_mes || '',
+    scenario: data.scenario || '',
+    mes_example: data.mes_example || '',
+    creator_notes: data.creator_notes || '',
+    creator: data.creator || '',
+    tags: Array.isArray(data.tags) ? data.tags : [],
+    character_version: data.character_version,
+    system_prompt: data.system_prompt,
+    post_history_instructions: data.post_history_instructions,
+    alternate_greetings: Array.isArray(data.alternate_greetings)
+      ? data.alternate_greetings
+      : undefined,
+    depth_prompt: data.depth_prompt,
+    talkativeness: coerceTalkativeness(data.talkativeness),
+  } as CharacterExportData;
+}
+
+/** Card-data keys we normalize explicitly (or must not persist verbatim);
+ *  everything else passes through untouched so V3-only and third-party
+ *  fields (nickname, source, chub metadata, …) survive a round trip. */
+const HANDLED_CARD_KEYS = new Set([
+  'name', 'description', 'personality', 'first_mes', 'scenario', 'mes_example',
+  'creator_notes', 'creator', 'tags', 'character_version', 'system_prompt',
+  'post_history_instructions', 'alternate_greetings', 'extensions',
+  // Never persisted into Character.data: books live as native lorebook rows
+  // (see worldInfoStore), and V3 embedded assets would bloat the row.
+  'character_book', 'assets',
+]);
+
+/** The pass-through slice of a card's data: unknown/V3 keys only. */
+function extraCardData(data: Record<string, unknown>): Record<string, unknown> {
+  const extra: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (!HANDLED_CARD_KEYS.has(key)) extra[key] = value;
+  }
+  return extra;
+}
+
+/**
  * Convert Character Card V2 or import data to CharacterInfo format
  */
 export function cardToCharacterInfo(
   card: CharacterCardV2 | CharacterExportData
 ): Partial<CharacterInfo> {
   if (isCharacterCardV2(card)) {
-    // V2 card format
+    // V2/V3 card format. Known fields are normalized explicitly; every other
+    // data key passes through so nothing a creator shipped gets dropped.
     const depthPrompt = card.data.extensions?.depth_prompt;
+    const talkativeness = coerceTalkativeness(card.data.extensions?.talkativeness);
     return {
       name: card.data.name,
       description: card.data.description,
@@ -278,6 +412,7 @@ export function cardToCharacterInfo(
       post_history_instructions: card.data.post_history_instructions,
       alternate_greetings: card.data.alternate_greetings,
       data: {
+        ...extraCardData(card.data as unknown as Record<string, unknown>),
         name: card.data.name,
         description: card.data.description,
         personality: card.data.personality,
@@ -294,12 +429,14 @@ export function cardToCharacterInfo(
         extensions: {
           ...(card.data.extensions || {}),
           ...(depthPrompt ? { depth_prompt: depthPrompt } : {}),
+          ...(talkativeness !== undefined ? { talkativeness } : {}),
         },
       },
     };
   }
 
   // Simple export format (CharacterExportData)
+  const talkativeness = coerceTalkativeness(card.talkativeness);
   return {
     name: card.name,
     description: card.description,
@@ -328,7 +465,10 @@ export function cardToCharacterInfo(
       system_prompt: card.system_prompt,
       post_history_instructions: card.post_history_instructions,
       alternate_greetings: card.alternate_greetings,
-      extensions: card.depth_prompt ? { depth_prompt: card.depth_prompt } : {},
+      extensions: {
+        ...(card.depth_prompt ? { depth_prompt: card.depth_prompt } : {}),
+        ...(talkativeness !== undefined ? { talkativeness } : {}),
+      },
     },
   };
 }
@@ -382,9 +522,56 @@ function textChunkNullIndex(chunkData: Uint8Array): number {
   return i;
 }
 
+/** tEXt/zTXt/iTXt keywords that carry a character card. Both are rewritten
+ *  on embed; on read, `ccv3` wins when both are present. */
+const CARD_KEYWORDS = ['ccv3', 'chara'];
+
+/** Inflate a zlib-format (RFC 1950) compressed byte buffer via the
+ *  browser's native DecompressionStream. Returns null on any failure
+ *  (unsupported environment, malformed data) — callers treat that as
+ *  "skip this chunk" rather than failing the whole parse. */
+async function inflateZlib(bytes: Uint8Array): Promise<Uint8Array | null> {
+  if (typeof DecompressionStream === 'undefined') return null;
+  try {
+    const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/** Decode a card chunk's raw payload bytes (the base64 ASCII text every
+ *  card-carrying chunk type stores) into the parsed card object. */
+function decodeCardPayload(base64String: string): CharacterCardV2 | CharacterExportData {
+  // atob() returns a binary string; decode as UTF-8 so non-ASCII
+  // characters (em-dashes, smart quotes, emoji) survive import.
+  const binary = atob(base64String);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const jsonString = new TextDecoder('utf-8').decode(bytes);
+  const charData = JSON.parse(jsonString);
+
+  if (charData.spec === 'chara_card_v2' || charData.spec === 'chara_card_v3') {
+    return charData as CharacterCardV2;
+  }
+  // Legacy V1 format — convert to our simple format via the shared mapper
+  // so PNG and JSON imports carry the same fields.
+  return v1ToExportData(charData);
+}
+
 /**
- * Extract character data from a PNG file's tEXt chunk
- * Character Card format stores base64-encoded JSON in a tEXt chunk with keyword "chara"
+ * Extract character data from a PNG file's embedded card chunk.
+ *
+ * Character Card data lives in a `ccv3` (V3) and/or `chara` (V2) chunk as
+ * base64-encoded JSON. `chara` is read by every legacy tool; `ccv3` is what
+ * V3-native exporters (RisuAI and similar) prefer, and some emit ONLY that
+ * keyword — a PNG carrying `ccv3` alone previously returned "no character
+ * data found" because only `chara` was read. Collected across tEXt/zTXt/
+ * iTXt (each decoded independently and try/caught, so one malformed
+ * optional chunk can never hide a good chunk elsewhere in the file); `ccv3`
+ * wins when both are present, mirroring the backend's precedence
+ * (app/util/png_card.py `extract_card`) so the two parsers agree on which
+ * card a dual-chunk PNG actually is.
  */
 export async function extractCharacterFromPNG(
   file: File
@@ -400,53 +587,62 @@ export async function extractCharacterFromPNG(
     }
   }
 
-  // Parse PNG chunks
+  const payloads: Record<string, string> = {};
+
   let offset = 8;
-  while (offset < data.length) {
+  while (offset + 8 <= data.length) {
     const length = readUint32BE(data, offset);
-    const typeBytes = data.slice(offset + 4, offset + 8);
-    const type = String.fromCharCode(...typeBytes);
+    const type = String.fromCharCode(...data.slice(offset + 4, offset + 8));
+    const chunkData = data.slice(offset + 8, offset + 8 + length);
 
     if (type === 'tEXt') {
-      // tEXt chunk: keyword\0text
-      const chunkData = data.slice(offset + 8, offset + 8 + length);
-      const nullIndex = textChunkNullIndex(chunkData);
-      const keyword = String.fromCharCode(...chunkData.slice(0, nullIndex));
-
-      if (keyword === 'chara') {
-        // Found character data - decode from base64
-        const textData = chunkData.slice(nullIndex + 1);
-        const base64String = String.fromCharCode(...textData);
-
-        try {
-          // atob() returns a binary string; decode as UTF-8 so non-ASCII
-          // characters (em-dashes, smart quotes, emoji) survive import.
-          const binary = atob(base64String);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const jsonString = new TextDecoder('utf-8').decode(bytes);
-          const charData = JSON.parse(jsonString);
-
-          // Check if it's V2/V3 format
-          if (charData.spec === 'chara_card_v2' || charData.spec === 'chara_card_v3') {
-            return charData as CharacterCardV2;
-          }
-
-          // Legacy V1 format - convert to our simple format
-          return {
-            name: charData.name || charData.char_name || '',
-            description: charData.description || '',
-            personality: charData.personality || '',
-            first_mes: charData.first_mes || '',
-            scenario: charData.scenario || '',
-            mes_example: charData.mes_example || '',
-            creator_notes: charData.creator_notes || '',
-            creator: charData.creator || '',
-            tags: charData.tags || [],
-          } as CharacterExportData;
-        } catch {
-          throw new Error('Failed to parse character data from PNG');
+      try {
+        // tEXt chunk: keyword\0text (text stored as-is, Latin-1)
+        const nullIndex = textChunkNullIndex(chunkData);
+        const keyword = String.fromCharCode(...chunkData.slice(0, nullIndex));
+        if (CARD_KEYWORDS.includes(keyword) && !(keyword in payloads)) {
+          const textBytes = chunkData.slice(nullIndex + 1);
+          payloads[keyword] = String.fromCharCode(...textBytes);
         }
+      } catch {
+        // malformed tEXt chunk — skip, don't kill the whole parse
+      }
+    } else if (type === 'zTXt') {
+      try {
+        // zTXt chunk: keyword\0 + compression method (1 byte, always 0/zlib) + zlib data
+        const nullIndex = textChunkNullIndex(chunkData);
+        const keyword = String.fromCharCode(...chunkData.slice(0, nullIndex));
+        if (CARD_KEYWORDS.includes(keyword) && !(keyword in payloads)) {
+          const inflated = await inflateZlib(chunkData.slice(nullIndex + 2));
+          if (inflated) payloads[keyword] = new TextDecoder('utf-8').decode(inflated);
+        }
+      } catch {
+        // malformed/unsupported zTXt chunk — skip
+      }
+    } else if (type === 'iTXt') {
+      try {
+        // iTXt chunk: keyword\0 + compression flag (1) + compression method (1)
+        // + language tag\0 + translated keyword\0 + text (UTF-8, optionally zlib)
+        let i = textChunkNullIndex(chunkData);
+        const keyword = String.fromCharCode(...chunkData.slice(0, i));
+        i += 1;
+        const compressionFlag = chunkData[i];
+        i += 2; // skip compression flag + compression method bytes
+        let langEnd = i;
+        while (langEnd < chunkData.length && chunkData[langEnd] !== 0) langEnd++;
+        let kwEnd = langEnd + 1;
+        while (kwEnd < chunkData.length && chunkData[kwEnd] !== 0) kwEnd++;
+        const textBytes = chunkData.slice(kwEnd + 1);
+        if (CARD_KEYWORDS.includes(keyword) && !(keyword in payloads)) {
+          if (compressionFlag === 1) {
+            const inflated = await inflateZlib(textBytes);
+            if (inflated) payloads[keyword] = new TextDecoder('utf-8').decode(inflated);
+          } else {
+            payloads[keyword] = new TextDecoder('utf-8').decode(textBytes);
+          }
+        }
+      } catch {
+        // malformed/unsupported iTXt chunk — skip
       }
     }
 
@@ -454,7 +650,14 @@ export async function extractCharacterFromPNG(
     offset += 12 + length;
   }
 
-  return null;
+  const base64String = payloads.ccv3 ?? payloads.chara;
+  if (!base64String) return null;
+
+  try {
+    return decodeCardPayload(base64String);
+  } catch {
+    throw new Error('Failed to parse character data from PNG');
+  }
 }
 
 /**
@@ -487,24 +690,40 @@ function createTextChunk(keyword: string, text: string): Uint8Array {
   return chunk;
 }
 
-/** tEXt keywords that carry a character card. Both are rewritten on embed. */
-const CARD_KEYWORDS = ['ccv3', 'chara'];
+/** Base64-encode a card object the way an embedded chunk stores it: JSON →
+ *  UTF-8 bytes → base64. Raw btoa() throws on any character above U+00FF
+ *  (em-dashes, smart quotes, emoji, CJK) — exactly what real character
+ *  cards contain — so the UTF-8 bytes are re-mapped through
+ *  String.fromCharCode first, mirroring the decode path in reverse. */
+function encodeCardBase64(card: CharacterCardV2): string {
+  const jsonString = JSON.stringify(card);
+  const utf8Bytes = new TextEncoder().encode(jsonString);
+  let binary = '';
+  for (let i = 0; i < utf8Bytes.length; i++) {
+    binary += String.fromCharCode(utf8Bytes[i]);
+  }
+  return btoa(binary);
+}
 
 /**
  * Embed character data into a PNG file.
  *
- * Returns a new PNG blob carrying the card as base64 JSON in both a `ccv3`
- * and a `chara` tEXt chunk — v3 readers find the former, v2 readers the
- * latter. Any card chunks already in the image are stripped first, so the
- * result holds exactly one card even when the input was itself an export.
- * This mirrors ggbc-backend's `embed_card` (app/util/png_card.py); the two
- * must stay in step or the same character exports differently depending on
+ * Returns a new PNG blob carrying a genuine V3 card in its `ccv3` tEXt
+ * chunk and a genuine V2 card in `chara` — v3 readers and v2/legacy readers
+ * each see a correctly self-described payload, rather than both chunks
+ * holding the same v2 JSON with `ccv3` mislabeling it as V3. Any card
+ * chunks already in the image (tEXt, zTXt, or iTXt — matching everything
+ * `extractCharacterFromPNG` can read) are stripped first, so the result
+ * holds exactly one card even when the input was itself an export. This
+ * mirrors ggbc-backend's `embed_card` (app/util/png_card.py); the two must
+ * stay in step or the same character exports differently depending on
  * which path produced the file.
  */
 export async function embedCharacterInPNG(
   imageBlob: Blob,
   character: CharacterInfo,
-  characterBook?: CharacterBookV2
+  characterBook?: CharacterBookV2,
+  bookMeta?: CharacterBookMeta
 ): Promise<Blob> {
   const buffer = await imageBlob.arrayBuffer();
   const data = new Uint8Array(buffer);
@@ -517,22 +736,13 @@ export async function embedCharacterInPNG(
     }
   }
 
-  // Convert character to V2 card and encode as base64. Mirror the decode
-  // path: encode the JSON to UTF-8 bytes first, then base64. Raw btoa()
-  // throws on any character above U+00FF (em-dashes, smart quotes, emoji,
-  // CJK), which is exactly what real character cards contain.
-  const cardData = characterToCardV2(character, characterBook);
-  const jsonString = JSON.stringify(cardData);
-  const utf8Bytes = new TextEncoder().encode(jsonString);
-  let binary = '';
-  for (let i = 0; i < utf8Bytes.length; i++) {
-    binary += String.fromCharCode(utf8Bytes[i]);
-  }
-  const base64Data = btoa(binary);
+  const cardChunks = [
+    createTextChunk('ccv3', encodeCardBase64(characterToCardV3(character, characterBook, bookMeta))),
+    createTextChunk('chara', encodeCardBase64(characterToCardV2(character, characterBook, bookMeta))),
+  ];
 
-  const cardChunks = CARD_KEYWORDS.map((kw) => createTextChunk(kw, base64Data));
-
-  // Copy the chunk stream through, dropping stale card chunks and inserting
+  // Copy the chunk stream through, dropping stale card chunks (any
+  // tEXt/zTXt/iTXt chunk carrying a CARD_KEYWORDS keyword) and inserting
   // the new ones just before IEND.
   const parts: Uint8Array[] = [data.slice(0, 8)];
   let inserted = false;
@@ -543,13 +753,17 @@ export async function embedCharacterInPNG(
     const type = String.fromCharCode(...data.slice(offset + 4, offset + 8));
     const end = offset + 12 + length;
 
-    if (type === 'tEXt') {
-      const chunkData = data.slice(offset + 8, offset + 8 + length);
-      const nullIndex = textChunkNullIndex(chunkData);
-      const keyword = String.fromCharCode(...chunkData.slice(0, nullIndex));
-      if (CARD_KEYWORDS.includes(keyword)) {
-        offset = end;
-        continue;
+    if (type === 'tEXt' || type === 'zTXt' || type === 'iTXt') {
+      try {
+        const chunkData = data.slice(offset + 8, offset + 8 + length);
+        const nullIndex = textChunkNullIndex(chunkData);
+        const keyword = String.fromCharCode(...chunkData.slice(0, nullIndex));
+        if (CARD_KEYWORDS.includes(keyword)) {
+          offset = end;
+          continue;
+        }
+      } catch {
+        // malformed chunk we can't identify — leave it in place untouched
       }
     }
 
@@ -579,12 +793,18 @@ export async function embedCharacterInPNG(
 
 /**
  * Export character as JSON file (as Character Card V2 so advanced fields survive)
+ *
+ * V2 stays the JSON default: it's the widest-compatibility interchange
+ * format, and unlike the PNG export (which can carry both a `ccv3` and a
+ * `chara` chunk in one file) a JSON export has no equivalent way to offer
+ * both versions at once.
  */
 export function exportCharacterAsJSON(
   character: CharacterInfo,
-  characterBook?: CharacterBookV2
+  characterBook?: CharacterBookV2,
+  bookMeta?: CharacterBookMeta
 ): Blob {
-  const cardV2 = characterToCardV2(character, characterBook);
+  const cardV2 = characterToCardV2(character, characterBook, bookMeta);
   const jsonString = JSON.stringify(cardV2, null, 2);
   return new Blob([jsonString], { type: 'application/json' });
 }
@@ -624,51 +844,40 @@ export async function parseCharacterFromJSON(
 ): Promise<CharacterExportData | CharacterCardV2> {
   const text = await file.text();
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let data: any;
   try {
-    const data = JSON.parse(text);
-
-    // Check if it's V2/V3 format
-    if (data.spec === 'chara_card_v2' || data.spec === 'chara_card_v3') {
-      return data as CharacterCardV2;
-    }
-
-    // Detect lorebook / world-info exports: they have `entries` but no
-    // character card fields.  Throw a typed error so the UI can offer to
-    // import it as a lorebook instead of silently creating an empty character.
-    if (
-      data.entries &&
-      typeof data.entries === 'object' &&
-      !data.name &&
-      !data.first_mes &&
-      !data.char_name
-    ) {
-      const count = Object.keys(data.entries).length;
-      throw new LorebookDetectedError(count);
-    }
-
-    // Return as simple export format
-    return {
-      name: data.name || data.char_name || '',
-      description: data.description || '',
-      personality: data.personality || '',
-      first_mes: data.first_mes || '',
-      scenario: data.scenario || '',
-      mes_example: data.mes_example || '',
-      creator_notes: data.creator_notes || '',
-      creator: data.creator || '',
-      tags: Array.isArray(data.tags) ? data.tags : [],
-      character_version: data.character_version,
-      system_prompt: data.system_prompt,
-      post_history_instructions: data.post_history_instructions,
-      alternate_greetings: Array.isArray(data.alternate_greetings)
-        ? data.alternate_greetings
-        : undefined,
-      depth_prompt: data.depth_prompt,
-      talkativeness: data.talkativeness,
-    } as CharacterExportData;
+    data = JSON.parse(text);
   } catch {
     throw new Error('Invalid JSON file');
   }
+
+  // Check if it's V2/V3 format
+  if (data.spec === 'chara_card_v2' || data.spec === 'chara_card_v3') {
+    return data as CharacterCardV2;
+  }
+
+  // Detect lorebook / world-info exports: they have `entries` but no
+  // character card fields. This throw is now OUTSIDE the JSON.parse
+  // try/catch above — previously it was caught by a wrapping try and
+  // rethrown as a generic "Invalid JSON file", so the UI's "import this as
+  // a lorebook instead" offer never actually fired.
+  if (
+    data.entries &&
+    typeof data.entries === 'object' &&
+    !data.name &&
+    !data.first_mes &&
+    !data.char_name
+  ) {
+    const count = Object.keys(data.entries).length;
+    throw new LorebookDetectedError(count);
+  }
+
+  // Legacy V1 / bare-object format, via the shared mapper so this stays in
+  // parity with the PNG import path (character_version, system_prompt,
+  // post_history_instructions, alternate_greetings, depth_prompt, and a
+  // properly coerced talkativeness).
+  return v1ToExportData(data);
 }
 
 /**

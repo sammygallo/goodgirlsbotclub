@@ -9,7 +9,9 @@ import {
   exportCharacterAsJSON,
   embedCharacterInPNG,
   downloadFile,
+  LorebookDetectedError,
   type CharacterBookV2,
+  type CharacterBookMeta,
   type CharacterCardV2,
   type CharacterExportData,
 } from '../utils/characterCard';
@@ -113,6 +115,12 @@ interface CharacterState {
   isExporting: boolean;
   isDuplicating: boolean;
   error: string | null;
+  /** Set instead of `error` when the only reason importCharacter found no
+   *  character is that a dropped JSON file is a lorebook/world-info export
+   *  in disguise (has `entries`, no character fields). The UI reads this
+   *  off the store rather than re-parsing the file itself, so it always
+   *  agrees with the parser's own detection. */
+  lorebookDetected: { text: string; name: string; entryCount: number } | null;
   // Organization state
   favorites: Set<string>;
   searchQuery: string;
@@ -133,6 +141,7 @@ interface CharacterState {
   duplicateCharacter: (avatar: string) => Promise<string | null>;
   clearSelection: () => void;
   clearError: () => void;
+  clearLorebookDetected: () => void;
   // Group chat actions
   toggleGroupChatCharacter: (avatar: string) => Promise<void>;
   startGroupChat: () => void;
@@ -149,8 +158,20 @@ interface CharacterState {
     data: Partial<CharacterInfo>;
     avatarFile?: File;
     characterBook?: CharacterBookV2;
+    /** Book-level fields (description/scan_depth/token_budget/
+     *  recursive_scanning/extensions) that don't survive the native-lorebook
+     *  round trip — stashed here so a future provenance write (Phase 1) can
+     *  re-merge them at export instead of silently dropping them. */
+    bookMeta?: CharacterBookMeta;
+    /** The parsed card exactly as read, before whitespace/tag normalization —
+     *  for a future "view/restore original import" affordance (Phase 1). */
+    rawCard: CharacterCardV2 | CharacterExportData;
     warnings: string[];
     changes: string[];
+    /** Names of extra PNG/character-JSON/lorebook-JSON files dropped
+     *  alongside the ones actually used (only the first of each kind is
+     *  imported today). */
+    ignoredFiles: string[];
   } | null>;
   exportCharacterAsPNG: (character: CharacterInfo) => Promise<void>;
   exportCharacterAsJSON: (character: CharacterInfo) => void;
@@ -213,6 +234,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   isExporting: false,
   isDuplicating: false,
   error: null,
+  lorebookDetected: null,
   favorites: loadFavorites(),
   searchQuery: '',
   selectedTags: new Set<string>(),
@@ -272,6 +294,8 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   },
 
   clearSelection: () => set({ selectedCharacter: null }),
+
+  clearLorebookDetected: () => set({ lorebookDetected: null }),
 
   createCharacter: async (data: CharacterCreateData, avatarFile?: File) => {
     set({ isCreating: true, error: null });
@@ -634,11 +658,12 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   // Import/Export actions
   importCharacter: async (files: File | File[], options?: NormalizeOptions) => {
     const fileList = Array.isArray(files) ? files : [files];
-    set({ isImporting: true, error: null });
+    set({ isImporting: true, error: null, lorebookDetected: null });
     try {
       let characterData: CharacterCardV2 | CharacterExportData | null = null;
       let avatarFile: File | undefined;
       let characterBook: CharacterBookV2 | undefined;
+      const ignoredFiles: string[] = [];
 
       const isPNG = (f: File) =>
         f.type === 'image/png' || f.name.toLowerCase().endsWith('.png');
@@ -652,9 +677,20 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         throw new Error('Unsupported file format. Please use PNG or JSON files.');
       }
 
+      if (pngFiles.length > 1) {
+        ignoredFiles.push(...pngFiles.slice(1).map((f) => f.name));
+      }
+
       // Classify JSON files as either lorebook or character card
       const standaloneBooks: CharacterBookV2[] = [];
       const characterJsons: Array<CharacterCardV2 | CharacterExportData> = [];
+      // First lorebook-shaped JSON that failed character parsing (a `spec`-
+      // tagged file with `entries` but no character fields — the one case
+      // parseLorebookFromJSON's own detection doesn't already catch). Kept
+      // as authoritative parser output, not a UI-side re-guess, so a caller
+      // that finds no character can offer "import as lorebook" using the
+      // real detection rather than reimplementing the heuristic.
+      let detectedLorebook: { text: string; name: string; entryCount: number } | null = null;
 
       for (const json of jsonFiles) {
         const book = await parseLorebookFromJSON(json);
@@ -663,10 +699,35 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         } else {
           try {
             characterJsons.push(await parseCharacterFromJSON(json));
-          } catch {
-            // skip unparseable JSON
+          } catch (err) {
+            if (err instanceof LorebookDetectedError) {
+              detectedLorebook ??= {
+                text: await json.text(),
+                name: json.name.replace(/\.json$/i, ''),
+                entryCount: err.entryCount,
+              };
+            }
+            // otherwise: unparseable JSON — skip
           }
         }
+      }
+
+      if (standaloneBooks.length > 1) {
+        ignoredFiles.push('extra lorebook JSON file(s)');
+      }
+      // A PNG always wins over every character JSON (below), not just the
+      // extras beyond the first — report all of them as ignored in that
+      // case, rather than only flagging duplicates within the JSON set
+      // (which would silently miss the common "dropped one PNG + one JSON
+      // for the same character" combination).
+      if (pngFiles.length > 0 && characterJsons.length > 0) {
+        ignoredFiles.push(
+          characterJsons.length === 1
+            ? 'character JSON file (a PNG card takes priority)'
+            : `${characterJsons.length} character JSON files (a PNG card takes priority)`
+        );
+      } else if (characterJsons.length > 1) {
+        ignoredFiles.push('extra character JSON file(s)');
       }
 
       // Resolve character source: PNG takes priority over JSON
@@ -680,8 +741,14 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       }
 
       if (!characterData) {
+        if (detectedLorebook) {
+          set({ isImporting: false, lorebookDetected: detectedLorebook });
+          return null;
+        }
         throw new Error('No character data found. Please provide a PNG or character JSON file.');
       }
+
+      const rawCard = characterData;
 
       // Normalize: clean whitespace, dedup tags, optionally standardize formatting.
       const { card: normalized, warnings, changes } = normalizeCard(
@@ -696,9 +763,22 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         characterBook = extractCharacterBook(normalized) || undefined;
       }
 
+      // Book-level fields the native-lorebook round trip can't carry (the
+      // backend's Lorebook table has fixed columns) — stashed for a future
+      // provenance write so a re-export doesn't silently drop them.
+      const bookMeta: CharacterBookMeta | undefined = characterBook
+        ? {
+            description: characterBook.description,
+            scan_depth: characterBook.scan_depth,
+            token_budget: characterBook.token_budget,
+            recursive_scanning: characterBook.recursive_scanning,
+            extensions: characterBook.extensions,
+          }
+        : undefined;
+
       const info = cardToCharacterInfo(normalized);
       set({ isImporting: false });
-      return { data: info, avatarFile, characterBook, warnings, changes };
+      return { data: info, avatarFile, characterBook, bookMeta, rawCard, warnings, changes, ignoredFiles };
     } catch (error) {
       set({
         isImporting: false,

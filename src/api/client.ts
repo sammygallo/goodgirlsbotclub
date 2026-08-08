@@ -268,13 +268,25 @@ function sanitizeAvatarName(name: string): string {
   return cleaned || 'Unnamed';
 }
 
-/** Build the v2 spec `data` object from the legacy CharacterCreateData shape. */
+/**
+ * Build the v2 spec `data` object from the legacy CharacterCreateData shape.
+ *
+ * `data_overrides` and `extensions` carry whatever the caller has that this
+ * function doesn't already model as an explicit field — V3-only card keys
+ * (`nickname`, `source`, …) and third-party extension namespaces (`chub`,
+ * `risuai`, …). Both are spread in FIRST so the explicit fields that follow
+ * always win over a passed-through value. Previously `data`/`extensions`
+ * were built from scratch every call, so anything not in this function's
+ * own field list — including on a plain edit-and-save with no import
+ * involved — was silently discarded on every save.
+ */
 function buildCardData(input: CharacterCreateData & { avatar_url?: string }): {
   data: Record<string, unknown>;
   tags: string[];
 } {
   const tags = splitTags(input.tags);
   const data: Record<string, unknown> = {
+    ...(input.data_overrides || {}),
     name: input.ch_name,
     description: input.description ?? '',
     personality: input.personality ?? '',
@@ -292,7 +304,16 @@ function buildCardData(input: CharacterCreateData & { avatar_url?: string }): {
   }
   if (input.character_version !== undefined) data.character_version = input.character_version;
 
-  const extensions: Record<string, unknown> = {};
+  // depth_prompt/talkativeness are still authoritatively driven by this
+  // call's own scalar fields (both callers derive them fresh from live form
+  // state on every save, including deliberately clearing them) — so those
+  // two keys are deleted from the spread before being recomputed, rather
+  // than merged, so a cleared field can't be resurrected by a stale value
+  // in `input.extensions`. Every other key in `input.extensions` (anything
+  // this function doesn't model) passes through untouched.
+  const extensions: Record<string, unknown> = { ...(input.extensions || {}) };
+  delete extensions.depth_prompt;
+  delete extensions.talkativeness;
   if (
     input.depth_prompt_prompt !== undefined ||
     input.depth_prompt_depth !== undefined ||
@@ -548,6 +569,14 @@ export interface CharacterCreateData {
   depth_prompt_role?: string;
   talkativeness?: string;
   fav?: boolean;
+  /** Card-data keys not modeled above (V3-only fields, third-party
+   *  extension namespace payloads that live outside `extensions`) — spread
+   *  into `data` verbatim so an import/edit round trip doesn't drop them. */
+  data_overrides?: Record<string, unknown>;
+  /** The full `data.extensions` object to preserve (third-party namespaces,
+   *  ggbc provenance). depth_prompt/talkativeness within it are still
+   *  overridden by this call's own scalar fields above. */
+  extensions?: Record<string, unknown>;
 }
 
 export interface CharacterEditData extends CharacterCreateData {
