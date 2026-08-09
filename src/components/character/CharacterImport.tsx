@@ -295,13 +295,16 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
         [findingId]: { error: err instanceof Error ? err.message : 'Generation failed.' },
       }));
     } finally {
-      setGeneratingFindingId((current) => (current === findingId ? null : current));
-      // Only remove OUR OWN controller — a newer generation for this same
-      // finding (started after this one but not yet resolved) would have
-      // already replaced it in the map, and this stale `finally` must not
-      // delete that newer one's entry out from under it.
+      // Only touch shared state if OUR OWN controller is still the current
+      // one for this finding — a newer generation for the same finding
+      // (started after this one but not yet resolved) would have already
+      // replaced it in the map. Without this guard, an aborted/superseded
+      // request's finally would still unconditionally null
+      // generatingFindingId once it settles, making the spinner disappear
+      // while the newer request is still actually running.
       if (abortControllersRef.current.get(findingId) === controller) {
         abortControllersRef.current.delete(findingId);
+        setGeneratingFindingId((current) => (current === findingId ? null : current));
       }
     }
   };
@@ -344,6 +347,17 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
 
     for (const diff of Object.values(deterministicDiffs)) applyDiff(diff);
 
+    // Two independently-generated ACCEPTED AI fixes can target the same
+    // field — e.g. a W++ rewrite and a lore-extraction both touching
+    // `description` on a long, heavily-structured card. Unlike
+    // deterministic fixes (composed sequentially on purpose, see
+    // applyAllDeterministicFixes), each AI pass here was generated
+    // independently against the same pre-AI baseline, so there's no
+    // principled way to merge two conflicting rewrites — applying both
+    // would silently let whichever was accepted last win with no trace.
+    // Track collisions and surface them instead of hiding the loss.
+    const claimedByFieldKey: Record<string, string> = {};
+    const conflictedFields: string[] = [];
     const newLoreEntries: CharacterBookEntryV2[] = [];
     for (const findingId of acceptedFindingIds) {
       // Accepted-but-then-unchecked findings don't apply — unchecking the
@@ -353,13 +367,35 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
       if (!selectedFindingIds.has(findingId)) continue;
       const preview = aiPreviews[findingId];
       if (!preview) continue;
-      preview.diffs?.forEach(applyDiff);
+
+      const noteClaim = (field: CardTextField) => {
+        const key = CARD_FIELD_TO_FORM_KEY[field];
+        if (!key) return;
+        if (claimedByFieldKey[key] && claimedByFieldKey[key] !== findingId) {
+          conflictedFields.push(field);
+        }
+        claimedByFieldKey[key] = findingId;
+      };
+
+      preview.diffs?.forEach((d) => {
+        noteClaim(d.field);
+        applyDiff(d);
+      });
       if (preview.loreExtract) {
+        noteClaim('description');
         patch.description = preview.loreExtract.revisedDescription;
         for (const entry of preview.loreExtract.entries) {
           newLoreEntries.push({ keys: entry.keys, content: entry.content });
         }
       }
+    }
+
+    if (conflictedFields.length > 0) {
+      const unique = Array.from(new Set(conflictedFields));
+      showToastGlobal(
+        `Two accepted fixes both rewrote ${unique.join(', ')} — only the last one applied. Double-check before saving.`,
+        'warning'
+      );
     }
 
     if (Object.keys(patch).length > 0) {
