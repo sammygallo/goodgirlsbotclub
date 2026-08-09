@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useCharacterStore } from '../../stores/characterStore';
 import { Modal, Button, Input, TextArea, ImageUpload, ExpressionUpload, TagInput } from '../ui';
+import { showToastGlobal } from '../ui/Toast';
 import { AlternateGreetingsEditor } from './AlternateGreetingsEditor';
 import { AIHelperButton } from './AIHelperButton';
 import { spritesApi } from '../../api/client';
@@ -127,9 +128,17 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
           const failures = results.filter((r) => r.status === 'rejected');
           if (failures.length > 0) {
             console.error('[CharacterCreation] Some expression uploads failed:', failures);
+            showToastGlobal(
+              `Character saved, but ${failures.length} expression image${failures.length === 1 ? '' : 's'} failed to upload — retry from the character's edit screen.`,
+              'warning'
+            );
           }
         } catch (err) {
           console.error('[CharacterCreation] Failed to upload expressions:', err);
+          showToastGlobal(
+            "Character saved, but expression images failed to upload — retry from the character's edit screen.",
+            'warning'
+          );
         } finally {
           setIsUploadingExpressions(false);
         }

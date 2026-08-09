@@ -1,11 +1,47 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Upload, FileImage, FileJson, X, BookOpen, AlertTriangle, Sparkles } from 'lucide-react';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { Modal, Button, Input, TextArea, ImageUpload, TagInput } from '../ui';
+import { showToastGlobal } from '../ui/Toast';
 import { AlternateGreetingsEditor } from './AlternateGreetingsEditor';
+import { ImportAnalysisScreen } from './ImportAnalysisScreen';
+import {
+  analyzeCard,
+  applyAllDeterministicFixes,
+  type AnalysisReport,
+  type CardTextField,
+  type FieldDiff,
+  type Finding,
+  type LoreExtractResult,
+} from '../../utils/cardAnalyzer';
+import { runAiFix } from '../../utils/cardAnalyzer/aiFixes';
+import { CARD_FIX_PROMPT_VERSION } from '../../utils/cardAnalyzer/prompts';
 import type { CharacterInfo } from '../../api/client';
-import type { CharacterBookV2 } from '../../utils/characterCard';
+import type {
+  CharacterBookV2,
+  CharacterBookEntryV2,
+  CharacterBookMeta,
+  CharacterCardV2,
+  CharacterExportData,
+} from '../../utils/characterCard';
+
+type Phase = 'pick' | 'report' | 'form';
+
+/** Card-analyzer field → this form's own field key, for merging an accepted
+ *  fix's diff back into the form. `system_prompt`/`post_history_instructions`
+ *  aren't editable in this form (they pass through from the imported card
+ *  untouched in handleSubmit) and no current detector targets them, so
+ *  they're intentionally absent here. */
+const CARD_FIELD_TO_FORM_KEY: Partial<Record<CardTextField, string>> = {
+  description: 'description',
+  personality: 'personality',
+  first_mes: 'firstMessage',
+  scenario: 'scenario',
+  mes_example: 'exampleMessages',
+  creator_notes: 'creatorNotes',
+};
 
 interface CharacterImportProps {
   isOpen: boolean;
@@ -64,6 +100,51 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
   });
   const [alternateGreetings, setAlternateGreetings] = useState<string[]>([]);
 
+  // Card-analyzer report state. `analysisReport`/`rawCard`/`bookMeta` are
+  // computed once per import (right after parsing); the rest track the
+  // user's in-progress review of AI-fixable findings.
+  const [phase, setPhase] = useState<Phase>('pick');
+  const [analysisReport, setAnalysisReport] = useState<AnalysisReport | null>(null);
+  const [rawCard, setRawCard] = useState<CharacterCardV2 | CharacterExportData | null>(null);
+  const [bookMeta, setBookMeta] = useState<CharacterBookMeta | undefined>(undefined);
+  const [deterministicDiffs, setDeterministicDiffs] = useState<Record<string, FieldDiff>>({});
+  const [appliedDeterministicFindingIds, setAppliedDeterministicFindingIds] = useState<string[]>([]);
+  const [selectedFindingIds, setSelectedFindingIds] = useState<Set<string>>(new Set());
+  const [acceptedFindingIds, setAcceptedFindingIds] = useState<Set<string>>(new Set());
+  const [aiPreviews, setAiPreviews] = useState<
+    Record<string, { diffs?: FieldDiff[]; loreExtract?: LoreExtractResult; error?: string }>
+  >({});
+  const [generatingFindingId, setGeneratingFindingId] = useState<string | null>(null);
+  // One AbortController per in-flight finding — generations for different
+  // findings can run concurrently (nothing serializes "Generate preview"
+  // across rows), so a single shared ref would let a later generation's
+  // controller silently replace an earlier one still in flight, making the
+  // earlier one uncancelable (e.g. by closing the modal).
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const abortAllGenerations = () => {
+    for (const controller of abortControllersRef.current.values()) controller.abort();
+    abortControllersRef.current.clear();
+  };
+
+  // Cancel any in-flight AI-fix generation if the modal unmounts.
+  useEffect(() => {
+    return () => abortAllGenerations();
+  }, []);
+
+  const resetAnalysisState = () => {
+    setPhase('pick');
+    setAnalysisReport(null);
+    setRawCard(null);
+    setBookMeta(undefined);
+    setDeterministicDiffs({});
+    setAppliedDeterministicFindingIds([]);
+    setSelectedFindingIds(new Set());
+    setAcceptedFindingIds(new Set());
+    setAiPreviews({});
+    setGeneratingFindingId(null);
+    abortAllGenerations();
+  };
+
   const processFiles = async (files: File[], opts?: { standardizeFormatting: boolean }) => {
     const result = await importCharacter(files, {
       standardizeFormatting: opts?.standardizeFormatting ?? standardizeFormatting,
@@ -96,10 +177,243 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
           result.data.data?.alternate_greetings ||
           []
       );
+
+      // Analyze the freshly-normalized card. Deterministic fixes are
+      // computed immediately (they're free); AI-fixable findings wait for
+      // the user to toggle them on. A card that comes back clean (no
+      // findings at all) skips the report screen entirely — the "opt-in
+      // fixes" design must not add friction to an import that has nothing
+      // to say.
+      const characterName = result.data.name || '';
+      const cardForAnalysis = {
+        name: characterName,
+        description: result.data.description || result.data.data?.description || '',
+        personality: result.data.personality || result.data.data?.personality || '',
+        first_mes: result.data.first_mes || result.data.data?.first_mes || '',
+        scenario: result.data.scenario || result.data.data?.scenario || '',
+        mes_example: result.data.mes_example || result.data.data?.mes_example || '',
+        creator_notes: result.data.data?.creator_notes || '',
+        system_prompt: result.data.system_prompt || result.data.data?.system_prompt || '',
+        post_history_instructions:
+          result.data.post_history_instructions ||
+          result.data.data?.post_history_instructions ||
+          '',
+      };
+      const report = analyzeCard(cardForAnalysis, characterName);
+      const { diffs, appliedFindingIds } = applyAllDeterministicFixes(
+        report.findings,
+        cardForAnalysis,
+        characterName
+      );
+      setAnalysisReport(report);
+      setRawCard(result.rawCard);
+      setBookMeta(result.bookMeta);
+      setDeterministicDiffs(
+        Object.fromEntries(diffs.map((d) => [d.field, d]))
+      );
+      setAppliedDeterministicFindingIds(appliedFindingIds);
+      setPhase(report.findings.length > 0 ? 'report' : 'form');
     }
     // If nothing was found and it's because a dropped JSON was a lorebook in
     // disguise, the store has already set `lorebookDetected` — no local
     // re-parse needed; the render below reads it straight off the store.
+  };
+
+  /** The card an AI fix pass should read from: the already-normalized
+   *  imported text, with any deterministic fix's result substituted in for
+   *  fields it touched. Without this, a field with BOTH a deterministic
+   *  finding (e.g. a legacy `<BOT>` placeholder, applied automatically)
+   *  and an AI-fixable finding (e.g. W++ formatting) would have its AI
+   *  pass run against the pre-fix text — the model never sees the
+   *  placeholder fix, so the rewritten prose could still contain `<BOT>`
+   *  even though the report told the user it was handled. Feeding the
+   *  deterministic result in as the baseline means the AI diff's `after`
+   *  already incorporates it, so applying both fixes to the same field
+   *  composes correctly instead of the later one silently discarding the
+   *  earlier one's work. */
+  const currentCardForFixes = () => {
+    const base = (field: CardTextField, fallback: string) =>
+      deterministicDiffs[field]?.after ?? fallback;
+    return {
+      name: formData.name,
+      description: base('description', formData.description),
+      personality: base('personality', formData.personality),
+      first_mes: base('first_mes', formData.firstMessage),
+      scenario: base('scenario', formData.scenario),
+      mes_example: base('mes_example', formData.exampleMessages),
+      creator_notes: base('creator_notes', formData.creatorNotes),
+      system_prompt: importedData?.system_prompt || importedData?.data?.system_prompt || '',
+      post_history_instructions:
+        importedData?.post_history_instructions ||
+        importedData?.data?.post_history_instructions ||
+        '',
+    };
+  };
+
+  const handleToggleFinding = (findingId: string) => {
+    setSelectedFindingIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(findingId)) next.delete(findingId);
+      else next.add(findingId);
+      return next;
+    });
+  };
+
+  const handleGeneratePreview = async (findingId: string) => {
+    const finding = analysisReport?.findings.find((f) => f.id === findingId);
+    if (!finding || finding.fix !== 'ai') return;
+
+    const controller = new AbortController();
+    abortControllersRef.current.get(findingId)?.abort();
+    abortControllersRef.current.set(findingId, controller);
+    setGeneratingFindingId(findingId);
+    setAiPreviews((prev) => {
+      const next = { ...prev };
+      delete next[findingId];
+      return next;
+    });
+
+    try {
+      const { activeProvider, activeModel } = useSettingsStore.getState();
+      const result = await runAiFix(
+        finding as Finding,
+        currentCardForFixes(),
+        formData.name.trim() || 'Character',
+        { provider: activeProvider, model: activeModel, signal: controller.signal }
+      );
+      setAiPreviews((prev) => ({
+        ...prev,
+        [findingId]:
+          result.kind === 'fieldDiffs'
+            ? { diffs: result.diffs }
+            : { loreExtract: result.result },
+      }));
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      setAiPreviews((prev) => ({
+        ...prev,
+        [findingId]: { error: err instanceof Error ? err.message : 'Generation failed.' },
+      }));
+    } finally {
+      // Only touch shared state if OUR OWN controller is still the current
+      // one for this finding — a newer generation for the same finding
+      // (started after this one but not yet resolved) would have already
+      // replaced it in the map. Without this guard, an aborted/superseded
+      // request's finally would still unconditionally null
+      // generatingFindingId once it settles, making the spinner disappear
+      // while the newer request is still actually running.
+      if (abortControllersRef.current.get(findingId) === controller) {
+        abortControllersRef.current.delete(findingId);
+        setGeneratingFindingId((current) => (current === findingId ? null : current));
+      }
+    }
+  };
+
+  const handleAcceptPreview = (findingId: string) => {
+    setAcceptedFindingIds((prev) => new Set(prev).add(findingId));
+  };
+
+  const handleRejectPreview = (findingId: string) => {
+    setSelectedFindingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(findingId);
+      return next;
+    });
+    setAcceptedFindingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(findingId);
+      return next;
+    });
+    setAiPreviews((prev) => {
+      const next = { ...prev };
+      delete next[findingId];
+      return next;
+    });
+  };
+
+  /** Merge every deterministic diff plus every ACCEPTED AI-fix diff into
+   *  the form, stage any extracted lore entries into the embedded book,
+   *  and move to the editable form. Rejected/unreviewed AI suggestions are
+   *  simply left as the user's original imported text — nothing here is
+   *  destructive, everything still passes through the normal edit form
+   *  before it's saved. */
+  const applyReviewedFixesAndContinue = () => {
+    abortAllGenerations();
+    const patch: Record<string, string> = {};
+    const applyDiff = (diff: FieldDiff) => {
+      const key = CARD_FIELD_TO_FORM_KEY[diff.field];
+      if (key) patch[key] = diff.after;
+    };
+
+    for (const diff of Object.values(deterministicDiffs)) applyDiff(diff);
+
+    // Two independently-generated ACCEPTED AI fixes can target the same
+    // field — e.g. a W++ rewrite and a lore-extraction both touching
+    // `description` on a long, heavily-structured card. Unlike
+    // deterministic fixes (composed sequentially on purpose, see
+    // applyAllDeterministicFixes), each AI pass here was generated
+    // independently against the same pre-AI baseline, so there's no
+    // principled way to merge two conflicting rewrites — applying both
+    // would silently let whichever was accepted last win with no trace.
+    // Track collisions and surface them instead of hiding the loss.
+    const claimedByFieldKey: Record<string, string> = {};
+    const conflictedFields: string[] = [];
+    const newLoreEntries: CharacterBookEntryV2[] = [];
+    for (const findingId of acceptedFindingIds) {
+      // Accepted-but-then-unchecked findings don't apply — unchecking the
+      // box after Accept is how a user abandons a fix they previewed and
+      // decided against, without having to hit Reject (which also throws
+      // the preview away entirely).
+      if (!selectedFindingIds.has(findingId)) continue;
+      const preview = aiPreviews[findingId];
+      if (!preview) continue;
+
+      const noteClaim = (field: CardTextField) => {
+        const key = CARD_FIELD_TO_FORM_KEY[field];
+        if (!key) return;
+        if (claimedByFieldKey[key] && claimedByFieldKey[key] !== findingId) {
+          conflictedFields.push(field);
+        }
+        claimedByFieldKey[key] = findingId;
+      };
+
+      preview.diffs?.forEach((d) => {
+        noteClaim(d.field);
+        applyDiff(d);
+      });
+      if (preview.loreExtract) {
+        noteClaim('description');
+        patch.description = preview.loreExtract.revisedDescription;
+        for (const entry of preview.loreExtract.entries) {
+          newLoreEntries.push({ keys: entry.keys, content: entry.content });
+        }
+      }
+    }
+
+    if (conflictedFields.length > 0) {
+      const unique = Array.from(new Set(conflictedFields));
+      showToastGlobal(
+        `Two accepted fixes both rewrote ${unique.join(', ')} — only the last one applied. Double-check before saving.`,
+        'warning'
+      );
+    }
+
+    if (Object.keys(patch).length > 0) {
+      setFormData((prev) => ({ ...prev, ...patch }));
+    }
+    if (newLoreEntries.length > 0) {
+      setImportedBook((prev) =>
+        prev
+          ? { ...prev, entries: [...prev.entries, ...newLoreEntries] }
+          : { name: `${formData.name.trim() || 'Character'} Lorebook`, entries: newLoreEntries }
+      );
+    }
+    setPhase('form');
+  };
+
+  const handleSkipSuggestions = () => {
+    abortAllGenerations();
+    setPhase('form');
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -166,6 +480,50 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
     const { extensions: importedExtensions, alternate_greetings: _dropped, ...dataOverrides } =
       importedData?.data || {};
 
+    // Import provenance: what format the card was detected as, which fixes
+    // (deterministic — always applied — and AI, only the ones the user
+    // accepted) actually landed, and the original parsed card so a future
+    // "restore original import" action in the edit screen has something to
+    // restore from. Capped well under the row's JSONB comfort zone; a huge
+    // original card is dropped rather than bloating every future read of
+    // this character.
+    const ORIGINAL_CARD_MAX_BYTES = 400_000;
+    const originalCardJson = rawCard ? JSON.stringify(rawCard) : null;
+    // Real UTF-8 byte length, not JS string .length (UTF-16 code units) —
+    // a card with substantial non-ASCII text (CJK, accents, emoji) can run
+    // up to ~3x its .length in actual bytes, which would let content well
+    // over the intended cap slip through a length-only check.
+    const originalCardBytes = originalCardJson
+      ? new TextEncoder().encode(originalCardJson).length
+      : 0;
+    const fixesApplied = [
+      ...appliedDeterministicFindingIds.map((id) => {
+        const finding = analysisReport?.findings.find((f) => f.id === id);
+        return { finding: id, pass: 'deterministic', field: finding?.field ?? '' };
+      }),
+      ...Array.from(acceptedFindingIds).map((id) => {
+        const finding = analysisReport?.findings.find((f) => f.id === id);
+        return { finding: id, pass: finding?.aiPass ?? 'unknown', field: finding?.field ?? '' };
+      }),
+    ];
+    const importProvenance = {
+      version: 1,
+      imported_at: new Date().toISOString(),
+      source_format: analysisReport?.sourceFormat ?? 'unknown',
+      prompt_version: CARD_FIX_PROMPT_VERSION,
+      original_card: originalCardBytes > 0 && originalCardBytes <= ORIGINAL_CARD_MAX_BYTES ? rawCard : null,
+      original_omitted: originalCardBytes > ORIGINAL_CARD_MAX_BYTES,
+      ...(bookMeta ? { character_book_meta: bookMeta } : {}),
+      fixes_applied: fixesApplied,
+    };
+    const mergedExtensions = {
+      ...(importedExtensions || {}),
+      ggbc: {
+        ...((importedExtensions?.ggbc as Record<string, unknown> | undefined) || {}),
+        import: importProvenance,
+      },
+    };
+
     const avatarUrl = await createCharacter(
       {
         ch_name: formData.name.trim(),
@@ -195,7 +553,7 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
           : undefined,
         talkativeness: typeof talkativenessRaw === 'string' ? talkativenessRaw : undefined,
         data_overrides: dataOverrides,
-        extensions: importedExtensions,
+        extensions: mergedExtensions,
       },
       avatarFile || undefined
     );
@@ -209,10 +567,43 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
           importedBook,
           `${formData.name.trim() || 'Character'} Lorebook`
         );
+        watchForLorebookSyncFailure();
       }
       handleClose();
       onImported?.(avatarUrl);
     }
+  };
+
+  /**
+   * registerEmbeddedBookFromCard's server sync is fire-and-forget (see
+   * worldInfoStore's own comment on syncNewBookWithEntries/
+   * syncCharacterBookReplace — making it awaitable is out of scope there)
+   * and only ever surfaces failure by setting worldInfoStore's `error`
+   * field, which nothing downstream of an import was reading. Watch for it
+   * briefly so a sync failure doesn't silently vanish — the character row
+   * itself always saves fine either way, so this is a heads-up, not a
+   * blocker.
+   *
+   * `error` is a single field shared by every worldInfoStore mutator (and
+   * also rendered as its own banner on the World Info page), so this is a
+   * best-effort heuristic, not a precise "this import's sync" signal:
+   * ignore whatever the error already was before this call started (so a
+   * stale, already-displayed error can't get misattributed to this
+   * import), and never write to the field — clearing someone else's
+   * still-relevant error out from under them would be worse than an
+   * occasional missed/misattributed toast in this narrow window.
+   */
+  const watchForLorebookSyncFailure = () => {
+    const errorBeforeThisImport = useWorldInfoStore.getState().error;
+    const unsub = useWorldInfoStore.subscribe((state) => {
+      if (!state.error || state.error === errorBeforeThisImport) return;
+      showToastGlobal(
+        `Character saved, but the lorebook didn't sync: ${state.error} — retry from the character's Lorebook section.`,
+        'warning'
+      );
+      unsub();
+    });
+    setTimeout(unsub, 5000);
   };
 
   const handleImportAsLorebook = () => {
@@ -237,6 +628,7 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
     setImportWarnings([]);
     setImportChanges([]);
     setImportIgnoredFiles([]);
+    resetAnalysisState();
     setFormData({
       name: '',
       description: '',
@@ -278,7 +670,21 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Import Character" size="lg">
-      {!importedData ? (
+      {phase === 'report' && analysisReport ? (
+        <ImportAnalysisScreen
+          report={analysisReport}
+          selectedFindingIds={selectedFindingIds}
+          onToggleFinding={handleToggleFinding}
+          deterministicDiffs={deterministicDiffs}
+          aiPreviews={aiPreviews}
+          generatingFindingId={generatingFindingId}
+          onGeneratePreview={handleGeneratePreview}
+          onAcceptPreview={handleAcceptPreview}
+          onRejectPreview={handleRejectPreview}
+          onSkipAll={handleSkipSuggestions}
+          onContinue={applyReviewedFixesAndContinue}
+        />
+      ) : phase === 'pick' ? (
         /* File Selection View */
         <div className="space-y-4">
           {/* Normalization toggle */}
@@ -449,6 +855,7 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
                 }
                 setAvatarPreview(null);
                 setAlternateGreetings([]);
+                resetAnalysisState();
               }}
               className="p-1 hover:bg-green-500/20 rounded"
             >
