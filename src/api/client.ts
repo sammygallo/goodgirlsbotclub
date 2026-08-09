@@ -268,13 +268,25 @@ function sanitizeAvatarName(name: string): string {
   return cleaned || 'Unnamed';
 }
 
-/** Build the v2 spec `data` object from the legacy CharacterCreateData shape. */
+/**
+ * Build the v2 spec `data` object from the legacy CharacterCreateData shape.
+ *
+ * `data_overrides` and `extensions` carry whatever the caller has that this
+ * function doesn't already model as an explicit field — V3-only card keys
+ * (`nickname`, `source`, …) and third-party extension namespaces (`chub`,
+ * `risuai`, …). Both are spread in FIRST so the explicit fields that follow
+ * always win over a passed-through value. Previously `data`/`extensions`
+ * were built from scratch every call, so anything not in this function's
+ * own field list — including on a plain edit-and-save with no import
+ * involved — was silently discarded on every save.
+ */
 function buildCardData(input: CharacterCreateData & { avatar_url?: string }): {
   data: Record<string, unknown>;
   tags: string[];
 } {
   const tags = splitTags(input.tags);
   const data: Record<string, unknown> = {
+    ...(input.data_overrides || {}),
     name: input.ch_name,
     description: input.description ?? '',
     personality: input.personality ?? '',
@@ -292,7 +304,16 @@ function buildCardData(input: CharacterCreateData & { avatar_url?: string }): {
   }
   if (input.character_version !== undefined) data.character_version = input.character_version;
 
-  const extensions: Record<string, unknown> = {};
+  // depth_prompt/talkativeness are still authoritatively driven by this
+  // call's own scalar fields (both callers derive them fresh from live form
+  // state on every save, including deliberately clearing them) — so those
+  // two keys are deleted from the spread before being recomputed, rather
+  // than merged, so a cleared field can't be resurrected by a stale value
+  // in `input.extensions`. Every other key in `input.extensions` (anything
+  // this function doesn't model) passes through untouched.
+  const extensions: Record<string, unknown> = { ...(input.extensions || {}) };
+  delete extensions.depth_prompt;
+  delete extensions.talkativeness;
   if (
     input.depth_prompt_prompt !== undefined ||
     input.depth_prompt_depth !== undefined ||
@@ -388,6 +409,22 @@ export type LorebookEntryDTO = RetrievalContextEntryDTO;
 /** GET /lorebooks/{id} — a LorebookDTO with its nested entries. */
 export interface LorebookWithEntriesDTO extends LorebookDTO {
   entries: LorebookEntryDTO[];
+}
+
+/**
+ * One ranked result from POST /lorebooks/search (LorebookSearchHit).
+ * `score` is a fused RRF rank, only meaningful relative to other hits in
+ * the SAME response — never compare it across two different search calls.
+ * The three per-signal scores are `null` (not `0`) when that signal didn't
+ * fire for this entry at all, e.g. `semanticScore` is null for an entry
+ * with no embedding yet, not "scored a semantic zero".
+ */
+export interface LorebookSearchHit {
+  entry: LorebookEntryDTO;
+  score: number;
+  keywordScore?: number | null;
+  semanticScore?: number | null;
+  ftsScore?: number | null;
 }
 
 /** 409 body for PUT /lorebooks/{id} (LorebookConflictDetail). */
@@ -532,6 +569,14 @@ export interface CharacterCreateData {
   depth_prompt_role?: string;
   talkativeness?: string;
   fav?: boolean;
+  /** Card-data keys not modeled above (V3-only fields, third-party
+   *  extension namespace payloads that live outside `extensions`) — spread
+   *  into `data` verbatim so an import/edit round trip doesn't drop them. */
+  data_overrides?: Record<string, unknown>;
+  /** The full `data.extensions` object to preserve (third-party namespaces,
+   *  ggbc provenance). depth_prompt/talkativeness within it are still
+   *  overridden by this call's own scalar fields above. */
+  extensions?: Record<string, unknown>;
 }
 
 export interface CharacterEditData extends CharacterCreateData {
@@ -985,6 +1030,34 @@ export const api = {
       `/lorebooks/${encodeURIComponent(lorebookId)}/entries/${encodeURIComponent(entryId)}`,
       { method: 'DELETE' }
     );
+  },
+
+  /**
+   * POST /lorebooks/search — ranked hybrid (keyword+semantic+FTS) search
+   * over the caller's own visible lorebook entries. Unlike every other
+   * lorebook call above, this makes a REAL, non-free OpenAI embeddings
+   * call server-side per request (see `_embed_search_query` in
+   * app/routers/lorebooks.py) — never call this on every keystroke; gate
+   * it behind an explicit, deliberate trigger. Throws (via apiRequest) on
+   * any failure, including a 400 when the caller has no OpenAI embeddings
+   * key configured at all — callers should treat that as "the feature
+   * quietly isn't available right now", not an error worth surfacing
+   * loudly, since search is advisory, never required.
+   */
+  async searchLorebooks(
+    query: string,
+    opts?: { lorebookIds?: string[]; limit?: number; minScore?: number }
+  ): Promise<LorebookSearchHit[]> {
+    const result = await apiRequest<{ hits: LorebookSearchHit[] }>('/lorebooks/search', {
+      method: 'POST',
+      body: JSON.stringify({
+        query,
+        ...(opts?.lorebookIds ? { lorebookIds: opts.lorebookIds } : {}),
+        ...(opts?.limit ? { limit: opts.limit } : {}),
+        ...(opts?.minScore !== undefined ? { minScore: opts.minScore } : {}),
+      }),
+    });
+    return Array.isArray(result?.hits) ? result.hits : [];
   },
 
   // -----------------------------------------------------------------

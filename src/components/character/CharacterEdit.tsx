@@ -220,6 +220,11 @@ export function CharacterEdit({
         depth_prompt_depth: depthPromptPrompt.trim() ? depthPromptDepth : undefined,
         depth_prompt_role: depthPromptPrompt.trim() ? depthPromptRole : undefined,
         talkativeness: talkativeness || undefined,
+        // Preserve the existing favorite flag and any third-party extension
+        // namespaces — previously every edit silently sent fav:false and
+        // rebuilt `extensions` from scratch, clearing both.
+        fav: character.fav,
+        extensions: character.data?.extensions,
       },
       avatarFile || undefined
     );

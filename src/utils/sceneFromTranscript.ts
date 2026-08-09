@@ -12,7 +12,7 @@
  * prompt describes the scene, not the character's face.
  */
 
-import { api } from '../api/client';
+import { generateOnce } from './llm/generate';
 import { estimateTokens } from './tokenizer';
 import type { TranscriptMsg } from './lorebookFromTranscript';
 
@@ -42,66 +42,6 @@ export interface SceneSummary {
   scene: string;
   /** Ordered per-segment motion directions; may be empty on parse failure. */
   beats: string[];
-}
-
-// ---------------------------------------------------------------------------
-// SSE stream parsing — copied to match the convention already used by
-// summarizeStore, autoMemoryStore, and lorebookFromTranscript (each keeps a
-// local copy). Kept identical so behavior matches the rest of the app's
-// generation paths.
-// ---------------------------------------------------------------------------
-
-async function* parseSSEStream(
-  stream: ReadableStream<Uint8Array>
-): AsyncGenerator<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed === 'data: [DONE]') continue;
-        if (trimmed.startsWith('data: ')) {
-          const data = trimmed.slice(6);
-          if (!data || data === '[DONE]') continue;
-          let json;
-          try {
-            json = JSON.parse(data);
-          } catch {
-            if (data.length > 0 && data !== 'undefined') yield data;
-            continue;
-          }
-          if (json?.error) {
-            const msg =
-              typeof json.error === 'string'
-                ? json.error
-                : json.error.message || 'Generation failed';
-            throw new Error(msg);
-          }
-          const content =
-            json.choices?.[0]?.delta?.content ||
-            json.choices?.[0]?.text ||
-            json.delta?.text ||
-            (json.type === 'content_block_delta' ? json.delta?.text : null) ||
-            json.content ||
-            json.message?.content?.[0]?.text ||
-            '';
-          if (content) yield content;
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }
 
 /**
@@ -218,28 +158,21 @@ export async function summarizeScene(
     throw new Error('No usable messages to summarize.');
   }
 
-  const stream = await api.generateMessage(
+  const raw = await generateOnce(
     [
       { role: 'system', content: systemPrompt(characterName) },
       { role: 'user', content: userPrompt(transcript, characterName, characterDescription) },
     ],
-    characterName,
-    provider,
-    model,
-    signal,
-    // Scene paragraph + a few beats as JSON; 700 tokens leaves slack
-    // without letting a rambling model run long.
-    { maxTokens: 700 }
+    {
+      label: characterName,
+      provider,
+      model,
+      signal,
+      // Scene paragraph + a few beats as JSON; 700 tokens leaves slack
+      // without letting a rambling model run long.
+      maxTokens: 700,
+    }
   );
-
-  if (!stream) {
-    throw new Error('No response from the model.');
-  }
-
-  let raw = '';
-  for await (const token of parseSSEStream(stream)) {
-    raw += token;
-  }
 
   const summary = parseSummary(raw);
   if (!summary.scene) {

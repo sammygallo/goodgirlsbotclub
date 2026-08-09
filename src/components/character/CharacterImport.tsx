@@ -23,6 +23,8 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
     error,
     clearError,
     getAllTags,
+    lorebookDetected,
+    clearLorebookDetected,
   } = useCharacterStore();
   const { importBookJson } = useWorldInfoStore();
 
@@ -34,8 +36,10 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
   const [standardizeFormatting, setStandardizeFormatting] = useState(false);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [importChanges, setImportChanges] = useState<string[]>([]);
-  // Lorebook-only file detection
-  const [lorebookFile, setLorebookFile] = useState<{ text: string; name: string; entryCount: number } | null>(null);
+  const [importIgnoredFiles, setImportIgnoredFiles] = useState<string[]>([]);
+  // Lorebook-only file detection lives on the store now (`lorebookDetected`)
+  // so this reflects the parser's own LorebookDetectedError instead of a
+  // second, independently-maintained heuristic in this component.
   const [lorebookImported, setLorebookImported] = useState(false);
   const [formData, setFormData] = useState<{
     name: string;
@@ -70,6 +74,7 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
       setImportedBook(result.characterBook || null);
       setImportWarnings(result.warnings || []);
       setImportChanges(result.changes || []);
+      setImportIgnoredFiles(result.ignoredFiles || []);
       if (result.avatarFile) {
         setAvatarFile(result.avatarFile);
         const previewUrl = URL.createObjectURL(result.avatarFile);
@@ -91,33 +96,10 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
           result.data.data?.alternate_greetings ||
           []
       );
-    } else if (files.length === 1) {
-      // Single file that failed character parsing — check if it's a standalone lorebook JSON
-      const file = files[0];
-      const isJSON = file.type === 'application/json' || file.name.toLowerCase().endsWith('.json');
-      if (isJSON) {
-        try {
-          const fileText = await file.text();
-          const parsed = JSON.parse(fileText);
-          if (
-            parsed?.entries &&
-            typeof parsed.entries === 'object' &&
-            !parsed.name &&
-            !parsed.first_mes
-          ) {
-            clearError();
-            const entryCount = Object.keys(parsed.entries).length;
-            setLorebookFile({
-              text: fileText,
-              name: file.name.replace(/\.json$/i, ''),
-              entryCount,
-            });
-          }
-        } catch {
-          // Not valid JSON — let the existing error stand
-        }
-      }
     }
+    // If nothing was found and it's because a dropped JSON was a lorebook in
+    // disguise, the store has already set `lorebookDetected` — no local
+    // re-parse needed; the render below reads it straight off the store.
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -125,7 +107,7 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
     if (files.length === 0) return;
 
     clearError();
-    setLorebookFile(null);
+    clearLorebookDetected();
     setLorebookImported(false);
 
     await processFiles(files);
@@ -164,7 +146,25 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
       (g) => typeof g === 'string' && g.trim()
     );
     const depthPrompt = importedData?.data?.extensions?.depth_prompt;
+    // Coerced to a string upstream in cardToCharacterInfo (SillyTavern
+    // writes this as a number) — the typeof check here is just narrowing
+    // for the string-typed field, not a data-loss guard anymore.
     const talkativenessRaw = importedData?.data?.extensions?.talkativeness;
+    // Everything the parser preserved that this form doesn't have its own
+    // field for — V3-only card keys and third-party extension namespaces —
+    // so a round trip through the wizard doesn't drop them. `extensions` is
+    // pulled out separately since buildCardData layers it before
+    // depth_prompt/talkativeness rather than through data_overrides.
+    // `alternate_greetings` is ALSO pulled out: it's edited below via
+    // `alternateGreetings` state and sent as its own explicit field, but
+    // buildCardData only overwrites that field when truthy — clearing every
+    // greeting sends `undefined`, so leaving the original imported array in
+    // `dataOverrides` would silently resurrect greetings the user just
+    // deleted (buildCardData spreads data_overrides first; a skipped
+    // explicit assignment leaves whatever the spread put there in place).
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { extensions: importedExtensions, alternate_greetings: _dropped, ...dataOverrides } =
+      importedData?.data || {};
 
     const avatarUrl = await createCharacter(
       {
@@ -194,6 +194,8 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
           ? (depthPrompt.role as string | undefined) || 'system'
           : undefined,
         talkativeness: typeof talkativenessRaw === 'string' ? talkativenessRaw : undefined,
+        data_overrides: dataOverrides,
+        extensions: importedExtensions,
       },
       avatarFile || undefined
     );
@@ -214,8 +216,8 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
   };
 
   const handleImportAsLorebook = () => {
-    if (!lorebookFile) return;
-    const book = importBookJson(lorebookFile.text, lorebookFile.name);
+    if (!lorebookDetected) return;
+    const book = importBookJson(lorebookDetected.text, lorebookDetected.name);
     if (book) {
       setLorebookImported(true);
     }
@@ -230,10 +232,11 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
     setImportedBook(null);
     setAvatarFile(null);
     setAvatarPreview(null);
-    setLorebookFile(null);
+    clearLorebookDetected();
     setLorebookImported(false);
     setImportWarnings([]);
     setImportChanges([]);
+    setImportIgnoredFiles([]);
     setFormData({
       name: '',
       description: '',
@@ -267,7 +270,7 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
     if (files.length === 0) return;
 
     clearError();
-    setLorebookFile(null);
+    clearLorebookDetected();
     setLorebookImported(false);
 
     await processFiles(files);
@@ -344,14 +347,14 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
           )}
 
           {/* Lorebook Detection */}
-          {lorebookFile && !lorebookImported && (
+          {lorebookDetected && !lorebookImported && (
             <div className="p-4 bg-[var(--color-primary)]/10 border border-[var(--color-primary)]/40 rounded-lg space-y-3">
               <div className="flex items-start gap-2.5 text-sm text-[var(--color-text-primary)]">
                 <BookOpen size={18} className="text-[var(--color-primary)] shrink-0 mt-0.5" />
                 <div>
                   <p className="font-medium">This is a lorebook / world-info file</p>
                   <p className="text-xs text-[var(--color-text-secondary)] mt-1">
-                    Contains {lorebookFile.entryCount} entr{lorebookFile.entryCount === 1 ? 'y' : 'ies'} — not a character card.
+                    Contains {lorebookDetected.entryCount} entr{lorebookDetected.entryCount === 1 ? 'y' : 'ies'} — not a character card.
                     You can import it as a lorebook and link it to a character later.
                   </p>
                 </div>
@@ -412,6 +415,21 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
               <ul className="text-xs text-[var(--color-text-secondary)] list-disc list-inside space-y-0.5">
                 {importWarnings.map((w, i) => (
                   <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Ignored extra files */}
+          {importIgnoredFiles.length > 0 && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-sm">
+              <div className="flex items-center gap-1.5 text-amber-400 font-medium mb-1">
+                <AlertTriangle size={14} />
+                Only the first file of each type was imported
+              </div>
+              <ul className="text-xs text-[var(--color-text-secondary)] list-disc list-inside space-y-0.5">
+                {importIgnoredFiles.map((f, i) => (
+                  <li key={i}>{f}</li>
                 ))}
               </ul>
             </div>
