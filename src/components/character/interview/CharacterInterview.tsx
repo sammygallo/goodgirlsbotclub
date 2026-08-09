@@ -3,7 +3,7 @@ import { X, AlertTriangle } from 'lucide-react';
 import { useCharacterInterviewStore } from '../../../stores/characterInterviewStore';
 import { getProviderAndModel } from '../../../utils/llm/resolve';
 import { isWeakModel } from '../../../utils/storyIngest/modelStrength';
-import { Button, BottomSheet } from '../../ui';
+import { Button, BottomSheet, ConfirmDialog } from '../../ui';
 import { InterviewChat } from './InterviewChat';
 import { CardPreviewPanel } from './CardPreviewPanel';
 import { InterviewAvatarStep } from './InterviewAvatarStep';
@@ -132,8 +132,17 @@ export function CharacterInterview({ isOpen, onClose, onCreated, onUseSimpleForm
   // InterviewReview itself, since that component unmounts whenever the
   // user steps over to InterviewAvatarStep ("Change avatar") and back.
   const [reviewExtras, setReviewExtras] = useState<ReviewExtrasState>(DEFAULT_REVIEW_EXTRAS);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 
   if (!isOpen) return null;
+
+  const discardAndClose = () => {
+    abort();
+    reset();
+    setReviewExtras(DEFAULT_REVIEW_EXTRAS);
+    setShowDiscardConfirm(false);
+    onClose();
+  };
 
   const handleClose = () => {
     // A save is in flight — closing now would abandon it mid-request with
@@ -142,14 +151,18 @@ export function CharacterInterview({ isOpen, onClose, onCreated, onUseSimpleForm
     // user believes they discarded it. Make the close control unreachable
     // for the duration instead of trying to race the request.
     if (phase === 'saving') return;
-    if (phase !== 'intro') {
-      const ok = window.confirm('Discard this character interview? Your progress will be lost.');
-      if (!ok) return;
+    if (phase === 'intro') {
+      discardAndClose();
+      return;
     }
-    abort();
-    reset();
-    setReviewExtras(DEFAULT_REVIEW_EXTRAS);
-    onClose();
+    // An in-app dialog, not window.confirm() — native confirm() is
+    // unreliable in exactly this spot: some mobile WebView/PWA contexts
+    // suppress it entirely, silently resolving false with no dialog ever
+    // shown to the user, which reads as "the close button doesn't work"
+    // rather than as a cancelled discard (confirmed live 2026-08-09 — a
+    // real user hit this). ConfirmDialog is the primitive this codebase
+    // already uses for the same "are you sure" shape elsewhere.
+    setShowDiscardConfirm(true);
   };
 
   const { provider, model } = getProviderAndModel();
@@ -230,6 +243,16 @@ export function CharacterInterview({ isOpen, onClose, onCreated, onUseSimpleForm
           />
         )}
       </div>
+
+      <ConfirmDialog
+        isOpen={showDiscardConfirm}
+        onClose={() => setShowDiscardConfirm(false)}
+        onConfirm={discardAndClose}
+        title="Discard this character interview?"
+        message="Your progress will be lost."
+        confirmLabel="Discard"
+        danger
+      />
     </div>
   );
 }
