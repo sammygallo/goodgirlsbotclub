@@ -5,10 +5,11 @@ import { useCharacterOwnershipStore } from '../../stores/characterOwnershipStore
 import { useAuthStore } from '../../stores/authStore';
 import { hasPermission } from '../../utils/permissions';
 import { spritesApi, type CharacterInfo } from '../../api/client';
-import { Modal, Button, Input, TextArea, ImageUpload, ExpressionUpload, TagInput, HelpTip } from '../ui';
+import { Modal, Button, ImageUpload, ExpressionUpload } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import { cardToCharacterInfo, type CharacterCardV2, type CharacterExportData } from '../../utils/characterCard';
-import { AlternateGreetingsEditor } from './AlternateGreetingsEditor';
+import { CoreCardFields } from './fields/CoreCardFields';
+import { AdvancedCardFields } from './fields/AdvancedCardFields';
 import { CharacterLorebookSection } from './CharacterLorebookSection';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
 import { GuideDrawer } from '../guides/GuideDrawer';
@@ -605,60 +606,21 @@ export function CharacterEdit({
           </div>
         )}
 
-        {/* Name - Required */}
-        <Input
-          label="Name *"
-          placeholder="Character's name"
-          value={formData.name}
-          onChange={handleChange('name')}
-          required
-          autoFocus
-        />
-
-        {/* Description */}
-        <TextArea
-          label="Description"
-          labelExtra={<HelpTip tip="The AI's mental image of the character. Describe physical appearance, background, world context, and relevant history. This is included in every prompt — be thorough but not redundant." />}
-          placeholder="Describe the character's appearance, background, and other details..."
-          value={formData.description}
-          onChange={handleChange('description')}
-          rows={3}
-        />
-
-        {/* Personality */}
-        <TextArea
-          label="Personality"
-          labelExtra={<HelpTip tip="How the character thinks, speaks, and feels. Focus on speech patterns, emotional tendencies, and quirks. Specific phrases like 'speaks in short, clipped sentences' or 'always deflects with humor' lead to more consistent character behavior than abstract traits like 'kind.'" />}
-          placeholder="Character's personality traits, mannerisms, speech patterns..."
-          value={formData.personality}
-          onChange={handleChange('personality')}
-          rows={3}
-        />
-
-        {/* First Message */}
-        <TextArea
-          label="First Message"
-          labelExtra={<HelpTip tip="The character's opening line when a new chat starts. Sets the tone and scene for the whole conversation. Opening mid-action or mid-moment works better than a generic greeting — it immediately pulls the user into the world." />}
-          placeholder="The character's opening message when starting a new chat..."
-          value={formData.firstMessage}
-          onChange={handleChange('firstMessage')}
-          rows={4}
-        />
-
-        {/* Alternate Greetings */}
-        <AlternateGreetingsEditor
-          greetings={alternateGreetings}
-          onChange={setAlternateGreetings}
-        />
-
-        {/* Scenario */}
-        <TextArea
-          label="Scenario"
-          labelExtra={<HelpTip tip="The specific situation when the chat begins — location, what just happened, the stakes. Unlike Description (which is always-on), Scenario sets the starting context for this particular conversation. Keep it focused; save world-building for World Info." />}
-          placeholder="The setting or context for conversations..."
-          value={formData.scenario}
-          onChange={handleChange('scenario')}
-          rows={2}
+        <CoreCardFields
+          formData={formData}
+          onChange={handleChange}
+          alternateGreetings={alternateGreetings}
+          onAlternateGreetingsChange={setAlternateGreetings}
+          helpTips={{
+            description:
+              "The AI's mental image of the character. Describe physical appearance, background, world context, and relevant history. This is included in every prompt — be thorough but not redundant.",
+            personality:
+              "How the character thinks, speaks, and feels. Focus on speech patterns, emotional tendencies, and quirks. Specific phrases like 'speaks in short, clipped sentences' or 'always deflects with humor' lead to more consistent character behavior than abstract traits like 'kind.'",
+            firstMessage:
+              'The character\'s opening line when a new chat starts. Sets the tone and scene for the whole conversation. Opening mid-action or mid-moment works better than a generic greeting — it immediately pulls the user into the world.',
+            scenario:
+              'The specific situation when the chat begins — location, what just happened, the stakes. Unlike Description (which is always-on), Scenario sets the starting context for this particular conversation. Keep it focused; save world-building for World Info.',
+          }}
         />
 
         {/* Expression Images */}
@@ -716,141 +678,36 @@ export function CharacterEdit({
           />
         </div>
 
-        {/* Collapsible Advanced Section */}
-        <details className="group">
-          <summary className="cursor-pointer text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] py-2">
-            Advanced Options
-          </summary>
-
-          <div className="space-y-4 mt-2 pl-2 border-l-2 border-[var(--color-border)]">
-            {/* Example Messages */}
-            <TextArea
-              label="Example Messages"
-              labelExtra={<HelpTip tip="Sample dialogue that teaches the AI the character's voice. Use the format: {{user}}: [message]\n{{char}}: [response]\n\nA few good examples (3–5 exchanges) are more effective than many mediocre ones. Focus on capturing distinctive speech patterns or reactions rather than plot." />}
-              placeholder="Example dialogue to help the AI understand the character's voice..."
-              value={formData.exampleMessages}
-              onChange={handleChange('exampleMessages')}
-              rows={4}
-            />
-
-            {/* Character's Note (Depth Prompt) */}
-            <div className="space-y-2">
-              <TextArea
-                label="Character's Note"
-                labelExtra={<HelpTip tip="A reminder injected at a specific position in the chat history (controlled by Injection Depth). Useful for keeping the AI on-track during long conversations where early instructions start to fade. Acts as a nudge rather than a full system prompt." />}
-                placeholder="Injected at a configurable depth in the chat to reinforce behavior..."
-                value={depthPromptPrompt}
-                onChange={(e) => setDepthPromptPrompt(e.target.value)}
-                rows={2}
-              />
-              {depthPromptPrompt && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-                      Injection Depth
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={20}
-                      value={depthPromptDepth}
-                      onChange={(e) => setDepthPromptDepth(Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-                      Role
-                    </label>
-                    <select
-                      value={depthPromptRole}
-                      onChange={(e) =>
-                        setDepthPromptRole(e.target.value as 'system' | 'user' | 'assistant')
-                      }
-                      className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-                    >
-                      <option value="system">System</option>
-                      <option value="user">User</option>
-                      <option value="assistant">Assistant</option>
-                    </select>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* System Prompt Override */}
-            <TextArea
-              label="System Prompt Override"
-              labelExtra={<HelpTip tip="Replaces the global Main Prompt for this character only. Use when a character needs a fundamentally different system prompt than your default. Only active if 'Honor character's System Prompt override' is enabled in Generation Settings → Prompts." />}
-              placeholder="Overrides the main system prompt for this character..."
-              value={systemPromptOverride}
-              onChange={(e) => setSystemPromptOverride(e.target.value)}
-              rows={3}
-            />
-
-            {/* Post-History Instructions */}
-            <TextArea
-              label="Post-History Instructions"
-              labelExtra={<HelpTip tip="A system message inserted after the chat history, just before the AI responds. This is the last thing the AI reads before generating a reply — great for final behavioral nudges or reminders. Requires 'Honor character's Post-History Instructions' in Generation Settings → Prompts." />}
-              placeholder="Instructions appended after the chat history..."
-              value={postHistoryInstructions}
-              onChange={(e) => setPostHistoryInstructions(e.target.value)}
-              rows={2}
-            />
-
-            {/* Talkativeness */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5">
-                Talkativeness ({talkativeness})
-              </label>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={talkativeness}
-                onChange={(e) => setTalkativeness(e.target.value)}
-                className="w-full"
-              />
-              <p className="text-xs text-[var(--color-text-secondary)] mt-1">
-                Used in group chats to control how often this character speaks.
-              </p>
-            </div>
-
-            {/* Character Version */}
-            <Input
-              label="Character Version"
-              placeholder="e.g., 1.0"
-              value={characterVersion}
-              onChange={(e) => setCharacterVersion(e.target.value)}
-            />
-
-            {/* Creator Notes */}
-            <TextArea
-              label="Creator Notes"
-              placeholder="Notes about the character for other users..."
-              value={formData.creatorNotes}
-              onChange={handleChange('creatorNotes')}
-              rows={2}
-            />
-
-            {/* Creator */}
-            <Input
-              label="Creator"
-              placeholder="Your name or handle"
-              value={formData.creator}
-              onChange={handleChange('creator')}
-            />
-
-            {/* Tags */}
-            <TagInput
-              label="Tags"
-              value={formData.tags}
-              onChange={(tags) => setFormData((prev) => ({ ...prev, tags }))}
-              suggestions={getAllTags()}
-            />
-          </div>
-        </details>
+        <AdvancedCardFields
+          formData={formData}
+          onChange={handleChange}
+          onTagsChange={(tags) => setFormData((prev) => ({ ...prev, tags }))}
+          tagSuggestions={getAllTags()}
+          characterVersion={characterVersion}
+          onCharacterVersionChange={setCharacterVersion}
+          depthPromptPrompt={depthPromptPrompt}
+          onDepthPromptPromptChange={setDepthPromptPrompt}
+          depthPromptDepth={depthPromptDepth}
+          onDepthPromptDepthChange={setDepthPromptDepth}
+          depthPromptRole={depthPromptRole}
+          onDepthPromptRoleChange={setDepthPromptRole}
+          systemPromptOverride={systemPromptOverride}
+          onSystemPromptOverrideChange={setSystemPromptOverride}
+          postHistoryInstructions={postHistoryInstructions}
+          onPostHistoryInstructionsChange={setPostHistoryInstructions}
+          talkativeness={talkativeness}
+          onTalkativenessChange={setTalkativeness}
+          helpTips={{
+            exampleMessages:
+              "Sample dialogue that teaches the AI the character's voice. Use the format: {{user}}: [message]\n{{char}}: [response]\n\nA few good examples (3–5 exchanges) are more effective than many mediocre ones. Focus on capturing distinctive speech patterns or reactions rather than plot.",
+            characterNote:
+              'A reminder injected at a specific position in the chat history (controlled by Injection Depth). Useful for keeping the AI on-track during long conversations where early instructions start to fade. Acts as a nudge rather than a full system prompt.',
+            systemPrompt:
+              "Replaces the global Main Prompt for this character only. Use when a character needs a fundamentally different system prompt than your default. Only active if 'Honor character's System Prompt override' is enabled in Generation Settings → Prompts.",
+            postHistoryInstructions:
+              "A system message inserted after the chat history, just before the AI responds. This is the last thing the AI reads before generating a reply — great for final behavioral nudges or reminders. Requires 'Honor character's Post-History Instructions' in Generation Settings → Prompts.",
+          }}
+        />
 
         {/* Error Message */}
         {error && (
@@ -865,6 +722,7 @@ export function CharacterEdit({
             type="button"
             variant="secondary"
             onClick={handleClose}
+            disabled={isEditing || isUploadingExpressions}
             className="flex-1"
           >
             Cancel

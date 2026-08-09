@@ -21,6 +21,7 @@ import { can, hasPermission } from '../../utils/permissions';
 import { api, type CharacterInfo } from '../../api/client';
 import { Button, ConfirmDialog } from '../ui';
 import { CharacterCreation } from '../character/CharacterCreation';
+import { CharacterInterview } from '../character/interview/CharacterInterview';
 import { CharacterEdit } from '../character/CharacterEdit';
 import { CharacterImport } from '../character/CharacterImport';
 
@@ -49,6 +50,7 @@ export function CharacterManagementPage() {
   const [isLoadingEdit, setIsLoadingEdit] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [showInterview, setShowInterview] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [exportingAvatar, setExportingAvatar] = useState<string | null>(null);
 
@@ -179,7 +181,7 @@ export function CharacterManagementPage() {
             <Button
               variant="primary"
               size="sm"
-              onClick={() => setShowCreate(true)}
+              onClick={() => setShowInterview(true)}
               className="flex items-center gap-1.5 shrink-0"
             >
               <Plus size={16} />
@@ -252,13 +254,28 @@ export function CharacterManagementPage() {
         )}
       </div>
 
-      {/* Create modal */}
+      {/* Create modal — plain form, reached via the interview wizard's
+          "Use the simple form instead" escape hatch */}
       <CharacterCreation
         isOpen={showCreate}
         onClose={() => setShowCreate(false)}
         onCreated={() => {
           setShowCreate(false);
           fetchCharacters();
+        }}
+      />
+
+      {/* Interview wizard — default "New" flow */}
+      <CharacterInterview
+        isOpen={showInterview}
+        onClose={() => setShowInterview(false)}
+        onCreated={() => {
+          setShowInterview(false);
+          fetchCharacters();
+        }}
+        onUseSimpleForm={() => {
+          setShowInterview(false);
+          setShowCreate(true);
         }}
       />
 

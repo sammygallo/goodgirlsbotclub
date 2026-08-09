@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useCharacterStore } from '../../stores/characterStore';
-import { Modal, Button, Input, TextArea, ImageUpload, ExpressionUpload, TagInput } from '../ui';
+import { Modal, Button, ImageUpload, ExpressionUpload } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
-import { AlternateGreetingsEditor } from './AlternateGreetingsEditor';
-import { AIHelperButton } from './AIHelperButton';
+import { CoreCardFields } from './fields/CoreCardFields';
+import { AdvancedCardFields } from './fields/AdvancedCardFields';
 import { spritesApi } from '../../api/client';
 
 interface CharacterCreationProps {
@@ -185,227 +185,38 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
           label="Avatar"
         />
 
-        {/* Name - Required */}
-        <Input
-          label="Name *"
-          placeholder="Character's name"
-          value={formData.name}
-          onChange={handleChange('name')}
-          required
-          autoFocus
-        />
-
-        {/* Description */}
-        <TextArea
-          label="Description"
-          labelExtra={
-            <AIHelperButton
-              field="description"
-              fields={aiFieldsSnapshot}
-              onResult={setAIResult('description')}
-            />
-          }
-          placeholder="Describe the character's appearance, background, and other details..."
-          value={formData.description}
-          onChange={handleChange('description')}
-          rows={3}
-        />
-
-        {/* Personality */}
-        <TextArea
-          label="Personality"
-          labelExtra={
-            <AIHelperButton
-              field="personality"
-              fields={aiFieldsSnapshot}
-              onResult={setAIResult('personality')}
-            />
-          }
-          placeholder="Character's personality traits, mannerisms, speech patterns..."
-          value={formData.personality}
-          onChange={handleChange('personality')}
-          rows={3}
-        />
-
-        {/* First Message */}
-        <TextArea
-          label="First Message"
-          labelExtra={
-            <AIHelperButton
-              field="firstMessage"
-              fields={aiFieldsSnapshot}
-              onResult={setAIResult('firstMessage')}
-            />
-          }
-          placeholder="The character's opening message when starting a new chat..."
-          value={formData.firstMessage}
-          onChange={handleChange('firstMessage')}
-          rows={4}
-        />
-
-        {/* Alternate Greetings */}
-        <AlternateGreetingsEditor
-          greetings={alternateGreetings}
-          onChange={setAlternateGreetings}
-        />
-
-        {/* Scenario */}
-        <TextArea
-          label="Scenario"
-          labelExtra={
-            <AIHelperButton
-              field="scenario"
-              fields={aiFieldsSnapshot}
-              onResult={setAIResult('scenario')}
-            />
-          }
-          placeholder="The setting or context for conversations..."
-          value={formData.scenario}
-          onChange={handleChange('scenario')}
-          rows={2}
+        <CoreCardFields
+          formData={formData}
+          onChange={handleChange}
+          alternateGreetings={alternateGreetings}
+          onAlternateGreetingsChange={setAlternateGreetings}
+          aiHelper={{ fields: aiFieldsSnapshot, onResult: setAIResult }}
         />
 
         {/* Expression Images */}
         <ExpressionUpload onExpressionsChange={setExpressionFiles} />
 
-        {/* Collapsible Advanced Section */}
-        <details className="group">
-          <summary className="cursor-pointer text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] py-2">
-            Advanced Options
-          </summary>
-
-          <div className="space-y-4 mt-2 pl-2 border-l-2 border-[var(--color-border)]">
-            {/* Example Messages */}
-            <TextArea
-              label="Example Messages"
-              labelExtra={
-                <AIHelperButton
-                  field="exampleMessages"
-                  fields={aiFieldsSnapshot}
-                  onResult={setAIResult('exampleMessages')}
-                />
-              }
-              placeholder="Example dialogue to help the AI understand the character's voice..."
-              value={formData.exampleMessages}
-              onChange={handleChange('exampleMessages')}
-              rows={4}
-            />
-
-            {/* Character's Note (Depth Prompt) */}
-            <div className="space-y-2">
-              <TextArea
-                label="Character's Note"
-                placeholder="Injected at a configurable depth in the chat to reinforce behavior..."
-                value={depthPromptPrompt}
-                onChange={(e) => setDepthPromptPrompt(e.target.value)}
-                rows={2}
-              />
-              {depthPromptPrompt && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-                      Injection Depth
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={20}
-                      value={depthPromptDepth}
-                      onChange={(e) => setDepthPromptDepth(Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-                      Role
-                    </label>
-                    <select
-                      value={depthPromptRole}
-                      onChange={(e) =>
-                        setDepthPromptRole(e.target.value as 'system' | 'user' | 'assistant')
-                      }
-                      className="w-full px-3 py-2 bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-                    >
-                      <option value="system">System</option>
-                      <option value="user">User</option>
-                      <option value="assistant">Assistant</option>
-                    </select>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* System Prompt Override */}
-            <TextArea
-              label="System Prompt Override"
-              placeholder="Overrides the main system prompt for this character..."
-              value={systemPromptOverride}
-              onChange={(e) => setSystemPromptOverride(e.target.value)}
-              rows={3}
-            />
-
-            {/* Post-History Instructions */}
-            <TextArea
-              label="Post-History Instructions"
-              placeholder="Instructions appended after the chat history..."
-              value={postHistoryInstructions}
-              onChange={(e) => setPostHistoryInstructions(e.target.value)}
-              rows={2}
-            />
-
-            {/* Talkativeness */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1.5">
-                Talkativeness ({talkativeness})
-              </label>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={talkativeness}
-                onChange={(e) => setTalkativeness(e.target.value)}
-                className="w-full"
-              />
-              <p className="text-xs text-[var(--color-text-secondary)] mt-1">
-                Used in group chats to control how often this character speaks.
-              </p>
-            </div>
-
-            {/* Character Version */}
-            <Input
-              label="Character Version"
-              placeholder="e.g., 1.0"
-              value={characterVersion}
-              onChange={(e) => setCharacterVersion(e.target.value)}
-            />
-
-            {/* Creator Notes */}
-            <TextArea
-              label="Creator Notes"
-              placeholder="Notes about the character for other users..."
-              value={formData.creatorNotes}
-              onChange={handleChange('creatorNotes')}
-              rows={2}
-            />
-
-            {/* Creator */}
-            <Input
-              label="Creator"
-              placeholder="Your name or handle"
-              value={formData.creator}
-              onChange={handleChange('creator')}
-            />
-
-            {/* Tags */}
-            <TagInput
-              label="Tags"
-              value={formData.tags}
-              onChange={(tags) => setFormData((prev) => ({ ...prev, tags }))}
-              suggestions={getAllTags()}
-            />
-          </div>
-        </details>
+        <AdvancedCardFields
+          formData={formData}
+          onChange={handleChange}
+          onTagsChange={(tags) => setFormData((prev) => ({ ...prev, tags }))}
+          tagSuggestions={getAllTags()}
+          characterVersion={characterVersion}
+          onCharacterVersionChange={setCharacterVersion}
+          depthPromptPrompt={depthPromptPrompt}
+          onDepthPromptPromptChange={setDepthPromptPrompt}
+          depthPromptDepth={depthPromptDepth}
+          onDepthPromptDepthChange={setDepthPromptDepth}
+          depthPromptRole={depthPromptRole}
+          onDepthPromptRoleChange={setDepthPromptRole}
+          systemPromptOverride={systemPromptOverride}
+          onSystemPromptOverrideChange={setSystemPromptOverride}
+          postHistoryInstructions={postHistoryInstructions}
+          onPostHistoryInstructionsChange={setPostHistoryInstructions}
+          talkativeness={talkativeness}
+          onTalkativenessChange={setTalkativeness}
+          aiHelper={{ fields: aiFieldsSnapshot, onResult: setAIResult }}
+        />
 
         {/* Error Message */}
         {error && (
@@ -420,6 +231,7 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
             type="button"
             variant="secondary"
             onClick={handleClose}
+            disabled={isCreating || isUploadingExpressions}
             className="flex-1"
           >
             Cancel
