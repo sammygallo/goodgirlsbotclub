@@ -26,6 +26,7 @@ import { can, hasPermission } from '../../utils/permissions';
 import { haptic } from '../../utils/haptics';
 import { Avatar, Button, Input } from '../ui';
 import { CharacterCreation } from '../character/CharacterCreation';
+import { CharacterInterview } from '../character/interview/CharacterInterview';
 import { CharacterImport } from '../character/CharacterImport';
 import { CharacterPreviewModal } from '../character/CharacterPreviewModal';
 import { CharacterRichText } from '../character/CharacterRichText';
@@ -58,6 +59,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const userRole = currentUser?.role;
   const canCreateCharacters = can(userRole, 'character:create');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showInterviewModal, setShowInterviewModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showCharacterList, setShowCharacterList] = useState(false);
   const [failedExpressions, setFailedExpressions] = useState<Set<string>>(new Set());
@@ -815,7 +817,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   <Button
                     variant="secondary"
                     className="flex-1"
-                    onClick={() => setShowCreateModal(true)}
+                    onClick={() => setShowInterviewModal(true)}
                   >
                     <Plus size={18} className="mr-2" />
                     New
@@ -827,11 +829,23 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         )}
       </aside>
 
-      {/* Character Creation Modal */}
+      {/* Character Creation Modal — plain form, reached via the interview
+          wizard's "Use the simple form instead" escape hatch */}
       <CharacterCreation
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
         onCreated={handleCharacterCreated}
+      />
+
+      {/* Character Interview Wizard — default "New" flow */}
+      <CharacterInterview
+        isOpen={showInterviewModal}
+        onClose={() => setShowInterviewModal(false)}
+        onCreated={handleCharacterCreated}
+        onUseSimpleForm={() => {
+          setShowInterviewModal(false);
+          setShowCreateModal(true);
+        }}
       />
 
       {/* Character Import Modal */}
