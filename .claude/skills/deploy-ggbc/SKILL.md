@@ -95,6 +95,16 @@ The `ggbc-backend` container's CMD is `alembic upgrade head && uvicorn …`, so 
 
 API secrets (Replicate keys, OpenAI keys, etc.) are Fernet-encrypted in Postgres using `SECRET_ENCRYPTION_KEY` from `/opt/goodgirlsbotclub/.env`. **Never** regenerate or change this key without re-encrypting the existing rows — every secret in the DB becomes unrecoverable. If you find the var unset on the droplet, the backend falls back to a publicly-known dev key (visible in source), which would mean every API key in the DB is decryptable by anyone reading the repo.
 
+### 6. NEVER scope `docker compose pull`/`up -d` to a single service — always deploy all three together
+
+It's tempting, when only the frontend image actually changed, to save a few seconds with `docker compose pull frontend && docker compose up -d frontend` instead of the full `docker compose pull && docker compose up -d`. **This takes the site down.** `postgres` and `ggbc-backend` both run with `network_mode: "service:frontend"` (gotcha #1/#2) — they don't have their own network namespace, they borrow the frontend container's. Recreating *only* the frontend container destroys the network namespace `postgres`/`ggbc-backend` are still attached to; they keep running as processes (`docker ps` cheerfully reports them `Up`, exactly like the alembic-race case in step 5), but nothing can reach them — `curl 127.0.0.1:8001/health` gets `Connection refused` and the site is fully down until they're recreated too.
+
+The visible symptom is a **persistent** 502 (unlike the normal alembic-migration 502 blip in step 5, this one never clears on its own — polling `/health` for 60s and seeing no change is the tell). `docker compose logs frontend` will show `connect() failed (111: Connection refused) ... upstream: "http://127.0.0.1:8001/..."` even though `ggbc-backend`'s own logs show it started cleanly — the backend is fine, it's just marooned on a namespace nginx no longer shares.
+
+**Fix:** `docker compose up -d` with no service argument — this recreates `postgres` and `ggbc-backend` to attach to the current frontend container, and recovery is immediate (confirmed 2026-08-09: `/health` back to 200 on the very next poll after the full `up -d`).
+
+The one-line takeaway: **there is no such thing as a partial restart on this stack.** Step 4's command is deliberately `docker compose pull && docker compose up -d` with no service scoping, even when you know only one image changed — don't "optimize" it. **Incurred on 2026-08-09**: a frontend-only hotfix deploy (`db6423c`, the interview-wizard close-button fix) took the site down for ~2 minutes this way before being caught and fixed with a full `up -d`.
+
 ## Arguments
 
 The skill accepts optional branch names as arguments:
@@ -344,10 +354,12 @@ gh run view <run-id> --repo <repo> --log-failed
 ssh root@159.89.180.146 "cd /opt/goodgirlsbotclub && git pull origin main && docker compose pull && docker compose up -d"
 ```
 
+**Never scope `pull`/`up -d` to a single service (e.g. `... pull frontend && ... up -d frontend`), even on a frontend-only or backend-only change.** See Environment gotcha #6 — `postgres`/`ggbc-backend` share the frontend container's network namespace, and restarting frontend alone strands them, unreachable, with no visible warning until you poll `/health` and it never clears.
+
 Pull-only deploy:
 - `git pull origin main` — fetches the latest `docker-compose.yml` and any config/script changes
-- `docker compose pull` — pulls the freshly-published frontend AND backend images from GHCR
-- `docker compose up -d` — recreates any containers whose image changed and restarts them
+- `docker compose pull` — pulls the freshly-published frontend AND backend images from GHCR (harmless no-op for whichever one didn't change)
+- `docker compose up -d` — recreates ALL THREE containers together so they share a fresh, consistent network namespace, restarting only the ones whose image actually changed
 
 Should complete in under a minute. **Never add `--build`.** Building on the droplet is explicitly prohibited (see Environment gotcha #3).
 
