@@ -40,6 +40,7 @@ import {
   runCardChecks,
   runGroupJudge,
 } from '../utils/storyIngest/reconcileJudge';
+import { isFactTombstone } from '../types/storyBible';
 import type { BibleFact, Contradiction, FactCategory, Scene } from '../types/storyBible';
 import {
   emptyCheckpoint,
@@ -769,6 +770,11 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
           `${reconciled.truncatedCharacters} ${reconciled.truncatedCharacters === 1 ? 'character had' : 'characters had'} more facts than one card check could hold, so the oldest weren’t compared against the card.`
         );
       }
+      if (reconciled.suppressedCardConflicts > 0) {
+        notes.push(
+          `${reconciled.suppressedCardConflicts} card ${reconciled.suppressedCardConflicts === 1 ? 'conflict was' : 'conflicts were'} left out because you deleted the ${reconciled.suppressedCardConflicts === 1 ? 'fact it would have cited' : 'facts they would have cited'}.`
+        );
+      }
       if (reconciled.dropped > 0) {
         notes.push(
           `${reconciled.dropped} ${reconciled.dropped === 1 ? 'contradiction' : 'contradictions'} didn’t fit and were left out.`
@@ -998,13 +1004,13 @@ const FACT_CATEGORIES: FactCategory[] = ['reveal', 'introduction', 'change', 'wo
  *  `groupFacts` would either crash on `.text` or, worse, be grouped as a
  *  fact with no subject and judged. Skipped rather than trusted.
  *
- *  `existingIds` is deliberately EVERY row's id, including the ones the
- *  shape check rejected. It answers a different question from `facts`:
- *  "does this fact row exist on the server?", which is what the merge's
- *  dangling-source prune needs. Building that set from the parsed list
- *  instead would make an unreadable-but-present row look deleted, and
- *  the prune would silently drop a perfectly valid contradiction that
- *  cites it. */
+ *  `existingIds` is deliberately every LIVE row's id, including the ones
+ *  the shape check rejected. It answers a different question from
+ *  `facts`: "does this fact row still exist on the server?", which is
+ *  what the merge's dangling-source prune needs. Building that set from
+ *  the parsed list instead would make an unreadable-but-present row look
+ *  deleted, and the prune would silently drop a perfectly valid
+ *  contradiction that cites it. */
 async function loadAllFacts(
   projectId: string
 ): Promise<{ facts: BibleFact[]; existingIds: Set<string> }> {
@@ -1018,6 +1024,12 @@ async function loadAllFacts(
     });
     for (const row of res.items ?? []) {
       const data = row?.data as Record<string, unknown> | undefined;
+      // A tombstone is a surviving ROW, not a surviving fact (phase 10
+      // §4.1 keeps it for cursor stability), so it must reach neither
+      // set. Counting it as existing would tell the prune a deleted fact
+      // is still live and leave every entry citing it immortal — the
+      // exact opposite of what the user's delete asked for.
+      if (isFactTombstone(data)) continue;
       const id =
         data && typeof data.id === 'string' ? data.id : (row?.id as string | undefined);
       if (id) existingIds.add(id);
@@ -1126,6 +1138,9 @@ export interface ReconcilePassOutcome {
   /** Card-backed characters with more facts than one card check could
    *  carry (see buildCardCheckTargets). */
   truncatedCharacters: number;
+  /** Card conflicts dropped because the user had deleted the card fact
+   *  they would have cited (phase 10 §4.4). */
+  suppressedCardConflicts: number;
   dropped: number;
   llmCalls: number;
 }
@@ -1190,6 +1205,7 @@ async function runReconcilePass(opts: {
   // fact row (harmless, and re-derived to the same id next run) rather
   // than a contradiction citing a fact that does not exist.
   const cardContradictions: { cardFactRowId: string }[] = [];
+  let suppressedCardConflicts = 0;
   for (const conflict of cardOutcome.detected) {
     const fact = buildCardFact(conflict);
     const row = await storyApi.appendFact(
@@ -1198,6 +1214,15 @@ async function runReconcilePass(opts: {
     );
     if (abort.signal.aborted) throw abortError();
     if (!stillOurs()) return null;
+    // The card fact's id is deterministic and the append is idempotent by
+    // id, so a card fact the user DELETED comes back as its tombstone.
+    // Citing it would resurrect the exact claim they adjudicated away, on
+    // every rebuild, with no way to make it stop. The delete IS the
+    // resolution: drop the conflict and report the count below.
+    if (isFactTombstone(row?.data)) {
+      suppressedCardConflicts++;
+      continue;
+    }
     // Append-only: re-posting a known id returns the STORED row, so this
     // is the id to cite even on a re-run that reworded the claim.
     const rowId = typeof row?.id === 'string' ? row.id : fact.id;
@@ -1234,6 +1259,7 @@ async function runReconcilePass(opts: {
     unreadableChecks: groupOutcome.unreadableBatches + cardOutcome.unreadableChecks,
     windowedGroups: groupOutcome.windowedGroups,
     truncatedCharacters: cardOutcome.truncatedCharacters,
+    suppressedCardConflicts,
     dropped,
     llmCalls: groupOutcome.llmCalls + cardOutcome.llmCalls,
   };

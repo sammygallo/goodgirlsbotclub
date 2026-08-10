@@ -18,6 +18,7 @@ import type {
   RefState,
   SourceRef,
   SourceSnapshot,
+  UserAnnotationSourceRef,
 } from '../../types/storyBible';
 
 /** Non-cryptographic fallback for non-secure contexts (LAN dev over
@@ -115,6 +116,21 @@ export function chatMessageSourceRef(
     kind: 'chat_message',
     ref: { chat, msg },
     snapshot: excerpt ? { excerpt: excerpt.slice(0, 500) } : {},
+    captured_at: capturedAt(),
+  };
+}
+
+/** The provenance terminator: "a human typed this."
+ *
+ *  Used by every phase-10 surface where the user authors content directly
+ *  — a Write-my-own fact, a pasted voice sample. There is nothing to
+ *  snapshot (the text IS the source) and nothing to resolve later, which
+ *  is why `resolveRefState` reports this kind as permanently live. */
+export function userAnnotationSourceRef(): UserAnnotationSourceRef {
+  return {
+    kind: 'user_annotation',
+    ref: null,
+    snapshot: {},
     captured_at: capturedAt(),
   };
 }
