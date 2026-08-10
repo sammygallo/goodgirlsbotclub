@@ -83,8 +83,10 @@ export function StartIngestModal({
           </p>
           <p className="text-xs text-[var(--color-text-secondary)]">
             A rough figure from our own tokenizer, not your provider's
-            count — treat it as a ballpark. Two model calls, plus a
-            keyword pass that costs nothing.
+            count — treat it as a ballpark. It covers the groundwork's two
+            model calls; reading the chat and checking it for
+            contradictions cost more on top, sized to how long the story
+            is.
           </p>
         </div>
 

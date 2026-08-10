@@ -19,6 +19,24 @@
   --color-text-action: #fbbf24;
   --color-text-thought: #a78bfa;
   --color-text-dialogue: #ffffff;
+
+  /* Status colours. Deliberately NOT part of the theme preset set that
+     applyTheme() overwrites: "this went wrong" must not become an
+     unreadable green because a user picked a green palette.
+
+     These existed only as references until now — the story-ingest UI
+     (phase 6 onward) has been asking for --color-warning/-error/-success
+     and the progress bar for --color-accent since it shipped, and an
+     undefined custom property makes `color: var(--x)` invalid at
+     computed-value time, so every one of those silently rendered with no
+     colour at all. Nothing looked broken, which is exactly why it went
+     unnoticed: the text was still there, just never tinted. */
+  --color-warning: #fbbf24;
+  --color-error: #f87171;
+  --color-success: #4ade80;
+  /* Follows the theme on purpose — it is an emphasis colour, not a
+     status one (the ingest progress bar's fill). */
+  --color-accent: var(--color-primary);
   color-scheme: dark;
 }
 

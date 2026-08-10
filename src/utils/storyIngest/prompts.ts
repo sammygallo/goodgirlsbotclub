@@ -17,6 +17,15 @@
 // pipeline): a checkpoint stamped with the OLD version is cold-start-only
 // and has no chunk_plan for the walk to resume, so the version bump is
 // what makes the store refuse to resume it and start a fresh build.
+//
+// Deliberately NOT bumped for phase 8 (reconcile): reconcile ADDS prompts
+// rather than changing the walk's or cold start's, so every mid-walk
+// checkpoint out there is still safe to continue — bumping would strand
+// each of them into a fresh paid rebuild for no benefit. The consequence
+// to accept: the version is one number for all of these prompts, so a
+// future reconcile-prompt change big enough to warrant a bump also
+// invalidates walk resumability. Weigh that before bumping for a judge
+// tweak.
 export const PROMPT_VERSION = 'ingest-v2';
 
 /** Ask for one JSON object. The parser is brace-matching and truncation
@@ -139,6 +148,73 @@ ${samplePassages.map((p, i) => `${i + 1}. ${p}`).join('\n') || '(no samples avai
 
 Voice profile (JSON object):`;
 }
+
+// ---------------------------------------------------------------------------
+// Reconcile (phase 8). Two prompt shapes, both judging for CONTRADICTIONS
+// only — never resolving one, which is the phase-10 human review's job.
+//
+// The model is given short per-call labels (f1, f2, …) instead of the
+// facts' real UUIDs: models mangle UUIDs, and a mangled id that happens
+// to resolve is far worse than one that obviously doesn't. The label→id
+// map is client-side and per-call, and nothing durable is ever seeded
+// from a label (they are positional; ids are content-seeded).
+// ---------------------------------------------------------------------------
+
+export const RECONCILE_SYSTEM = `You audit a story bible for genuine contradictions — claims that cannot both be true of the same subject.
+
+Rules:
+- Only flag MUTUALLY EXCLUSIVE claims. If both could be true at once, it is not a contradiction.
+- Story progression is NOT a contradiction: a "change" fact superseding an earlier state is normal, unless both are asserted as concurrently true.
+- Groups labelled "(world / unattributed)" may mix facts about DIFFERENT subjects — never force a conflict between facts that could be about different people or things.
+- Never pair facts from two different groups.
+- If unsure, do not flag it. If nothing conflicts, return an empty list.
+- Return ONLY one JSON object. No prose, no markdown fences.
+- Shape: {"contradictions": [{"facts": ["f1", "f2"], "type": "character_attribute", "description": "one sentence naming the conflict"}]}
+- "facts" must name at least TWO different labels from the SAME group.
+- "type" must be exactly one of: character_attribute, world_rule, timeline, relationship, object_state.`;
+
+/** `groups` is pre-rendered by reconcileJudge.ts — it owns the labels and
+ *  the clamping, so the prompt layer never sees a real fact id. */
+export function reconcilePrompt(groups: string): string {
+  return `Fact groups to audit (each group is one subject and one kind of claim):
+
+${groups}
+
+Contradictions (JSON object):`;
+}
+
+export const RECONCILE_REPAIR_INSTRUCTION = `That response could not be parsed as a JSON object with a "contradictions" array (see the system instructions). Return ONLY the corrected JSON object — no prose, no markdown fences, no explanation.`;
+
+export const CARD_CHECK_SYSTEM = `You compare what a character's ORIGINAL character card says about them against what actually happened in the roleplay, and report only where the two cannot both be true.
+
+Roleplayers routinely override their own card — that is the point of this check.
+
+Rules:
+- Only flag MUTUALLY EXCLUSIVE claims: the card says one thing, the story establishes something that cannot coexist with it.
+- A card claim the story simply never touches is NOT a contradiction. Neither is a card trait the story develops, deepens or moves past over time — only a direct clash counts.
+- If unsure, do not flag it. If nothing clashes, return an empty list.
+- Return ONLY one JSON object. No prose, no markdown fences.
+- Shape: {"contradictions": [{"facts": ["f1"], "card_claim": "the card's own words, quoted or closely paraphrased", "type": "character_attribute", "description": "one sentence naming the conflict"}]}
+- "facts" must name at least ONE label from the story facts below — the card side is supplied by "card_claim", never by a label.
+- "type" must be exactly one of: character_attribute, world_rule, timeline, relationship, object_state.`;
+
+export function cardCheckPrompt(opts: {
+  characterName: string;
+  cardText: string;
+  facts: string;
+}): string {
+  return `Character: ${opts.characterName}
+
+What the character card says:
+${opts.cardText || '(the card said nothing usable)'}
+
+What the story established:
+${opts.facts}
+
+Contradictions (JSON object):`;
+}
+
+export const CARD_CHECK_REPAIR_INSTRUCTION = RECONCILE_REPAIR_INSTRUCTION;
 
 // JSON-recovery helpers now live in the shared LLM toolkit; re-exported here
 // so existing ingestion imports keep working.

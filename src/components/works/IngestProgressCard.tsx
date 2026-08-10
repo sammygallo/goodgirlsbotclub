@@ -1,7 +1,7 @@
 import { Check, CircleAlert, Loader2 } from 'lucide-react';
 import {
+  INGEST_PASSES,
   PASS_LABELS,
-  PHASE6_PASSES,
   useStoryIngestStore,
 } from '../../stores/storyIngestStore';
 import { Button } from '../ui';
@@ -21,7 +21,7 @@ export function IngestProgressCard() {
   const usage = checkpoint?.token_usage;
   const spent = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
   const done = completed.length;
-  const total = PHASE6_PASSES.length;
+  const total = INGEST_PASSES.length;
 
   // Stays visible after a stop or failure: hiding it also hides the
   // reset hatch and the token subtotal, which is exactly when the user
@@ -63,7 +63,7 @@ export function IngestProgressCard() {
       )}
 
       <ul className="space-y-1">
-        {PHASE6_PASSES.map((pass) => {
+        {INGEST_PASSES.map((pass) => {
           const isDone = completed.includes(pass);
           const isCurrent = currentPass === pass;
           return (
@@ -98,19 +98,29 @@ export function IngestProgressCard() {
 
       {!isRunning && stopped && (
         <p className="text-xs text-[var(--color-text-secondary)]">
-          {checkpoint?.current_pass === 'transcript_walk' &&
-          checkpoint.chunk_plan.length > 0
-            ? // The transcript walk (phase 7) checkpoints every chunk, so
-              // this genuinely continues rather than starting over. Keyed
-              // on chunk_plan, NOT chunk_index, to stay in lockstep with
-              // run()'s resumableWalk gate — at index 0 the walk still
-              // re-plans, but cold-start and world-info are skipped, so
-              // "starts from the beginning" would be a lie.
-              'Building again picks up where it stopped.'
-            : // Honest about the limit: cold-start/world-info always
-              // restart from the beginning — they are cheap enough that
-              // resuming them isn't worth the complexity.
-              'Building again starts from the beginning.'}
+          {/* These three branches must stay in lockstep with run()'s
+              `resumableReconcile` and `resumableWalk` predicates. When
+              reconcile shipped, only the walk branch existed, so a paused
+              reconcile — the one state where the ENTIRE chat is already
+              paid for and durable — was told "starts from the beginning",
+              right beside the button that would have made it true. */}
+          {checkpoint?.current_pass === 'reconcile'
+            ? // Everything upstream of reconcile is durable on the server,
+              // so this really is only the contradiction check again.
+              'Building again only re-checks for contradictions.'
+            : checkpoint?.current_pass === 'transcript_walk' &&
+                checkpoint.chunk_plan.length > 0
+              ? // The transcript walk (phase 7) checkpoints every chunk, so
+                // this genuinely continues rather than starting over. Keyed
+                // on chunk_plan, NOT chunk_index, to stay in lockstep with
+                // run()'s resumableWalk gate — at index 0 the walk still
+                // re-plans, but cold-start and world-info are skipped, so
+                // "starts from the beginning" would be a lie.
+                'Building again picks up where it stopped.'
+              : // Honest about the limit: cold-start/world-info always
+                // restart from the beginning — they are cheap enough that
+                // resuming them isn't worth the complexity.
+                'Building again starts from the beginning.'}
         </p>
       )}
 
