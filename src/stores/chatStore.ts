@@ -7,7 +7,10 @@ import {
   type CharacterInfo,
   type GenerationOptions,
   type GenerationImage,
+  type Project,
+  type ProjectChatRef,
 } from '../api/client';
+import type { Edit } from '../types/storyBible';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 import { useSettingsStore } from './settingsStore';
 import { usePersonaStore } from './personaStore';
@@ -2795,6 +2798,233 @@ function normalizeMessage(msg: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Rename healing (story-state phase 10 §7)
+// ---------------------------------------------------------------------------
+
+/** Chat identity is the (avatar, file_name) PAIR — a rename moves only the
+ *  second half, so both must match for a row to be one this heal owns. */
+function sameChatRef(a: ProjectChatRef, b: ProjectChatRef): boolean {
+  return a.character_avatar === b.character_avatar && a.file_name === b.file_name;
+}
+
+function isChatRef(value: unknown): value is ProjectChatRef {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.character_avatar === 'string' && typeof v.file_name === 'string';
+}
+
+/** A project row this heal is willing to PATCH. `chats` and `server_ts` cross
+ *  the fetch boundary as `unknown` — and a 409 body's `current` is adopted
+ *  without validation by the client — so a row that doesn't carry a real
+ *  member array is skipped rather than spread into a PATCH that would blank
+ *  the list or write `base_ts: undefined`. */
+function isPatchableProject(value: unknown): value is Project {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === 'string' &&
+    typeof v.server_ts === 'number' &&
+    Array.isArray(v.chats) &&
+    v.chats.every(isChatRef)
+  );
+}
+
+/** The `meta.source.chat` pointer, proven object-by-object rather than cast:
+ *  the section arrives as `unknown` and the rewrite below re-spreads BOTH
+ *  levels, so a `source` or `chat` that isn't an object would silently
+ *  produce a meta row with the wrong shape. */
+function metaChatPointer(data: unknown): {
+  source: Record<string, unknown>;
+  chat: Record<string, unknown>;
+  ref: ProjectChatRef;
+} | null {
+  if (!data || typeof data !== 'object') return null;
+  const source = (data as Record<string, unknown>).source;
+  if (!source || typeof source !== 'object') return null;
+  const chat = (source as Record<string, unknown>).chat;
+  if (!chat || typeof chat !== 'object') return null;
+  const ref = (chat as Record<string, unknown>).ref;
+  if (!isChatRef(ref)) return null;
+  return {
+    source: source as Record<string, unknown>,
+    chat: chat as Record<string, unknown>,
+    ref,
+  };
+}
+
+/**
+ * Repoint every Work — and every Work's bible — that referenced a chat by the
+ * name it just lost (phase 10 §7).
+ *
+ * The rename ITSELF has already succeeded by the time this runs, so nothing
+ * here may surface as a rename failure, one Work's failure must not stop the
+ * next, and success is silent. Relink (Story tab) stays the guaranteed
+ * recovery path for whatever this best-effort pass misses.
+ */
+async function healRenamedChatRefs(
+  oldRef: ProjectChatRef,
+  newRef: ProjectChatRef
+): Promise<void> {
+  let degraded = false;
+  const note = (what: string, error: unknown) => {
+    degraded = true;
+    console.warn(`[chatStore] rename heal: ${what}`, error);
+  };
+
+  try {
+    // Lazy imports only: this module already sits inside the
+    // authStore/lovenseStore cycle, and a static edge into projectStore
+    // TDZ-crashes the app at boot — projectStore.openChatRef reaches back
+    // into this module exactly the same way.
+    const [{ useProjectStore }, client, { bibleUuid, capturedAt }] = await Promise.all([
+      import('./projectStore'),
+      import('../api/client'),
+      import('../utils/storyBible/sourceRefs'),
+    ]);
+    const {
+      projectsApi,
+      storyApi,
+      ProjectConflictError,
+      StoryConflictError,
+      isStoryManifestShape,
+    } = client;
+
+    const withRenamedChats = (p: Project) => ({
+      chats: p.chats.map((c) => (sameChatRef(c, oldRef) ? newRef : c)),
+    });
+
+    /** `updateSelected`'s adopt-and-re-derive shape, but per-row: a rename
+     *  reaches Works that are not the selected one, which that action cannot
+     *  express. */
+    const repointProject = async (project: Project): Promise<Project> => {
+      try {
+        return await projectsApi.update(project.id, {
+          ...withRenamedChats(project),
+          base_ts: project.server_ts,
+        });
+      } catch (error) {
+        if (!(error instanceof ProjectConflictError) || !isPatchableProject(error.current)) {
+          throw error;
+        }
+        const winner = error.current;
+        // The winner may already carry the new name (another device healed
+        // it, or the user relinked by hand) — re-deriving from it then means
+        // there is nothing left to write.
+        if (!winner.chats.some((c) => sameChatRef(c, oldRef))) return winner;
+        return projectsApi.update(winner.id, {
+          ...withRenamedChats(winner),
+          base_ts: winner.server_ts,
+        });
+      }
+    };
+
+    /** Returns false when this bible was not pointing at the renamed chat, so
+     *  the caller knows not to log an edit for a write that never happened. */
+    const rewriteMeta = async (
+      projectId: string,
+      data: Record<string, unknown>,
+      baseTs: number
+    ): Promise<boolean> => {
+      const pointer = metaChatPointer(data);
+      if (!pointer || !sameChatRef(pointer.ref, oldRef)) return false;
+      await storyApi.putSection(
+        projectId,
+        'meta',
+        {
+          // A section PUT is a full replace, so everything read is resent and
+          // only the pointer moves. `snapshot` and `captured_at` stay VERBATIM
+          // (§5.5's relink rule — the snapshot records what was true at
+          // capture), and `ingest_watermark` is untouched: zeroing it would
+          // make the transcript walk re-read a chat whose messages did not
+          // change.
+          ...data,
+          source: { ...pointer.source, chat: { ...pointer.chat, ref: newRef } },
+          updated_at: capturedAt(),
+        },
+        baseTs
+      );
+      return true;
+    };
+
+    const healBible = async (projectId: string) => {
+      // §7 says "GET meta; 404 → skip", but apiRequest collapses a 404 into a
+      // generic Error, and treating every read failure as "no bible" would
+      // swallow the exact case this hook exists for. The manifest answers the
+      // same question explicitly — storyStore.load already gates section
+      // reads this way for the same normal-but-noisy 404.
+      const manifest = await storyApi.manifest(projectId);
+      if (!isStoryManifestShape(manifest)) {
+        throw new Error('unrecognized story manifest');
+      }
+      if (!manifest.sections.some((s) => s.section === 'meta')) return;
+
+      const section = await storyApi.getSection(projectId, 'meta');
+      let rewrote: boolean;
+      try {
+        rewrote = await rewriteMeta(projectId, section.data, section.server_ts);
+      } catch (error) {
+        if (!(error instanceof StoryConflictError) || !error.current) throw error;
+        rewrote = await rewriteMeta(projectId, error.current.data, error.currentTs);
+      }
+      if (!rewrote) return;
+
+      // §5.6's field mapping, built inline: storyStore owns the shared
+      // recordEdit helper, but importing storyStore from here would add
+      // precisely the static store edge §7 forbids.
+      const edit: Edit = {
+        // Minted BEFORE the POST so a transport retry re-sends the same id and
+        // the server's idempotency absorbs it instead of double-logging.
+        id: bibleUuid(),
+        occurred_at: capturedAt(),
+        // The user initiated the rename, even though this write is automatic.
+        actor: 'user',
+        surface: 'bible_direct',
+        target: { type: 'meta', id: null },
+        // Only the file name moved — the avatar half of the ref is identical
+        // by construction. Clamped like every other edit diff; only a
+        // pathological file name could reach the cap.
+        diff: `source chat renamed: ${oldRef.file_name} → ${newRef.file_name}`.slice(0, 2000),
+        classification: 'cosmetic',
+        propagated_to_bible: true,
+        propagation_notes: '',
+      };
+      await storyApi.appendEdit(projectId, edit as unknown as Record<string, unknown>);
+    };
+
+    // The list projection carries `chat_count` but not the refs themselves, so
+    // membership needs a per-row GET; the count at least keeps chat-less Works
+    // out of that fan-out.
+    const rows = (await projectsApi.list()).filter((r) => r.chat_count > 0);
+    for (const row of rows) {
+      try {
+        const project = await projectsApi.get(row.id);
+        if (!isPatchableProject(project)) continue;
+        if (!project.chats.some((c) => sameChatRef(c, oldRef))) continue;
+
+        const repointed = await repointProject(project);
+        // Keep an open Works panel honest about the row just rewritten — but
+        // only if it is still the one on screen.
+        if (useProjectStore.getState().selected?.id === repointed.id) {
+          useProjectStore.setState({ selected: repointed });
+        }
+        await healBible(row.id);
+      } catch (error) {
+        note(`Work ${row.id} still points at the old chat name`, error);
+      }
+    }
+  } catch (error) {
+    note('no Work could be repointed', error);
+  } finally {
+    if (degraded) {
+      showToastGlobal(
+        'Chat renamed — a Work still points at the old name; use Relink in its Story tab',
+        'warning'
+      );
+    }
+  }
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   chatFiles: [],
@@ -3722,6 +3952,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ currentChatFile: sanitized });
       }
       await fetchChatFiles(avatarUrl);
+      // Story-state phase 10 §7: repoint Works and bibles that still name the
+      // old file. Trailing and self-contained — it swallows its own failures,
+      // so a heal that goes wrong can never reach the catch below and report
+      // a rename that already landed as failed.
+      await healRenamedChatRefs(
+        { character_avatar: avatarUrl, file_name: originalFile },
+        // The SERVER-sanitized name, never the caller's raw input: the refs
+        // have to match what /chats/rename actually stored.
+        { character_avatar: avatarUrl, file_name: sanitized }
+      );
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Failed to rename chat' });
     }

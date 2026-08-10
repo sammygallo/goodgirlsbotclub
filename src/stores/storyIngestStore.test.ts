@@ -1783,6 +1783,88 @@ describe('reconcile (phase 8)', () => {
     expect(contradictionsOf(sections).map((c) => c.id)).toEqual(['cites-mangled']);
   });
 
+  it('a DELETED fact row is neither live nor judgeable', async () => {
+    // The delete leaves the ROW behind (phase 10 §4.1 — cursor stability),
+    // so every reader of the log has to discriminate, and both halves of
+    // that matter. An id that still reads as live leaves the entry citing
+    // it immortal, because the prune can then never fire; a payload that
+    // still reads as a fact puts the claim the user deleted back in front
+    // of the judge, which re-detects it and files it all over again.
+    const deleted = { id: 'fact-gone', deleted_at: '2026-08-10T00:00:00.000Z' };
+    // Deliberately fatter than the wire contract, which replaces `data`
+    // wholesale with exactly two keys: what this pins is that the
+    // tombstone check decides, not the shape check that follows it.
+    const deletedButReadable = {
+      ...transcriptFact('fact-wing', 'Ivy sealed the north wing herself.'),
+      deleted_at: '2026-08-10T00:00:00.000Z',
+    };
+    const entry = existingContradiction(['fact-a', 'fact-gone'], {
+      id: 'cites-deleted',
+    });
+
+    const sections = seedReconcileResume({ continuity: { contradictions: [entry] } });
+    wireFactLog([...IVY_FACTS, deleted, deletedButReadable]);
+
+    let judgePrompt = '';
+    const { llm } = scriptedLlm({
+      judge: (ctx) => {
+        judgePrompt = ctx.user;
+        return NOTHING_CONFLICTS;
+      },
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+
+    expect(contradictionsOf(sections)).toEqual([]);
+    // The two live Ivy facts and nothing else: a third label in the group
+    // would mean the deleted claim was handed to the judge anyway.
+    expect(groupLabels(judgePrompt)[0]).toHaveLength(2);
+    expect(judgePrompt).not.toContain('sealed the north wing herself');
+  });
+
+  it('suppresses — and reports — a card conflict whose card fact was deleted', async () => {
+    // The card fact's id is deterministic and appendFact is idempotent by
+    // id, so a card fact the user DELETED comes back as its tombstone.
+    // Citing it would re-file the exact claim they adjudicated away, on
+    // every rebuild, with nothing they could do to make it stop. The
+    // delete is the resolution — and the suppression is reported, because
+    // "no silent caps" covers suppression too.
+    const cardTombstone = {
+      id: cardFactId('char-ivy'),
+      deleted_at: '2026-08-10T00:00:00.000Z',
+    };
+    // What the build BEFORE the delete wrote — it must go too, or the
+    // deleted claim survives in the section that the user reads.
+    const staleCardEntry = existingContradiction([cardFactId('char-ivy'), 'fact-a'], {
+      id: 'stale-card-entry',
+    });
+
+    const sections = seedReconcileResume({
+      continuity: { contradictions: [staleCardEntry] },
+    });
+    const rows = wireFactLog([...IVY_FACTS, cardTombstone]);
+
+    const { llm, counts } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user),
+      card: (ctx) => cardReply(ctx.user),
+    });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+
+    // The card check ran and flagged something; the append hit the
+    // tombstone, so nothing it flagged reached the section and no row was
+    // resurrected.
+    expect(counts.card).toBe(1);
+    expect(appendFact).toHaveBeenCalledTimes(1);
+    expect(rows).toHaveLength(3);
+    expect(contradictionsOf(sections).map((c) => c.id)).toEqual([
+      contradictionId(['fact-a', 'fact-b']),
+    ]);
+
+    const last = ingestWrites()[ingestWrites().length - 1];
+    expect(last.status).toBe('complete');
+    expect(last.error).toContain('1 card conflict was left out');
+  });
+
   it('collapses a drifted citation set into one entry', async () => {
     // Models trim citations nondeterministically: run 1 reports {a,b,c},
     // run 2 {a,b}. Different sorted-source seeds mean different ids, so

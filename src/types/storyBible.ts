@@ -495,3 +495,77 @@ export interface Contradiction {
 export interface ContinuitySection {
   contradictions: Contradiction[];
 }
+
+// ---------------------------------------------------------------------------
+// Edit log (phase 10)
+//
+// Mirrors ggbc-backend `Edit` / `EditTarget`. The log has been writable
+// since phase 4 and readable since phase 5, but nothing on this side ever
+// built a row — phase 8 §11 left the client helper to phase 10, so these
+// types are new here even though the backend models are old. Same
+// extra="forbid" rule as every other section: a drifted field name is a
+// 422 at append time, invisible to tsc.
+// ---------------------------------------------------------------------------
+
+export type EditClassification =
+  | 'cosmetic'
+  | 'substantive'
+  | 'voice_shift'
+  | 'contradiction';
+
+export interface EditTarget {
+  type:
+    | 'scene'
+    | 'character'
+    | 'fact'
+    | 'voice'
+    | 'rule'
+    | 'meta'
+    | 'world'
+    | 'hints'
+    | 'contradiction';
+  /** A real UUID for scene/fact/contradiction/character targets; null for
+   *  the whole-section ones (`meta`, `voice`, `world`, `hints`) which have
+   *  no row id to point at. A non-UUID string is a 422. */
+  id?: string | null;
+}
+
+export interface Edit {
+  id: string;
+  occurred_at: string;
+  actor: 'user' | 'agent';
+  surface: 'rendered_output' | 'bible_direct';
+  target: EditTarget;
+  diff?: string;
+  classification: EditClassification;
+  propagated_to_bible?: boolean;
+  propagation_notes?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Fact tombstones (phase 10)
+// ---------------------------------------------------------------------------
+
+/** A deleted fact's row payload. The backend replaces `data` wholesale with
+ *  exactly these two keys, keeping `seq`/`id`/`created_at` on the row — see
+ *  the delete endpoint's docstring for why the row must survive. */
+export interface FactTombstone {
+  id: string;
+  deleted_at: string;
+}
+
+/** The live-vs-deleted discriminator, in one place.
+ *
+ *  `BibleFact` is `extra="forbid"` server-side, so no appended fact can
+ *  ever carry a `deleted_at` key — presence of the key IS the tombstone.
+ *  Every consumer of a raw `StoryLogEntry.data` (the review index, the
+ *  accordion, reconcile's `loadAllFacts`, the card-fact append) must go
+ *  through this rather than inlining the check, so there is exactly one
+ *  definition of "deleted" to keep in step with the server. */
+export function isFactTombstone(
+  data: Record<string, unknown> | null | undefined
+): data is Record<string, unknown> & FactTombstone {
+  return (
+    !!data && typeof data === 'object' && typeof data.deleted_at === 'string'
+  );
+}

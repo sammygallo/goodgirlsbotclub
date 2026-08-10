@@ -8,21 +8,36 @@ import {
   type StoryResetReason,
   type StoryLogEntry,
   type StoryManifest,
+  type StorySceneOut,
   type StorySceneSummary,
   type StorySectionOut,
 } from '../api/client';
 import { showToastGlobal } from '../components/ui/Toast';
 import {
   STORY_SCHEMA_VERSION,
+  isFactTombstone,
+  type Contradiction,
+  type ContinuitySection,
+  type Edit,
+  type EditClassification,
+  type EditTarget,
   type MetaSection,
+  type SamplePassage,
+  type Scene,
   type StorySectionName,
+  type UserVoiceSection,
 } from '../types/storyBible';
 import {
   bibleUuid,
   capturedAt,
   characterSourceRef,
   chatSourceRef,
+  userAnnotationSourceRef,
 } from '../utils/storyBible/sourceRefs';
+// The delete-time cleanup and the lock-canon auto-fix apply the SAME
+// mechanical rules, so they share one pure implementation rather than two
+// that can disagree about what "cleaned" means.
+import { cleanupFactRefs } from '../utils/storyBible/canonCheck';
 
 /**
  * Story bible state for the Works panel's Story tab (step 2, phase 5).
@@ -91,16 +106,169 @@ interface StoryState {
    *  the manifest already in state, so callers must have a fresh one
    *  (the Story tab always does — it's loaded on open). */
   restoreArchive: (archiveId: string) => Promise<boolean>;
+
+  // --- Review checkpoint (phase 10) ------------------------------------
+
+  /** Every fact row by id, tombstones included — the review surface needs
+   *  arbitrary facts by id and the paged `facts` list can't answer that.
+   *  Lazily built on first use, cleared by `clear()` and patched in place
+   *  by `deleteFact`. Null means "not built yet", not "empty". */
+  factIndex: Map<string, StoryLogEntry> | null;
+  /** Page the whole fact log into `factIndex`. Cheap to call repeatedly —
+   *  returns the cached map unless it's been invalidated. */
+  loadAllFactsById: () => Promise<Map<string, StoryLogEntry> | null>;
+  /** Every scene with its FULL payload, paged to exhaustion.
+   *
+   *  The lock-canon check reads scene ref fields (participants,
+   *  continuity_facts_established, pov_character) that list summaries
+   *  don't carry, so this is a fetch per scene on top of the paging.
+   *  Deliberately not cached and not held in state: it runs once, on an
+   *  explicit user action, against scene counts the plan calls small. */
+  loadAllScenesWithData: () => Promise<StorySceneOut[] | null>;
+  /** The one continuity writer for resolution-shaped changes. `patchFn`
+   *  is pure and re-run against the winner's entries on conflict, so the
+   *  user's intent survives a 409 instead of being merged away or blindly
+   *  overwriting. Returning null from it is an explicit no-op. */
+  patchContinuity: (
+    patchFn: (entries: Contradiction[]) => Contradiction[] | null,
+    editMeta: EditMeta
+  ) => Promise<boolean>;
+  /** Tombstone a fact, then mechanically clean up every contradiction
+   *  that cited it. */
+  deleteFact: (factId: string) => Promise<boolean>;
+  /** Full-replace one scene through a pure patch of its `data`. */
+  patchScene: (
+    sceneId: string,
+    patchFn: (data: Scene) => Scene | null,
+    editMeta: EditMeta
+  ) => Promise<boolean>;
+  /** Fold a scene into its predecessor in the loaded ordering. */
+  mergeSceneIntoPrevious: (sceneId: string) => Promise<boolean>;
+  /** Add a user-written passage to `user_voice.sample_passages`. */
+  appendSamplePassage: (text: string) => Promise<boolean>;
+  /** Point the bible at the same roleplay under a new identity, keeping
+   *  the capture snapshot and the ingest watermark untouched. */
+  relinkSourceChat: (chat: ProjectChatRef) => Promise<boolean>;
+  lockCanon: () => Promise<boolean>;
+  unlockCanon: () => Promise<boolean>;
+}
+
+/** What an action tells `recordEdit` about the change it just made. The
+ *  id, timestamp, actor and surface are the helper's to stamp. */
+export interface EditMeta {
+  target: EditTarget;
+  classification: EditClassification;
+  diff?: string;
 }
 
 const FACT_PAGE = 50;
 const SCENE_PAGE = 100;
 const ARCHIVE_PAGE = 25;
+/** The server's own maximum. The review index pages the whole log, so it
+ *  wants the biggest page it can get, unlike the tab's lazy list. */
+const FACT_INDEX_PAGE = 500;
+/** Backstop on the index's paging loop — a runaway cursor is a hang, not
+ *  an error, and this is the same shape the ingest store's pager uses. */
+const MAX_FACT_INDEX_PAGES = 500;
+/** Same backstop for the scene pager behind the lock-canon check. */
+const MAX_SCENE_INDEX_PAGES = 200;
+/** Backend `EDIT_MAX_BYTES` is 16 KiB on the normalized row; the diff is
+ *  the only free-form field, so it gets a clamp with headroom to spare. */
+const EDIT_DIFF_MAX = 2000;
+/** `SamplePassage.text` has no server cap of its own, but the section
+ *  does (256 KiB) and a pasted novel chapter would eat it. */
+const SAMPLE_PASSAGE_MAX = 4000;
+/** Keeps the voice section from growing without bound; walk-captured
+ *  passages are never evicted, only user-added ones. */
+const MAX_USER_PASSAGES = 10;
+/** `SCENE_MAX_BYTES`. Checked client-side before a merge writes, because
+ *  a 413 landing after a partial merge is the unrecoverable shape. */
+const SCENE_MAX_BYTES = 64 * 1024;
 
 /** True when the manifest says `meta` exists — i.e. a source chat has
  *  been designated and the bible has begun. */
 export function hasBible(manifest: StoryManifest | null): boolean {
   return !!manifest?.sections.some((s) => s.section === 'meta');
+}
+
+/** True while the bible is locked and every mutating review action must
+ *  refuse. Read from the meta section rather than store state — the lock
+ *  is bible content, not client state, so it survives a reload and is
+ *  visible to every device. */
+export function isCanonLocked(
+  sections: Partial<Record<StorySectionName, StorySectionOut>>
+): boolean {
+  const meta = sections.meta?.data as unknown as MetaSection | undefined;
+  return !!meta?.canon_locked_at;
+}
+
+/** The deleted fact's text, for the edit row's diff. Looked up from
+ *  whatever is already loaded — this runs AFTER the tombstone landed, so
+ *  it is best-effort by nature and an empty string is an honest answer. */
+function factTextFor(
+  index: Map<string, StoryLogEntry> | null,
+  facts: StoryLogEntry[],
+  factId: string
+): string {
+  const row =
+    index?.get(factId) ??
+    facts.find(
+      (f) => (typeof f.data?.id === 'string' ? f.data.id : f.id) === factId
+    );
+  if (!row || isFactTombstone(row.data)) return '(text unavailable)';
+  return String(row.data?.text ?? '').slice(0, 200);
+}
+
+/** Fold `victim` into `survivor`, which precedes it.
+ *
+ *  Pure so the byte-budget check and the tests can run it without
+ *  touching the network. The survivor keeps its own identity fields
+ *  (title, setting, pov, user notes) — a merge is "this scene absorbed
+ *  the next one", not "these two became a third thing". */
+export function mergeScenes(survivor: Scene, victim: Scene): Scene {
+  const join = (a: string, b: string): string =>
+    [a?.trim(), b?.trim()].filter(Boolean).join(' ');
+  const union = (a: string[] = [], b: string[] = []): string[] =>
+    Array.from(new Set([...a, ...b]));
+  return {
+    ...survivor,
+    summary: join(survivor.summary, victim.summary),
+    detailed_summary: join(survivor.detailed_summary, victim.detailed_summary),
+    participants: union(survivor.participants, victim.participants),
+    // The scene→fact index IS healed by this union; the fact→scene back
+    // pointer (`established_in` on the victim's facts) dangles forever,
+    // because facts are append-only and there is nothing to heal them
+    // with. That is a lock-canon warning, by design.
+    continuity_facts_established: union(
+      survivor.continuity_facts_established,
+      victim.continuity_facts_established
+    ),
+    source: {
+      ...survivor.source,
+      message_range: {
+        start: survivor.source.message_range.start,
+        end: victim.source.message_range.end,
+      },
+      total_messages:
+        (survivor.source.total_messages ?? 0) +
+        (victim.source.total_messages ?? 0),
+      swipe_resolutions: [
+        ...(survivor.source.swipe_resolutions ?? []),
+        ...(victim.source.swipe_resolutions ?? []),
+      ],
+      excluded_segments: [
+        ...(survivor.source.excluded_segments ?? []),
+        ...(victim.source.excluded_segments ?? []),
+      ],
+    },
+    annotations: {
+      ...survivor.annotations,
+      flagged_issues: [
+        ...(survivor.annotations?.flagged_issues ?? []),
+        ...(victim.annotations?.flagged_issues ?? []),
+      ],
+    },
+  };
 }
 
 export const useStoryStore = create<StoryState>((set, get) => {
@@ -110,6 +278,11 @@ export const useStoryStore = create<StoryState>((set, get) => {
   // fresher archive list (review finding — the projectId guard alone
   // doesn't order two calls for the SAME project against each other).
   let archivesFetchSeq = 0;
+  // Same shape as archivesFetchSeq: orders a loadAllFactsById paging run
+  // against ANY other write to factIndex (load()'s reset, deleteFact's
+  // patch, clear()). Without it a slow paging run can trail a fresh
+  // load() and stamp its stale map over new rows.
+  let factIndexSeq = 0;
 
   // Bumped by clear(), which the Story tab calls whenever it unmounts or
   // switches Works. `projectId` alone can't see a leave-and-return: the
@@ -141,6 +314,189 @@ export const useStoryStore = create<StoryState>((set, get) => {
     await get().load(projectId);
   };
 
+  /** True while the bible is locked. Read from the meta section rather
+   *  than a memoized flag: the lock is server state that any device can
+   *  set or clear, and this call runs right before a write, so it needs
+   *  the freshest value the store has. */
+  const isLockedNow = (): boolean => {
+    const meta = get().sections.meta?.data as unknown as MetaSection | undefined;
+    return !!meta?.canon_locked_at;
+  };
+
+  /** True while a walk is running or resumable (plan §3.3). Read via a
+   *  LAZY import so this store keeps its "never statically edge to
+   *  another store" rule — static cycles here are how TDZ crashes at
+   *  boot start. The dynamic import is cached by the module loader, so
+   *  a hot mutating path pays the resolution once. */
+  const isBuildActiveNow = async (): Promise<boolean> => {
+    try {
+      const mod = await import('./storyIngestStore');
+      const status = mod.useStoryIngestStore.getState().checkpoint?.status;
+      return status === 'running' || status === 'paused' || status === 'error';
+    } catch {
+      // The import failing (rare — code split, offline reload) must
+      // never block writes: fail open, matching every other guard here.
+      return false;
+    }
+  };
+
+  /** Toast + refuse pattern shared by every gated action. `toastKind` is
+   *  the reason so the user sees why the click did nothing. */
+  const refuseIfGated = async (opts: {
+    allowWhileLocked?: boolean;
+    allowWhileBuilding?: boolean;
+  }): Promise<boolean> => {
+    if (!opts.allowWhileLocked && isLockedNow()) {
+      showToastGlobal('Canon is locked — unlock to edit', 'warning');
+      return true;
+    }
+    if (!opts.allowWhileBuilding && (await isBuildActiveNow())) {
+      showToastGlobal('Finish or clear the build first', 'warning');
+      return true;
+    }
+    return false;
+  };
+
+  /** Append one edit-log row for a change that has ALREADY landed.
+   *
+   *  Best-effort and deliberately swallowing: the primary mutation is
+   *  committed by the time this runs, so a failed edit append must never
+   *  roll anything back, block the UI, or turn a successful action into a
+   *  reported failure. It toasts once and moves on.
+   *
+   *  The id is minted BEFORE the POST so a transport retry re-sends the
+   *  same id and the server's `(project_id, id)` idempotency absorbs it —
+   *  one user action can never become two history rows. */
+  const recordEdit = async (
+    projectId: string,
+    epoch: number,
+    meta: EditMeta
+  ): Promise<void> => {
+    const edit: Edit = {
+      id: bibleUuid(),
+      occurred_at: capturedAt(),
+      actor: 'user',
+      surface: 'bible_direct',
+      target: meta.target,
+      diff: (meta.diff ?? '').slice(0, EDIT_DIFF_MAX),
+      classification: meta.classification,
+      // These ARE bible-direct edits by construction — the user changed
+      // the bible itself, not a rendered output awaiting propagation.
+      propagated_to_bible: true,
+      propagation_notes: '',
+    };
+    try {
+      await storyApi.appendEdit(
+        projectId,
+        edit as unknown as Record<string, unknown>
+      );
+    } catch (error) {
+      if (stillOn(projectId, epoch)) {
+        showToastGlobal(
+          error instanceof Error
+            ? `Change saved, but the history entry failed: ${error.message}`
+            : 'Change saved, but the history entry failed',
+          'warning'
+        );
+      }
+    }
+  };
+
+  /** Set or clear `meta.canon_locked_at`. Shared by lock and unlock
+   *  because they differ only in the value written and the words used —
+   *  everything else (read-spread-PUT, one adopt-retry, the edit row) is
+   *  identical, and duplicating it is how the two drift apart. */
+  const setCanonLock = async (locked: boolean): Promise<boolean> => {
+    const { projectId } = get();
+    if (!projectId) return false;
+    // Unlock (locked=false) must still work while the bible is locked —
+    // that IS the point of unlock. Lock (locked=true) has to refuse
+    // while another device already locked (no-op UX), and both refuse
+    // during an active build (§3.3): the build's own writes would race
+    // a lock stamp.
+    if (await refuseIfGated({ allowWhileLocked: !locked })) return false;
+    set({ isSaving: true });
+    const epoch = storeEpoch;
+
+    const write = async (
+      current: StorySectionOut | null,
+      baseTs: number
+    ): Promise<void> => {
+      const existing = (current?.data ?? null) as unknown as MetaSection | null;
+      if (!existing) throw new Error('No story to lock yet');
+      const section = await storyApi.putSection(
+        projectId,
+        'meta',
+        {
+          ...existing,
+          updated_at: capturedAt(),
+          canon_locked_at: locked ? capturedAt() : null,
+        } as unknown as Record<string, unknown>,
+        baseTs
+      );
+      if (stillOn(projectId, epoch)) {
+        set((s) => ({ sections: { ...s.sections, meta: section } }));
+      }
+    };
+
+    const editMeta: EditMeta = {
+      target: { type: 'meta' },
+      classification: 'substantive',
+      diff: locked ? 'canon locked' : 'canon unlocked',
+    };
+
+    try {
+      const current = get().sections.meta ?? null;
+      await write(current, current?.server_ts ?? 0);
+      await recordEdit(projectId, epoch, editMeta);
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) {
+        set({ isSaving: false });
+        showToastGlobal(locked ? 'Canon locked' : 'Canon unlocked', 'success');
+      }
+      return stillCurrentNow;
+    } catch (error) {
+      if (error instanceof StoryConflictError) {
+        try {
+          await write(error.current ?? null, error.currentTs);
+          await recordEdit(projectId, epoch, editMeta);
+          const stillCurrentNow = stillOn(projectId, epoch);
+          if (stillCurrentNow) {
+            set({ isSaving: false });
+            showToastGlobal(
+              locked
+                ? 'Canon locked (merged with another device)'
+                : 'Canon unlocked (merged with another device)',
+              'warning'
+            );
+          }
+          return stillCurrentNow;
+        } catch {
+          if (stillOn(projectId, epoch)) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'The story changed on another device — try again',
+              'error'
+            );
+          }
+          return false;
+        }
+      }
+      if (stillOn(projectId, epoch)) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof Error
+            ? error.message
+            : locked
+              ? 'Failed to lock canon'
+              : 'Failed to unlock canon',
+          'error'
+        );
+      }
+      return false;
+    }
+  };
+
   return {
   projectId: null,
   manifest: null,
@@ -154,6 +510,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
   archivesLoaded: false,
   archivesCursor: null,
   archivesHasMore: false,
+  factIndex: null,
   isLoading: false,
   isSaving: false,
   error: null,
@@ -163,6 +520,10 @@ export const useStoryStore = create<StoryState>((set, get) => {
     // old epoch stops being allowed to write, even if the user comes
     // straight back to the same Work.
     storeEpoch++;
+    // And any factIndex paging that captured the old seq stops being
+    // allowed to write too — the epoch check alone doesn't order two
+    // calls within the same visit.
+    factIndexSeq++;
     set({
       projectId: null,
       manifest: null,
@@ -184,6 +545,9 @@ export const useStoryStore = create<StoryState>((set, get) => {
       archivesLoaded: false,
       archivesCursor: null,
       archivesHasMore: false,
+      // The epoch bump alone doesn't drop this — a cached index would
+      // otherwise show one Work's facts inside the next Work's cards.
+      factIndex: null,
       error: null,
     });
   },
@@ -208,6 +572,9 @@ export const useStoryStore = create<StoryState>((set, get) => {
         'entities',
         'continuity',
         'ingestion',
+        // Phase 10's voice meter reads this, and appendSamplePassage
+        // read-spread-PUTs it — both need it in state, not a lazy GET.
+        'user_voice',
       ];
       const loaded: Partial<Record<StorySectionName, StorySectionOut>> = {};
       await Promise.all(
@@ -222,7 +589,13 @@ export const useStoryStore = create<StoryState>((set, get) => {
         manifest.scene_count > 0
           ? storyApi.listScenes(projectId, { limit: SCENE_PAGE })
           : Promise.resolve(null),
-        manifest.fact_count > 0
+        // NOT gated on fact_count: since phase 10 that number counts LIVE
+        // facts only, so a bible whose facts were all deleted reports 0
+        // while GET /facts still returns the tombstone rows the review
+        // list must render struck through. Gate on the bible existing at
+        // all instead — one empty page for a young bible is cheaper than
+        // silently hiding every deleted fact.
+        manifest.sections.length > 0
           ? storyApi.listFacts(projectId, { limit: FACT_PAGE })
           : Promise.resolve(null),
       ]);
@@ -236,8 +609,15 @@ export const useStoryStore = create<StoryState>((set, get) => {
         facts: factPage?.items ?? [],
         factsCursor: factPage?.next_after_seq ?? null,
         factsHasMore: factPage?.has_more ?? false,
+        // A reload can change the whole log (restore, reset, a finished
+        // walk), so the index is invalidated rather than reconciled; the
+        // next card that needs it re-pages. The seq bump keeps a paging
+        // run that started before this reload from stamping its stale
+        // map after the null lands.
+        factIndex: null,
         isLoading: false,
       });
+      factIndexSeq++;
     } catch (error) {
       if (!stillOn(projectId, epoch)) return;
       set({
@@ -632,5 +1012,667 @@ export const useStoryStore = create<StoryState>((set, get) => {
       return false;
     }
   },
+
+  // --- Review checkpoint (phase 10) --------------------------------------
+
+  loadAllFactsById: async () => {
+    const { projectId, factIndex } = get();
+    if (!projectId) return null;
+    if (factIndex) return factIndex;
+    const epoch = storeEpoch;
+    // Claimed BEFORE the first fetch so a load() that runs during the
+    // paging bumps this and the stale index we build never lands.
+    const seq = ++factIndexSeq;
+    try {
+      const index = new Map<string, StoryLogEntry>();
+      let afterSeq: number | undefined;
+      for (let page = 0; page < MAX_FACT_INDEX_PAGES; page++) {
+        const res = await storyApi.listFacts(projectId, {
+          afterSeq,
+          limit: FACT_INDEX_PAGE,
+        });
+        for (const row of res.items) {
+          // Tombstones are kept: a card citing a deleted fact must be
+          // able to say "(deleted fact)" rather than render a blank.
+          const id = typeof row.data?.id === 'string' ? row.data.id : row.id;
+          index.set(id, row);
+        }
+        if (!res.has_more || res.next_after_seq === null) break;
+        afterSeq = res.next_after_seq;
+      }
+      if (!stillOn(projectId, epoch) || seq !== factIndexSeq) return null;
+      set({ factIndex: index });
+      return index;
+    } catch (error) {
+      if (stillOn(projectId, epoch) && seq === factIndexSeq) {
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to load facts',
+          'error'
+        );
+      }
+      return null;
+    }
+  },
+
+  loadAllScenesWithData: async () => {
+    const { projectId } = get();
+    if (!projectId) return null;
+    const epoch = storeEpoch;
+    try {
+      const summaries: StorySceneSummary[] = [];
+      let cursor: { sequence: number; id: string } | null = null;
+      for (let page = 0; page < MAX_SCENE_INDEX_PAGES; page++) {
+        const res = await storyApi.listScenes(projectId, {
+          ...(cursor
+            ? { afterSequence: cursor.sequence, afterId: cursor.id }
+            : {}),
+          limit: SCENE_PAGE,
+        });
+        summaries.push(...res.items);
+        if (
+          !res.has_more ||
+          res.next_after_sequence === null ||
+          res.next_after_id === null
+        ) {
+          break;
+        }
+        cursor = { sequence: res.next_after_sequence, id: res.next_after_id };
+      }
+      const full = await Promise.all(
+        summaries.map((s) => storyApi.getScene(projectId, s.id))
+      );
+      if (!stillOn(projectId, epoch)) return null;
+      return full;
+    } catch (error) {
+      if (stillOn(projectId, epoch)) {
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to load scenes',
+          'error'
+        );
+      }
+      return null;
+    }
+  },
+
+  patchContinuity: async (patchFn, editMeta) => {
+    const { projectId } = get();
+    if (!projectId) return false;
+    // Resolutions are safe against reconcile (existing-wins was designed
+    // exactly for this concurrency), so §3.3's build carve-out applies
+    // here — but locking still blocks by §3.2.
+    if (await refuseIfGated({ allowWhileBuilding: true })) return false;
+    set({ isSaving: true });
+    const epoch = storeEpoch;
+
+    /** Apply the caller's intent to one server-read section and write it
+     *  back. Returns false for a no-op (nothing to write, no server_ts
+     *  churn) — reconcile's own discipline. */
+    const applyTo = async (
+      current: StorySectionOut | null,
+      baseTs: number
+    ): Promise<'written' | 'noop'> => {
+      const data = (current?.data ?? null) as unknown as ContinuitySection | null;
+      const entries = data?.contradictions;
+      // A missing or malformed section is nothing to patch — never
+      // overwrite a shape we don't understand with one we invented.
+      if (!Array.isArray(entries)) return 'noop';
+      const patched = patchFn(entries);
+      if (patched === null) return 'noop';
+      const section = await storyApi.putSection(
+        projectId,
+        'continuity',
+        // Spread the READ data, not a fresh object: a PUT is a full
+        // replace, so any field this phase doesn't know about would be
+        // erased by rebuilding from scratch.
+        {
+          ...(current?.data ?? {}),
+          contradictions: patched,
+        } as unknown as Record<string, unknown>,
+        baseTs
+      );
+      if (stillOn(projectId, epoch)) {
+        set((s) => ({ sections: { ...s.sections, continuity: section } }));
+      }
+      return 'written';
+    };
+
+    try {
+      const current = get().sections.continuity ?? null;
+      const outcome = await applyTo(current, current?.server_ts ?? 0);
+      if (outcome === 'noop') {
+        if (stillOn(projectId, epoch)) set({ isSaving: false });
+        return stillOn(projectId, epoch);
+      }
+      await recordEdit(projectId, epoch, editMeta);
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) set({ isSaving: false });
+      return stillCurrentNow;
+    } catch (error) {
+      if (error instanceof StoryConflictError) {
+        // Apply-intent-on-winner: re-run the SAME pure patch against the
+        // winner's entries, so a resolution written in another tab and
+        // this one both survive. Merging detections (writeContinuityMerged)
+        // would silently drop this resolution instead.
+        try {
+          const outcome = await applyTo(error.current ?? null, error.currentTs);
+          if (outcome !== 'noop') await recordEdit(projectId, epoch, editMeta);
+          const stillCurrentNow = stillOn(projectId, epoch);
+          if (stillCurrentNow) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'Story was updated on another device — changes merged',
+              'warning'
+            );
+          }
+          return stillCurrentNow;
+        } catch {
+          if (stillOn(projectId, epoch)) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'That change collided with another device — try again',
+              'error'
+            );
+          }
+          return false;
+        }
+      }
+      if (stillOn(projectId, epoch)) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to save the change',
+          'error'
+        );
+      }
+      return false;
+    }
+  },
+
+  deleteFact: async (factId) => {
+    const { projectId } = get();
+    if (!projectId) return false;
+    if (await refuseIfGated({})) return false;
+    const epoch = storeEpoch;
+
+    try {
+      await storyApi.deleteFact(projectId, factId);
+    } catch (error) {
+      // A 404 means it's already gone (another tab, a double-click) —
+      // that is the outcome the user asked for, not a failure.
+      const message = error instanceof Error ? error.message : '';
+      if (!/fact not found/i.test(message)) {
+        if (stillOn(projectId, epoch)) {
+          showToastGlobal(message || 'Failed to delete the fact', 'error');
+        }
+        return false;
+      }
+    }
+
+    // Read the fact's text BEFORE we tombstone it locally — otherwise
+    // the diff below would look it up on the just-installed tombstone
+    // and land as "deleted: (text unavailable)" for every user delete.
+    const originalText = factTextFor(get().factIndex, get().facts, factId);
+
+    // Mark it locally so the list can strike it through immediately; the
+    // row stays, because the wire keeps returning it and hiding it makes
+    // "where did my fact go" a support question.
+    if (stillOn(projectId, epoch)) {
+      const tombstone = { id: factId, deleted_at: capturedAt() };
+      set((s) => ({
+        facts: s.facts.map((row) =>
+          (typeof row.data?.id === 'string' ? row.data.id : row.id) === factId &&
+          !isFactTombstone(row.data)
+            ? { ...row, data: tombstone }
+            : row
+        ),
+        factIndex: s.factIndex
+          ? new Map(s.factIndex).set(factId, {
+              ...(s.factIndex.get(factId) ?? {
+                seq: 0,
+                id: factId,
+                created_at: tombstone.deleted_at,
+              }),
+              data: tombstone,
+            })
+          : null,
+      }));
+    }
+
+    await recordEdit(projectId, epoch, {
+      target: { type: 'fact', id: factId },
+      classification: 'substantive',
+      diff: `deleted: ${originalText}`,
+    });
+
+    // Mechanical cleanup of every contradiction that cited it. Runs
+    // through patchContinuity so it inherits the conflict handling.
+    const cleaned = await get().patchContinuity(
+      (entries) => cleanupFactRefs(entries, new Set([factId])),
+      {
+        target: { type: 'contradiction' },
+        classification: 'contradiction',
+        diff: `cleaned contradiction references to deleted fact ${factId}`,
+      }
+    );
+    if (!cleaned && stillOn(projectId, epoch)) {
+      // The delete DID happen — never report otherwise. Both the
+      // lock-canon auto-fix and reconcile's next prune are downstream
+      // nets for the references left behind.
+      showToastGlobal(
+        "Fact deleted — some contradiction references couldn't be cleaned; Lock canon will fix them",
+        'warning'
+      );
+    }
+
+    await reloadIfStillOn(projectId, epoch);
+    return stillOn(projectId, epoch);
+  },
+
+  patchScene: async (sceneId, patchFn, editMeta) => {
+    const { projectId } = get();
+    if (!projectId) return false;
+    if (await refuseIfGated({})) return false;
+    set({ isSaving: true });
+    const epoch = storeEpoch;
+
+    const applyTo = async (
+      data: Scene,
+      baseTs: number
+    ): Promise<'written' | 'noop'> => {
+      const patched = patchFn(data);
+      if (patched === null) return 'noop';
+      const written = await storyApi.putScene(
+        projectId,
+        sceneId,
+        patched as unknown as Record<string, unknown>,
+        baseTs
+      );
+      if (stillOn(projectId, epoch)) {
+        // The list holds server-TRUNCATED projections, so refresh the row
+        // from what we just wrote rather than from the full payload.
+        set((s) => ({
+          scenes: s.scenes.map((row) =>
+            row.id === sceneId
+              ? {
+                  ...row,
+                  sequence: written.sequence,
+                  title: String(patched.title ?? row.title).slice(0, 200),
+                  summary: String(patched.summary ?? row.summary).slice(0, 500),
+                  server_ts: written.server_ts,
+                  updated_at: written.updated_at,
+                }
+              : row
+          ),
+        }));
+      }
+      return 'written';
+    };
+
+    try {
+      // Summaries carry no `data`, so the full row is always fetched —
+      // PUTting a list projection would write back truncated text.
+      const full = await storyApi.getScene(projectId, sceneId);
+      const outcome = await applyTo(
+        full.data as unknown as Scene,
+        full.server_ts
+      );
+      if (outcome === 'noop') {
+        if (stillOn(projectId, epoch)) set({ isSaving: false });
+        return stillOn(projectId, epoch);
+      }
+      await recordEdit(projectId, epoch, editMeta);
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) set({ isSaving: false });
+      return stillCurrentNow;
+    } catch (error) {
+      if (error instanceof StoryConflictError) {
+        try {
+          // Re-fetch rather than trusting the 409 body: StoryConflictError
+          // types `current` as a section, but a scene conflict puts a
+          // scene dump there — a re-read is the honest way to get the
+          // winner's shape.
+          const fresh = await storyApi.getScene(projectId, sceneId);
+          const outcome = await applyTo(
+            fresh.data as unknown as Scene,
+            fresh.server_ts
+          );
+          if (outcome !== 'noop') await recordEdit(projectId, epoch, editMeta);
+          const stillCurrentNow = stillOn(projectId, epoch);
+          if (stillCurrentNow) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'That scene was updated on another device — changes merged',
+              'warning'
+            );
+          }
+          return stillCurrentNow;
+        } catch {
+          if (stillOn(projectId, epoch)) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'That scene changed on another device — try again',
+              'error'
+            );
+          }
+          return false;
+        }
+      }
+      if (stillOn(projectId, epoch)) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to save the scene',
+          'error'
+        );
+      }
+      return false;
+    }
+  },
+
+  mergeSceneIntoPrevious: async (sceneId) => {
+    const { projectId, scenes, isSaving } = get();
+    if (!projectId || isSaving) return false;
+    if (await refuseIfGated({})) return false;
+    const ordered = [...scenes].sort(
+      (a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id)
+    );
+    const index = ordered.findIndex((s) => s.id === sceneId);
+    if (index < 1) {
+      // The first scene has no predecessor to merge into, and an unloaded
+      // scene has no known ordering — both are refusals, not errors.
+      showToastGlobal('That scene has nothing before it to merge into', 'error');
+      return false;
+    }
+    const survivorId = ordered[index - 1].id;
+    set({ isSaving: true });
+    const epoch = storeEpoch;
+
+    try {
+      const [survivor, victim] = await Promise.all([
+        storyApi.getScene(projectId, survivorId),
+        storyApi.getScene(projectId, sceneId),
+      ]);
+      const merged = mergeScenes(
+        survivor.data as unknown as Scene,
+        victim.data as unknown as Scene
+      );
+
+      // Checked BEFORE either write: a 413 landing between the PUT and
+      // the DELETE is the unrecoverable shape — content duplicated into
+      // the survivor with the victim still present and no way to retry
+      // cleanly.
+      const size = new TextEncoder().encode(JSON.stringify(merged)).length;
+      if (size > SCENE_MAX_BYTES) {
+        if (stillOn(projectId, epoch)) {
+          set({ isSaving: false });
+          showToastGlobal(
+            'Those two scenes are too large to merge — trim one first',
+            'error'
+          );
+        }
+        return false;
+      }
+
+      // PUT the survivor FIRST, then delete the victim. This order fails
+      // safe: a crash between them duplicates content (visible, and
+      // retryable), where delete-first would destroy the victim with no
+      // archive — scene writes don't snapshot.
+      await storyApi.putScene(
+        projectId,
+        survivorId,
+        merged as unknown as Record<string, unknown>,
+        survivor.server_ts
+      );
+      await storyApi.deleteScene(projectId, sceneId, victim.server_ts);
+
+      await recordEdit(projectId, epoch, {
+        target: { type: 'scene', id: survivorId },
+        classification: 'substantive',
+        diff: `merged scene ${sceneId} (${victim.data?.title ?? ''}) into this one`,
+      });
+      await reloadIfStillOn(projectId, epoch);
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) {
+        set({ isSaving: false });
+        showToastGlobal('Scenes merged', 'success');
+      }
+      return stillCurrentNow;
+    } catch (error) {
+      // No blind retry of a compound operation: reload so the user sees
+      // exactly which half landed, and let them decide.
+      await reloadIfStillOn(projectId, epoch);
+      if (stillOn(projectId, epoch)) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof StoryConflictError
+            ? 'Those scenes changed on another device — reloaded, try again'
+            : error instanceof Error
+              ? error.message
+              : 'Failed to merge the scenes',
+          'error'
+        );
+      }
+      return false;
+    }
+  },
+
+  appendSamplePassage: async (text) => {
+    const { projectId } = get();
+    if (!projectId) return false;
+    const trimmed = text.trim().slice(0, SAMPLE_PASSAGE_MAX);
+    // `SamplePassage.text` is min_length=1 server-side — a whitespace-only
+    // paste is a 422 worth catching here.
+    if (!trimmed) return false;
+    if (await refuseIfGated({})) return false;
+    set({ isSaving: true });
+    const epoch = storeEpoch;
+
+    let evicted = false;
+    const build = (existing: UserVoiceSection): UserVoiceSection => {
+      const passage: SamplePassage = {
+        text: trimmed,
+        source: userAnnotationSourceRef(),
+      };
+      const passages = [...(existing.sample_passages ?? []), passage];
+      // Evict the OLDEST user-added passage only — a walk-captured one is
+      // evidence the user never supplied and can't recreate.
+      const userIdx = passages
+        .map((p, i) => (p.source?.kind === 'user_annotation' ? i : -1))
+        .filter((i) => i >= 0);
+      if (userIdx.length > MAX_USER_PASSAGES) {
+        passages.splice(userIdx[0], 1);
+        evicted = true;
+      }
+      return {
+        ...existing,
+        sample_passages: passages,
+        // `confidence` is deliberately untouched: it is the model's own
+        // self-assessment, and fabricating a bump would defeat the meter.
+      };
+    };
+
+    const write = async (
+      current: StorySectionOut | null,
+      baseTs: number
+    ): Promise<void> => {
+      const existing = (current?.data ?? null) as unknown as UserVoiceSection | null;
+      if (!existing) {
+        throw new Error('No voice profile yet — run a build first');
+      }
+      const section = await storyApi.putSection(
+        projectId,
+        'user_voice',
+        build(existing) as unknown as Record<string, unknown>,
+        baseTs
+      );
+      if (stillOn(projectId, epoch)) {
+        set((s) => ({ sections: { ...s.sections, user_voice: section } }));
+      }
+    };
+
+    try {
+      const current = get().sections.user_voice ?? null;
+      await write(current, current?.server_ts ?? 0);
+      await recordEdit(projectId, epoch, {
+        target: { type: 'voice' },
+        classification: 'voice_shift',
+        diff: `added a writing sample (${trimmed.length} chars)`,
+      });
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) {
+        set({ isSaving: false });
+        showToastGlobal(
+          evicted
+            ? 'Writing sample added — the oldest one you added was dropped'
+            : 'Writing sample added',
+          'success'
+        );
+      }
+      return stillCurrentNow;
+    } catch (error) {
+      if (error instanceof StoryConflictError) {
+        try {
+          // Additive, so re-pushing onto the winner is safe — exactly once.
+          evicted = false;
+          await write(error.current ?? null, error.currentTs);
+          await recordEdit(projectId, epoch, {
+            target: { type: 'voice' },
+            classification: 'voice_shift',
+            diff: `added a writing sample (${trimmed.length} chars)`,
+          });
+          const stillCurrentNow = stillOn(projectId, epoch);
+          if (stillCurrentNow) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'Writing sample added (merged with another device)',
+              'warning'
+            );
+          }
+          return stillCurrentNow;
+        } catch {
+          if (stillOn(projectId, epoch)) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'Your voice profile changed on another device — try again',
+              'error'
+            );
+          }
+          return false;
+        }
+      }
+      if (stillOn(projectId, epoch)) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to add the sample',
+          'error'
+        );
+      }
+      return false;
+    }
+  },
+
+  relinkSourceChat: async (chat) => {
+    const { projectId } = get();
+    if (!projectId) return false;
+    if (await refuseIfGated({})) return false;
+    set({ isSaving: true });
+    const epoch = storeEpoch;
+
+    let previous = '';
+    const build = (existing: MetaSection): MetaSection => {
+      previous = existing.source?.chat?.ref?.file_name ?? '';
+      return {
+        ...existing,
+        updated_at: capturedAt(),
+        source: {
+          ...existing.source,
+          chat: {
+            // Only the POINTER moves. The snapshot records what was true
+            // at capture time and stays verbatim, and `captured_at` is
+            // when that capture happened — neither is re-stamped, which
+            // is the whole difference between a relink and a designate.
+            ...existing.source.chat,
+            ref: chat,
+          },
+        },
+        // Deliberately NOT rebuilt: `source.characters` (relink asserts
+        // the same roleplay), and NOT zeroed: `ingest_watermark` —
+        // resetting it would make phase 11 re-walk the chat from zero.
+      };
+    };
+
+    const write = async (
+      current: StorySectionOut | null,
+      baseTs: number
+    ): Promise<void> => {
+      const existing = (current?.data ?? null) as unknown as MetaSection | null;
+      if (!existing?.source?.chat) {
+        throw new Error('No source chat to relink yet');
+      }
+      const section = await storyApi.putSection(
+        projectId,
+        'meta',
+        build(existing) as unknown as Record<string, unknown>,
+        baseTs
+      );
+      if (stillOn(projectId, epoch)) {
+        set((s) => ({ sections: { ...s.sections, meta: section } }));
+      }
+    };
+
+    try {
+      const current = get().sections.meta ?? null;
+      await write(current, current?.server_ts ?? 0);
+      await recordEdit(projectId, epoch, {
+        target: { type: 'meta' },
+        classification: 'cosmetic',
+        diff: `source chat relinked: ${previous} → ${chat.file_name}`,
+      });
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) {
+        set({ isSaving: false });
+        showToastGlobal('Source chat relinked', 'success');
+      }
+      return stillCurrentNow;
+    } catch (error) {
+      if (error instanceof StoryConflictError) {
+        try {
+          await write(error.current ?? null, error.currentTs);
+          await recordEdit(projectId, epoch, {
+            target: { type: 'meta' },
+            classification: 'cosmetic',
+            diff: `source chat relinked: ${previous} → ${chat.file_name}`,
+          });
+          const stillCurrentNow = stillOn(projectId, epoch);
+          if (stillCurrentNow) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'Source chat relinked (merged with another device)',
+              'warning'
+            );
+          }
+          return stillCurrentNow;
+        } catch {
+          if (stillOn(projectId, epoch)) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'The story changed on another device — try again',
+              'error'
+            );
+          }
+          return false;
+        }
+      }
+      if (stillOn(projectId, epoch)) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to relink',
+          'error'
+        );
+      }
+      return false;
+    }
+  },
+
+  lockCanon: async () => setCanonLock(true),
+  unlockCanon: async () => setCanonLock(false),
   };
 });

@@ -2341,7 +2341,7 @@ export class SceneBulkConflictError extends Error {
 
 async function storyWrite<T>(
   path: string,
-  method: 'PUT' | 'POST',
+  method: 'PUT' | 'POST' | 'DELETE',
   body: unknown
 ): Promise<T> {
   const token = await getCsrfToken();
@@ -2388,6 +2388,9 @@ async function storyWrite<T>(
       `HTTP ${response.status}`
     );
   }
+  // DELETE /scenes/{id} answers 204 — still base_ts-guarded (hence this
+  // helper and not apiRequest), but with nothing to parse.
+  if (response.status === 204) return {} as T;
   return response.json();
 }
 
@@ -2560,6 +2563,66 @@ export const storyApi = {
       `/projects/${projectId}/story/facts`,
       'POST',
       { data: fact }
+    );
+  },
+
+  /** Tombstone one fact (phase 10). No body and no base_ts: facts carry no
+   *  version token, and the tombstone is idempotent so none is needed. 204
+   *  whether it tombstoned the row or found it already tombstoned; 404 only
+   *  when the id never existed. Deliberately NOT storyWrite — there is no
+   *  409 or 413 on this route, and apiRequest already returns `{}` for a
+   *  204. */
+  async deleteFact(projectId: string, factId: string): Promise<void> {
+    await apiRequest<Record<string, never>>(
+      `/projects/${projectId}/story/facts/${factId}`,
+      { method: 'DELETE' }
+    );
+  },
+
+  /** Append one edit-log row. Idempotent by `data.id` exactly like
+   *  appendFact, which is why callers mint the id BEFORE the POST — a
+   *  transport retry then re-sends the same id instead of double-logging
+   *  the same user action. */
+  async appendEdit(
+    projectId: string,
+    edit: Record<string, unknown>
+  ): Promise<StoryLogEntry> {
+    return storyWrite<StoryLogEntry>(
+      `/projects/${projectId}/story/edits`,
+      'POST',
+      { data: edit }
+    );
+  },
+
+  /** Single-scene full replace. The bulk path is for a walk chunk writing
+   *  many scenes at once; this is for one scene edited by hand, where a
+   *  bulk 409's per-row conflict list would be noise. */
+  async putScene(
+    projectId: string,
+    sceneId: string,
+    data: Record<string, unknown>,
+    baseTs: number
+  ): Promise<StorySceneOut> {
+    return storyWrite<StorySceneOut>(
+      `/projects/${projectId}/story/scenes/${sceneId}`,
+      'PUT',
+      { data, base_ts: baseTs }
+    );
+  },
+
+  /** Delete one scene. Carries a base_ts BODY on a DELETE verb — dropping a
+   *  scene another pass just rewrote is as lossy as overwriting it, so the
+   *  same CAS applies. 409 throws StoryConflictError like any other guarded
+   *  write. */
+  async deleteScene(
+    projectId: string,
+    sceneId: string,
+    baseTs: number
+  ): Promise<void> {
+    await storyWrite<Record<string, never>>(
+      `/projects/${projectId}/story/scenes/${sceneId}`,
+      'DELETE',
+      { base_ts: baseTs }
     );
   },
 

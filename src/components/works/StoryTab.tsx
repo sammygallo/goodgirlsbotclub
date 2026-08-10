@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   CircleAlert,
@@ -7,7 +7,8 @@ import {
   RotateCcw,
   Sparkles,
 } from 'lucide-react';
-import { useStoryStore, hasBible } from '../../stores/storyStore';
+import { useStoryStore, hasBible, isCanonLocked } from '../../stores/storyStore';
+import { api } from '../../api/client';
 import {
   estimateColdStartTokens,
   hasUnreadableChecksNote,
@@ -22,6 +23,12 @@ import { useChatLoreConfigStore } from '../../stores/chatLoreConfigStore';
 import { resolveEffectiveBooks } from '../../utils/worldInfoComposition';
 import { IngestProgressCard } from './IngestProgressCard';
 import { StartIngestModal } from './StartIngestModal';
+import { ContradictionCard } from './ContradictionCard';
+import type { EvidenceMessage } from './ContradictionCard';
+import { FactReviewList } from './FactReviewList';
+import { VoiceConfidenceCard } from './VoiceConfidenceCard';
+import { LockCanonFooter } from './LockCanonFooter';
+import { SceneReviewRow } from './SceneReviewRow';
 import {
   gatherColdStartSources,
   gatherIngestInputs,
@@ -32,9 +39,20 @@ import { planTranscriptChunks } from '../../utils/storyIngest/transcriptChunker'
 import { Button, ConfirmDialog, Modal } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import type { Project, ProjectChatRef, StoryArchiveReason } from '../../api/client';
-import type { Contradiction, MetaSection } from '../../types/storyBible';
+import type {
+  Contradiction,
+  MetaSection,
+  UserVoiceSection,
+} from '../../types/storyBible';
 import type { IngestMessage } from '../../utils/storyIngest/types';
-import { describeRef, resolveRefState } from '../../utils/storyBible/sourceRefs';
+import {
+  bibleUuid,
+  capturedAt,
+  describeRef,
+  resolveRefState,
+  userAnnotationSourceRef,
+} from '../../utils/storyBible/sourceRefs';
+import { storyApi } from '../../api/client';
 
 /**
  * Story tab of the Works panel — productization step 2, phase 5.
@@ -75,13 +93,6 @@ function readContradictions(data: Record<string, unknown> | undefined): Contradi
       typeof c.resolution?.status === 'string'
     );
   });
-}
-
-/** `character_attribute` -> "character attribute" — the enum values are
- *  the only vocabulary the judge speaks; Phase 10's card can afford nicer
- *  copy, this read-only list doesn't need to invent any. */
-function humanizeContradictionType(type: string): string {
-  return type.replace(/_/g, ' ');
 }
 
 const ARCHIVE_REASON_LABEL: Record<StoryArchiveReason, string> = {
@@ -192,6 +203,7 @@ export function StoryTab({
     loadArchives,
     loadMoreArchives,
     restoreArchive,
+    relinkSourceChat,
   } = useStoryStore();
   const characters = useCharacterStore((s) => s.characters);
   const personas = usePersonaStore((s) => s.personas);
@@ -203,7 +215,13 @@ export function StoryTab({
   const resetIngestState = useStoryIngestStore((s) => s.resetIngestState);
   const checkpoint = useStoryIngestStore((s) => s.checkpoint);
 
-  const [pickerOpen, setPickerOpen] = useState(false);
+  /** The picker is opened for one of two entirely different intents. A
+   *  bare boolean would have routed both through the same onPick, and a
+   *  relink taking the Change path would call `resetBible` — that is the
+   *  bug this discriminant exists to prevent. */
+  const [pickerMode, setPickerMode] = useState<null | 'designate' | 'relink'>(
+    null
+  );
   const [confirmReset, setConfirmReset] = useState(false);
   /** A chat chosen in the picker that would REPLACE an existing source,
    *  held until the user confirms the discard it implies. */
@@ -234,6 +252,27 @@ export function StoryTab({
 
   const meta = sections.meta?.data as unknown as MetaSection | undefined;
   const sourceChat = meta?.source?.chat ?? null;
+  /** Locked bibles disable every write in this tab except unlock, reset,
+   *  and change source (§3.2 — reset/change destroy `meta` wholesale,
+   *  which is unlock-by-destruction and honest). */
+  const canonLocked = isCanonLocked(sections);
+  /** A build in flight or resumable (§3.3). Scene edits, fact deletes and
+   *  resolutions render disabled with "Finish or clear the build first";
+   *  resolutions stay ENABLED per the plan (reconcile's merge was
+   *  designed resolution-safe). */
+  const buildActive =
+    checkpoint?.status === 'running' ||
+    checkpoint?.status === 'paused' ||
+    checkpoint?.status === 'error';
+  /** Fact deletes, scene edits, sample paste, relink, lock — every §5
+   *  action except the resolution-shaped ones — gates on this. */
+  const writesDisabled = !canManage || canonLocked || buildActive;
+  /** Contradiction resolutions (Keep/Defer/Reopen/Write my own) stay
+   *  live during a build (plan §3.3): reconcile's existing-wins merge
+   *  was designed resolution-safe, so the review UI shouldn't punish
+   *  the user for running a walk. The lock still blocks — locking IS
+   *  the mode where nothing edits. */
+  const resolutionsDisabled = !canManage || canonLocked;
 
   const contradictions = useMemo(
     () => readContradictions(sections.continuity?.data),
@@ -243,19 +282,61 @@ export function StoryTab({
     (c) => c.resolution.status === 'unresolved'
   ).length;
 
+  const userVoice = useMemo(
+    () => sections.user_voice?.data as unknown as UserVoiceSection | undefined,
+    [sections.user_voice]
+  );
+
+  /** One evidence fetch shared across every ContradictionCard (§6.1: "one
+   *  fetch shared across all cards"). The cache is keyed by the current
+   *  source chat ref so a relink invalidates it, and null is the
+   *  fall-through the cards render as snapshot-only — never a throw. */
+  const evidenceCacheRef = useRef<{
+    key: string;
+    messages: EvidenceMessage[] | null;
+    inFlight: Promise<EvidenceMessage[] | null> | null;
+  } | null>(null);
+  const loadChatMessages = useCallback(async (): Promise<EvidenceMessage[] | null> => {
+    const chat = sourceChat?.ref ?? null;
+    if (!chat) return null;
+    const key = `${chat.character_avatar} ${chat.file_name}`;
+    const cache = evidenceCacheRef.current;
+    if (cache?.key === key) return cache.inFlight ?? cache.messages;
+    const inFlight = api
+      .getChatMessages(chat.character_avatar, chat.file_name)
+      .then((r) => r.messages as EvidenceMessage[])
+      .catch(() => null);
+    evidenceCacheRef.current = { key, messages: null, inFlight };
+    const messages = await inFlight;
+    if (evidenceCacheRef.current?.key === key) {
+      evidenceCacheRef.current = { key, messages, inFlight: null };
+    }
+    return messages;
+  }, [sourceChat]);
+
   const characterNameByAvatar = useMemo(
     () => new Map(characters.map((c) => [c.avatar, c.name])),
     [characters]
   );
 
-  const sourceState = useMemo(() => {
-    if (!sourceChat) return null;
-    return resolveRefState(sourceChat, {
+  /** One live-ref bundle passed to every ref classifier in the tab. An
+   *  omitted list reads as 'live' (see `resolveRefState`'s can't-tell
+   *  rule), so half-filled versions of this are what invent dangling
+   *  false-positives — build it once, use it everywhere. */
+  const liveRefs = useMemo(
+    () => ({
       chats: project.chats,
       characterAvatars: characters.map((c) => c.avatar),
       characterNameByAvatar,
-    });
-  }, [sourceChat, project.chats, characters, characterNameByAvatar]);
+      personaNames: personas.map((p) => p.name),
+    }),
+    [project.chats, characters, characterNameByAvatar, personas]
+  );
+
+  const sourceState = useMemo(() => {
+    if (!sourceChat) return null;
+    return resolveRefState(sourceChat, liveRefs);
+  }, [sourceChat, liveRefs]);
 
   const designate = async (chat: ProjectChatRef) => {
     const ok = await designateSourceChat(chat, {
@@ -269,22 +350,121 @@ export function StoryTab({
       // Work the user actually picked the chat for.
       projectId: project.id,
     });
-    if (ok) setPickerOpen(false);
+    if (ok) setPickerMode(null);
+    return ok;
+  };
+
+  const relink = async (chat: ProjectChatRef) => {
+    // Relink is not a designate: same roleplay, new identity. The store
+    // action keeps the ingest watermark and the captured snapshot
+    // verbatim — the picker calls this straight, no reset in between.
+    const ok = await relinkSourceChat(chat);
+    if (ok) setPickerMode(null);
     return ok;
   };
 
   const onPick = async (chat: ProjectChatRef) => {
+    if (pickerMode === 'relink') {
+      await relink(chat);
+      return;
+    }
     // Repointing an existing bible at a different chat orphans every
     // scene and fact — their message refs address the OLD chat, and a
     // scene carries no chat ref of its own to notice. So changing the
     // source discards the bible first (plan Decision 4), behind an
     // explicit confirm.
     if (sourceChat && !sameChat(sourceChat.ref, chat)) {
-      setPickerOpen(false);
+      setPickerMode(null);
       setPendingChange(chat);
       return;
     }
     await designate(chat);
+  };
+
+  /** Write-my-own (§6.2): append the user's fact FIRST so the resolution
+   *  never cites an id that doesn't exist yet, then patch the entry to
+   *  cite it. The append is retry-safe on its own (the server is
+   *  idempotent by fact id, and this call ties itself to the same id).
+   *
+   *  Guarded end-to-end against a Work switch mid-flight: the append
+   *  goes to `project.id`, and the resolution PUT will NOT run if the
+   *  user has since navigated away — otherwise the store's own
+   *  `patchContinuity` reads its target from `get().projectId`, and a
+   *  slow appendFact could resolve after the user opened Work B, so the
+   *  resolution would land on B's continuity while A's contradiction
+   *  stayed unresolved and the user sees a success.
+   *
+   *  Returns true only when both halves landed — the modal in the card
+   *  keeps the user's text intact on false. */
+  const writeOwnFact = async (
+    contradiction: Contradiction,
+    text: string,
+    rationale: string
+  ): Promise<boolean> => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    const workId = project.id;
+    const factId = bibleUuid();
+    const fact = {
+      id: factId,
+      text: trimmed,
+      category:
+        contradiction.type === 'world_rule' ? 'world_rule' : 'change',
+      confidence: 'explicit',
+      source: userAnnotationSourceRef(),
+      // The one legal home for back-refs to the losers, per Phase 8's
+      // decision 1: appended, not mutating the losers themselves.
+      contradicts: contradiction.sources,
+      supersedes: null,
+      established_in: null,
+    };
+    try {
+      await storyApi.appendFact(
+        workId,
+        fact as unknown as Record<string, unknown>
+      );
+    } catch (error) {
+      showToastGlobal(
+        error instanceof Error ? error.message : 'Failed to save your fact',
+        'error'
+      );
+      return false;
+    }
+    // The store's projectId may have moved on during the append (Work
+    // switch). Only patch the continuity when the tab is still on the
+    // Work whose contradiction this is for — otherwise the resolution
+    // PUT would land on the wrong bible.
+    if (useStoryStore.getState().projectId !== workId) return false;
+    const patched = await useStoryStore.getState().patchContinuity(
+      (entries) => {
+        // No entry means the target was cleaned up between opening the
+        // modal and submitting (a delete of one of its sources
+        // dropped it, another tab resolved and reconcile pruned it).
+        // Nothing to write — the store's own no-op discipline.
+        if (!entries.some((entry) => entry.id === contradiction.id)) {
+          return null;
+        }
+        return entries.map((entry) =>
+          entry.id === contradiction.id
+            ? {
+                ...entry,
+                resolution: {
+                  status: 'user_chose' as const,
+                  canonical_choice: factId,
+                  rationale,
+                  resolved_at: capturedAt(),
+                },
+              }
+            : entry
+        );
+      },
+      {
+        target: { type: 'contradiction', id: contradiction.id },
+        classification: 'contradiction',
+        diff: `write-my-own: ${trimmed.slice(0, 200)}`,
+      }
+    );
+    return patched;
   };
 
   const confirmChange = async () => {
@@ -555,17 +735,17 @@ export function StoryTab({
             </p>
           </div>
           {canManage && project.chats.length > 0 && (
-            <Button variant="primary" onClick={() => setPickerOpen(true)}>
+            <Button variant="primary" onClick={() => setPickerMode('designate')}>
               Choose source chat
             </Button>
           )}
         </div>
-        {pickerOpen && (
+        {pickerMode !== null && (
           <SourceChatPickerModal
             chats={project.chats}
             current={null}
             onPick={onPick}
-            onClose={() => setPickerOpen(false)}
+            onClose={() => setPickerMode(null)}
             busy={isSaving}
           />
         )}
@@ -594,11 +774,29 @@ export function StoryTab({
               </p>
             )}
           </div>
-          {canManage && project.chats.length > 0 && (
-            <Button variant="secondary" onClick={() => setPickerOpen(true)}>
-              Change
-            </Button>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Dangling only: a live ref has nothing to relink, and drift
+                isn't a state a chat ref can be in (no name snapshot to
+                drift). Relink and Change are deliberately distinct: only
+                Change discards. */}
+            {canManage && sourceState === 'dangling' && (
+              <Button
+                variant="secondary"
+                onClick={() => setPickerMode('relink')}
+                disabled={isSaving || canonLocked}
+              >
+                Relink
+              </Button>
+            )}
+            {canManage && project.chats.length > 0 && (
+              <Button
+                variant="secondary"
+                onClick={() => setPickerMode('designate')}
+              >
+                Change
+              </Button>
+            )}
+          </div>
         </div>
       </section>
 
@@ -660,12 +858,17 @@ export function StoryTab({
             <Button
               variant="primary"
               onClick={() => setStartOpen(true)}
-              disabled={preparing || !coldStartSources}
+              disabled={preparing || !coldStartSources || canonLocked}
             >
               <Sparkles size={16} />
               {preparing ? 'Starting…' : 'Build'}
             </Button>
           </div>
+          {canonLocked && (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Canon is locked — unlock to rebuild.
+            </p>
+          )}
           {checkpoint?.replay_approx && (
             <p className="text-xs text-[var(--color-text-secondary)]">
               Lorebook usage was reconstructed from the chat rather than
@@ -739,27 +942,24 @@ export function StoryTab({
         </p>
       </section>
 
-      {/* Scenes (read-only) */}
+      {/* Scenes — with editable titles and merge-with-previous (§6, §5.3). */}
       {scenes.length > 0 && (
         <section>
           <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)] mb-2">
             Scenes
           </h3>
           <ul className="space-y-1">
-            {scenes.map((scene) => (
-              <li
+            {scenes.map((scene, i) => (
+              <SceneReviewRow
                 key={scene.id}
-                className="px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)]"
-              >
-                <p className="text-sm text-[var(--color-text-primary)]">
-                  {scene.title || `Scene ${scene.sequence + 1}`}
-                </p>
-                {scene.summary && (
-                  <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-                    {scene.summary}
-                  </p>
-                )}
-              </li>
+                scene={scene}
+                // The list pages forward from sequence 0, so the loaded
+                // list's head IS the bible's head — the first scene has
+                // nothing to merge into either way.
+                isFirst={i === 0}
+                canManage={canManage}
+                disabled={writesDisabled}
+              />
             ))}
           </ul>
           {scenesHasMore && (
@@ -774,64 +974,68 @@ export function StoryTab({
         </section>
       )}
 
-      {/* Fact log (read-only, paginated) */}
-      {facts.length > 0 && (
+      {/* Established facts — the review-mode accordion (§6.3). */}
+      <FactReviewList
+        facts={facts}
+        scenes={scenes}
+        hasMore={factsHasMore}
+        onLoadMore={() => void loadMoreFacts()}
+        canManage={canManage}
+        disabled={writesDisabled}
+      />
+
+      {/* Voice profile meter with the paste fallback (§6.4). Rendered
+          only when the section exists; the store's own manifest gate
+          keeps its writes safe against a bible that hasn't been built. */}
+      {userVoice && (
+        <VoiceConfidenceCard
+          voice={userVoice}
+          canManage={canManage}
+          disabled={writesDisabled}
+        />
+      )}
+
+      {/* Contradictions — the review checkpoint (§6.1). */}
+      {contradictions.length > 0 && (
         <section>
-          <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)] mb-2">
-            Established facts
-          </h3>
-          <ul className="space-y-1">
-            {facts.map((entry) => (
-              <li
-                key={entry.id}
-                className="px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] text-sm text-[var(--color-text-primary)]"
-              >
-                {String(entry.data.text ?? '')}
-                <span className="ml-2 text-xs text-[var(--color-text-secondary)]">
-                  {String(entry.data.confidence ?? '')}
-                </span>
-              </li>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)]">
+              Contradictions
+            </h3>
+            {unresolvedContradictions > 0 && (
+              <span className="text-xs text-[var(--color-warning)]">
+                {unresolvedContradictions} unresolved
+              </span>
+            )}
+          </div>
+          <div className="space-y-2">
+            {contradictions.map((c) => (
+              <ContradictionCard
+                key={c.id}
+                contradiction={c}
+                loadChatMessages={loadChatMessages}
+                onWriteOwn={(text, rationale) =>
+                  writeOwnFact(c, text, rationale)
+                }
+                canManage={canManage}
+                disabled={resolutionsDisabled}
+                deleteDisabled={buildActive}
+              />
             ))}
-          </ul>
-          {factsHasMore && (
-            <Button
-              variant="secondary"
-              onClick={() => void loadMoreFacts()}
-              className="mt-2"
-            >
-              Load more
-            </Button>
-          )}
+          </div>
         </section>
       )}
 
-      {/* Contradictions (read-only) — resolving them is Phase 10's
-          review UX; this is only the flag, no evidence or fact lookups. */}
-      {contradictions.length > 0 && (
-        <section>
-          <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)] mb-2">
-            Contradictions
-          </h3>
-          <ul className="space-y-1">
-            {contradictions.slice(0, 20).map((c) => (
-              <li
-                key={c.id}
-                className="px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] text-sm text-[var(--color-text-primary)]"
-              >
-                <span className="mr-2 text-xs px-2 py-0.5 rounded-full bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)]">
-                  {humanizeContradictionType(c.type)}
-                </span>
-                {c.description}
-              </li>
-            ))}
-          </ul>
-          {contradictions.length > 20 && (
-            <p className="text-xs text-[var(--color-text-secondary)] mt-1">
-              and {contradictions.length - 20} more
-            </p>
-          )}
-        </section>
-      )}
+      {/* Lock canon footer (§6.6). Rendered wherever a bible with ≥1
+          section beyond meta exists — its own manifest gate handles the
+          rest so the footer never appears on an untouched Work. */}
+      <LockCanonFooter
+        contradictions={contradictions}
+        sections={sections}
+        liveRefs={liveRefs}
+        canManage={canManage}
+        disabled={buildActive}
+      />
 
       {canManage && (
         <section className="pt-2 border-t border-[var(--color-border)]">
@@ -861,12 +1065,12 @@ export function StoryTab({
         />
       )}
 
-      {pickerOpen && (
+      {pickerMode !== null && (
         <SourceChatPickerModal
           chats={project.chats}
           current={sourceChat?.ref ?? null}
           onPick={onPick}
-          onClose={() => setPickerOpen(false)}
+          onClose={() => setPickerMode(null)}
           busy={isSaving}
         />
       )}

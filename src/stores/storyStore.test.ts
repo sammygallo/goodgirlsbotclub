@@ -8,6 +8,11 @@ const listFacts = vi.fn();
 const reset = vi.fn();
 const listArchives = vi.fn();
 const restoreArchiveApi = vi.fn();
+const deleteFactApi = vi.fn();
+const appendEdit = vi.fn();
+const getScene = vi.fn();
+const putScene = vi.fn();
+const deleteScene = vi.fn();
 
 class FakeConflict extends Error {
   currentTs: number;
@@ -40,12 +45,28 @@ vi.mock('../api/client', () => ({
     reset: (...a: unknown[]) => reset(...a),
     listArchives: (...a: unknown[]) => listArchives(...a),
     restoreArchive: (...a: unknown[]) => restoreArchiveApi(...a),
+    deleteFact: (...a: unknown[]) => deleteFactApi(...a),
+    appendEdit: (...a: unknown[]) => appendEdit(...a),
+    getScene: (...a: unknown[]) => getScene(...a),
+    putScene: (...a: unknown[]) => putScene(...a),
+    deleteScene: (...a: unknown[]) => deleteScene(...a),
   },
   StoryConflictError: FakeConflict,
   StoryRestoreConflictError: FakeRestoreConflict,
 }));
 
 vi.mock('../components/ui/Toast', () => ({ showToastGlobal: vi.fn() }));
+
+// The build-active gate reads storyIngestStore's checkpoint lazily.
+// Mocking it lets a test set the checkpoint on a per-case basis without
+// pulling the real ingest module (with its ambient store subscriptions)
+// into the test env.
+const ingestCheckpoint = { current: null as null | { status: string } };
+vi.mock('./storyIngestStore', () => ({
+  useStoryIngestStore: {
+    getState: () => ({ checkpoint: ingestCheckpoint.current }),
+  },
+}));
 
 const { useStoryStore, hasBible } = await import('./storyStore');
 const { showToastGlobal } = await import('../components/ui/Toast');
@@ -88,6 +109,10 @@ beforeEach(() => {
     next_after_id: null,
     has_more: false,
   });
+  deleteFactApi.mockResolvedValue(undefined);
+  appendEdit.mockResolvedValue({ seq: 1, id: 'e1', data: {}, created_at: 'x' });
+  deleteScene.mockResolvedValue(undefined);
+  ingestCheckpoint.current = null;
 });
 
 describe('hasBible', () => {
@@ -951,5 +976,656 @@ describe('restoreArchive', () => {
     await useStoryStore.getState().restoreArchive('archive-1');
 
     expect(listArchives).toHaveBeenCalledWith('p1', { limit: 25 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review checkpoint (phase 10)
+// ---------------------------------------------------------------------------
+
+const CONTRADICTION = {
+  id: 'c1',
+  type: 'character_attribute',
+  description: 'Eye colour disagrees',
+  sources: ['f1', 'f2'],
+  detected_by: 'agent',
+  resolution: { status: 'unresolved', canonical_choice: null, rationale: '' },
+};
+
+function continuitySection(serverTs: number, entries: unknown[] = [CONTRADICTION]) {
+  return {
+    section: 'continuity',
+    server_ts: serverTs,
+    updated_at: '2026-08-10T12:00:00Z',
+    data: { contradictions: entries },
+  };
+}
+
+function factRow(id: string, text = 'a fact', seq = 1) {
+  return {
+    seq,
+    id,
+    created_at: '2026-08-10T12:00:00Z',
+    data: { id, text, category: 'reveal', confidence: 'explicit' },
+  };
+}
+
+describe('load — the tombstone-aware fact gate', () => {
+  it('still fetches facts when every fact has been deleted', async () => {
+    // fact_count counts LIVE facts, so an all-deleted log reports 0 — but
+    // the rows are still on the wire and the review list must show them.
+    manifest.mockResolvedValue({
+      ...emptyManifest,
+      sections: [{ section: 'meta', server_ts: 1, bytes: 10, updated_at: 'x' }],
+      fact_count: 0,
+    });
+    getSection.mockResolvedValue(metaSection(1));
+
+    await useStoryStore.getState().load('p1');
+
+    expect(listFacts).toHaveBeenCalledWith('p1', { limit: 50 });
+  });
+});
+
+describe('patchContinuity', () => {
+  beforeEach(() => {
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: { continuity: continuitySection(3) as never },
+    });
+  });
+
+  it('writes the patched entries and appends an edit row', async () => {
+    putSection.mockResolvedValue(continuitySection(4));
+
+    const ok = await useStoryStore.getState().patchContinuity(
+      (entries) =>
+        entries.map((e) => ({
+          ...e,
+          resolution: { ...e.resolution, status: 'deferred' as const },
+        })),
+      { target: { type: 'contradiction' }, classification: 'contradiction' }
+    );
+
+    expect(ok).toBe(true);
+    const [, name, data, baseTs] = putSection.mock.calls[0];
+    expect(name).toBe('continuity');
+    expect(baseTs).toBe(3);
+    expect((data as { contradictions: { resolution: { status: string } }[] })
+      .contradictions[0].resolution.status).toBe('deferred');
+    expect(appendEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op when the patch returns null — no PUT, no edit row', async () => {
+    const ok = await useStoryStore.getState().patchContinuity(() => null, {
+      target: { type: 'contradiction' },
+      classification: 'contradiction',
+    });
+
+    expect(ok).toBe(true);
+    expect(putSection).not.toHaveBeenCalled();
+    expect(appendEdit).not.toHaveBeenCalled();
+  });
+
+  it('re-applies the intent to the WINNER on conflict, not the local copy', async () => {
+    // Another tab resolved a DIFFERENT entry first. Both must survive:
+    // merging detections would drop this one's resolution silently.
+    const otherEntry = { ...CONTRADICTION, id: 'c2', sources: ['f3', 'f4'] };
+    putSection
+      .mockRejectedValueOnce(
+        new FakeConflict(9, continuitySection(9, [CONTRADICTION, otherEntry]).data
+          ? continuitySection(9, [CONTRADICTION, otherEntry])
+          : null)
+      )
+      .mockResolvedValueOnce(continuitySection(10));
+
+    const ok = await useStoryStore.getState().patchContinuity(
+      (entries) =>
+        entries.map((e) =>
+          e.id === 'c1'
+            ? { ...e, resolution: { ...e.resolution, status: 'deferred' as const } }
+            : e
+        ),
+      { target: { type: 'contradiction' }, classification: 'contradiction' }
+    );
+
+    expect(ok).toBe(true);
+    expect(putSection).toHaveBeenCalledTimes(2);
+    const [, , retryData, retryBaseTs] = putSection.mock.calls[1];
+    expect(retryBaseTs).toBe(9);
+    const entries = (retryData as { contradictions: { id: string; resolution: { status: string } }[] }).contradictions;
+    // The winner's other entry survived AND this call's intent applied.
+    expect(entries).toHaveLength(2);
+    expect(entries.find((e) => e.id === 'c1')?.resolution.status).toBe('deferred');
+  });
+
+  it('gives up after a second conflict instead of blind-overwriting', async () => {
+    putSection
+      .mockRejectedValueOnce(new FakeConflict(9, continuitySection(9)))
+      .mockRejectedValueOnce(new FakeConflict(11, continuitySection(11)));
+
+    const ok = await useStoryStore.getState().patchContinuity(
+      (entries) => [...entries],
+      { target: { type: 'contradiction' }, classification: 'contradiction' }
+    );
+
+    expect(ok).toBe(false);
+    expect(putSection).toHaveBeenCalledTimes(2);
+    expect(useStoryStore.getState().isSaving).toBe(false);
+  });
+
+  it('does not write or toast for a work the user has left', async () => {
+    let release: (v: unknown) => void = () => {};
+    putSection.mockReturnValue(new Promise((r) => { release = r; }));
+
+    const pending = useStoryStore.getState().patchContinuity(
+      (entries) => [...entries],
+      { target: { type: 'contradiction' }, classification: 'contradiction' }
+    );
+    useStoryStore.getState().clear();
+    release(continuitySection(4));
+
+    expect(await pending).toBe(false);
+    expect(useStoryStore.getState().sections.continuity).toBeUndefined();
+    expect(showToastGlobal).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteFact', () => {
+  beforeEach(() => {
+    useStoryStore.setState({
+      projectId: 'p1',
+      facts: [factRow('f1'), factRow('f2', 'another', 2)],
+      sections: { continuity: continuitySection(3) as never },
+    });
+    putSection.mockResolvedValue(continuitySection(4));
+  });
+
+  it('tombstones the row locally instead of dropping it from the list', async () => {
+    // The reload at the end reads fresh state from the server, so the
+    // wire keeps returning the tombstone rather than dropping the row —
+    // the mock must mirror that (the reason for §4.2's cursor-stability
+    // rule on GET /facts).
+    manifest.mockResolvedValue({
+      ...emptyManifest,
+      sections: [{ section: 'meta', server_ts: 1, bytes: 10, updated_at: 'x' }],
+      fact_count: 1,
+    });
+    getSection.mockResolvedValue(metaSection(1));
+    listFacts.mockResolvedValue({
+      items: [
+        {
+          seq: 1,
+          id: 'f1',
+          created_at: '2026-08-10T12:00:00Z',
+          data: { id: 'f1', deleted_at: '2026-08-10T12:00:00Z' },
+        },
+        factRow('f2', 'another', 2),
+      ],
+      next_after_seq: null,
+      has_more: false,
+    });
+
+    await useStoryStore.getState().deleteFact('f1');
+
+    const { facts } = useStoryStore.getState();
+    expect(facts).toHaveLength(2);
+    const deleted = facts.find((f) => f.id === 'f1');
+    expect(deleted?.data.text).toBeUndefined();
+    expect(typeof deleted?.data.deleted_at).toBe('string');
+    // The untouched row is left exactly as it was.
+    expect(facts.find((f) => f.id === 'f2')?.data.text).toBe('another');
+  });
+
+  it('treats an already-deleted fact as success, not an error', async () => {
+    deleteFactApi.mockRejectedValueOnce(new Error('fact not found'));
+
+    const ok = await useStoryStore.getState().deleteFact('f1');
+
+    expect(ok).toBe(true);
+    expect(showToastGlobal).not.toHaveBeenCalledWith(
+      expect.stringContaining('Failed'),
+      'error'
+    );
+  });
+
+  it('cleans up contradictions that cited the fact', async () => {
+    await useStoryStore.getState().deleteFact('f1');
+
+    // Only two sources, so removing one drops the entry entirely.
+    const [, , data] = putSection.mock.calls[0];
+    expect((data as { contradictions: unknown[] }).contradictions).toEqual([]);
+  });
+
+  it('never reports failure when the delete landed but cleanup did not', async () => {
+    putSection.mockRejectedValue(new Error('boom'));
+    putSection.mockRejectedValue(new Error('boom'));
+
+    const ok = await useStoryStore.getState().deleteFact('f1');
+
+    expect(deleteFactApi).toHaveBeenCalledWith('p1', 'f1');
+    expect(ok).toBe(true);
+    expect(showToastGlobal).toHaveBeenCalledWith(
+      expect.stringContaining("couldn't be cleaned"),
+      'warning'
+    );
+  });
+
+  it('does not touch state for a work the user has left', async () => {
+    let release: (v: unknown) => void = () => {};
+    deleteFactApi.mockReturnValue(new Promise((r) => { release = r; }));
+
+    const pending = useStoryStore.getState().deleteFact('f1');
+    useStoryStore.getState().clear();
+    release(undefined);
+
+    expect(await pending).toBe(false);
+    expect(useStoryStore.getState().facts).toEqual([]);
+  });
+});
+
+describe('loadAllFactsById', () => {
+  it('pages the whole log and keeps tombstones in the index', async () => {
+    useStoryStore.setState({ projectId: 'p1' });
+    listFacts
+      .mockResolvedValueOnce({
+        items: [factRow('f1'), { seq: 2, id: 'f2', created_at: 'x', data: { id: 'f2', deleted_at: '2026-08-10T12:00:00Z' } }],
+        next_after_seq: 2,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({ items: [factRow('f3', 'third', 3)], next_after_seq: null, has_more: false });
+
+    const index = await useStoryStore.getState().loadAllFactsById();
+
+    expect(index?.size).toBe(3);
+    // A deleted source must stay resolvable so a card can say so.
+    expect(index?.get('f2')?.data.deleted_at).toBeTruthy();
+    expect(listFacts).toHaveBeenCalledTimes(2);
+  });
+
+  it('serves the cache instead of re-paging', async () => {
+    useStoryStore.setState({ projectId: 'p1', factIndex: new Map([['f1', factRow('f1')]]) });
+
+    const index = await useStoryStore.getState().loadAllFactsById();
+
+    expect(index?.size).toBe(1);
+    expect(listFacts).not.toHaveBeenCalled();
+  });
+});
+
+describe('mergeSceneIntoPrevious', () => {
+  const sceneData = (id: string, seq: number, extra: Record<string, unknown> = {}) => ({
+    id,
+    sequence: seq,
+    title: `Scene ${seq}`,
+    summary: `Summary ${seq}`,
+    detailed_summary: `Detail ${seq}`,
+    setting: { location_ref: null, time_ref: null, atmosphere: '' },
+    participants: [`p${seq}`],
+    continuity_facts_established: [`f${seq}`],
+    source: {
+      message_range: {
+        start: { msg_id: `s${seq}`, swipe_idx: 0, fingerprint: { sha: 'a', hash_alg: 'sha256', send_date: 1 } },
+        end: { msg_id: `e${seq}`, swipe_idx: 0, fingerprint: { sha: 'b', hash_alg: 'sha256', send_date: 2 } },
+      },
+      total_messages: 10,
+      swipe_resolutions: [],
+      excluded_segments: [],
+    },
+    annotations: { user_notes: '', author_intent: '', flagged_issues: [], stale_source: false },
+    ...extra,
+  });
+
+  beforeEach(() => {
+    useStoryStore.setState({
+      projectId: 'p1',
+      scenes: [
+        { id: 'sc1', sequence: 0, title: 'Scene 0', summary: 'Summary 0', server_ts: 5, updated_at: 'x' },
+        { id: 'sc2', sequence: 1, title: 'Scene 1', summary: 'Summary 1', server_ts: 6, updated_at: 'x' },
+      ],
+    });
+    getScene.mockImplementation((_p: string, id: string) =>
+      Promise.resolve({
+        id,
+        sequence: id === 'sc1' ? 0 : 1,
+        server_ts: id === 'sc1' ? 5 : 6,
+        updated_at: 'x',
+        data: sceneData(id, id === 'sc1' ? 0 : 1),
+      })
+    );
+    putScene.mockResolvedValue({ id: 'sc1', sequence: 0, server_ts: 7, updated_at: 'y', data: {} });
+  });
+
+  it('writes the survivor BEFORE deleting the victim', async () => {
+    const order: string[] = [];
+    putScene.mockImplementation(() => { order.push('put'); return Promise.resolve({ id: 'sc1', sequence: 0, server_ts: 7, updated_at: 'y', data: {} }); });
+    deleteScene.mockImplementation(() => { order.push('delete'); return Promise.resolve(); });
+
+    await useStoryStore.getState().mergeSceneIntoPrevious('sc2');
+
+    // PUT-then-crash duplicates content (visible, retryable); the other
+    // order would destroy the victim with no archive behind it.
+    expect(order).toEqual(['put', 'delete']);
+    expect(deleteScene).toHaveBeenCalledWith('p1', 'sc2', 6);
+  });
+
+  it('unions the fact and participant indexes and spans the message range', async () => {
+    await useStoryStore.getState().mergeSceneIntoPrevious('sc2');
+
+    const [, , merged] = putScene.mock.calls[0];
+    const m = merged as ReturnType<typeof sceneData>;
+    expect(m.participants).toEqual(['p0', 'p1']);
+    expect(m.continuity_facts_established).toEqual(['f0', 'f1']);
+    expect(m.source.message_range.start.msg_id).toBe('s0');
+    expect(m.source.message_range.end.msg_id).toBe('e1');
+    expect(m.source.total_messages).toBe(20);
+    expect(m.title).toBe('Scene 0');
+  });
+
+  it('refuses before writing anything when the merge would exceed the cap', async () => {
+    getScene.mockImplementation((_p: string, id: string) =>
+      Promise.resolve({
+        id,
+        sequence: id === 'sc1' ? 0 : 1,
+        server_ts: id === 'sc1' ? 5 : 6,
+        updated_at: 'x',
+        data: sceneData(id, id === 'sc1' ? 0 : 1, { detailed_summary: 'x'.repeat(40000) }),
+      })
+    );
+
+    const ok = await useStoryStore.getState().mergeSceneIntoPrevious('sc2');
+
+    expect(ok).toBe(false);
+    expect(putScene).not.toHaveBeenCalled();
+    expect(deleteScene).not.toHaveBeenCalled();
+  });
+
+  it('refuses to merge the first scene', async () => {
+    const ok = await useStoryStore.getState().mergeSceneIntoPrevious('sc1');
+    expect(ok).toBe(false);
+    expect(getScene).not.toHaveBeenCalled();
+  });
+});
+
+describe('relinkSourceChat', () => {
+  const NEW_CHAT = { character_avatar: 'Ivy.png', file_name: 'Ivy - renamed' };
+
+  it('moves only the pointer — snapshot, captured_at and watermark survive', async () => {
+    const snapshot = { name: 'Ivy - 1' };
+    const watermark = { message_count: 42, last_msg: null };
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: {
+        meta: metaSection(3, {
+          source: {
+            platform: 'ggbc',
+            chat: { kind: 'chat', ref: CHAT, snapshot, captured_at: '2026-07-01T00:00:00Z' },
+            characters: [{ kind: 'character', ref: 'Ivy.png' }],
+          },
+          ingest_watermark: watermark,
+        }) as never,
+      },
+    });
+    putSection.mockResolvedValue(metaSection(4));
+
+    const ok = await useStoryStore.getState().relinkSourceChat(NEW_CHAT);
+
+    expect(ok).toBe(true);
+    const [, , data] = putSection.mock.calls[0];
+    const meta = data as {
+      source: { chat: { ref: unknown; snapshot: unknown; captured_at: string }; characters: unknown[] };
+      ingest_watermark: unknown;
+    };
+    expect(meta.source.chat.ref).toEqual(NEW_CHAT);
+    // Relink asserts "same roleplay, new identity": re-stamping the
+    // snapshot would lose what was true at capture time, and zeroing the
+    // watermark would make phase 11 re-walk from scratch.
+    expect(meta.source.chat.snapshot).toEqual(snapshot);
+    expect(meta.source.chat.captured_at).toBe('2026-07-01T00:00:00Z');
+    expect(meta.ingest_watermark).toEqual(watermark);
+    expect(meta.source.characters).toHaveLength(1);
+  });
+});
+
+describe('appendSamplePassage', () => {
+  function voiceSection(serverTs: number, passages: unknown[] = []) {
+    return {
+      section: 'user_voice',
+      server_ts: serverTs,
+      updated_at: 'x',
+      data: {
+        style_summary: 's',
+        register: 'literary',
+        diction: {},
+        rhetorical_devices: [],
+        pov_preferences: { in_chat: null, likely_target_for_prose: null },
+        interaction_style: {},
+        sample_passages: passages,
+        confidence: 0.3,
+      },
+    };
+  }
+
+  beforeEach(() => {
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: { user_voice: voiceSection(2) as never },
+    });
+    putSection.mockResolvedValue(voiceSection(3));
+  });
+
+  it('appends with a user_annotation source and leaves confidence alone', async () => {
+    await useStoryStore.getState().appendSamplePassage('  My own prose.  ');
+
+    const [, , data] = putSection.mock.calls[0];
+    const voice = data as { sample_passages: { text: string; source: { kind: string } }[]; confidence: number };
+    expect(voice.sample_passages).toHaveLength(1);
+    expect(voice.sample_passages[0].text).toBe('My own prose.');
+    expect(voice.sample_passages[0].source.kind).toBe('user_annotation');
+    // The model's self-assessment is not ours to inflate.
+    expect(voice.confidence).toBe(0.3);
+  });
+
+  it('refuses a whitespace-only paste before hitting the wire', async () => {
+    const ok = await useStoryStore.getState().appendSamplePassage('   \n  ');
+    expect(ok).toBe(false);
+    expect(putSection).not.toHaveBeenCalled();
+  });
+
+  it('evicts the oldest USER passage only, never a captured one', async () => {
+    const captured = { text: 'walk captured', source: { kind: 'chat_message' } };
+    const mine = Array.from({ length: 10 }, (_, i) => ({
+      text: `mine ${i}`,
+      source: { kind: 'user_annotation' },
+    }));
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: { user_voice: voiceSection(2, [captured, ...mine]) as never },
+    });
+
+    await useStoryStore.getState().appendSamplePassage('newest');
+
+    const [, , data] = putSection.mock.calls[0];
+    const passages = (data as { sample_passages: { text: string }[] }).sample_passages;
+    expect(passages[0].text).toBe('walk captured');
+    expect(passages.some((p) => p.text === 'mine 0')).toBe(false);
+    expect(passages.some((p) => p.text === 'newest')).toBe(true);
+  });
+});
+
+describe('lockCanon / unlockCanon', () => {
+  beforeEach(() => {
+    useStoryStore.setState({ projectId: 'p1', sections: { meta: metaSection(3) as never } });
+    putSection.mockResolvedValue(metaSection(4));
+  });
+
+  it('stamps canon_locked_at and appends a substantive edit', async () => {
+    const ok = await useStoryStore.getState().lockCanon();
+
+    expect(ok).toBe(true);
+    const [, name, data] = putSection.mock.calls[0];
+    expect(name).toBe('meta');
+    expect(typeof (data as { canon_locked_at: string }).canon_locked_at).toBe('string');
+    const edit = appendEdit.mock.calls[0][1] as { classification: string; target: { type: string } };
+    expect(edit.classification).toBe('substantive');
+    expect(edit.target.type).toBe('meta');
+  });
+
+  it('clears it on unlock', async () => {
+    await useStoryStore.getState().unlockCanon();
+    const [, , data] = putSection.mock.calls[0];
+    expect((data as { canon_locked_at: string | null }).canon_locked_at).toBeNull();
+  });
+
+  it('does not toast for a work the user has left', async () => {
+    let release: (v: unknown) => void = () => {};
+    putSection.mockReturnValue(new Promise((r) => { release = r; }));
+
+    const pending = useStoryStore.getState().lockCanon();
+    useStoryStore.getState().clear();
+    release(metaSection(4));
+
+    expect(await pending).toBe(false);
+    expect(showToastGlobal).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review findings — regression pins (phase 10)
+// ---------------------------------------------------------------------------
+
+describe('lock and build gates', () => {
+  function lockedMeta(serverTs: number) {
+    return metaSection(serverTs, { canon_locked_at: '2026-08-10T12:00:00Z' });
+  }
+
+  it('refuses fact deletes while canon is locked', async () => {
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: { meta: lockedMeta(3) as never },
+    });
+
+    const ok = await useStoryStore.getState().deleteFact('f1');
+
+    expect(ok).toBe(false);
+    expect(deleteFactApi).not.toHaveBeenCalled();
+  });
+
+  it('refuses fact deletes while a build is running', async () => {
+    useStoryStore.setState({ projectId: 'p1' });
+    ingestCheckpoint.current = { status: 'running' };
+
+    const ok = await useStoryStore.getState().deleteFact('f1');
+
+    expect(ok).toBe(false);
+    expect(deleteFactApi).not.toHaveBeenCalled();
+  });
+
+  it('lets contradiction resolutions through during a build', async () => {
+    // Resolutions are safe against reconcile's existing-wins merge, so
+    // §3.3 carves them out of the build gate.
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: { continuity: continuitySection(3) as never },
+    });
+    ingestCheckpoint.current = { status: 'running' };
+    putSection.mockResolvedValue(continuitySection(4));
+
+    const ok = await useStoryStore.getState().patchContinuity(
+      (entries) => [...entries],
+      { target: { type: 'contradiction' }, classification: 'contradiction' }
+    );
+
+    expect(ok).toBe(true);
+    expect(putSection).toHaveBeenCalledTimes(1);
+  });
+
+  it('unlock works while locked, but lock refuses when already locked', async () => {
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: { meta: lockedMeta(3) as never },
+    });
+    putSection.mockResolvedValue(metaSection(4));
+
+    // A second lock is a no-op — nothing to write and nothing to say.
+    const lockAgain = await useStoryStore.getState().lockCanon();
+    expect(lockAgain).toBe(false);
+    expect(putSection).not.toHaveBeenCalled();
+
+    const unlocked = await useStoryStore.getState().unlockCanon();
+    expect(unlocked).toBe(true);
+    const [, , data] = putSection.mock.calls[0];
+    expect((data as { canon_locked_at: string | null }).canon_locked_at).toBeNull();
+  });
+});
+
+describe('deleteFact edit-row diff', () => {
+  it('carries the original fact text — not the tombstone placeholder', async () => {
+    // The tombstone lands in local state before the edit row is written,
+    // so the text has to be captured BEFORE that set — otherwise every
+    // delete's diff reads 'deleted: (text unavailable)' and the audit
+    // log stops answering "what did that delete actually remove?".
+    useStoryStore.setState({
+      projectId: 'p1',
+      facts: [factRow('f1', 'Sara wore the blue coat')],
+      sections: { continuity: continuitySection(3, []) as never },
+    });
+    listFacts.mockResolvedValue({
+      items: [
+        {
+          seq: 1,
+          id: 'f1',
+          created_at: 'x',
+          data: { id: 'f1', deleted_at: '2026-08-10T12:00:00Z' },
+        },
+      ],
+      next_after_seq: null,
+      has_more: false,
+    });
+
+    await useStoryStore.getState().deleteFact('f1');
+
+    const edit = appendEdit.mock.calls[0][1] as { diff: string };
+    expect(edit.diff).toBe('deleted: Sara wore the blue coat');
+    expect(edit.diff).not.toContain('text unavailable');
+  });
+});
+
+describe('loadAllFactsById fetch-seq ordering', () => {
+  it('does not stamp a stale index over a fresh load()', async () => {
+    // The specific hazard the review caught: loadAllFactsById's paging
+    // beats load()'s facts fetch, then lands its old map on top and
+    // hides freshly-appended facts as '(deleted fact)' in cards.
+    useStoryStore.setState({ projectId: 'p1' });
+
+    // A slow first (and only) page for the index.
+    let release: (v: unknown) => void = () => {};
+    listFacts.mockImplementationOnce(
+      () => new Promise((r) => { release = r; })
+    );
+
+    const pending = useStoryStore.getState().loadAllFactsById();
+
+    // A load() runs while the index is in flight — its listFacts mock
+    // returns the fresh row list and the seq bump invalidates the
+    // index paging.
+    manifest.mockResolvedValueOnce({
+      ...emptyManifest,
+      sections: [{ section: 'meta', server_ts: 1, bytes: 10, updated_at: 'x' }],
+    });
+    getSection.mockResolvedValueOnce(metaSection(1));
+    listFacts.mockResolvedValueOnce({
+      items: [factRow('f1', 'fresh')],
+      next_after_seq: null,
+      has_more: false,
+    });
+    await useStoryStore.getState().load('p1');
+
+    // Now the stale index resolves. It must NOT overwrite factIndex.
+    release({ items: [], next_after_seq: null, has_more: false });
+    const result = await pending;
+
+    expect(result).toBeNull();
+    expect(useStoryStore.getState().factIndex).toBeNull();
   });
 });
