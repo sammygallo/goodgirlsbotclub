@@ -27,7 +27,20 @@ import {
   type SceneBulkItem,
 } from '../utils/storyIngest/transcriptWalk';
 import { runUserVoiceSynthesis } from '../utils/storyIngest/userVoice';
-import type { Scene } from '../types/storyBible';
+import { groupFacts } from '../utils/storyIngest/reconcile';
+import {
+  buildCardContradiction,
+  buildCardFact,
+  buildCardCheckTargets,
+  buildContradiction,
+  continuityUnchanged,
+  mergeContinuity,
+  readCardCharacters,
+  readContinuitySection,
+  runCardChecks,
+  runGroupJudge,
+} from '../utils/storyIngest/reconcileJudge';
+import type { BibleFact, Contradiction, FactCategory, Scene } from '../types/storyBible';
 import {
   emptyCheckpoint,
   type ColdStartSources,
@@ -52,8 +65,14 @@ import {
  */
 
 /** Passes the pipeline runs, in order — the progress checklist renders
- *  from this. */
-export const PHASE6_PASSES: IngestPass[] = ['cold_start', 'wi_replay', 'transcript_walk'];
+ *  from this. `review` is deliberately absent: it is a phase-10 human
+ *  checkpoint, not something this pipeline can tick off. */
+export const INGEST_PASSES: IngestPass[] = [
+  'cold_start',
+  'wi_replay',
+  'transcript_walk',
+  'reconcile',
+];
 
 /** A walk longer than this many chunks needs an explicit confirmation
  *  before it starts (plan Phase 7: "no silent caps" on a very long RP) —
@@ -299,14 +318,42 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       existing.current_pass === 'transcript_walk' &&
       existing.chunk_plan.length > 0;
 
+    // The walk's twin, and mandatory once reconcile writes
+    // `current_pass: 'reconcile'` — without it, a paused reconcile is
+    // classified a FRESH build and re-pays cold_start plus the entire
+    // walk. The tempting one-line fix (widening resumableWalk to accept
+    // 'reconcile') is worse than it looks: runTranscriptWalkPass's own
+    // inner gate still demands 'transcript_walk', so it falls through to
+    // the fresh-plan branch and silently re-walks — re-bills — the whole
+    // chat. Widening BOTH gates then lands in sliceChunksFromPlan, where
+    // a user who deleted a chunk-boundary message after the walk finished
+    // trips 'diverged' and is told to Reset story, destroying a complete,
+    // fully-paid bible over a divergence reconcile does not even care
+    // about (it reads the server-side fact log, never the chat).
+    //
+    // No status check, mirroring resumableWalk, so both 'paused' and
+    // 'error' reconcile checkpoints resume cheaply.
+    const resumableReconcile =
+      existing !== null &&
+      existing.prompt_version === PROMPT_VERSION &&
+      existing.current_pass === 'reconcile';
+
     set({
-      currentPass: resumableWalk ? 'transcript_walk' : 'cold_start',
-      // cold_start/wi_replay genuinely completed in the ORIGINAL run —
-      // show them as done rather than reverting the checklist.
-      completed: resumableWalk ? ['cold_start', 'wi_replay'] : [],
+      currentPass: resumableReconcile
+        ? 'reconcile'
+        : resumableWalk
+          ? 'transcript_walk'
+          : 'cold_start',
+      // Passes that genuinely completed in the ORIGINAL run — show them
+      // as done rather than reverting the checklist.
+      completed: resumableReconcile
+        ? ['cold_start', 'wi_replay', 'transcript_walk']
+        : resumableWalk
+          ? ['cold_start', 'wi_replay']
+          : [],
     });
 
-    let checkpoint: IngestCheckpoint = resumableWalk
+    let checkpoint: IngestCheckpoint = resumableWalk || resumableReconcile
       ? {
           ...existing!,
           status: 'running',
@@ -320,18 +367,42 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
           lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
         };
 
+    // Declared HERE, above saveCheckpoint, for two reasons: the fold
+    // below reads them on every write (including the very first one and
+    // every heartbeat), and countingLlm updates them as it bills. Seeded
+    // from the checkpoint — 0 for a fresh build, the persisted subtotal
+    // for a resume, so a continued run keeps accumulating rather than
+    // reverting to 0 and undercounting everything already spent.
+    let inputTokens = checkpoint.token_usage.input_tokens;
+    let outputTokens = checkpoint.token_usage.output_tokens;
+
     const saveCheckpoint = async (next: IngestCheckpoint) => {
-      checkpoint = next;
+      // The single choke point where live spend becomes durable spend.
+      // Callers used to pass token_usage themselves, which meant only the
+      // handful that remembered to did: the per-chunk walk saves carried
+      // the totals as of walk ENTRY, so a mid-walk pause persisted a
+      // figure missing most of the walk, and "resume seeds its running
+      // total from the checkpoint" was quietly false. Folding here fixes
+      // every write at once, including the heartbeat's.
+      const folded: IngestCheckpoint = {
+        ...next,
+        token_usage: {
+          ...next.token_usage,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+        },
+      };
+      checkpoint = folded;
       try {
-        const section = await putIngestion(projectId, next, get().checkpointTs);
-        set({ checkpoint: next, checkpointTs: section.server_ts });
+        const section = await putIngestion(projectId, folded, get().checkpointTs);
+        set({ checkpoint: folded, checkpointTs: section.server_ts });
       } catch (error) {
         if (error instanceof StoryConflictError) {
           // Another writer moved the section. Adopt its token and retry
           // once so our progress isn't silently dropped.
           const winnerTs = error.currentTs;
-          const section = await putIngestion(projectId, next, winnerTs);
-          set({ checkpoint: next, checkpointTs: section.server_ts });
+          const section = await putIngestion(projectId, folded, winnerTs);
+          set({ checkpoint: folded, checkpointTs: section.server_ts });
         } else {
           throw error;
         }
@@ -366,11 +437,6 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     try {
       await saveCheckpoint(checkpoint);
 
-      // Seeded from the checkpoint (0 for a fresh build) so a resume's
-      // running total keeps accumulating rather than reverting to 0 and
-      // undercounting everything spent before the tab closed.
-      let inputTokens = checkpoint.token_usage.input_tokens;
-      let outputTokens = checkpoint.token_usage.output_tokens;
       let llmAttempts = 0;
       let llmFailures = 0;
       const countingLlm = input.llm
@@ -418,9 +484,13 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         : undefined;
 
       let cast: KnownCastMember[];
+      // The entities section's raw character objects, kept alongside the
+      // narrowed cast: reconcile's card check needs the card-derived text
+      // and provenance cold start stamped on them, which `cast` drops.
+      let rawCharacters: unknown[];
       let approximate = checkpoint.replay_approx;
 
-      if (resumableWalk) {
+      if (resumableWalk || resumableReconcile) {
         // Cold start / world-info replay already ran in the ORIGINAL
         // run — rerunning them would mint brand-new random character ids
         // (orphaning the ones an already-open scene references on the
@@ -466,6 +536,7 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
           name: c.canonical_name,
           aliases: c.aliases ?? [],
         }));
+        rawCharacters = entities.characters as unknown[];
       } else {
         // ---- pass 1: cold start ---------------------------------------
         const cold = await runColdStart(input.sources, countingLlm, abort.signal);
@@ -491,7 +562,6 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         await saveCheckpoint({
           ...checkpoint,
           current_pass: 'wi_replay',
-          token_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
           lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
         });
 
@@ -536,7 +606,6 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
               ? 'The model could not be reached, so only the mechanical parts were built.'
               : '',
             current_pass: null,
-            token_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
             replay_approx: approximate,
             lock: null,
           });
@@ -555,92 +624,157 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
           name: c.canonical_name,
           aliases: c.aliases,
         }));
+        rawCharacters = cold.entities.characters as unknown[];
       }
 
-      // ---- pass 2: transcript walk -----------------------------------
-      set({ currentPass: 'transcript_walk' });
-      checkpoint = {
-        ...checkpoint,
-        current_pass: 'transcript_walk',
-        token_usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-        replay_approx: approximate,
-      };
+      const notes: string[] = [];
+
+      // A reconcile-resume skips this entire block. It must NEVER call
+      // runTranscriptWalkPass (which would re-bill the whole chat) and
+      // never re-synthesize user_voice — both are already durable, which
+      // is exactly what `current_pass: 'reconcile'` records.
+      if (!resumableReconcile) {
+        // ---- pass 2: transcript walk ---------------------------------
+        set({ currentPass: 'transcript_walk' });
+        checkpoint = {
+          ...checkpoint,
+          current_pass: 'transcript_walk',
+          replay_approx: approximate,
+        };
+        await saveCheckpoint({
+          ...checkpoint,
+          lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
+        });
+
+        const walkOutcome = await runTranscriptWalkPass({
+          projectId,
+          chat: input.chat,
+          messages: input.messages,
+          cast,
+          llm: countingLlm,
+          checkpoint,
+          priorCheckpoint: existing,
+          confirmLongWalk: input.confirmLongWalk ?? false,
+          abort,
+          stillOurs,
+          saveCheckpoint,
+        });
+        checkpoint = walkOutcome.checkpoint;
+
+        // Another run took over (the user switched Works mid-flight) — its
+        // owner is responsible for the outcome now, not us.
+        if (walkOutcome.status === 'aborted') return false;
+
+        if (walkOutcome.status === 'needs_confirmation') {
+          const message = WALK_CONFIRM_MESSAGE(walkOutcome.chunkCount ?? 0);
+          await saveCheckpoint({ ...checkpoint, status: 'paused', error: message, lock: null });
+          finish({ error: message });
+          showToastGlobal(message, 'warning');
+          return false;
+        }
+
+        if (walkOutcome.status === 'diverged') {
+          // "Reset ingestion state" only clears this checkpoint, not the
+          // scenes/facts already written — pointing at it here would leave
+          // stale, pre-divergence content in place for a rebuild to
+          // duplicate on top of. The full "Reset story" action clears
+          // scenes/facts too, which divergence genuinely needs.
+          const message =
+            'The chat changed since this build started. Use "Reset story" below, then build again.';
+          await saveCheckpoint({ ...checkpoint, status: 'error', error: message, lock: null });
+          finish({ error: message });
+          showToastGlobal(message, 'error');
+          return false;
+        }
+
+        if (abort.signal.aborted) throw abortError();
+        if (!stillOurs()) return false;
+
+        // ---- post-walk: user_voice synthesis -------------------------
+        const voice = await runUserVoiceSynthesis({
+          messages: input.messages,
+          chat: input.chat,
+          llm: countingLlm,
+          signal: abort.signal,
+        });
+        if (abort.signal.aborted) throw abortError();
+        if (!stillOurs()) return false;
+        await writeSection(projectId, 'user_voice', voice.section);
+
+        if (walkOutcome.unreadableChunks > 0) {
+          notes.push(
+            `${walkOutcome.unreadableChunks} of ${walkOutcome.totalChunks} chunks could not be read and were skipped.`
+          );
+        }
+        if (walkOutcome.trailingUnwalked > 0) {
+          // The user kept chatting while a build was paused — the plan
+          // this resume continued was pinned before those messages
+          // existed, so they were never walked (see runTranscriptWalkPass).
+          notes.push(
+            `${walkOutcome.trailingUnwalked} newer ${walkOutcome.trailingUnwalked === 1 ? 'message wasn’t' : 'messages weren’t'} included — rebuild to pick them up.`
+          );
+        }
+      }
+
+      // ---- pass 3: reconcile -----------------------------------------
+      //
+      // Checkpointed only now, mirroring "the chunk plan is pinned only
+      // after cold_start landed": `current_pass: 'reconcile'` is the
+      // honest signal that cold-start's ids, every walk chunk and
+      // user_voice are all durable on the server.
+      //
+      // A crash in the window between the user_voice write and this save
+      // leaves 'transcript_walk' fully advanced — the resume takes the
+      // walk path, runs a zero-iteration chunk loop, reruns user_voice
+      // (idempotent, one cheap call) and arrives here fresh. Correct by
+      // construction rather than by a second checkpoint field.
+      set({
+        completed: ['cold_start', 'wi_replay', 'transcript_walk'],
+        currentPass: 'reconcile',
+      });
+      checkpoint = { ...checkpoint, current_pass: 'reconcile' };
       await saveCheckpoint({
         ...checkpoint,
         lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
       });
 
-      const walkOutcome = await runTranscriptWalkPass({
+      const reconciled = await runReconcilePass({
         projectId,
-        chat: input.chat,
-        messages: input.messages,
         cast,
+        rawCharacters,
         llm: countingLlm,
-        checkpoint,
-        priorCheckpoint: existing,
-        confirmLongWalk: input.confirmLongWalk ?? false,
         abort,
         stillOurs,
-        saveCheckpoint,
       });
-      checkpoint = walkOutcome.checkpoint;
-
-      // Another run took over (the user switched Works mid-flight) — its
-      // owner is responsible for the outcome now, not us.
-      if (walkOutcome.status === 'aborted') return false;
-
-      if (walkOutcome.status === 'needs_confirmation') {
-        const message = WALK_CONFIRM_MESSAGE(walkOutcome.chunkCount ?? 0);
-        await saveCheckpoint({ ...checkpoint, status: 'paused', error: message, lock: null });
-        finish({ error: message });
-        showToastGlobal(message, 'warning');
-        return false;
-      }
-
-      if (walkOutcome.status === 'diverged') {
-        // "Reset ingestion state" only clears this checkpoint, not the
-        // scenes/facts already written — pointing at it here would leave
-        // stale, pre-divergence content in place for a rebuild to
-        // duplicate on top of. The full "Reset story" action clears
-        // scenes/facts too, which divergence genuinely needs.
-        const message =
-          'The chat changed since this build started. Use "Reset story" below, then build again.';
-        await saveCheckpoint({ ...checkpoint, status: 'error', error: message, lock: null });
-        finish({ error: message });
-        showToastGlobal(message, 'error');
-        return false;
-      }
+      if (reconciled === null) return false;
 
       if (abort.signal.aborted) throw abortError();
       if (!stillOurs()) return false;
 
-      // ---- post-walk: user_voice synthesis ---------------------------
-      const voice = await runUserVoiceSynthesis({
-        messages: input.messages,
-        chat: input.chat,
-        llm: countingLlm,
-        signal: abort.signal,
+      set({
+        completed: ['cold_start', 'wi_replay', 'transcript_walk', 'reconcile'],
+        currentPass: null,
       });
-      if (abort.signal.aborted) throw abortError();
-      if (!stillOurs()) return false;
-      await writeSection(projectId, 'user_voice', voice.section);
 
-      set({ completed: ['cold_start', 'wi_replay', 'transcript_walk'], currentPass: null });
-      const notes: string[] = [];
-      if (walkOutcome.unreadableChunks > 0) {
+      if (reconciled.unreadableChecks > 0) {
+        notes.push(unreadableChecksNote(reconciled.unreadableChecks));
+      }
+      if (reconciled.windowedGroups > 0) {
         notes.push(
-          `${walkOutcome.unreadableChunks} of ${walkOutcome.totalChunks} chunks could not be read and were skipped.`
+          `${reconciled.windowedGroups} very large fact ${reconciled.windowedGroups === 1 ? 'group was' : 'groups were'} checked in slices, so some pairs weren’t compared.`
         );
       }
-      if (walkOutcome.trailingUnwalked > 0) {
-        // The user kept chatting while a build was paused — the plan
-        // this resume continued was pinned before those messages
-        // existed, so they were never walked (see runTranscriptWalkPass).
+      if (reconciled.truncatedCharacters > 0) {
         notes.push(
-          `${walkOutcome.trailingUnwalked} newer ${walkOutcome.trailingUnwalked === 1 ? 'message wasn’t' : 'messages weren’t'} included — rebuild to pick them up.`
+          `${reconciled.truncatedCharacters} ${reconciled.truncatedCharacters === 1 ? 'character had' : 'characters had'} more facts than one card check could hold, so the oldest weren’t compared against the card.`
         );
       }
-      const unreadableNote = notes.join(' ');
+      if (reconciled.dropped > 0) {
+        notes.push(
+          `${reconciled.dropped} ${reconciled.dropped === 1 ? 'contradiction' : 'contradictions'} didn’t fit and were left out.`
+        );
+      }
+      const unreadableNote = notes.join(' ').slice(0, 500);
       await saveCheckpoint({
         ...checkpoint,
         status: 'complete',
@@ -652,8 +786,12 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
 
       finish({});
       showToastGlobal(
-        unreadableNote ? 'Story built — some of the chat could not be read' : 'Story built',
-        unreadableNote ? 'warning' : 'success'
+        reconciled.found > 0
+          ? `Story built — ${reconciled.found} possible ${reconciled.found === 1 ? 'contradiction' : 'contradictions'} flagged`
+          : unreadableNote
+            ? 'Story built — some of it could not be read'
+            : 'Story built',
+        unreadableNote || reconciled.found > 0 ? 'warning' : 'success'
       );
       return true;
     } catch (error) {
@@ -822,6 +960,283 @@ async function bulkWriteScenesWithRetry(
     }
     throw error;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile (phase 8)
+// ---------------------------------------------------------------------------
+
+/** The completion note for judge calls whose answer was unreadable.
+ *
+ *  Load-bearing wording: with a weak model EVERY check can be unreadable
+ *  and the pass still completes, so a bare "0 contradictions" tile would
+ *  read as "checked, clean" rather than "could not check". The Story tab
+ *  matches this note in the persisted checkpoint to keep those two
+ *  states distinguishable after the toast has faded. */
+function unreadableChecksNote(count: number): string {
+  return `${count} contradiction ${count === 1 ? 'check' : 'checks'} could not be read.`;
+}
+
+/** Whether a persisted completion note carries the caveat above. Exported
+ *  for the Story tab — the note lives in `ingestion.error`, a plain
+ *  string, so this is the one place that knows its shape. */
+export function hasUnreadableChecksNote(note: string | null | undefined): boolean {
+  return /contradiction checks? could not be read/i.test(note ?? '');
+}
+
+/** Facts per listFacts page. */
+const FACT_PAGE_LIMIT = 200;
+/** Backstop against a server that never stops saying `has_more` — at 200
+ *  a page this is 100k facts, far past anything a chat produces. */
+const MAX_FACT_PAGES = 500;
+
+const FACT_CATEGORIES: FactCategory[] = ['reveal', 'introduction', 'change', 'world_rule'];
+
+/** Page the whole fact log, shape-checking every row.
+ *
+ *  Rows cross the network as `unknown`; a malformed one that reached
+ *  `groupFacts` would either crash on `.text` or, worse, be grouped as a
+ *  fact with no subject and judged. Skipped rather than trusted.
+ *
+ *  `existingIds` is deliberately EVERY row's id, including the ones the
+ *  shape check rejected. It answers a different question from `facts`:
+ *  "does this fact row exist on the server?", which is what the merge's
+ *  dangling-source prune needs. Building that set from the parsed list
+ *  instead would make an unreadable-but-present row look deleted, and
+ *  the prune would silently drop a perfectly valid contradiction that
+ *  cites it. */
+async function loadAllFacts(
+  projectId: string
+): Promise<{ facts: BibleFact[]; existingIds: Set<string> }> {
+  const out: BibleFact[] = [];
+  const existingIds = new Set<string>();
+  let afterSeq: number | undefined;
+  for (let page = 0; page < MAX_FACT_PAGES; page++) {
+    const res = await storyApi.listFacts(projectId, {
+      limit: FACT_PAGE_LIMIT,
+      ...(afterSeq === undefined ? {} : { afterSeq }),
+    });
+    for (const row of res.items ?? []) {
+      const data = row?.data as Record<string, unknown> | undefined;
+      const id =
+        data && typeof data.id === 'string' ? data.id : (row?.id as string | undefined);
+      if (id) existingIds.add(id);
+      if (!data || typeof data !== 'object') continue;
+      const text = typeof data.text === 'string' ? data.text.trim() : '';
+      if (!id || !text) continue;
+      out.push({
+        id,
+        text,
+        category: FACT_CATEGORIES.includes(data.category as FactCategory)
+          ? (data.category as FactCategory)
+          : 'reveal',
+        established_in: typeof data.established_in === 'string' ? data.established_in : null,
+        source: (data.source ?? null) as BibleFact['source'],
+        confidence: (data.confidence === 'inferred' || data.confidence === 'contested'
+          ? data.confidence
+          : 'explicit') as BibleFact['confidence'],
+      });
+    }
+    if (!res.has_more || res.next_after_seq === null || res.next_after_seq === undefined) break;
+    afterSeq = res.next_after_seq;
+  }
+  return { facts: out, existingIds };
+}
+
+/**
+ * Merge fresh detections into the `continuity` section.
+ *
+ * Deliberately NOT `writeSection`: that helper does a BLIND adopt-winner
+ * re-PUT on 409, which is correct only for sections a pass rebuilds
+ * wholesale. Continuity is co-owned — phase 10 writes user resolutions
+ * into it and users add their own entries — so a blind re-PUT would
+ * revert a resolution written seconds earlier in another tab. The 409
+ * path here re-merges against the winner instead, which is the whole
+ * difference.
+ */
+async function writeContinuityMerged(
+  projectId: string,
+  detected: Contradiction[],
+  liveFactIds: ReadonlySet<string>,
+  cardFactIds: ReadonlySet<string>
+): Promise<{ dropped: number }> {
+  let section: StorySectionOut | null = null;
+  try {
+    section = await storyApi.getSection(projectId, 'continuity');
+  } catch (error) {
+    // A network blip must NOT be read as "never written" — that would
+    // zero base_ts and full-replace whatever is actually stored.
+    if (!isMissingSection(error)) throw error;
+  }
+
+  // Outside the catch on purpose: a malformed section must throw, and
+  // throwing inside would risk isMissingSection swallowing it.
+  const existing = section ? readContinuitySection(section.data) : [];
+  const merged = mergeContinuity(existing, detected, liveFactIds, cardFactIds);
+
+  if (section && continuityUnchanged(existing, merged.contradictions)) {
+    // The backend bumps server_ts on every PUT regardless, and a
+    // gratuitous bump forces a 409-and-merge on the next write from any
+    // open review tab.
+    return { dropped: merged.dropped };
+  }
+
+  // Spread the read payload so a future additive backend field isn't
+  // wiped by this full-replace PUT (the phase-5 content_rating lesson).
+  const payload = {
+    ...((section?.data as Record<string, unknown>) ?? {}),
+    contradictions: merged.contradictions,
+  };
+  try {
+    await storyApi.putSection(projectId, 'continuity', payload, section?.server_ts ?? 0);
+  } catch (error) {
+    if (!(error instanceof StoryConflictError)) throw error;
+
+    // Someone wrote continuity between our read and our write. Re-merge
+    // against THEIR data, not ours — the loser's job is to add its
+    // detections to the winner, never to replace it.
+    let winner = error.current;
+    if (!winner || typeof winner.data !== 'object' || winner.data === null) {
+      winner = await storyApi.getSection(projectId, 'continuity');
+    }
+    const winnerExisting = readContinuitySection(winner.data);
+    const remerged = mergeContinuity(winnerExisting, detected, liveFactIds, cardFactIds);
+    if (continuityUnchanged(winnerExisting, remerged.contradictions)) {
+      return { dropped: remerged.dropped };
+    }
+    // A second 409 throws: the detections are recomputable on the next
+    // build and the winner's data is intact, so retrying forever would
+    // only spin.
+    await storyApi.putSection(
+      projectId,
+      'continuity',
+      { ...(winner.data as Record<string, unknown>), contradictions: remerged.contradictions },
+      winner.server_ts ?? error.currentTs
+    );
+    return { dropped: remerged.dropped };
+  }
+  return { dropped: merged.dropped };
+}
+
+export interface ReconcilePassOutcome {
+  /** Contradictions this run detected (before the merge's own drops). */
+  found: number;
+  unreadableChecks: number;
+  windowedGroups: number;
+  /** Card-backed characters with more facts than one card check could
+   *  carry (see buildCardCheckTargets). */
+  truncatedCharacters: number;
+  dropped: number;
+  llmCalls: number;
+}
+
+/**
+ * The reconcile pass: judge the fact log for contradictions and write
+ * them to `continuity`.
+ *
+ * Returns null when this run lost ownership mid-pass — the caller bails
+ * bare, exactly as the walk does, because the new owner is responsible
+ * for the store's state now.
+ *
+ * Cost is bounded at roughly 2·(batches + eligible characters) — one
+ * repair round each, worst case — which is why a mid-pass resume simply
+ * re-judges the whole pass rather than persisting a cursor: the
+ * deterministic ids and the merge make the re-judge produce zero
+ * duplicates, and it costs about one walk chunk.
+ */
+async function runReconcilePass(opts: {
+  projectId: string;
+  cast: KnownCastMember[];
+  rawCharacters: unknown[];
+  llm: LlmCall;
+  abort: AbortController;
+  stillOurs: () => boolean;
+}): Promise<ReconcilePassOutcome | null> {
+  const { projectId, cast, rawCharacters, llm, abort, stillOurs } = opts;
+
+  const { facts: allFacts, existingIds } = await loadAllFacts(projectId);
+  if (abort.signal.aborted) throw abortError();
+  if (!stillOurs()) return null;
+
+  // HARD INVARIANT, and the reason this filter is applied ONCE here
+  // rather than at each consumer: reconcile's own synthetic card facts
+  // (§6) must never be fed back into either the group judge or the card
+  // check. Filtering only one of them would let a re-run litigate card
+  // facts against card facts and shift every batch under them.
+  const facts = allFacts.filter((f) => f.source?.kind !== 'card_field');
+
+  const groupOutcome = await runGroupJudge({
+    groups: groupFacts(facts, cast),
+    cast,
+    llm,
+    signal: abort.signal,
+  });
+  if (abort.signal.aborted) throw abortError();
+  if (!stillOurs()) return null;
+
+  const cardOutcome = await runCardChecks({
+    targets: buildCardCheckTargets(readCardCharacters(rawCharacters), facts, cast),
+    llm,
+    signal: abort.signal,
+  });
+  if (abort.signal.aborted) throw abortError();
+  if (!stillOurs()) return null;
+
+  const detected: Contradiction[] = groupOutcome.detected.map(buildContradiction);
+  const liveFactIds = new Set(existingIds);
+
+  // The card fact is appended BEFORE the section write so `sources` never
+  // dangles, even transiently: a crash between the two leaves an orphan
+  // fact row (harmless, and re-derived to the same id next run) rather
+  // than a contradiction citing a fact that does not exist.
+  const cardContradictions: { cardFactRowId: string }[] = [];
+  for (const conflict of cardOutcome.detected) {
+    const fact = buildCardFact(conflict);
+    const row = await storyApi.appendFact(
+      projectId,
+      fact as unknown as Record<string, unknown>
+    );
+    if (abort.signal.aborted) throw abortError();
+    if (!stillOurs()) return null;
+    // Append-only: re-posting a known id returns the STORED row, so this
+    // is the id to cite even on a re-run that reworded the claim.
+    const rowId = typeof row?.id === 'string' ? row.id : fact.id;
+    liveFactIds.add(rowId);
+    cardContradictions.push({ cardFactRowId: rowId });
+    detected.push(buildCardContradiction(conflict, rowId));
+  }
+
+  // Collapse anything that landed on the same id (the same pair reached
+  // from two entity groups, or a card conflict re-derived twice) before
+  // the merge sees it. First wins — they are byte-identical by
+  // construction anyway.
+  const byId = new Map<string, Contradiction>();
+  for (const c of detected) if (!byId.has(c.id)) byId.set(c.id, c);
+  const unique = [...byId.values()];
+
+  // Every card fact in the bible, not just this run's: the merge compares
+  // against entries an EARLIER build wrote, whose card facts are already
+  // in the log.
+  const cardFactIds = new Set(
+    allFacts.filter((f) => f.source?.kind === 'card_field').map((f) => f.id)
+  );
+  for (const c of cardContradictions) cardFactIds.add(c.cardFactRowId);
+
+  const { dropped } = await writeContinuityMerged(
+    projectId,
+    unique,
+    liveFactIds,
+    cardFactIds
+  );
+
+  return {
+    found: unique.length,
+    unreadableChecks: groupOutcome.unreadableBatches + cardOutcome.unreadableChecks,
+    windowedGroups: groupOutcome.windowedGroups,
+    truncatedCharacters: cardOutcome.truncatedCharacters,
+    dropped,
+    llmCalls: groupOutcome.llmCalls + cardOutcome.llmCalls,
+  };
 }
 
 interface WalkPassOutcome {

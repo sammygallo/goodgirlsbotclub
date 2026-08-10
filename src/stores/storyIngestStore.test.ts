@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Contradiction } from '../types/storyBible';
 
 const getSection = vi.fn();
 const putSection = vi.fn();
 const getScene = vi.fn();
 const bulkWriteScenes = vi.fn();
 const appendFact = vi.fn();
+const listFacts = vi.fn();
 const manifest = vi.fn();
 
 class FakeConflict extends Error {
@@ -34,6 +36,7 @@ vi.mock('../api/client', () => ({
     getScene: (...a: unknown[]) => getScene(...a),
     bulkWriteScenes: (...a: unknown[]) => bulkWriteScenes(...a),
     appendFact: (...a: unknown[]) => appendFact(...a),
+    listFacts: (...a: unknown[]) => listFacts(...a),
     manifest: (...a: unknown[]) => manifest(...a),
   },
   StoryConflictError: FakeConflict,
@@ -46,7 +49,18 @@ vi.mock('./usageStore', () => ({
 
 const { useStoryIngestStore, LOCK_STALE_MS, estimateColdStartTokens } =
   await import('./storyIngestStore');
-const { PROMPT_VERSION } = await import('../utils/storyIngest/prompts');
+const {
+  PROMPT_VERSION,
+  CARD_CHECK_SYSTEM,
+  RECONCILE_SYSTEM,
+  USER_VOICE_SYSTEM,
+  WALK_SYSTEM,
+} = await import('../utils/storyIngest/prompts');
+const { cardFactId, contradictionId } = await import(
+  '../utils/storyIngest/reconcileJudge'
+);
+const { estimateTokens } = await import('../utils/tokenizer');
+const { showToastGlobal } = await import('../components/ui/Toast');
 
 const SOURCES = {
   characterName: 'Ivy',
@@ -123,8 +137,355 @@ function wireScenesAndFacts() {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Reconcile (phase 8) harness.
+//
+// Every earlier pass BLIND-WRITES the sections it owns, so a putSection
+// that accepts anything is a good enough fake for them. Reconcile is the
+// first read-modify-write on this side — GET continuity, merge, PUT with
+// the read's base_ts — and a merge bug is invisible to a mock that never
+// 409s and never remembers what it stored. These fakes enforce base_ts the
+// way the server does, hand the 409 its winner body, and keep the fact log
+// append-only with id idempotency (re-posting a known id returns the
+// STORED row), which is the contract the card fact's determinism rests on.
+// ---------------------------------------------------------------------------
+
+interface FakeSections {
+  data: (name: string) => Record<string, unknown> | undefined;
+  ts: (name: string) => number;
+  /** Write out-of-band, the way another tab would. */
+  inject: (name: string, data: Record<string, unknown>) => void;
+  hooks: { beforePut?: (name: string, baseTs: number) => void };
+}
+
+function wireStatefulSections(
+  seed: Record<string, Record<string, unknown>> = {}
+): FakeSections {
+  const rows = new Map<string, { data: Record<string, unknown>; server_ts: number }>();
+  // Deliberately not 1: a section's server_ts must never coincide with a
+  // base_ts of 0 ("create"), or a stale-token bug reads as a pass.
+  let ts = 100;
+  const hooks: FakeSections['hooks'] = {};
+  const out = (name: string) => {
+    const row = rows.get(name)!;
+    return { section: name, data: row.data, server_ts: row.server_ts, updated_at: 'x' };
+  };
+  for (const [name, data] of Object.entries(seed)) rows.set(name, { data, server_ts: ++ts });
+
+  getSection.mockImplementation(async (_p: string, name: string) => {
+    // The literal 404 string isMissingSection matches — anything else has
+    // to be treated as a transient failure by the caller.
+    if (!rows.has(name)) throw new Error('section not written yet');
+    return out(name);
+  });
+  putSection.mockImplementation(
+    async (_p: string, name: string, data: Record<string, unknown>, baseTs: number) => {
+      hooks.beforePut?.(name, baseTs);
+      const current = rows.get(name)?.server_ts ?? 0;
+      if (baseTs !== current) {
+        throw new FakeConflict(current, rows.has(name) ? out(name) : null);
+      }
+      rows.set(name, { data, server_ts: ++ts });
+      return out(name);
+    }
+  );
+
+  return {
+    data: (name) => rows.get(name)?.data,
+    ts: (name) => rows.get(name)?.server_ts ?? 0,
+    inject: (name, data) => rows.set(name, { data, server_ts: ++ts }),
+    hooks,
+  };
+}
+
+interface FakeFactRow {
+  seq: number;
+  id: string;
+  data: Record<string, unknown>;
+  created_at: string;
+}
+
+/** Append-only fact log with the server's id idempotency. Returns the live
+ *  row array so a test can assert how many rows actually exist — the
+ *  difference between "appendFact was called twice" and "two facts were
+ *  stored" is the whole point of the card fact's deterministic id. */
+function wireFactLog(seed: Record<string, unknown>[] = []): FakeFactRow[] {
+  const rows: FakeFactRow[] = [];
+  const append = (data: Record<string, unknown>): FakeFactRow => {
+    const id = String(data.id);
+    const known = rows.find((r) => r.id === id);
+    if (known) return known;
+    const row = { seq: rows.length + 1, id, data, created_at: 'x' };
+    rows.push(row);
+    return row;
+  };
+  seed.forEach(append);
+  appendFact.mockImplementation(async (_p: string, data: Record<string, unknown>) =>
+    append(data)
+  );
+  listFacts.mockImplementation(
+    async (_p: string, opts: { afterSeq?: number; limit?: number } = {}) => {
+      const after = opts.afterSeq ?? 0;
+      const page = rows.filter((r) => r.seq > after).slice(0, opts.limit ?? 200);
+      const last = page[page.length - 1];
+      return {
+        items: page,
+        next_after_seq: last ? last.seq : null,
+        has_more: last ? rows.some((r) => r.seq > last.seq) : false,
+      };
+    }
+  );
+  return rows;
+}
+
+function transcriptFact(id: string, text: string, over: Record<string, unknown> = {}) {
+  return {
+    id,
+    text,
+    category: 'reveal',
+    confidence: 'explicit',
+    established_in: null,
+    source: {
+      kind: 'chat_message',
+      ref: { chat_file: 'chat1.jsonl', msg_id: 'm1', swipe_idx: 0 },
+      snapshot: { excerpt: text },
+      captured_at: '2026-01-01T00:00:00.000Z',
+    },
+    ...over,
+  };
+}
+
+/** Two facts about Ivy in one category — the smallest input that produces
+ *  a judgeable group (`groupFacts` drops singletons). */
+const IVY_FACTS = [
+  transcriptFact('fact-a', 'Ivy keeps the north wing sealed.'),
+  transcriptFact('fact-b', 'Ivy has never sealed the north wing.'),
+];
+
+/** An `entities` character shaped the way cold start stamps a card-backed
+ *  one: a `card_field` provenance ref (what makes it eligible for the card
+ *  check) plus the card-derived text the check compares against. */
+function cardBackedIvy(over: Record<string, unknown> = {}) {
+  return {
+    id: 'char-ivy',
+    canonical_name: 'Ivy',
+    aliases: [],
+    physical_description: { summary: 'An archivist who never leaves the Reach.' },
+    personality: { traits: [{ trait: 'Dry.' }] },
+    provenance: [
+      {
+        kind: 'card_field',
+        ref: { character_avatar: 'Ivy.png', field: 'description' },
+        snapshot: { excerpt: 'An archivist who never leaves the Reach.' },
+        captured_at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    ...over,
+  };
+}
+
+/** A checkpoint parked at reconcile: cold start's ids, every walk chunk and
+ *  user_voice are all durable, which is exactly what `current_pass:
+ *  'reconcile'` claims. */
+function reconcileCheckpoint(over: Record<string, unknown> = {}) {
+  return {
+    status: 'paused',
+    current_pass: 'reconcile',
+    prompt_version: PROMPT_VERSION,
+    chunk_index: 2,
+    chunk_plan: [
+      { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },
+      { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+    ],
+    last_ingested: {
+      msg_id: 'm64',
+      swipe_idx: 0,
+      fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+    },
+    open_scene: null,
+    lock: null,
+    token_usage: { input_tokens: 900, output_tokens: 400 },
+    model: null,
+    replay_approx: false,
+    error: '',
+    ...over,
+  };
+}
+
+/** The server state a mid-reconcile resume starts from. */
+function seedReconcileResume(extra: Record<string, Record<string, unknown>> = {}) {
+  return wireStatefulSections({
+    ingestion: reconcileCheckpoint(),
+    entities: { characters: [cardBackedIvy()], objects: [], factions: [] },
+    ...extra,
+  });
+}
+
+function existingContradiction(
+  sources: string[],
+  over: Partial<Contradiction> = {}
+): Contradiction {
+  return {
+    id: contradictionId(sources),
+    type: 'character_attribute',
+    description: 'Recorded by an earlier build.',
+    sources: [...sources].sort(),
+    detected_by: 'agent',
+    resolution: {
+      status: 'unresolved',
+      canonical_choice: null,
+      rationale: '',
+      resolved_at: null,
+    },
+    ...over,
+  };
+}
+
+function contradictionsOf(sections: FakeSections): Contradiction[] {
+  const data = sections.data('continuity') as
+    | { contradictions?: Contradiction[] }
+    | undefined;
+  return data?.contradictions ?? [];
+}
+
+interface PersistedCheckpoint {
+  status: string;
+  current_pass: string | null;
+  chunk_index: number;
+  chunk_plan: unknown[];
+  token_usage: { input_tokens: number; output_tokens: number };
+  lock: { client_id: string } | null;
+  error: string;
+}
+
+/** Every ingestion checkpoint payload that actually reached the server —
+ *  the only copy phase 8's token-usage fold can be judged by. */
+function ingestWrites(): PersistedCheckpoint[] {
+  return putSection.mock.calls.filter((c) => c[1] === 'ingestion').map((c) => c[2]);
+}
+
+type LlmKind = 'cold' | 'walk' | 'voice' | 'judge' | 'card';
+interface LlmCallCtx {
+  /** The last message's content — the rendered prompt for a fresh call,
+   *  the repair instruction on a repair round. */
+  user: string;
+  call: number;
+  signal?: AbortSignal;
+}
+type LlmHandler = (ctx: LlmCallCtx) => string | Promise<string>;
+
+/** A fake model that routes by SYSTEM PROMPT rather than call ordinal, so
+ *  a fixture doesn't silently mis-answer when a pass gains or loses a call.
+ *
+ *  `billed` re-derives what a correct biller owes, independently of the
+ *  store: a call that returns bills input+output, a call that fails after
+ *  being sent bills its input only, and a CANCELLED call bills nothing
+ *  (pressing Stop is a user decision, not a purchase). Tests compare the
+ *  PERSISTED totals against it. */
+function scriptedLlm(script: Partial<Record<LlmKind, LlmHandler>>) {
+  const counts: Record<LlmKind, number> = { cold: 0, walk: 0, voice: 0, judge: 0, card: 0 };
+  const billed = { input: 0, output: 0 };
+  const llm = vi.fn(
+    async (
+      msgs: { role: string; content: string }[],
+      opts: { signal?: AbortSignal }
+    ) => {
+      const system = msgs[0]?.content ?? '';
+      const kind: LlmKind =
+        system === RECONCILE_SYSTEM
+          ? 'judge'
+          : system === CARD_CHECK_SYSTEM
+            ? 'card'
+            : system === WALK_SYSTEM
+              ? 'walk'
+              : system === USER_VOICE_SYSTEM
+                ? 'voice'
+                : 'cold';
+      counts[kind]++;
+      const sent = msgs.reduce((n, m) => n + estimateTokens(m.content), 0);
+      try {
+        const handler = script[kind];
+        const reply = handler
+          ? await handler({
+              user: msgs[msgs.length - 1]?.content ?? '',
+              call: counts[kind],
+              signal: opts?.signal,
+            })
+          : '{}';
+        billed.input += sent;
+        billed.output += estimateTokens(reply);
+        return reply;
+      } catch (error) {
+        if ((error as Error)?.name !== 'AbortError') billed.input += sent;
+        throw error;
+      }
+    }
+  );
+  return { llm, counts, billed };
+}
+
+/** The per-group labels the prompt actually carried, so a fixture answer
+ *  cites what the model would have seen instead of assuming a numbering
+ *  (labels are per-CALL and positional — nothing durable is seeded from
+ *  them, and a test that hardcodes them stops testing the label map). */
+function groupLabels(prompt: string): string[][] {
+  return prompt
+    .split('\n\n')
+    .map((block) => [...block.matchAll(/^(f\d+):/gm)].map((m) => m[1]))
+    .filter((labels) => labels.length > 0);
+}
+
+/** Flag the first group's first two facts as conflicting. */
+function judgeReply(prompt: string): string {
+  const [first] = groupLabels(prompt);
+  return JSON.stringify({
+    contradictions:
+      first && first.length >= 2
+        ? [
+            {
+              facts: [first[0], first[1]],
+              type: 'character_attribute',
+              description: 'Two claims about the north wing that cannot both hold.',
+            },
+          ]
+        : [],
+  });
+}
+
+const NOTHING_CONFLICTS = JSON.stringify({ contradictions: [] });
+
+/** Flag the card against the first fact shown. */
+function cardReply(prompt: string, claim = 'Ivy has never left the Reach.'): string {
+  const [first] = groupLabels(prompt);
+  return JSON.stringify({
+    contradictions: first?.length
+      ? [
+          {
+            facts: [first[0]],
+            card_claim: claim,
+            type: 'character_attribute',
+            description: 'The card and the story disagree about Ivy.',
+          },
+        ]
+      : [],
+  });
+}
+
+/** A chunk the model read fine and found nothing worth recording in — the
+ *  cheapest honest walk answer (one billed call, no scene/fact writes). */
+const EMPTY_CHUNK = JSON.stringify({ scenes: [] });
+const VOICE_JSON = JSON.stringify({
+  style_summary: '',
+  register: 'mixed',
+  rhetorical_devices: [],
+  tendency: 'reactive',
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // Reconcile (phase 8) pages the fact log on every completed run, so an
+  // empty log is the default for every test that isn't about reconcile.
+  listFacts.mockResolvedValue({ items: [], next_after_seq: null, has_more: false });
   useStoryIngestStore.getState().clear();
 });
 
@@ -252,6 +613,29 @@ describe('advisory lock', () => {
     wireHappyPath();
     useStoryIngestStore.setState({ isRunning: true });
     expect(await useStoryIngestStore.getState().run(runInput())).toBe(false);
+
+    // And the real shape of that bug: two clicks in ONE tick, driven all
+    // the way through reconcile. The flag is claimed synchronously before
+    // any await precisely so the second click can't start a second paid
+    // build — which for phase 8 would also mean a second judge pass and a
+    // second continuity merge racing the first.
+    useStoryIngestStore.getState().clear();
+    const sections = wireStatefulSections();
+    wireFactLog(IVY_FACTS);
+    const { llm, counts } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user),
+      card: () => NOTHING_CONFLICTS,
+    });
+
+    const first = useStoryIngestStore.getState().run(runInput({ llm }));
+    const second = useStoryIngestStore.getState().run(runInput({ llm }));
+    expect(await second).toBe(false);
+    expect(await first).toBe(true);
+
+    expect(counts.judge).toBe(1);
+    expect(counts.card).toBe(1);
+    expect(putSection.mock.calls.filter((c) => c[1] === 'continuity')).toHaveLength(1);
+    expect(contradictionsOf(sections)).toHaveLength(1);
   });
 });
 
@@ -985,5 +1369,715 @@ describe('transcript walk (phase 7)', () => {
     const ok = await useStoryIngestStore.getState().run(runInput({ messages, llm }));
     expect(ok).toBe(true);
     expect(attempt).toBe(2);
+  });
+});
+
+describe('reconcile (phase 8)', () => {
+  it('runs after user_voice, writes continuity, and appends each card fact once', async () => {
+    // The pass ORDER is load-bearing, not cosmetic: `current_pass:
+    // 'reconcile'` is the checkpoint's claim that cold start's ids, every
+    // walk chunk and user_voice are all durable. Writing it before
+    // user_voice landed would make a resume skip a pass that never ran.
+    const sections = wireStatefulSections();
+    const rows = wireFactLog(IVY_FACTS);
+    const { llm, counts } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user),
+      card: (ctx) => cardReply(ctx.user),
+    });
+
+    // No messages: the walk plans zero chunks and user_voice needs no
+    // model call, so this exercises the pass boundary itself rather than
+    // re-testing the walk.
+    const ok = await useStoryIngestStore.getState().run(runInput({ llm }));
+    expect(ok).toBe(true);
+
+    const order = putSection.mock.calls.map((c) => c[1]);
+    expect(order.indexOf('continuity')).toBeGreaterThan(order.indexOf('user_voice'));
+    expect(useStoryIngestStore.getState().completed).toEqual([
+      'cold_start',
+      'wi_replay',
+      'transcript_walk',
+      'reconcile',
+    ]);
+
+    // Exactly one card fact row, cited by the contradiction that needed
+    // it — the card side has no fact of its own, and a second row per
+    // re-detection is what the deterministic id exists to prevent.
+    const ivyId = (sections.data('entities') as { characters: { id: string }[] })
+      .characters[0].id;
+    const cardRows = rows.filter(
+      (r) => (r.data.source as { kind?: string } | undefined)?.kind === 'card_field'
+    );
+    expect(cardRows).toHaveLength(1);
+    expect(cardRows[0].id).toBe(cardFactId(ivyId));
+    expect(cardRows[0].data.contradicts).toEqual(['fact-a']);
+    expect(appendFact).toHaveBeenCalledTimes(1);
+    expect(rows).toHaveLength(3);
+
+    expect(contradictionsOf(sections).map((c) => c.id)).toEqual([
+      contradictionId(['fact-a', 'fact-b']),
+      contradictionId([cardRows[0].id, 'fact-a']),
+    ]);
+    // Synthetic card facts are excluded from grouping, so the judge saw
+    // only the two transcript facts: one batch, one character.
+    expect(counts.judge).toBe(1);
+    expect(counts.card).toBe(1);
+
+    const last = ingestWrites()[ingestWrites().length - 1];
+    expect(last.status).toBe('complete');
+    expect(last.lock).toBeNull();
+  });
+
+  it('resumes a paused reconcile without re-paying cold_start or the walk', async () => {
+    // THE expensive regression. Without `resumableReconcile`, a paused
+    // reconcile checkpoint is classified a FRESH build and re-pays cold
+    // start plus the entire chat. The tempting one-line fix (widening
+    // resumableWalk to accept 'reconcile') is worse: the walk's own inner
+    // gate still demands 'transcript_walk', so it falls through to the
+    // fresh-plan branch and silently re-walks — re-bills — everything.
+    const resolvedAlready = existingContradiction(['fact-a', 'fact-b'], {
+      resolution: {
+        status: 'user_chose',
+        canonical_choice: 'fact-a',
+        rationale: 'The north wing is sealed.',
+        resolved_at: '2026-08-09T00:00:00Z',
+      },
+    });
+    const sections = seedReconcileResume({
+      // An earlier run recorded this pair and the user has since resolved
+      // it; the whole-pass re-judge must merge onto that, not beside it.
+      continuity: { contradictions: [resolvedAlready] },
+    });
+    wireFactLog(IVY_FACTS);
+    const { llm, counts } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user),
+      card: () => NOTHING_CONFLICTS,
+    });
+
+    const ok = await useStoryIngestStore
+      .getState()
+      .run(runInput({ messages: longMessages(65), llm }));
+    expect(ok).toBe(true);
+
+    expect(counts.cold).toBe(0);
+    expect(counts.walk).toBe(0);
+    expect(counts.voice).toBe(0);
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+    // cold_start is the only writer of these three; user_voice is the
+    // only thing the post-walk synthesis writes.
+    const written = putSection.mock.calls.map((c) => c[1]);
+    expect(written).not.toContain('entities');
+    expect(written).not.toContain('world');
+    expect(written).not.toContain('rendering_hints');
+    expect(written).not.toContain('user_voice');
+    // Nor may it touch the chat at all — the resume reads the server-side
+    // fact log, and getScene is the walk's message-side read.
+    expect(getScene).not.toHaveBeenCalled();
+
+    expect(counts.judge).toBe(1);
+    const final = contradictionsOf(sections);
+    const ids = final.map((c) => c.id);
+    expect(ids).toEqual([contradictionId(['fact-a', 'fact-b'])]);
+    expect(new Set(ids).size).toBe(ids.length);
+    // Existing wins on id collision — which is the whole reason a resume
+    // can re-judge the entire pass: a phase-10 resolution must survive an
+    // idempotent re-detection rather than being reverted to unresolved.
+    expect(final[0].resolution).toEqual(resolvedAlready.resolution);
+    expect(useStoryIngestStore.getState().completed).toContain('reconcile');
+  });
+
+  it('persists the walk AND reconcile spend at every save point, then resumes from it', async () => {
+    // The inherited bug §4 fixes: run()'s `checkpoint.token_usage` was
+    // last written at walk ENTRY, and the per-chunk saves re-sent that
+    // stale object, so a mid-walk pause persisted totals missing most of
+    // the walk and a mid-reconcile pause missed the walk entirely. The
+    // in-memory copy was always right, which is exactly why only the
+    // PERSISTED payloads can catch it.
+    const sections = wireStatefulSections({
+      continuity: { contradictions: [existingContradiction(['fact-a', 'fact-b'])] },
+    });
+    wireFactLog(IVY_FACTS);
+    const messages = longMessages(65); // two chunks
+
+    const first = scriptedLlm({
+      walk: () => EMPTY_CHUNK,
+      voice: () => VOICE_JSON,
+      judge: (ctx) => judgeReply(ctx.user),
+      // The tab is closed while the card check is in flight — after the
+      // group judge has already been paid for.
+      card: () => {
+        const e = new Error('Aborted');
+        e.name = 'AbortError';
+        throw e;
+      },
+    });
+    expect(
+      await useStoryIngestStore.getState().run(runInput({ messages, llm: first.llm }))
+    ).toBe(false);
+
+    const writes = ingestWrites();
+    const walkEntry = writes.find((w) => w.current_pass === 'transcript_walk')!;
+    const afterChunk0 = writes.find((w) => w.chunk_index === 1)!;
+    const reconcileEntry = writes.find(
+      (w) => w.current_pass === 'reconcile' && w.status === 'running'
+    )!;
+    const paused = writes[writes.length - 1];
+
+    // A mid-walk chunk-boundary save now carries the chunk it just paid
+    // for, not the totals as of walk entry.
+    expect(afterChunk0.token_usage.input_tokens).toBeGreaterThan(
+      walkEntry.token_usage.input_tokens
+    );
+    // ...and the reconcile boundary carries the whole walk plus the
+    // user_voice call.
+    expect(reconcileEntry.token_usage.input_tokens).toBeGreaterThan(
+      afterChunk0.token_usage.input_tokens
+    );
+    expect(paused.status).toBe('paused');
+    expect(paused.current_pass).toBe('reconcile');
+    // Exact, not merely larger: the group judge's spend is included and
+    // the cancelled card check's is not.
+    expect(paused.token_usage).toEqual({
+      input_tokens: first.billed.input,
+      output_tokens: first.billed.output,
+    });
+    expect(paused.token_usage.input_tokens).toBeGreaterThan(
+      reconcileEntry.token_usage.input_tokens
+    );
+
+    // ---- resume ---------------------------------------------------
+    const beforeResume = putSection.mock.calls.length;
+    const second = scriptedLlm({
+      walk: () => EMPTY_CHUNK,
+      judge: (ctx) => judgeReply(ctx.user),
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(
+      await useStoryIngestStore.getState().run(runInput({ messages, llm: second.llm }))
+    ).toBe(true);
+    expect(second.counts.walk).toBe(0);
+    expect(second.counts.cold).toBe(0);
+
+    const resumeWrites = putSection.mock.calls
+      .slice(beforeResume)
+      .filter((c) => c[1] === 'ingestion')
+      .map((c) => c[2] as PersistedCheckpoint);
+    // "Resume seeds its running totals from the checkpoint" — only true
+    // because the fold made the paused figure honest in the first place.
+    expect(resumeWrites[0].token_usage).toEqual(paused.token_usage);
+    const done = resumeWrites[resumeWrites.length - 1];
+    expect(done.status).toBe('complete');
+    expect(done.token_usage).toEqual({
+      input_tokens: paused.token_usage.input_tokens + second.billed.input,
+      output_tokens: paused.token_usage.output_tokens + second.billed.output,
+    });
+
+    // The re-judge merged onto the entry that was already there.
+    const ids = contradictionsOf(sections).map((c) => c.id);
+    expect(ids).toEqual([contradictionId(['fact-a', 'fact-b'])]);
+  });
+
+  it('re-appends the same card fact row after a crash before the section write', async () => {
+    // The card fact is appended BEFORE the continuity PUT so `sources`
+    // never dangles even transiently. The cost of that ordering is an
+    // orphan fact row when the write fails — which is only acceptable
+    // because the id is seeded from the character and the cited fact ids
+    // (never the model's wording), so the retry re-derives it and the
+    // append-only log returns the STORED row instead of a duplicate.
+    const sections = seedReconcileResume();
+    const rows = wireFactLog(IVY_FACTS);
+
+    let crashed = false;
+    sections.hooks.beforePut = (name) => {
+      if (name === 'continuity' && !crashed) {
+        crashed = true;
+        throw new Error('server on fire');
+      }
+    };
+    const firstRun = scriptedLlm({
+      judge: () => NOTHING_CONFLICTS,
+      card: (ctx) => cardReply(ctx.user, 'Ivy has never left the Reach.'),
+    });
+    expect(
+      await useStoryIngestStore.getState().run(runInput({ llm: firstRun.llm }))
+    ).toBe(false);
+
+    const cardId = cardFactId('char-ivy');
+    expect(rows.map((r) => r.id)).toEqual(['fact-a', 'fact-b', cardId]);
+    expect(sections.data('continuity')).toBeUndefined();
+    const failed = ingestWrites()[ingestWrites().length - 1];
+    expect(failed.status).toBe('error');
+    // Still resumable as reconcile — a reconcile failure must never
+    // re-bill the walk.
+    expect(failed.current_pass).toBe('reconcile');
+
+    // Resume, with the model rewording the same claim.
+    const rejudged: string[] = [];
+    const secondRun = scriptedLlm({
+      judge: (ctx) => {
+        rejudged.push(ctx.user);
+        return NOTHING_CONFLICTS;
+      },
+      card: (ctx) => {
+        rejudged.push(ctx.user);
+        return cardReply(ctx.user, 'The card says she has never left.');
+      },
+    });
+    expect(
+      await useStoryIngestStore.getState().run(runInput({ llm: secondRun.llm }))
+    ).toBe(true);
+
+    // HARD INVARIANT: the orphan card fact is filtered out of the loaded
+    // log before ANY consumer sees it. Filtering only the group judge
+    // looks fine here — a lone 'introduction' fact is a singleton group
+    // and never reaches it — so the CARD check is where a half-applied
+    // filter actually shows, litigating the card fact against itself.
+    expect(rejudged.join('\n')).not.toContain('Card: ');
+
+    expect(appendFact).toHaveBeenCalledTimes(2);
+    expect(rows).toHaveLength(3);
+    // The stored row wins: one card fact, with the first run's wording.
+    expect(rows[2].data.text).toBe('Card: Ivy has never left the Reach.');
+    expect(contradictionsOf(sections).map((c) => c.id)).toEqual([
+      contradictionId([cardId, 'fact-a']),
+    ]);
+  });
+
+  it('merges against the winner when another tab resolves a contradiction mid-write', async () => {
+    // `writeSection`'s blind adopt-and-re-PUT is correct for sections a
+    // pass rebuilds wholesale and CATASTROPHIC here: continuity is
+    // co-owned with phase 10, so a blind re-PUT would revert a resolution
+    // the user wrote seconds ago in another tab.
+    const sections = seedReconcileResume();
+    wireFactLog(IVY_FACTS);
+
+    const userResolved = existingContradiction(['fact-a', 'fact-b'], {
+      id: 'user-entry',
+      description: 'The user filed this one themselves.',
+      detected_by: 'user',
+      resolution: {
+        status: 'user_chose',
+        canonical_choice: 'fact-a',
+        rationale: 'The north wing is sealed.',
+        resolved_at: '2026-08-09T00:00:00Z',
+      },
+    });
+    let bumps = 0;
+    sections.hooks.beforePut = (name) => {
+      // Lands between reconcile's GET and its PUT — the exact window the
+      // merge-aware 409 path exists for.
+      if (name === 'continuity' && bumps === 0) {
+        bumps++;
+        sections.inject('continuity', { contradictions: [userResolved] });
+      }
+    };
+
+    const { llm } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user),
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+
+    const final = contradictionsOf(sections);
+    expect(putSection.mock.calls.filter((c) => c[1] === 'continuity')).toHaveLength(2);
+    // The user's resolution survived, and the fresh detection joined it.
+    expect(final.map((c) => c.id)).toEqual([
+      'user-entry',
+      contradictionId(['fact-a', 'fact-b']),
+    ]);
+    expect(final[0].resolution).toEqual(userResolved.resolution);
+  });
+
+  it('gives up after a second 409 rather than spinning, leaving the winner intact', async () => {
+    const sections = seedReconcileResume();
+    wireFactLog(IVY_FACTS);
+
+    let bumps = 0;
+    const injected = () => ({
+      contradictions: [
+        existingContradiction(['fact-a', 'fact-b'], {
+          id: `user-entry-${bumps}`,
+          detected_by: 'user' as const,
+        }),
+      ],
+    });
+    sections.hooks.beforePut = (name) => {
+      if (name !== 'continuity') return;
+      bumps++;
+      sections.inject('continuity', injected());
+    };
+
+    const { llm } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user),
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(false);
+
+    // Two attempts, then a resumable error: the detections are
+    // recomputable on the next build and the winner's data is intact, so
+    // retrying forever would only spin against a busy tab.
+    expect(putSection.mock.calls.filter((c) => c[1] === 'continuity')).toHaveLength(2);
+    expect(contradictionsOf(sections).map((c) => c.id)).toEqual(['user-entry-2']);
+    const last = ingestWrites()[ingestWrites().length - 1];
+    expect(last.status).toBe('error');
+    expect(last.current_pass).toBe('reconcile');
+  });
+
+  it('prunes only unresolved agent entries whose facts are gone', async () => {
+    // Without the prune, phase 10's fact hard-delete leaves immortal
+    // entries citing 404s that can never be re-detected. With too MUCH
+    // prune, a user's own entry or a resolved one disappears — and those
+    // are the two things this pass must never destroy (phase 10 owns
+    // their cleanup at delete time).
+    const stale = existingContradiction(['fact-a', 'fact-gone'], { id: 'stale-agent' });
+    const resolved = existingContradiction(['fact-b', 'fact-gone'], {
+      id: 'resolved-agent',
+      resolution: {
+        status: 'user_chose',
+        canonical_choice: 'fact-b',
+        rationale: '',
+        resolved_at: '2026-08-09T00:00:00Z',
+      },
+    });
+    const byUser = existingContradiction(['fact-a', 'fact-gone'], {
+      id: 'user-filed',
+      detected_by: 'user',
+    });
+    const sections = seedReconcileResume({
+      continuity: { contradictions: [stale, resolved, byUser] },
+    });
+    wireFactLog(IVY_FACTS);
+
+    const { llm } = scriptedLlm({
+      judge: () => NOTHING_CONFLICTS,
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+
+    expect(contradictionsOf(sections).map((c) => c.id)).toEqual([
+      'resolved-agent',
+      'user-filed',
+    ]);
+  });
+
+  it('an UNREADABLE fact row still counts as existing, so the prune leaves its entry alone', async () => {
+    // The prune answers "does this fact row still exist on the server?".
+    // loadAllFacts shape-checks every row before handing it to the judge —
+    // correct, since a malformed row would be grouped as a subject-less
+    // fact and judged — but building the live-id set from that FILTERED
+    // list conflates "we could not parse it" with "it was deleted", and
+    // silently destroys a perfectly good contradiction that cites it.
+    // Nothing else in the pipeline notices: the entry just stops existing.
+    const readable = transcriptFact('fact-a', 'Ivy keeps the north wing sealed.');
+    // Present, addressable, and cited by a real entry — but with no usable
+    // text, so it never reaches the judge.
+    const unreadable = { id: 'fact-mangled', category: 'reveal', confidence: 'explicit' };
+    const entry = existingContradiction(['fact-a', 'fact-mangled'], { id: 'cites-mangled' });
+
+    const sections = seedReconcileResume({ continuity: { contradictions: [entry] } });
+    wireFactLog([readable, unreadable]);
+
+    const { llm } = scriptedLlm({ judge: () => NOTHING_CONFLICTS, card: () => NOTHING_CONFLICTS });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+
+    expect(contradictionsOf(sections).map((c) => c.id)).toEqual(['cites-mangled']);
+  });
+
+  it('collapses a drifted citation set into one entry', async () => {
+    // Models trim citations nondeterministically: run 1 reports {a,b,c},
+    // run 2 {a,b}. Different sorted-source seeds mean different ids, so
+    // without the dampener every rebuild piles another near-duplicate
+    // onto a list a human has to read.
+    const wide = existingContradiction(['fact-a', 'fact-b', 'fact-c'], {
+      id: 'wide-entry',
+    });
+    const sections = seedReconcileResume({
+      continuity: { contradictions: [wide] },
+    });
+    wireFactLog([
+      ...IVY_FACTS,
+      transcriptFact('fact-c', 'Ivy sealed the north wing years ago.'),
+    ]);
+
+    const { llm } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user), // cites the first two only
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+
+    const ids = contradictionsOf(sections).map((c) => c.id);
+    expect(ids).toEqual(['wide-entry']);
+    expect(ids).not.toContain(contradictionId(['fact-a', 'fact-b']));
+  });
+
+  it('issues no PUT when the merge changes nothing', async () => {
+    // The backend bumps server_ts on EVERY put, and a gratuitous bump
+    // forces a 409-and-merge on the next write from any open review tab.
+    const sections = seedReconcileResume({
+      continuity: { contradictions: [existingContradiction(['fact-a', 'fact-b'])] },
+    });
+    wireFactLog(IVY_FACTS);
+    const before = sections.ts('continuity');
+
+    const { llm } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user),
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+
+    expect(putSection.mock.calls.filter((c) => c[1] === 'continuity')).toHaveLength(0);
+    expect(sections.ts('continuity')).toBe(before);
+  });
+
+  it('bails bare when the run loses ownership mid-reconcile', async () => {
+    // The user switched Works while the judge was in flight. The new
+    // owner is responsible for the store's state now, so this run must
+    // not set(), toast, or PUT anything for the project it no longer
+    // owns — and its heartbeat must be dead, or it keeps PUTting a dead
+    // run's checkpoint against whichever Work is open by then.
+    vi.useFakeTimers();
+    try {
+      const sections = seedReconcileResume();
+      wireFactLog(IVY_FACTS);
+      const { llm, counts } = scriptedLlm({
+        judge: (ctx) => {
+          useStoryIngestStore.setState({ projectId: 'p2' });
+          return judgeReply(ctx.user);
+        },
+        card: () => NOTHING_CONFLICTS,
+      });
+
+      expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(false);
+
+      expect(counts.card).toBe(0); // bailed at the first ownership check
+      expect(putSection.mock.calls.filter((c) => c[1] === 'continuity')).toHaveLength(0);
+      expect(sections.data('continuity')).toBeUndefined();
+      expect(showToastGlobal).not.toHaveBeenCalled();
+      expect(useStoryIngestStore.getState().completed).not.toContain('reconcile');
+      // The flags are still released, or clear() would refuse to reset a
+      // run it believes is live and wedge the store forever.
+      expect(useStoryIngestStore.getState().isRunning).toBe(false);
+      expect(useStoryIngestStore.getState().abort).toBeNull();
+
+      const callsAtBail = putSection.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(LOCK_STALE_MS * 3);
+      expect(putSection.mock.calls.length).toBe(callsAtBail);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels mid-judge without leaving a half-merged section', async () => {
+    const sections = seedReconcileResume();
+    wireFactLog(IVY_FACTS);
+
+    let reachedJudge!: () => void;
+    const atJudge = new Promise<void>((r) => {
+      reachedJudge = r;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const { llm, billed } = scriptedLlm({
+      judge: async (ctx) => {
+        reachedJudge();
+        await gate;
+        // What a real provider bridge does once the signal trips.
+        if (ctx.signal?.aborted) {
+          const e = new Error('Aborted');
+          e.name = 'AbortError';
+          throw e;
+        }
+        return judgeReply(ctx.user);
+      },
+    });
+
+    const running = useStoryIngestStore.getState().run(runInput({ llm }));
+    await atJudge;
+    useStoryIngestStore.getState().cancel();
+    release();
+    expect(await running).toBe(false);
+
+    const last = ingestWrites()[ingestWrites().length - 1];
+    // A cancel is a user decision, not an error to display — and it
+    // resumes as reconcile, never as a fresh build.
+    expect(last.status).toBe('paused');
+    expect(last.current_pass).toBe('reconcile');
+    expect(last.error).toBe('');
+    expect(useStoryIngestStore.getState().error).toBeNull();
+    // Nothing partial: the section is absent, because the merge write is
+    // a single PUT that either happened or did not.
+    expect(sections.data('continuity')).toBeUndefined();
+    // Billing is exact against the resumed subtotal: the cancelled call
+    // adds nothing at all (countingLlm bills a FAILED call's input, but a
+    // user pressing Stop is not a purchase), and the persisted figure
+    // still carries every token the earlier passes spent.
+    expect(billed).toEqual({ input: 0, output: 0 });
+    expect(last.token_usage).toEqual({
+      input_tokens: 900 + billed.input,
+      output_tokens: 400 + billed.output,
+    });
+  });
+
+  it('clear() mid-reconcile drops viewing state only, and Stop still lands', async () => {
+    // Leaving the Story tab must not orphan a paid run: clear() wipes the
+    // checkpoint it was displaying, and the run keeps its own lifecycle —
+    // including a Stop that has to survive checkpointTs being reset to 0
+    // (the next save 409s and adopts the winner's token).
+    const sections = seedReconcileResume();
+    wireFactLog(IVY_FACTS);
+
+    let reachedJudge!: () => void;
+    const atJudge = new Promise<void>((r) => {
+      reachedJudge = r;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const { llm } = scriptedLlm({
+      judge: async (ctx) => {
+        reachedJudge();
+        await gate;
+        if (ctx.signal?.aborted) {
+          const e = new Error('Aborted');
+          e.name = 'AbortError';
+          throw e;
+        }
+        return judgeReply(ctx.user);
+      },
+    });
+
+    const running = useStoryIngestStore.getState().run(runInput({ llm }));
+    await atJudge;
+    useStoryIngestStore.getState().clear();
+    expect(useStoryIngestStore.getState().isRunning).toBe(true);
+    expect(useStoryIngestStore.getState().abort).not.toBeNull();
+    expect(useStoryIngestStore.getState().checkpoint).toBeNull();
+
+    useStoryIngestStore.getState().cancel();
+    release();
+    expect(await running).toBe(false);
+    expect(useStoryIngestStore.getState().isRunning).toBe(false);
+
+    const last = ingestWrites()[ingestWrites().length - 1];
+    expect(last.status).toBe('paused');
+    expect(last.current_pass).toBe('reconcile');
+    // It really landed on the server despite the zeroed base_ts.
+    expect((sections.data('ingestion') as { status: string }).status).toBe('paused');
+    expect(sections.data('continuity')).toBeUndefined();
+  });
+
+  it('does not report divergence when a chunk boundary was deleted after the walk', async () => {
+    // The trap the second predicate dodges. Widening the walk's gates to
+    // cover 'reconcile' lands in sliceChunksFromPlan, where a user who
+    // deleted a chunk-boundary message AFTER the walk finished trips
+    // 'diverged' → "Use Reset story", destroying a complete, fully-paid
+    // bible over a divergence reconcile does not care about: it reads the
+    // server-side fact log, never the chat. (A delete is the fixture that
+    // pins it — edits never trip the slice at all, since ids are
+    // permanent and content is not compared.)
+    const sections = seedReconcileResume();
+    wireFactLog(IVY_FACTS);
+    const messages = longMessages(65).filter((m) => m.id !== 'm59');
+
+    const { llm } = scriptedLlm({
+      judge: (ctx) => judgeReply(ctx.user),
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(
+      await useStoryIngestStore.getState().run(runInput({ messages, llm }))
+    ).toBe(true);
+
+    const last = ingestWrites()[ingestWrites().length - 1];
+    expect(last.status).toBe('complete');
+    expect(last.error).not.toContain('Reset story');
+    expect(contradictionsOf(sections)).toHaveLength(1);
+  });
+
+  it('reaches reconcile via the walk path when the crash preceded its checkpoint', async () => {
+    // The window between the user_voice write and the reconcile
+    // checkpoint save. `current_pass` still reads 'transcript_walk', fully
+    // advanced, so the resume takes the walk path, runs a zero-iteration
+    // chunk loop, re-synthesizes user_voice (idempotent, one cheap call)
+    // and arrives at reconcile fresh — correct by construction rather
+    // than by a second checkpoint field.
+    const sections = wireStatefulSections({
+      ingestion: reconcileCheckpoint({
+        status: 'error',
+        current_pass: 'transcript_walk',
+        error: 'HTTP 500',
+      }),
+      entities: { characters: [cardBackedIvy()], objects: [], factions: [] },
+    });
+    wireFactLog(IVY_FACTS);
+    manifest.mockResolvedValue({
+      project_id: 'p1',
+      sections: [],
+      scene_count: 2,
+      fact_count: 2,
+      edit_count: 0,
+    });
+
+    const { llm, counts } = scriptedLlm({
+      voice: () => VOICE_JSON,
+      judge: (ctx) => judgeReply(ctx.user),
+      card: () => NOTHING_CONFLICTS,
+    });
+    expect(
+      await useStoryIngestStore
+        .getState()
+        .run(runInput({ messages: longMessages(65), llm }))
+    ).toBe(true);
+
+    expect(counts.cold).toBe(0);
+    expect(counts.walk).toBe(0); // every chunk was already done
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+    expect(counts.voice).toBe(1);
+    expect(putSection.mock.calls.map((c) => c[1])).toContain('user_voice');
+    expect(contradictionsOf(sections)).toHaveLength(1);
+    expect(useStoryIngestStore.getState().completed).toContain('reconcile');
+  });
+
+  it('never reaches reconcile with no model, or when every call failed', async () => {
+    // Reading the whole fact log and judging it needs a working model far
+    // more than the mechanical cold-start mapping does, so both early
+    // completions must exit before the walk — and therefore before
+    // reconcile — exactly as they did in phase 6.
+    const noLlm = wireStatefulSections();
+    wireFactLog(IVY_FACTS);
+    expect(await useStoryIngestStore.getState().run(runInput())).toBe(true);
+    expect(listFacts).not.toHaveBeenCalled();
+    expect(noLlm.data('continuity')).toBeUndefined();
+    expect(useStoryIngestStore.getState().completed).toEqual(['cold_start', 'wi_replay']);
+
+    useStoryIngestStore.getState().clear();
+    const allFail = wireStatefulSections();
+    wireFactLog(IVY_FACTS);
+    const llm = vi.fn(async () => {
+      throw new Error('402 payment required');
+    });
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+    expect(listFacts).not.toHaveBeenCalled();
+    expect(allFail.data('continuity')).toBeUndefined();
+    expect(useStoryIngestStore.getState().completed).not.toContain('reconcile');
+  });
+
+  it('writes an empty continuity section with zero model calls when nothing groups', async () => {
+    // Section PRESENCE is what lets the Story tab and phase 10 tell
+    // "checked, clean" from "never checked", so a bible with nothing to
+    // judge still gets one — and pays for nothing to get it.
+    const sections = seedReconcileResume();
+    wireFactLog([]);
+    const { llm, counts } = scriptedLlm({});
+
+    expect(await useStoryIngestStore.getState().run(runInput({ llm }))).toBe(true);
+
+    expect(counts.judge).toBe(0);
+    expect(counts.card).toBe(0);
+    expect(llm).not.toHaveBeenCalled();
+    expect(sections.data('continuity')).toEqual({ contradictions: [] });
+    expect(useStoryIngestStore.getState().completed).toContain('reconcile');
   });
 });

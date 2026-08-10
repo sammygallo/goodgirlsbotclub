@@ -10,6 +10,7 @@ import {
 import { useStoryStore, hasBible } from '../../stores/storyStore';
 import {
   estimateColdStartTokens,
+  hasUnreadableChecksNote,
   useStoryIngestStore,
 } from '../../stores/storyIngestStore';
 import { useCharacterStore } from '../../stores/characterStore';
@@ -31,7 +32,7 @@ import { planTranscriptChunks } from '../../utils/storyIngest/transcriptChunker'
 import { Button, ConfirmDialog, Modal } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import type { Project, ProjectChatRef, StoryArchiveReason } from '../../api/client';
-import type { MetaSection } from '../../types/storyBible';
+import type { Contradiction, MetaSection } from '../../types/storyBible';
 import type { IngestMessage } from '../../utils/storyIngest/types';
 import { describeRef, resolveRefState } from '../../utils/storyBible/sourceRefs';
 
@@ -53,6 +54,34 @@ function showIngestError(err: unknown): void {
 
 function sameChat(a: ProjectChatRef, b: ProjectChatRef): boolean {
   return a.character_avatar === b.character_avatar && a.file_name === b.file_name;
+}
+
+/** `continuity.data` is `Record<string, unknown>` on the wire — reconcile
+ *  writes it, but a stale deploy, a mid-write crash, or a future schema
+ *  drift could still hand this tab something unshaped. Rendering "no
+ *  contradiction data" is always safe; rendering a crash is not. */
+function readContradictions(data: Record<string, unknown> | undefined): Contradiction[] {
+  const raw = data?.contradictions;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is Contradiction => {
+    const c = entry as Partial<Contradiction> | null;
+    return (
+      typeof c === 'object' &&
+      c !== null &&
+      typeof c.id === 'string' &&
+      typeof c.type === 'string' &&
+      typeof c.description === 'string' &&
+      Array.isArray(c.sources) &&
+      typeof c.resolution?.status === 'string'
+    );
+  });
+}
+
+/** `character_attribute` -> "character attribute" — the enum values are
+ *  the only vocabulary the judge speaks; Phase 10's card can afford nicer
+ *  copy, this read-only list doesn't need to invent any. */
+function humanizeContradictionType(type: string): string {
+  return type.replace(/_/g, ' ');
 }
 
 const ARCHIVE_REASON_LABEL: Record<StoryArchiveReason, string> = {
@@ -205,6 +234,14 @@ export function StoryTab({
 
   const meta = sections.meta?.data as unknown as MetaSection | undefined;
   const sourceChat = meta?.source?.chat ?? null;
+
+  const contradictions = useMemo(
+    () => readContradictions(sections.continuity?.data),
+    [sections.continuity]
+  );
+  const unresolvedContradictions = contradictions.filter(
+    (c) => c.resolution.status === 'unresolved'
+  ).length;
 
   const characterNameByAvatar = useMemo(
     () => new Map(characters.map((c) => [c.avatar, c.name])),
@@ -654,23 +691,48 @@ export function StoryTab({
         <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)] mb-2">
           Contents
         </h3>
-        <dl className="grid grid-cols-3 gap-2 text-center">
-          {[
-            ['Scenes', manifest?.scene_count ?? 0],
-            ['Facts', manifest?.fact_count ?? 0],
-            ['Edits', manifest?.edit_count ?? 0],
-          ].map(([label, count]) => (
+        <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+          {(
+            [
+              ['Scenes', manifest?.scene_count ?? 0, false],
+              ['Facts', manifest?.fact_count ?? 0, false],
+              ['Edits', manifest?.edit_count ?? 0, false],
+              [
+                'Contradictions',
+                unresolvedContradictions,
+                unresolvedContradictions > 0,
+              ],
+            ] as [string, number, boolean][]
+          ).map(([label, count, warn]) => (
             <div
-              key={label as string}
-              className="rounded-lg bg-[var(--color-bg-secondary)] py-2"
+              key={label}
+              className={`rounded-lg py-2 ${
+                warn ? 'bg-[var(--color-warning)]/15' : 'bg-[var(--color-bg-secondary)]'
+              }`}
             >
-              <dt className="text-xs text-[var(--color-text-secondary)]">
+              <dt
+                className={`text-xs ${
+                  warn ? 'text-[var(--color-warning)]' : 'text-[var(--color-text-secondary)]'
+                }`}
+              >
                 {label}
               </dt>
-              <dd className="text-lg text-[var(--color-text-primary)]">{count}</dd>
+              <dd
+                className={`text-lg ${
+                  warn ? 'text-[var(--color-warning)]' : 'text-[var(--color-text-primary)]'
+                }`}
+              >
+                {count}
+              </dd>
             </div>
           ))}
         </dl>
+        {hasUnreadableChecksNote(checkpoint?.error) && (
+          <p className="text-xs text-[var(--color-warning)] mt-2">
+            Some contradiction checks couldn't be read, so this count may be
+            incomplete.
+          </p>
+        )}
         <p className="text-xs text-[var(--color-text-secondary)] mt-2">
           Building the story from your chat comes next — this work is ready
           for it.
@@ -739,6 +801,34 @@ export function StoryTab({
             >
               Load more
             </Button>
+          )}
+        </section>
+      )}
+
+      {/* Contradictions (read-only) — resolving them is Phase 10's
+          review UX; this is only the flag, no evidence or fact lookups. */}
+      {contradictions.length > 0 && (
+        <section>
+          <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)] mb-2">
+            Contradictions
+          </h3>
+          <ul className="space-y-1">
+            {contradictions.slice(0, 20).map((c) => (
+              <li
+                key={c.id}
+                className="px-3 py-2 rounded-lg bg-[var(--color-bg-secondary)] text-sm text-[var(--color-text-primary)]"
+              >
+                <span className="mr-2 text-xs px-2 py-0.5 rounded-full bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)]">
+                  {humanizeContradictionType(c.type)}
+                </span>
+                {c.description}
+              </li>
+            ))}
+          </ul>
+          {contradictions.length > 20 && (
+            <p className="text-xs text-[var(--color-text-secondary)] mt-1">
+              and {contradictions.length - 20} more
+            </p>
           )}
         </section>
       )}

@@ -182,10 +182,12 @@ export interface FactGroup {
  *  contradict anything, and the plan scopes the judge to multi-fact
  *  groups precisely so a long story doesn't spend a model call per fact.
  *
- *  Output order is stable (entity, then category, then original fact
- *  order) so a rerun over the same bible produces the same groups in the
- *  same sequence — the judge's prompts, and anything seeded from them,
- *  stay reproducible. */
+ *  Output order is FIRST-APPEARANCE order of each (entity, category)
+ *  bucket, with facts inside a bucket in their original order — not
+ *  sorted by entity. That is just as deterministic for a given fact log,
+ *  which is the property the judge needs: a rerun over the same bible
+ *  produces the same groups in the same sequence, so its batches, and
+ *  anything seeded from them, stay reproducible. */
 export function groupFacts(
   facts: BibleFact[],
   cast: KnownCastMember[]

@@ -202,7 +202,13 @@ export const useStoryStore = create<StoryState>((set, get) => {
       // Only fetch what exists. A 404 here would be normal-but-noisy for
       // an untouched Work, so the manifest gates the reads.
       const present = new Set(manifest.sections.map((s) => s.section));
-      const wanted: StorySectionName[] = ['meta', 'world', 'entities', 'ingestion'];
+      const wanted: StorySectionName[] = [
+        'meta',
+        'world',
+        'entities',
+        'continuity',
+        'ingestion',
+      ];
       const loaded: Partial<Record<StorySectionName, StorySectionOut>> = {};
       await Promise.all(
         wanted
