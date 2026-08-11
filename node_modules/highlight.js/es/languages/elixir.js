@@ -20,6 +20,7 @@ function elixir(hljs) {
     "cond",
     "defstruct",
     "defguard",
+    "defguardp",
     "do",
     "else",
     "end",
@@ -228,7 +229,13 @@ function elixir(hljs) {
     beginKeywords: 'defimpl defmodule defprotocol defrecord',
     end: /\bdo\b|$|;/
   });
+  const CHAR_LITERAL = {
+    scope: 'string',
+    match: /\?'/,
+    relevance: 0
+  };
   const ELIXIR_DEFAULT_CONTAINS = [
+    CHAR_LITERAL,
     STRING,
     REGEX_SIGIL,
     UPCASE_SIGIL,

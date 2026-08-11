@@ -510,7 +510,12 @@ export function StoryTab({
     [drift, canonLocked, canManage, checkpoint]
   );
   const newMessageCount = banner.newMessageCount;
-  const staleSceneIds = drift?.scenes?.downstreamSceneIds ?? [];
+  // Memoised because the `?? []` fallback would otherwise mint a new
+  // array on every render, re-running the filter below each time.
+  const staleSceneIds = useMemo(
+    () => drift?.scenes?.downstreamSceneIds ?? [],
+    [drift]
+  );
   /** Scenes the user has waved off this visit. Detection would otherwise
    *  re-derive the same set on the next render and the badge would come
    *  straight back, which reads as the dismiss having failed. */
