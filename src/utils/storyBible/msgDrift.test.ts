@@ -18,11 +18,13 @@ import { describe, it, expect } from 'vitest';
 import {
   checkMsgDrift,
   checkWatermark,
+  driftBannerState,
   indexById,
   localiseSceneDrift,
   newMessagesSince,
   type DriftMessage,
   type DriftScene,
+  type SceneDriftReport,
 } from './msgDrift';
 import { hashText } from './sourceRefs';
 import type { IngestWatermark, MsgRef } from '../../types/storyBible';
@@ -357,5 +359,136 @@ describe('indexById', () => {
     expect(idx.get('a')).toBe(0);
     expect(idx.get('b')).toBe(1);
     expect(idx.get('nope')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Banner rules
+//
+// The component renders straight from this, so these ARE the UI tests —
+// the repo keeps its suite in plain node, and every rule that can
+// actually be wrong lives here rather than in the JSX.
+// ---------------------------------------------------------------------------
+
+describe('driftBannerState', () => {
+  const open = { canonLocked: false, canManage: true };
+
+  function report(over: Partial<SceneDriftReport> = {}): SceneDriftReport {
+    return {
+      divergedSceneId: 's2',
+      divergedSequence: 1,
+      downstreamSceneIds: ['s2', 's3'],
+      checkedScenes: 3,
+      unverifiableRefs: 0,
+      idChurnSuspected: false,
+      ...over,
+    };
+  }
+
+  it('renders nothing without a verdict, or for a viewer', () => {
+    expect(driftBannerState(null, null, open).kind).toBe('none');
+    expect(
+      driftBannerState({ kind: 'new_messages', count: 3, anchorIndex: 1 }, null, {
+        canonLocked: false,
+        canManage: false,
+      }).kind
+    ).toBe('none');
+  });
+
+  it('renders nothing for never_walked, unknown, or clean', () => {
+    expect(driftBannerState({ kind: 'never_walked' }, null, open).kind).toBe('none');
+    expect(
+      driftBannerState({ kind: 'unknown', reason: 'no_anchor' }, null, open).kind
+    ).toBe('none');
+    expect(
+      driftBannerState(
+        { kind: 'unknown', reason: 'unverifiable_anchor' },
+        null,
+        open
+      ).kind
+    ).toBe('none');
+    expect(driftBannerState({ kind: 'clean', anchorIndex: 4 }, null, open).kind).toBe(
+      'none'
+    );
+  });
+
+  it('offers Update for new messages', () => {
+    const s = driftBannerState(
+      { kind: 'new_messages', count: 7, anchorIndex: 3 },
+      null,
+      open
+    );
+    expect(s.kind).toBe('new_messages');
+    expect(s.newMessageCount).toBe(7);
+    expect(s.canUpdate).toBe(true);
+  });
+
+  it('withholds Update while canon is locked, but still shows the banner', () => {
+    const s = driftBannerState(
+      { kind: 'new_messages', count: 7, anchorIndex: 3 },
+      null,
+      { canonLocked: true, canManage: true }
+    );
+    // Detection is a pure read, so the user is still TOLD — they are just
+    // told to unlock first.
+    expect(s.kind).toBe('new_messages');
+    expect(s.canUpdate).toBe(false);
+  });
+
+  it('offers Re-ingest and Flag on divergence', () => {
+    const s = driftBannerState(
+      { kind: 'diverged', reason: 'anchor_edited', anchorIndex: 3 },
+      report(),
+      open
+    );
+    expect(s.kind).toBe('diverged');
+    expect(s.staleSceneCount).toBe(2);
+    expect(s.canReingest).toBe(true);
+    expect(s.canFlag).toBe(true);
+  });
+
+  it('withholds BOTH divergence actions while canon is locked', () => {
+    // Re-ingest routes through the ungated `resetBible`, which wipes
+    // `meta` — including `canon_locked_at`. Offering it here would make
+    // the lock destroyable by a button in a section that promises no
+    // auto-unlock, and nothing downstream would refuse on our behalf.
+    const s = driftBannerState(
+      { kind: 'diverged', reason: 'anchor_deleted', anchorIndex: -1 },
+      report(),
+      { canonLocked: true, canManage: true }
+    );
+    expect(s.kind).toBe('diverged');
+    expect(s.canReingest).toBe(false);
+    expect(s.canFlag).toBe(false);
+  });
+
+  it('does not offer Flag when no scenes were localised', () => {
+    const s = driftBannerState(
+      { kind: 'diverged', reason: 'count_mismatch', anchorIndex: 2 },
+      report({ downstreamSceneIds: [] }),
+      open
+    );
+    expect(s.canFlag).toBe(false);
+    expect(s.canReingest).toBe(true); // still recoverable
+  });
+
+  it('surfaces an incomplete check so the copy can soften', () => {
+    const s = driftBannerState(
+      { kind: 'diverged', reason: 'anchor_edited', anchorIndex: 3 },
+      report({ unverifiableRefs: 2 }),
+      open
+    );
+    expect(s.incompleteCheck).toBe(true);
+  });
+
+  it('still renders the diverged banner when tier 2 could not run at all', () => {
+    const s = driftBannerState(
+      { kind: 'diverged', reason: 'anchor_edited', anchorIndex: 3 },
+      null,
+      open
+    );
+    expect(s.kind).toBe('diverged');
+    expect(s.staleSceneCount).toBe(0);
+    expect(s.canFlag).toBe(false);
   });
 });

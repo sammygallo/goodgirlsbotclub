@@ -321,6 +321,82 @@ export async function localiseSceneDrift(
   };
 }
 
+// ---------------------------------------------------------------------------
+// What the banner should say and offer
+// ---------------------------------------------------------------------------
+
+export interface DriftBannerState {
+  /** 'none' renders nothing at all. */
+  kind: 'none' | 'new_messages' | 'diverged';
+  newMessageCount: number;
+  staleSceneCount: number;
+  /** Pick up the new messages incrementally. */
+  canUpdate: boolean;
+  /** Rebuild from scratch (archive-backed). */
+  canReingest: boolean;
+  /** Stamp `stale_source` on the affected scenes. */
+  canFlag: boolean;
+  /** Tier 2 could not check some refs, so the affected list may be short. */
+  incompleteCheck: boolean;
+}
+
+/**
+ * Map a drift result onto what the user is actually offered.
+ *
+ * Extracted from the component so the RULES are testable in plain node,
+ * which is how everything else in this codebase is tested. The important
+ * one is the lock:
+ *
+ * Re-ingest routes through `resetBible`, which is ungated and wipes
+ * `meta` — including `canon_locked_at`. Offering it while canon is locked
+ * would make a lock destroyable by a button whose own section promises no
+ * auto-unlock. Flagging is suppressed for the same reason it is offered
+ * at all: it is a write, and the lock is the mode where nothing writes.
+ * Detection itself is a pure read and keeps running regardless, so the
+ * user is still TOLD — they are just told to unlock first.
+ */
+export function driftBannerState(
+  verdict: WatermarkVerdict | null | undefined,
+  scenes: SceneDriftReport | null | undefined,
+  opts: { canonLocked: boolean; canManage: boolean }
+): DriftBannerState {
+  const none: DriftBannerState = {
+    kind: 'none',
+    newMessageCount: 0,
+    staleSceneCount: 0,
+    canUpdate: false,
+    canReingest: false,
+    canFlag: false,
+    incompleteCheck: false,
+  };
+  if (!verdict || !opts.canManage) return none;
+
+  // `never_walked` and `unknown` deliberately show nothing. Silence is
+  // the honest output when there is no watermark to measure from, or when
+  // the anchor could not be verified — see §3.2 on not overclaiming.
+  if (verdict.kind === 'never_walked' || verdict.kind === 'unknown') return none;
+  if (verdict.kind === 'clean') return none;
+
+  if (verdict.kind === 'new_messages') {
+    return {
+      ...none,
+      kind: 'new_messages',
+      newMessageCount: verdict.count,
+      canUpdate: !opts.canonLocked,
+    };
+  }
+
+  const staleSceneCount = scenes?.downstreamSceneIds.length ?? 0;
+  return {
+    ...none,
+    kind: 'diverged',
+    staleSceneCount,
+    canReingest: !opts.canonLocked,
+    canFlag: !opts.canonLocked && staleSceneCount > 0,
+    incompleteCheck: (scenes?.unverifiableRefs ?? 0) > 0,
+  };
+}
+
 /**
  * True when every dangling ref's fingerprint still appears somewhere in
  * the live chat — the id-churn signature.

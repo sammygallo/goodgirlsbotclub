@@ -10,7 +10,8 @@ import type {
   SourceRef,
 } from '../../types/storyBible';
 import type { StoryLogEntry } from '../../api/client';
-import { capturedAt, describeRef, hashText } from '../../utils/storyBible/sourceRefs';
+import { capturedAt, describeRef } from '../../utils/storyBible/sourceRefs';
+import { checkMsgDrift, type DriftMessage } from '../../utils/storyBible/msgDrift';
 import { Button, ConfirmDialog, Input, Modal, TextArea } from '../ui';
 
 /**
@@ -142,19 +143,20 @@ function byteLength(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
-/** The live text the ref points at, or null when that swipe is gone.
+/** The evidence message in the shared comparator's shape.
  *
- *  `swipe_idx` IS the chosen swipe (sourceRefs' v1.1 amendment), so an
- *  index past the end of the array means the swipe the fact came from no
- *  longer exists — drift, not a reason to quietly quote a different one.
- *  A message with no `swipes` array at all has exactly one text, `mes`,
- *  which is swipe 0. */
-function liveSwipeText(msg: EvidenceMessage, swipeIdx: number): string | null {
-  if (Array.isArray(msg.swipes)) {
-    if (swipeIdx < 0 || swipeIdx >= msg.swipes.length) return null;
-    return msg.swipes[swipeIdx] ?? null;
-  }
-  return swipeIdx === 0 ? msg.mes : null;
+ *  `swipe_idx` IS the chosen swipe (sourceRefs' v1.1 amendment). Passing
+ *  `swipes` through means the comparator can resolve the exact swipe the
+ *  ref names rather than only the active one. A message with no `swipes`
+ *  array at all has exactly one text, `mes`, which is swipe 0. */
+function asDriftMessage(msg: EvidenceMessage, id: string): DriftMessage {
+  return {
+    id,
+    content: Array.isArray(msg.swipes) ? (msg.swipes[0] ?? msg.mes) : msg.mes,
+    swipeIdx: 0,
+    timestamp: 0,
+    swipes: Array.isArray(msg.swipes) ? msg.swipes : null,
+  };
 }
 
 async function resolveChatMessageEvidence(
@@ -167,11 +169,6 @@ async function resolveChatMessageEvidence(
     badge: 'dangling',
     note: 'as captured during ingestion',
   };
-  const drifted: Evidence = {
-    quote: snapshot,
-    badge: 'drifted',
-    note: 'the message changed since ingestion',
-  };
 
   // No transcript in hand — chat missing, fetch failed, or the lead had
   // nothing to give us. The snapshot carries the card on its own.
@@ -181,22 +178,38 @@ async function resolveChatMessageEvidence(
   const found = messages.find((m) => m.extra?.ggbc_id === msg.msg_id);
   if (!found) return dangling;
 
-  const live = liveSwipeText(found, msg.swipe_idx);
-  if (live === null) return drifted;
-
-  const { sha, hash_alg } = await hashText(live);
-  // NEVER compare digests across algorithms — djb2 and sha256 disagree on
-  // identical text by construction, so a mismatch here says nothing about
-  // whether the message changed. Say only what is true: we can't check.
-  if (hash_alg !== msg.fingerprint.hash_alg) {
-    return {
-      quote: snapshot,
-      badge: 'drifted',
-      note: "couldn't be re-checked here — showing what was captured",
-    };
+  // One drift ladder for the whole app (phase 11). This used to be a
+  // private copy here, and "check the fingerprint, not just the id" is
+  // exactly the kind of rule that rots when it has two implementations.
+  const verdict = await checkMsgDrift(msg, asDriftMessage(found, msg.msg_id));
+  switch (verdict) {
+    case 'dangling':
+      return dangling;
+    case 'drifted':
+      return {
+        quote: snapshot,
+        badge: 'drifted',
+        note: 'the message changed since ingestion',
+      };
+    case 'unverifiable':
+      // A cross-algorithm comparison says nothing about whether the text
+      // changed. The badge still reads `drifted` because this surface has
+      // only three states and "unchecked" is closer to "don't trust the
+      // quote" than to "verified" — the note carries the nuance. The
+      // banner in StoryTab, which has a fourth state, stays silent
+      // instead.
+      return {
+        quote: snapshot,
+        badge: 'drifted',
+        note: "couldn't be re-checked here — showing what was captured",
+      };
+    default: {
+      const live = Array.isArray(found.swipes)
+        ? found.swipes[msg.swipe_idx]
+        : found.mes;
+      return { quote: clampQuote(live ?? ''), badge: 'live', note: '' };
+    }
   }
-  if (sha !== msg.fingerprint.sha) return drifted;
-  return { quote: clampQuote(live), badge: 'live', note: '' };
 }
 
 async function resolveEvidence(

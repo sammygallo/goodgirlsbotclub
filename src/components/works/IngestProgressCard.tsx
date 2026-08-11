@@ -98,29 +98,40 @@ export function IngestProgressCard() {
 
       {!isRunning && stopped && (
         <p className="text-xs text-[var(--color-text-secondary)]">
-          {/* These three branches must stay in lockstep with run()'s
-              `resumableReconcile` and `resumableWalk` predicates. When
-              reconcile shipped, only the walk branch existed, so a paused
-              reconcile — the one state where the ENTIRE chat is already
-              paid for and durable — was told "starts from the beginning",
-              right beside the button that would have made it true. */}
-          {checkpoint?.current_pass === 'reconcile'
-            ? // Everything upstream of reconcile is durable on the server,
-              // so this really is only the contradiction check again.
-              'Building again only re-checks for contradictions.'
-            : checkpoint?.current_pass === 'transcript_walk' &&
-                checkpoint.chunk_plan.length > 0
-              ? // The transcript walk (phase 7) checkpoints every chunk, so
-                // this genuinely continues rather than starting over. Keyed
-                // on chunk_plan, NOT chunk_index, to stay in lockstep with
-                // run()'s resumableWalk gate — at index 0 the walk still
-                // re-plans, but cold-start and world-info are skipped, so
-                // "starts from the beginning" would be a lie.
-                'Building again picks up where it stopped.'
-              : // Honest about the limit: cold-start/world-info always
-                // restart from the beginning — they are cheap enough that
-                // resuming them isn't worth the complexity.
-                'Building again starts from the beginning.'}
+          {/* These branches must stay in lockstep with run()'s
+              `resumableReconcile`, `resumableWalk` and `incrementalWalk`
+              predicates. When reconcile shipped, only the walk branch
+              existed, so a paused reconcile — the one state where the
+              ENTIRE chat is already paid for and durable — was told
+              "starts from the beginning", right beside the button that
+              would have made it true. */}
+          {checkpoint?.current_pass === 'transcript_walk' &&
+          checkpoint.chunk_plan.length > 0
+            ? // The transcript walk (phase 7) checkpoints every chunk, so
+              // this genuinely continues rather than starting over. Keyed
+              // on chunk_plan, NOT chunk_index, to stay in lockstep with
+              // run()'s resumableWalk gate — at index 0 the walk still
+              // re-plans, but cold-start and world-info are skipped, so
+              // "starts from the beginning" would be a lie. Phase 11 also
+              // extends the pinned plan here, so anything added while the
+              // build was stopped is picked up in the same press.
+              'Building again picks up where it stopped, including anything you’ve added since.'
+            : checkpoint?.current_pass === 'reconcile'
+              ? // Everything upstream of reconcile is durable on the
+                // server. Phase 11 narrowed `resumableReconcile` with a
+                // "nothing new upstream" conjunct, so this is only true
+                // when the chat hasn't grown — hence the qualifier rather
+                // than the old flat promise.
+                'Building again re-checks for contradictions, and reads any new messages first.'
+              : checkpoint && checkpoint.chunk_plan.length > 0
+                ? // A finished walk that can still be continued: phase
+                  // 11's incremental path reuses the pinned plan instead
+                  // of re-reading (and re-billing) the whole chat.
+                  'Building again reads only what you’ve added since.'
+                : // Honest about the limit: cold-start/world-info always
+                  // restart from the beginning — they are cheap enough
+                  // that resuming them isn't worth the complexity.
+                  'Building again starts from the beginning.'}
         </p>
       )}
 

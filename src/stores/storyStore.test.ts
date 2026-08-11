@@ -1629,3 +1629,136 @@ describe('loadAllFactsById fetch-seq ordering', () => {
     expect(useStoryStore.getState().factIndex).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stale-source flagging (phase 11)
+// ---------------------------------------------------------------------------
+
+describe('flagScenesStale / clearSceneStale', () => {
+  function sceneRow(id: string, serverTs: number, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      sequence: 0,
+      server_ts: serverTs,
+      updated_at: 'x',
+      data: {
+        id,
+        sequence: 0,
+        title: 'A scene',
+        summary: 's',
+        annotations: {
+          user_notes: 'keep me',
+          author_intent: '',
+          flagged_issues: [],
+          stale_source: false,
+        },
+        ...extra,
+      },
+    };
+  }
+
+  it('sets stale_source while PRESERVING the rest of annotations', async () => {
+    useStoryStore.setState({ projectId: 'p1' });
+    getScene.mockResolvedValue(sceneRow('s1', 5));
+    putScene.mockResolvedValue({ ...sceneRow('s1', 6), sequence: 0 });
+
+    const result = await useStoryStore.getState().flagScenesStale(['s1']);
+
+    expect(result).toEqual({ flagged: 1, alreadyFlagged: 0, failed: 0 });
+    const [, , data] = putScene.mock.calls[0];
+    const annotations = (data as { annotations: Record<string, unknown> }).annotations;
+    expect(annotations.stale_source).toBe(true);
+    // A full-replace PUT drops whatever the patch didn't spread.
+    expect(annotations.user_notes).toBe('keep me');
+  });
+
+  it('is a no-op on an already-flagged scene — no PUT, no server_ts churn', async () => {
+    useStoryStore.setState({ projectId: 'p1' });
+    getScene.mockResolvedValue(
+      sceneRow('s1', 5, {
+        annotations: {
+          user_notes: '',
+          author_intent: '',
+          flagged_issues: [],
+          stale_source: true,
+        },
+      })
+    );
+
+    const result = await useStoryStore.getState().flagScenesStale(['s1']);
+
+    expect(result).toEqual({ flagged: 0, alreadyFlagged: 1, failed: 0 });
+    expect(putScene).not.toHaveBeenCalled();
+  });
+
+  it('keeps going when one scene fails — flagging is advisory, not atomic', async () => {
+    useStoryStore.setState({ projectId: 'p1' });
+    getScene.mockImplementation(async (_p: string, id: string) => {
+      if (id === 's2') throw new Error('boom');
+      return sceneRow(id, 5);
+    });
+    putScene.mockResolvedValue(sceneRow('s1', 6));
+
+    const result = await useStoryStore.getState().flagScenesStale(['s1', 's2', 's3']);
+
+    expect(result.flagged).toBe(2);
+    expect(result.failed).toBe(1);
+  });
+
+  it('flags while a build is parked in error — the state divergence creates', async () => {
+    // patchScene's default gate treats running|paused|error as
+    // build-active, and divergence itself parks the checkpoint in error.
+    // Without the carve-out, "Mark affected scenes" would refuse in
+    // exactly the situation that produces the button.
+    useStoryStore.setState({ projectId: 'p1' });
+    ingestCheckpoint.current = { status: 'error' };
+    getScene.mockResolvedValue(sceneRow('s1', 5));
+    putScene.mockResolvedValue(sceneRow('s1', 6));
+
+    const result = await useStoryStore.getState().flagScenesStale(['s1']);
+
+    expect(result.flagged).toBe(1);
+    expect(putScene).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to flag while canon is locked', async () => {
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: {
+        meta: metaSection(3, { canon_locked_at: '2026-08-10T12:00:00Z' }) as never,
+      },
+    });
+    getScene.mockResolvedValue(sceneRow('s1', 5));
+
+    const result = await useStoryStore.getState().flagScenesStale(['s1']);
+
+    expect(result).toEqual({ flagged: 0, alreadyFlagged: 0, failed: 1 });
+    expect(putScene).not.toHaveBeenCalled();
+  });
+
+  it('writes no edit row for a machine-driven flag, but does for a user dismissal', async () => {
+    useStoryStore.setState({ projectId: 'p1' });
+    getScene.mockResolvedValue(sceneRow('s1', 5));
+    putScene.mockResolvedValue(sceneRow('s1', 6));
+
+    await useStoryStore.getState().flagScenesStale(['s1']);
+    // `recordEdit` hardcodes actor: 'user'; a derived flag is not
+    // authorship, so flagging opts out.
+    expect(appendEdit).not.toHaveBeenCalled();
+
+    getScene.mockResolvedValue(
+      sceneRow('s1', 6, {
+        annotations: {
+          user_notes: '',
+          author_intent: '',
+          flagged_issues: [],
+          stale_source: true,
+        },
+      })
+    );
+    putScene.mockResolvedValue(sceneRow('s1', 7));
+    await useStoryStore.getState().clearSceneStale('s1');
+    // Dismissing IS a user judgement, so it keeps its audit row.
+    expect(appendEdit).toHaveBeenCalledTimes(1);
+  });
+});
