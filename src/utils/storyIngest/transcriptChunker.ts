@@ -104,7 +104,8 @@ export function planTranscriptChunks(messages: IngestMessage[]): WalkChunkPlan {
  * Returns `null` when any boundary id from the plan can no longer be
  * found (or is now out of order) — the caller must treat that as history
  * having diverged under the pass and refuse to resume rather than guess.
- * This deliberately does not attempt reconciliation (that is Phase 10's
+ * This deliberately does not attempt reconciliation (see
+ * `extendChunkPlan` and `utils/storyBible/msgDrift` for phase 11's
  * incremental re-ingestion); it only answers "is it still safe to keep
  * going from where we stopped".
  */
@@ -130,4 +131,74 @@ export function sliceChunksFromPlan(
     });
   }
   return chunks;
+}
+
+export interface ChunkPlanExtension {
+  /** Entries to CONCATENATE onto the pinned plan. Empty when the plan
+   *  already covers every current message. */
+  entries: ChunkPlanEntry[];
+  /** Chunks the extension adds, in the same shape a fresh plan produces. */
+  chunks: WalkChunk[];
+  /** Index into the live array of the last message the pinned plan
+   *  covered, or -1 when that boundary is gone. */
+  lastPlannedIndex: number;
+  /** True when the EXTENSION ALONE exceeds the soft cap.
+   *
+   *  Scoped to the extension rather than the cumulative total on purpose:
+   *  the confirmation this drives asks the user to authorise NEW spend,
+   *  and re-prompting on a cumulative count would ask them to
+   *  re-authorise chunks they already paid for every time they add a
+   *  message to a long chat. */
+  exceedsSoftCap: boolean;
+}
+
+/**
+ * Plan the messages that arrived AFTER a pinned plan's last boundary.
+ *
+ * This is the one mechanism behind two features (phase 11 plan §5.1):
+ * Phase 7's resume gap — a paused walk whose plan was pinned before the
+ * user kept roleplaying, whose trailing messages were counted into
+ * `trailingUnwalked` and then never walked — and the incremental update
+ * of a completed walk. Both are the same question: what comes after the
+ * last boundary, and how does it chunk?
+ *
+ * Returns `lastPlannedIndex: -1` when the plan's final boundary id is no
+ * longer present. That is divergence, not extension, and the caller must
+ * NOT treat an empty `entries` in that case as "nothing new" — check the
+ * index. (`sliceChunksFromPlan` would independently return `null` for the
+ * same plan, so the ordinary walk path refuses first; this is belt and
+ * braces for callers that extend without slicing.)
+ *
+ * The pinned prefix is never rewritten. "Plan pinned ⇒ those upstream ids
+ * are load-bearing" still holds for everything already walked; extension
+ * only appends.
+ */
+export function extendChunkPlan(
+  messages: IngestMessage[],
+  plan: ChunkPlanEntry[]
+): ChunkPlanExtension {
+  const empty = (lastPlannedIndex: number): ChunkPlanExtension => ({
+    entries: [],
+    chunks: [],
+    lastPlannedIndex,
+    exceedsSoftCap: false,
+  });
+
+  const lastEntry = plan[plan.length - 1];
+  if (!lastEntry) return empty(-1);
+
+  const lastPlannedIndex = messages.findIndex((m) => m.id === lastEntry.end_msg_id);
+  if (lastPlannedIndex < 0) return empty(-1);
+  if (lastPlannedIndex >= messages.length - 1) return empty(lastPlannedIndex);
+
+  // `planTranscriptChunks` is pure and takes any slice, so the tail plans
+  // exactly as a fresh transcript would — same budget, same force-split,
+  // same well-formed entries.
+  const tail = planTranscriptChunks(messages.slice(lastPlannedIndex + 1));
+  return {
+    entries: tail.chunkPlan,
+    chunks: tail.chunks,
+    lastPlannedIndex,
+    exceedsSoftCap: tail.exceedsSoftCap,
+  };
 }

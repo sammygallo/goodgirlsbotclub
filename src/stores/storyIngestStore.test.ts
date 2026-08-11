@@ -2163,3 +2163,334 @@ describe('reconcile (phase 8)', () => {
     expect(useStoryIngestStore.getState().completed).toContain('reconcile');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Incremental re-ingestion (phase 11)
+//
+// Every case here pins a behaviour that was WRONG in the plan's first
+// draft and got caught by the adversarial review. They are regression
+// pins first and feature tests second.
+// ---------------------------------------------------------------------------
+
+describe('incremental re-ingestion (phase 11)', () => {
+  const WALKED = 65; // forces two chunks at WALK_FORCE_SPLIT_MESSAGES=60
+
+  function sceneJson(title: string, endIdx: number, closed = true) {
+    return JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title,
+          summary: title.toLowerCase(),
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: endIdx,
+          closed,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+  }
+
+  const VOICE_JSON = JSON.stringify({
+    style_summary: '',
+    register: 'mixed',
+    rhetorical_devices: [],
+    tendency: 'reactive',
+  });
+
+  const ENTITIES = {
+    characters: [{ id: 'char-ivy', canonical_name: 'Ivy', aliases: [] }],
+    objects: [],
+    factions: [],
+  };
+
+  /** A bible whose walk already finished over `WALKED` messages. */
+  function completedCheckpoint(over: Record<string, unknown> = {}) {
+    return {
+      status: 'complete',
+      current_pass: null,
+      prompt_version: PROMPT_VERSION,
+      chunk_index: 2,
+      chunk_plan: [
+        { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },
+        { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+      ],
+      last_ingested: {
+        msg_id: 'm64',
+        swipe_idx: 0,
+        fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+      },
+      open_scene: null,
+      lock: null,
+      token_usage: { input_tokens: 5, output_tokens: 5 },
+      replay_approx: false,
+      error: '',
+      ...over,
+    };
+  }
+
+  function wireIncremental(checkpoint: Record<string, unknown>) {
+    const sections = wireStatefulSections({
+      ingestion: checkpoint,
+      entities: ENTITIES,
+      meta: {
+        schema_version: '1.1',
+        bible_id: 'b1',
+        created_at: 'x',
+        updated_at: 'x',
+        source: {
+          platform: 'ggbc',
+          chat: {
+            kind: 'chat',
+            ref: { character_avatar: 'Ivy.png', file_name: 'chat1.jsonl' },
+            snapshot: { name: 'chat1.jsonl' },
+            captured_at: 'x',
+          },
+        },
+        ingest_watermark: {
+          message_count: WALKED,
+          last_msg: {
+            msg_id: 'm64',
+            swipe_idx: 0,
+            fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+          },
+        },
+      },
+    });
+    wireScenesAndFacts();
+    wireFactLog();
+    manifest.mockResolvedValue({
+      project_id: 'p1',
+      sections: [],
+      scene_count: 2,
+      fact_count: 0,
+      edit_count: 0,
+    });
+    return sections;
+  }
+
+  it('walks ONLY the new messages and does not rerun cold start', async () => {
+    const sections = wireIncremental(completedCheckpoint());
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(ok).toBe(true);
+    // One walk call for the 5 new messages + one user_voice call. If cold
+    // start had rerun there would be two more, and `entities` would be
+    // rewritten — assert the section write directly rather than relying on
+    // character ids, which are deterministic and identical either way.
+    expect(llm).toHaveBeenCalledTimes(2);
+    expect(putSection.mock.calls.filter((c) => c[1] === 'entities')).toHaveLength(0);
+    expect(bulkWriteScenes).toHaveBeenCalledTimes(1);
+
+    const plan = (sections.data('ingestion') as { chunk_plan: unknown[] }).chunk_plan;
+    expect(plan).toHaveLength(3); // two pinned + one extension entry
+  });
+
+  it('advances the watermark in META, not the checkpoint', async () => {
+    const sections = wireIncremental(completedCheckpoint());
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    const meta = sections.data('meta') as {
+      ingest_watermark: { message_count: number; last_msg: { msg_id: string } };
+    };
+    expect(meta.ingest_watermark.message_count).toBe(70);
+    expect(meta.ingest_watermark.last_msg.msg_id).toBe('m69');
+
+    // The durable cursor must NOT live in `ingestion`: resetIngestState
+    // wipes that whole section, and losing the watermark there would make
+    // the next build re-walk — and re-bill — the entire chat.
+    const ingestion = sections.data('ingestion') as Record<string, unknown>;
+    expect(ingestion.ingest_watermark).toBeUndefined();
+  });
+
+  it('starts a NEW scene rather than re-opening a completed walk’s open tail scene', async () => {
+    // A completed bible whose chat ended mid-scene: nothing force-closes
+    // the final chunk's scene, so open_scene survives completion. Treating
+    // that as "resume this scene" would let an incremental run rewrite a
+    // title the user set in the phase-10 review UI.
+    wireIncremental(completedCheckpoint({ open_scene: 'scene-tail' }));
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(ok).toBe(true);
+    // Confirms we really are on the extension path (a fresh rebuild would
+    // re-run cold start and re-walk both chunks), so the assertion below
+    // is about re-opening rather than about never getting here.
+    expect(llm).toHaveBeenCalledTimes(2);
+    // The tail scene is never even read, so it cannot be rewritten.
+    expect(getScene).not.toHaveBeenCalled();
+  });
+
+  it('re-opens the tail scene when the walk is genuinely in flight', async () => {
+    // The resume-gap case: current_pass is still 'transcript_walk', so the
+    // review UI has been gated shut and nothing can have been reviewed.
+    wireIncremental(
+      completedCheckpoint({
+        status: 'error',
+        current_pass: 'transcript_walk',
+        chunk_index: 1,
+        open_scene: 'scene-tail',
+      })
+    );
+    getScene.mockResolvedValue({
+      id: 'scene-tail',
+      sequence: 1,
+      server_ts: 5,
+      updated_at: 'x',
+      data: {
+        id: 'scene-tail',
+        sequence: 1,
+        title: 'Tail',
+        summary: '',
+        detailed_summary: '',
+        participants: [],
+        continuity_facts_established: [],
+        source: {
+          message_range: {
+            start: { msg_id: 'm60', swipe_idx: 0, fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 } },
+            end: { msg_id: 'm64', swipe_idx: 0, fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 } },
+          },
+          total_messages: 5,
+          swipe_resolutions: [],
+          excluded_segments: [],
+        },
+      },
+    });
+    const responses = [sceneJson('Scene B', 4), sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(getScene).toHaveBeenCalledWith('p1', 'scene-tail');
+  });
+
+  it('EXTENDS a paused walk’s pinned plan instead of reporting unwalked trailing messages', async () => {
+    // Phase 7's resume gap. The plan was pinned over 65 messages; the user
+    // kept roleplaying to 70 while the build was paused. Those 5 used to be
+    // counted and then abandoned with "rebuild to pick them up".
+    const sections = wireIncremental(
+      completedCheckpoint({
+        status: 'error',
+        current_pass: 'transcript_walk',
+        chunk_index: 1,
+      })
+    );
+    const responses = [sceneJson('Scene B', 4), sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm })
+    );
+
+    expect(ok).toBe(true);
+    const ingestion = sections.data('ingestion') as {
+      chunk_plan: unknown[];
+      chunk_index: number;
+      error: string;
+    };
+    expect(ingestion.chunk_plan).toHaveLength(3);
+    expect(ingestion.chunk_index).toBe(3);
+    expect(ingestion.error).not.toMatch(/rebuild to pick them up/i);
+  });
+
+  it('does NOT re-prompt the long-walk confirm for a small extension on a huge plan', async () => {
+    // The cap is scoped to the extension, so a user adding one message to
+    // an already-enormous chat is never asked to re-authorise the chunks
+    // they already paid for.
+    const bigPlan = Array.from({ length: 250 }, (_, n) => ({
+      start_msg_id: `m${n}`,
+      end_msg_id: `m${n}`,
+      est_tokens: 10,
+    }));
+    wireIncremental(
+      completedCheckpoint({
+        chunk_plan: bigPlan,
+        chunk_index: 250,
+        last_ingested: {
+          msg_id: 'm249',
+          swipe_idx: 0,
+          fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+        },
+      })
+    );
+    const responses = [sceneJson('Scene C', 0), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({
+        messages: longMessages(251),
+        llm,
+        hasNewMessages: true,
+        confirmLongWalk: false,
+      })
+    );
+
+    expect(ok).toBe(true);
+    // Two calls = one extension chunk + user_voice. A cumulative cap would
+    // have returned needs_confirmation and spent nothing; a full rebuild
+    // would have cost far more.
+    expect(llm).toHaveBeenCalledTimes(2);
+  });
+
+  it('walks new messages even when the checkpoint is parked mid-reconcile', async () => {
+    // Without the §6 narrowing, `resumableReconcile` skips the walk block
+    // entirely: Update would re-judge contradictions, never read the new
+    // messages, and still toast "Story built".
+    const sections = wireIncremental(
+      completedCheckpoint({ status: 'error', current_pass: 'reconcile' })
+    );
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(ok).toBe(true);
+    expect(bulkWriteScenes).toHaveBeenCalledTimes(1);
+    const meta = sections.data('meta') as {
+      ingest_watermark: { message_count: number };
+    };
+    expect(meta.ingest_watermark.message_count).toBe(70);
+  });
+
+  it('still skips the walk on a reconcile resume when nothing is new', async () => {
+    // The narrowing must not break the phase-8 behaviour it narrows: with
+    // no new messages, a parked reconcile still resumes cheaply.
+    wireIncremental(completedCheckpoint({ status: 'error', current_pass: 'reconcile' }));
+    const llm = vi.fn(async () => '{}');
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(WALKED), llm })
+    );
+
+    expect(ok).toBe(true);
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+  });
+});

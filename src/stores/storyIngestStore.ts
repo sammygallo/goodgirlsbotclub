@@ -15,6 +15,7 @@ import { PROMPT_VERSION } from '../utils/storyIngest/prompts';
 import { replaySupported, replayWorldInfo } from '../utils/storyIngest/wiReplay';
 import type { ReplayEntry } from '../utils/storyIngest/wiReplay';
 import {
+  extendChunkPlan,
   planTranscriptChunks,
   sliceChunksFromPlan,
   type WalkChunk,
@@ -115,6 +116,17 @@ export interface IngestRunInput {
   /** Required once a walk would exceed `WALK_CHUNK_SOFT_CAP` chunks — the
    *  UI must get an explicit "yes, this one's long" before it starts. */
   confirmLongWalk?: boolean;
+  /** Tier-1 drift detection says the chat has grown past the watermark
+   *  (phase 11). Two things turn on it, and both are safety rather than
+   *  optimisation:
+   *
+   *  - It promotes a completed build into an INCREMENTAL walk instead of
+   *    a from-scratch rebuild.
+   *  - It OUTRANKS `resumableReconcile`. A checkpoint parked mid-reconcile
+   *    would otherwise skip the walk block entirely, so "Update story" on
+   *    a bible whose last build died during reconcile would never walk the
+   *    new messages and would still report success. */
+  hasNewMessages?: boolean;
 }
 
 interface StoryIngestState {
@@ -291,13 +303,16 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       showToastGlobal('Story tooling changed — starting a fresh build', 'warning');
     }
 
-    // A walk already in progress must NOT be treated as a fresh build:
-    // cold_start mints brand-new random character ids on every call, and
-    // an already-open scene on the server references the ids from the
-    // ORIGINAL run — rerunning cold_start would silently orphan them.
+    // A walk already in progress must NOT be treated as a fresh build.
     // Re-initializing the checkpoint from emptyCheckpoint() here would
-    // also destroy chunk_plan/chunk_index the moment pass 1 hit any
-    // failure, discarding potentially hours of already-paid-for progress.
+    // destroy chunk_plan/chunk_index the moment pass 1 hit any failure,
+    // discarding potentially hours of already-paid-for progress — and
+    // rerunning cold_start re-bills its LLM pass and full-replaces the
+    // `entities`, `world` and `rendering_hints` sections. (Character ids
+    // themselves SURVIVE a rerun: cold start mints them deterministically
+    // from stable seeds via createIdMinter, so scene `participants` stay
+    // attached. Earlier comments here claimed random ids and orphaning;
+    // that stopped being true when ids became derived.)
     //
     // The predicate is "the plan has been pinned", NOT "the index has
     // advanced". chunk 0's scenes and facts are committed to the server
@@ -334,27 +349,51 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     //
     // No status check, mirroring resumableWalk, so both 'paused' and
     // 'error' reconcile checkpoints resume cheaply.
+    //
+    // `hasNewMessages` narrows it (phase 11 plan §6). Skipping the walk is
+    // only safe while there is nothing new to walk: on a bible whose last
+    // build died during reconcile, an Update press would otherwise re-judge
+    // contradictions, never touch the new messages, and still report
+    // "Story built".
     const resumableReconcile =
       existing !== null &&
       existing.prompt_version === PROMPT_VERSION &&
-      existing.current_pass === 'reconcile';
+      existing.current_pass === 'reconcile' &&
+      !input.hasNewMessages;
+
+    // Phase 11's third mode: a bible that already walked this chat to
+    // completion (or parked in reconcile) and has since grown. It shares
+    // resumableWalk's "cold start's output is load-bearing, read it back"
+    // conclusion, but reaches it from a checkpoint whose `current_pass` is
+    // null rather than 'transcript_walk'. Without this, an incremental run
+    // is classified a fresh build and re-walks — re-bills — the entire
+    // chat, which is the whole thing this phase exists to stop.
+    const incrementalWalk =
+      !resumableWalk &&
+      existing !== null &&
+      existing.prompt_version === PROMPT_VERSION &&
+      existing.chunk_plan.length > 0 &&
+      !!input.hasNewMessages;
+
+    /** Any mode that continues an existing bible rather than rebuilding. */
+    const continuingBuild = resumableWalk || resumableReconcile || incrementalWalk;
 
     set({
       currentPass: resumableReconcile
         ? 'reconcile'
-        : resumableWalk
+        : resumableWalk || incrementalWalk
           ? 'transcript_walk'
           : 'cold_start',
       // Passes that genuinely completed in the ORIGINAL run — show them
       // as done rather than reverting the checklist.
       completed: resumableReconcile
         ? ['cold_start', 'wi_replay', 'transcript_walk']
-        : resumableWalk
+        : resumableWalk || incrementalWalk
           ? ['cold_start', 'wi_replay']
           : [],
     });
 
-    let checkpoint: IngestCheckpoint = resumableWalk || resumableReconcile
+    let checkpoint: IngestCheckpoint = continuingBuild
       ? {
           ...existing!,
           status: 'running',
@@ -491,12 +530,16 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       let rawCharacters: unknown[];
       let approximate = checkpoint.replay_approx;
 
-      if (resumableWalk || resumableReconcile) {
-        // Cold start / world-info replay already ran in the ORIGINAL
-        // run — rerunning them would mint brand-new random character ids
-        // (orphaning the ones an already-open scene references on the
-        // server) and re-walk facts already accounted for. Read back the
-        // cast cold_start already wrote instead of recomputing it.
+      if (continuingBuild) {
+        // Cold start / world-info replay already ran in the ORIGINAL run.
+        // Rerunning them re-bills cold start's LLM pass and full-replaces
+        // `entities`, `world` and `rendering_hints` — clobbering sections
+        // this bible has been reviewed against. Read back the cast
+        // cold_start already wrote instead of recomputing it.
+        //
+        // This is also the path phase 11's incremental walk MUST take
+        // (plan §5.2): falling through to the fresh branch on an Update
+        // press would re-pay for the whole chat.
         if (!countingLlm) {
           finish({ error: 'A connected model is needed to continue this build.' });
           showToastGlobal('A connected model is needed to continue this build', 'error');
@@ -629,6 +672,11 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       }
 
       const notes: string[] = [];
+      // Facts this run's walk appended, for phase 11's group-level
+      // reconcile restriction. Null means "judge everything" and is the
+      // safe default — every path that cannot prove it walked the entire
+      // extension leaves it null.
+      let newFactIds: Set<string> | null = null;
 
       // A reconcile-resume skips this entire block. It must NEVER call
       // runTranscriptWalkPass (which would re-bill the whole chat) and
@@ -656,6 +704,7 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
           checkpoint,
           priorCheckpoint: existing,
           confirmLongWalk: input.confirmLongWalk ?? false,
+          incremental: incrementalWalk,
           abort,
           stillOurs,
           saveCheckpoint,
@@ -707,14 +756,50 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
             `${walkOutcome.unreadableChunks} of ${walkOutcome.totalChunks} chunks could not be read and were skipped.`
           );
         }
-        if (walkOutcome.trailingUnwalked > 0) {
-          // The user kept chatting while a build was paused — the plan
-          // this resume continued was pinned before those messages
-          // existed, so they were never walked (see runTranscriptWalkPass).
-          notes.push(
-            `${walkOutcome.trailingUnwalked} newer ${walkOutcome.trailingUnwalked === 1 ? 'message wasn’t' : 'messages weren’t'} included — rebuild to pick them up.`
-          );
+
+        // The walk pass is durable, so record how far the chat has been
+        // read. This is the ONE write that makes every future build
+        // incremental, and it goes to `meta` rather than the checkpoint
+        // because "Reset ingestion state" wipes the whole `ingestion`
+        // section — a user clearing a wedged build would otherwise lose
+        // their read position and re-pay for the entire chat.
+        //
+        // Once per completed pass, not per chunk: `last_ingested` already
+        // carries the fine-grained position for crash recovery, and the
+        // two only disagree while a run is in flight.
+        //
+        // Lazy import for the same reason storyStore reaches back this
+        // way — neither store may statically edge to the other.
+        const lastWalked = input.messages[input.messages.length - 1];
+        if (lastWalked) {
+          try {
+            const mod = await import('./storyStore');
+            await mod.useStoryStore.getState().advanceIngestWatermark(
+              {
+                message_count: input.messages.length,
+                last_msg: await buildMsgRef(lastWalked),
+              },
+              { projectId }
+            );
+          } catch {
+            // Never fatal: a missed watermark costs a redundant re-walk
+            // next time, where throwing here would discard a pass the
+            // user already paid for.
+          }
         }
+
+        // Only claim to know which facts are new when this run's walk
+        // actually covered the WHOLE extension. A run that resumed into
+        // the middle of a pinned plan appended some of the new facts in
+        // an earlier process, and judging only the ids from THIS process
+        // would under-judge while reporting success. `null` falls back to
+        // a full reconcile, which is safe — deterministic contradiction
+        // ids plus the existing-wins merge make over-judging cost tokens
+        // and nothing else.
+        const coveredWholeExtension =
+          walkOutcome.extensionStart !== null &&
+          walkOutcome.walkedFrom <= walkOutcome.extensionStart;
+        newFactIds = coveredWholeExtension ? walkOutcome.appendedFactIds : null;
       }
 
       // ---- pass 3: reconcile -----------------------------------------
@@ -746,6 +831,7 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         llm: countingLlm,
         abort,
         stillOurs,
+        newFactIds,
       });
       if (reconciled === null) return false;
 
@@ -1055,6 +1141,47 @@ async function loadAllFacts(
   return { facts: out, existingIds };
 }
 
+/** How many recent fact texts to seed an incremental walk's digest with.
+ *  Matches the rolling window `processChunk` maintains, so a continued
+ *  walk starts with the same amount of context a mid-walk chunk has. */
+const RECENT_FACT_SEED = 20;
+
+/**
+ * The most recent fact texts, for seeding a continued walk's duplicate
+ * suppression.
+ *
+ * Best-effort by design: a failure here costs some redundant facts on one
+ * chunk, and throwing would abort a walk over a nicety. The log has no
+ * reverse cursor, so this pages forward and keeps the tail — cheap in
+ * practice (HTTP only, no model calls) and bounded by MAX_FACT_PAGES.
+ */
+async function loadRecentFactTexts(projectId: string): Promise<string[]> {
+  try {
+    const texts: string[] = [];
+    let afterSeq: number | undefined;
+    for (let page = 0; page < MAX_FACT_PAGES; page++) {
+      const res = await storyApi.listFacts(projectId, {
+        limit: FACT_PAGE_LIMIT,
+        ...(afterSeq === undefined ? {} : { afterSeq }),
+      });
+      for (const row of res.items ?? []) {
+        const data = row?.data as Record<string, unknown> | undefined;
+        if (isFactTombstone(data)) continue;
+        if (data && typeof data.text === 'string' && data.text.trim()) {
+          texts.push(data.text.trim());
+        }
+      }
+      if (!res.has_more || res.next_after_seq === null || res.next_after_seq === undefined) {
+        break;
+      }
+      afterSeq = res.next_after_seq;
+    }
+    return texts.slice(-RECENT_FACT_SEED);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Merge fresh detections into the `continuity` section.
  *
@@ -1166,9 +1293,20 @@ async function runReconcilePass(opts: {
   llm: LlmCall;
   abort: AbortController;
   stillOurs: () => boolean;
+  /** Phase 11: ids this run's walk just appended. Null = judge
+   *  everything, which is what every full build does. */
+  newFactIds?: ReadonlySet<string> | null;
 }): Promise<ReconcilePassOutcome | null> {
   const { projectId, cast, rawCharacters, llm, abort, stillOurs } = opts;
 
+  // The whole log, every time — including on an incremental run.
+  //
+  // This is NOT a missed optimisation. `mergeContinuity`'s dangling-source
+  // prune drops any unresolved agent entry whose sources are not all in
+  // `liveFactIds`, so handing it a partial id set would silently delete
+  // valid contradictions that cite older facts. `cardFactIds` likewise has
+  // to cover EARLIER builds' card facts. What an incremental run saves is
+  // judge calls (model tokens), not HTTP.
   const { facts: allFacts, existingIds } = await loadAllFacts(projectId);
   if (abort.signal.aborted) throw abortError();
   if (!stillOurs()) return null;
@@ -1180,8 +1318,28 @@ async function runReconcilePass(opts: {
   // facts against card facts and shift every batch under them.
   const facts = allFacts.filter((f) => f.source?.kind !== 'card_field');
 
+  // Group the FULL log, then judge only the groups a new fact landed in.
+  //
+  // Restricting at the FACT level instead — grouping only post-watermark
+  // facts — looks equivalent and is not: `groupFacts` drops singleton
+  // groups, so a lone new fact contradicting a lone old one never forms a
+  // pair and the run reports "no contradictions". That new-vs-old case is
+  // the entire point of an incremental reconcile, so the restriction has
+  // to happen at the group level, after grouping.
+  //
+  // Cast matters here too: attribution is text-derived, so a walk that
+  // introduced a new character can re-attribute previously world-bucketed
+  // old facts. Group membership is therefore computed against the CURRENT
+  // cast every run and never cached.
+  const allGroups = groupFacts(facts, cast);
+  const newFactIds = opts.newFactIds;
+  const groups =
+    newFactIds && newFactIds.size > 0
+      ? allGroups.filter((g) => g.facts.some((f) => newFactIds.has(f.id)))
+      : allGroups;
+
   const groupOutcome = await runGroupJudge({
-    groups: groupFacts(facts, cast),
+    groups,
     cast,
     llm,
     signal: abort.signal,
@@ -1189,8 +1347,22 @@ async function runReconcilePass(opts: {
   if (abort.signal.aborted) throw abortError();
   if (!stillOurs()) return null;
 
+  // Card checks follow the same rule: only characters whose attributed
+  // facts actually changed. The recent-40 window stays computed over ALL
+  // their facts, so the card claim is still judged against the character's
+  // full picture rather than just the new lines.
+  const allCardTargets = buildCardCheckTargets(
+    readCardCharacters(rawCharacters),
+    facts,
+    cast
+  );
+  const cardTargets =
+    newFactIds && newFactIds.size > 0
+      ? allCardTargets.filter((t) => t.facts.some((f) => newFactIds.has(f.id)))
+      : allCardTargets;
+
   const cardOutcome = await runCardChecks({
-    targets: buildCardCheckTargets(readCardCharacters(rawCharacters), facts, cast),
+    targets: cardTargets,
     llm,
     signal: abort.signal,
   });
@@ -1271,12 +1443,16 @@ interface WalkPassOutcome {
   checkpoint: IngestCheckpoint;
   unreadableChunks: number;
   totalChunks: number;
-  /** Messages added to the chat AFTER a resumed walk's plan was pinned —
-   *  the plan isn't extended mid-resume (that's incremental re-ingestion,
-   *  Phase 10's job), so these are never walked. Reported rather than
-   *  silently dropped; 0 for a fresh walk (whose plan always covers
-   *  every current message). */
-  trailingUnwalked: number;
+  /** Chunks this pass actually walked, and the plan index it started
+   *  from. Phase 11's reconcile needs to know whether the walk covered
+   *  the WHOLE extension: a run that resumed into the middle of a plan
+   *  appended only some of the new facts, and judging only "new" facts
+   *  from a partial set would under-judge while reporting success. */
+  walkedFrom: number;
+  extensionStart: number | null;
+  /** Fact ids THIS process appended. Only meaningful when the pass
+   *  covered the whole extension — see `run()`'s `coveredWholeExtension`. */
+  appendedFactIds: Set<string>;
 }
 
 /**
@@ -1289,9 +1465,15 @@ interface WalkPassOutcome {
  * Resume is INTENTIONALLY conservative: it only continues when the
  * persisted `chunk_plan` still slices cleanly against the current
  * messages AND `last_ingested` still exists. Anything else is reported
- * as `diverged` rather than guessed at — reconciling a transcript that
- * changed mid-walk is Phase 10's job (incremental re-ingestion), not
- * this pass's.
+ * as `diverged` rather than guessed at — a transcript whose EXISTING
+ * messages changed is not something this pass will try to repair.
+ *
+ * What it now does handle (phase 11) is a transcript that only GREW:
+ * the pinned plan is reused AND extended over everything past its last
+ * boundary. That single mechanism serves two features that are really
+ * one computation — Phase 7's resume gap (a paused walk whose plan was
+ * pinned before the user kept roleplaying) and the incremental update
+ * of a completed walk.
  */
 async function runTranscriptWalkPass(opts: {
   projectId: string;
@@ -1304,12 +1486,17 @@ async function runTranscriptWalkPass(opts: {
    *  decide whether an in-progress walk can be resumed. */
   priorCheckpoint: IngestCheckpoint | null;
   confirmLongWalk: boolean;
+  /** Phase 11: continue a bible whose walk already finished, over the
+   *  messages added since. Reuses the pinned plan the same way a resume
+   *  does, but starts from a checkpoint whose `current_pass` is null. */
+  incremental: boolean;
   abort: AbortController;
   stillOurs: () => boolean;
   saveCheckpoint: (next: IngestCheckpoint) => Promise<void>;
 }): Promise<WalkPassOutcome> {
   const { projectId, chat, messages, cast, llm, abort, stillOurs, saveCheckpoint } = opts;
   let cp = opts.checkpoint;
+  const appendedFactIds = new Set<string>();
 
   // Deliberately a DIFFERENT predicate from run()'s `resumableWalk`,
   // which answers "are cold_start's ids durable?" and so drops the index
@@ -1329,15 +1516,20 @@ async function runTranscriptWalkPass(opts: {
   const resumable =
     opts.priorCheckpoint !== null &&
     opts.priorCheckpoint.prompt_version === PROMPT_VERSION &&
-    opts.priorCheckpoint.current_pass === 'transcript_walk' &&
-    opts.priorCheckpoint.chunk_index > 0 &&
-    opts.priorCheckpoint.chunk_plan.length > 0;
+    opts.priorCheckpoint.chunk_plan.length > 0 &&
+    ((opts.priorCheckpoint.current_pass === 'transcript_walk' &&
+      opts.priorCheckpoint.chunk_index > 0) ||
+      // Phase 11: a finished (or reconcile-parked) walk being continued
+      // over new messages. There is no chunk_index condition because a
+      // completed walk's index already sits at chunk_plan.length, which
+      // is exactly where the extension begins.
+      opts.incremental);
 
   let chunks: WalkChunk[];
   let startIndex = 0;
   let openScene: OpenSceneCarry | null = null;
   let nextSequence = 0;
-  let trailingUnwalked = 0;
+  let extensionStart: number | null = null;
 
   if (resumable) {
     const prior = opts.priorCheckpoint!;
@@ -1350,25 +1542,83 @@ async function runTranscriptWalkPass(opts: {
         checkpoint: cp,
         unreadableChunks: 0,
         totalChunks: 0,
-        trailingUnwalked: 0,
+        walkedFrom: 0,
+        extensionStart: null,
+        appendedFactIds,
       };
     }
-    chunks = sliced;
+
+    // Extend the pinned plan over everything the user added after it was
+    // pinned. This is the fix for Phase 7's resume gap: those messages
+    // used to be counted, reported as "rebuild to pick them up", and then
+    // never walked.
+    //
+    // The pinned prefix is never rewritten — extension only appends — so
+    // "plan pinned ⇒ those upstream ids are load-bearing" still holds for
+    // everything already walked.
+    const extension = extendChunkPlan(messages, prior.chunk_plan);
+    if (extension.lastPlannedIndex < 0) {
+      // sliceChunksFromPlan would already have caught this; belt and
+      // braces so an empty extension can never be misread as "nothing new".
+      return {
+        status: 'diverged',
+        checkpoint: cp,
+        unreadableChunks: 0,
+        totalChunks: 0,
+        walkedFrom: 0,
+        extensionStart: null,
+        appendedFactIds,
+      };
+    }
+
+    if (extension.chunks.length > 0) {
+      // The cap is scoped to the EXTENSION, not the cumulative plan: this
+      // confirmation authorises new spend, and asking again for chunks the
+      // user already paid for would re-prompt on every message they add to
+      // a long chat.
+      if (extension.exceedsSoftCap && !opts.confirmLongWalk) {
+        return {
+          status: 'needs_confirmation',
+          chunkCount: extension.chunks.length,
+          checkpoint: cp,
+          unreadableChunks: 0,
+          totalChunks: extension.chunks.length,
+          walkedFrom: 0,
+          extensionStart: null,
+          appendedFactIds,
+        };
+      }
+      extensionStart = prior.chunk_plan.length;
+    }
+
+    // Re-open the tail scene only for a walk that is genuinely in flight.
+    //
+    // `open_scene` alone is the WRONG discriminator: nothing force-closes
+    // the final chunk's scene, so a completed bible whose chat ends
+    // mid-scene routinely carries a non-null open_scene. Re-opening on
+    // that would let an incremental run rewrite the tail scene's title and
+    // summary from the model — over a title the user may have set in the
+    // phase-10 review UI. A walk parked at `transcript_walk` has had the
+    // review surface gated shut the whole time, so nothing there can have
+    // been reviewed.
+    const reopenSceneId =
+      prior.current_pass === 'transcript_walk' ? (prior.open_scene ?? null) : null;
+
+    chunks = [...sliced, ...extension.chunks];
     startIndex = prior.chunk_index;
-    cp = { ...cp, chunk_plan: prior.chunk_plan, chunk_index: startIndex, open_scene: prior.open_scene };
+    cp = {
+      ...cp,
+      chunk_plan: [...prior.chunk_plan, ...extension.entries],
+      chunk_index: startIndex,
+      open_scene: reopenSceneId,
+    };
+    // Persist the EXTENDED plan before the loop consumes startIndex — the
+    // old code echoed the prior plan here, so a crash mid-extension would
+    // resume against a plan that no longer covered the tail.
+    if (extension.entries.length > 0) await saveCheckpoint(cp);
 
-    // The plan was pinned against an EARLIER fetch of this chat; the
-    // user may have kept roleplaying while the build was paused. Those
-    // trailing messages aren't part of any plan entry and are never
-    // walked here — surfaced below rather than silently unaccounted for.
-    const lastPlannedId = prior.chunk_plan[prior.chunk_plan.length - 1]?.end_msg_id;
-    const lastPlannedIdx = lastPlannedId
-      ? messages.findIndex((m) => m.id === lastPlannedId)
-      : -1;
-    trailingUnwalked = lastPlannedIdx >= 0 ? messages.length - 1 - lastPlannedIdx : 0;
-
-    if (prior.open_scene) {
-      const sceneRow = await storyApi.getScene(projectId, prior.open_scene);
+    if (reopenSceneId) {
+      const sceneRow = await storyApi.getScene(projectId, reopenSceneId);
       const data = sceneRow.data as unknown as Scene;
       openScene = {
         sceneId: sceneRow.id,
@@ -1405,7 +1655,9 @@ async function runTranscriptWalkPass(opts: {
         checkpoint: cp,
         unreadableChunks: 0,
         totalChunks: planned.chunks.length,
-        trailingUnwalked: 0,
+        walkedFrom: 0,
+        extensionStart: null,
+        appendedFactIds,
       };
     }
     chunks = planned.chunks;
@@ -1417,7 +1669,13 @@ async function runTranscriptWalkPass(opts: {
     startIndex > 0 && chunks[startIndex - 1]
       ? chunks[startIndex - 1].messages.filter((m) => !m.isSystem).slice(-2)
       : [];
-  const recentFactsDigest: string[] = [];
+  // Seeded from the fact log when this run continues an existing bible.
+  // An incremental walk of five new messages would otherwise start with
+  // zero fact context, and the id seed includes the fact text, so
+  // near-duplicates do NOT collide and do NOT dedupe — the digest is the
+  // only thing stopping the model from re-emitting what it already knows.
+  const recentFactsDigest: string[] =
+    startIndex > 0 ? await loadRecentFactTexts(projectId) : [];
   let unreadableChunks = 0;
 
   for (let i = startIndex; i < chunks.length; i++) {
@@ -1428,7 +1686,9 @@ async function runTranscriptWalkPass(opts: {
         checkpoint: cp,
         unreadableChunks,
         totalChunks: chunks.length,
-        trailingUnwalked,
+        walkedFrom: startIndex,
+        extensionStart,
+        appendedFactIds,
       };
     }
 
@@ -1458,6 +1718,7 @@ async function runTranscriptWalkPass(opts: {
       for (const fact of result.facts) {
         await storyApi.appendFact(projectId, fact as unknown as Record<string, unknown>);
         recentFactsDigest.push(fact.text);
+        appendedFactIds.add(fact.id);
       }
       openScene = result.openScene;
       nextSequence = result.nextSequence;
@@ -1480,7 +1741,9 @@ async function runTranscriptWalkPass(opts: {
     checkpoint: cp,
     unreadableChunks,
     totalChunks: chunks.length,
-    trailingUnwalked,
+    walkedFrom: startIndex,
+    extensionStart,
+    appendedFactIds,
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  extendChunkPlan,
   planTranscriptChunks,
   sliceChunksFromPlan,
   WALK_CHUNK_SOFT_CAP,
@@ -119,5 +120,92 @@ describe('sliceChunksFromPlan', () => {
     const messages = idSequence(10);
     const badPlan = [{ start_msg_id: 'm5', end_msg_id: 'm2', est_tokens: 0 }];
     expect(sliceChunksFromPlan(messages, badPlan)).toBeNull();
+  });
+});
+
+describe('extendChunkPlan', () => {
+  it('plans nothing when the pinned plan already covers every message', () => {
+    const messages = idSequence(120);
+    const plan = planTranscriptChunks(messages).chunkPlan;
+    const ext = extendChunkPlan(messages, plan);
+    expect(ext.entries).toEqual([]);
+    expect(ext.chunks).toEqual([]);
+    expect(ext.lastPlannedIndex).toBe(messages.length - 1);
+    expect(ext.exceedsSoftCap).toBe(false);
+  });
+
+  it('plans only the tail past the last pinned boundary', () => {
+    const walked = idSequence(120);
+    const plan = planTranscriptChunks(walked).chunkPlan;
+    const appended = Array.from({ length: 5 }, (_, i) =>
+      msg({ id: `new${i}`, content: `new line ${i}` })
+    );
+    const live = [...walked, ...appended];
+
+    const ext = extendChunkPlan(live, plan);
+    expect(ext.lastPlannedIndex).toBe(walked.length - 1);
+    expect(ext.chunks.flatMap((c) => c.messages.map((m) => m.id))).toEqual(
+      appended.map((m) => m.id)
+    );
+    // The pinned prefix is never rewritten — extension only appends.
+    expect(ext.entries.length).toBeGreaterThan(0);
+    expect(ext.entries[0].start_msg_id).toBe('new0');
+  });
+
+  it('produces a plan that slices cleanly once concatenated', () => {
+    const walked = idSequence(80);
+    const plan = planTranscriptChunks(walked).chunkPlan;
+    const live = [...walked, ...idSequence(30, 'later')];
+
+    const ext = extendChunkPlan(live, plan);
+    const extended = [...plan, ...ext.entries];
+    const sliced = sliceChunksFromPlan(live, extended);
+
+    expect(sliced).not.toBeNull();
+    // Every live message ends up in exactly one chunk, in order.
+    expect(sliced!.flatMap((c) => c.messages.map((m) => m.id))).toEqual(
+      live.map((m) => m.id)
+    );
+  });
+
+  it('reports lastPlannedIndex -1 when the final boundary is gone (divergence, not extension)', () => {
+    const walked = idSequence(60);
+    const plan = planTranscriptChunks(walked).chunkPlan;
+    const lastId = plan[plan.length - 1].end_msg_id;
+    const live = walked.filter((m) => m.id !== lastId);
+
+    const ext = extendChunkPlan(live, plan);
+    expect(ext.lastPlannedIndex).toBe(-1);
+    // Callers must check the index: empty entries here does NOT mean
+    // "nothing new".
+    expect(ext.entries).toEqual([]);
+  });
+
+  it('reports lastPlannedIndex -1 for an empty pinned plan', () => {
+    expect(extendChunkPlan(idSequence(5), []).lastPlannedIndex).toBe(-1);
+  });
+
+  it('scopes exceedsSoftCap to the extension, not the cumulative total', () => {
+    // A prior plan already far past the cap, plus a tiny tail.
+    const walked = idSequence(WALK_FORCE_SPLIT_MESSAGES * (WALK_CHUNK_SOFT_CAP + 5));
+    const plan = planTranscriptChunks(walked).chunkPlan;
+    expect(plan.length).toBeGreaterThan(WALK_CHUNK_SOFT_CAP);
+
+    const live = [...walked, msg({ id: 'tail', content: 'one more' })];
+    const ext = extendChunkPlan(live, plan);
+
+    expect(ext.chunks.length).toBe(1);
+    // The user already paid for the prior chunks; do not re-prompt.
+    expect(ext.exceedsSoftCap).toBe(false);
+  });
+
+  it('sets exceedsSoftCap when the extension alone is huge', () => {
+    const walked = idSequence(10);
+    const plan = planTranscriptChunks(walked).chunkPlan;
+    const live = [
+      ...walked,
+      ...idSequence(WALK_FORCE_SPLIT_MESSAGES * (WALK_CHUNK_SOFT_CAP + 2), 'big'),
+    ];
+    expect(extendChunkPlan(live, plan).exceedsSoftCap).toBe(true);
   });
 });
