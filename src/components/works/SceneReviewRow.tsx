@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Merge, Pencil } from 'lucide-react';
+import { Merge, Pencil, TriangleAlert } from 'lucide-react';
 import type { StorySceneSummary } from '../../api/client';
 import { useStoryStore } from '../../stores/storyStore';
 import type { Scene } from '../../types/storyBible';
@@ -21,6 +21,9 @@ export function SceneReviewRow({
   isFirst,
   canManage,
   disabled,
+  stale = false,
+  onClearStale,
+  canonLocked = false,
 }: {
   scene: StorySceneSummary;
   /** No predecessor to merge into. Merge is hidden rather than disabled
@@ -31,6 +34,21 @@ export function SceneReviewRow({
   canManage: boolean;
   /** Canon locked, a build is running, or the user is a viewer. */
   disabled: boolean;
+  /** This scene's source no longer matches upstream (phase 11).
+   *
+   *  Derived from THIS visit's drift check rather than read back from
+   *  `annotations.stale_source`: the scene-list projection carries no
+   *  annotations, and widening it is a backend change. Detection re-runs
+   *  each visit and re-derives the same set while the divergence stands,
+   *  so the badge is stable without a fetch per scene. */
+  stale?: boolean;
+  /** Clears the persisted flag AND hides the badge for this visit. */
+  onClearStale?: () => void;
+  /** Canon is locked, so `clearSceneStale` would refuse. Kept separate
+   *  from `disabled`, which also covers an active build — dismissing is
+   *  deliberately allowed while a build is parked, since divergence is
+   *  what parks it. */
+  canonLocked?: boolean;
 }) {
   const patchScene = useStoryStore((s) => s.patchScene);
   const mergeSceneIntoPrevious = useStoryStore((s) => s.mergeSceneIntoPrevious);
@@ -115,9 +133,20 @@ export function SceneReviewRow({
               </Button>
             </div>
           ) : (
-            <p className="text-sm text-[var(--color-text-primary)] truncate">
-              {label}
-            </p>
+            <div className="flex items-center gap-2 min-w-0">
+              <p className="text-sm text-[var(--color-text-primary)] truncate">
+                {label}
+              </p>
+              {stale && (
+                <span
+                  className="flex items-center gap-1 shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-[var(--color-bg-tertiary)] text-[var(--color-warning)]"
+                  title="The messages this scene was built from have changed"
+                >
+                  <TriangleAlert size={10} />
+                  Out of date
+                </span>
+              )}
+            </div>
           )}
           {!editingTitle && scene.summary && (
             <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
@@ -127,6 +156,17 @@ export function SceneReviewRow({
         </div>
         {canManage && !editingTitle && (
           <div className="flex items-center gap-1 shrink-0">
+            {stale && onClearStale && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onClearStale}
+                disabled={isSaving || canonLocked}
+                title="This scene is fine as it is"
+              >
+                Dismiss
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"

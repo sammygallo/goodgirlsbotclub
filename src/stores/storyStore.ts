@@ -21,6 +21,7 @@ import {
   type Edit,
   type EditClassification,
   type EditTarget,
+  type IngestWatermark,
   type MetaSection,
   type SamplePassage,
   type Scene,
@@ -140,7 +141,8 @@ interface StoryState {
   patchScene: (
     sceneId: string,
     patchFn: (data: Scene) => Scene | null,
-    editMeta: EditMeta
+    editMeta: EditMeta,
+    opts?: ScenePatchOptions
   ) => Promise<boolean>;
   /** Fold a scene into its predecessor in the loaded ordering. */
   mergeSceneIntoPrevious: (sceneId: string) => Promise<boolean>;
@@ -151,6 +153,53 @@ interface StoryState {
   relinkSourceChat: (chat: ProjectChatRef) => Promise<boolean>;
   lockCanon: () => Promise<boolean>;
   unlockCanon: () => Promise<boolean>;
+
+  // --- Incremental re-ingestion (phase 11) ------------------------------
+
+  /** Stamp `annotations.stale_source` on scenes whose source no longer
+   *  matches upstream. One `patchScene` per scene with INDEPENDENT
+   *  failure — a flag is advisory, so partial success beats an
+   *  all-or-nothing batch that a single concurrent edit could roll back.
+   *  Already-flagged scenes are a no-op (no PUT, no `server_ts` churn),
+   *  which is what makes re-running free. */
+  flagScenesStale: (sceneIds: readonly string[]) => Promise<StaleFlagResult>;
+  /** Clear the flag on one scene — the user's "this is fine" escape
+   *  hatch from the review surface. */
+  clearSceneStale: (sceneId: string) => Promise<boolean>;
+  /** Advance `meta.ingest_watermark` after a walk pass completed.
+   *
+   *  Lives here because `meta` is this store's section, and is called
+   *  from `storyIngestStore` through a lazy import for the same
+   *  no-static-store-edges reason `isBuildActiveNow` exists. Ungated on
+   *  purpose: the walk that calls it IS the active build, so
+   *  `refuseIfGated` would refuse against its own checkpoint. */
+  advanceIngestWatermark: (
+    watermark: IngestWatermark,
+    opts?: { projectId?: string }
+  ) => Promise<boolean>;
+}
+
+/** Escape hatches for callers that are not a user editing one scene. */
+export interface ScenePatchOptions {
+  /** Permit the write while a build is running/paused/error. Only for
+   *  writes that cannot race the walk's own scene writes — phase 11's
+   *  stale flagging qualifies because flagging is deliberately kept OUT
+   *  of the walk (plan §5.6) and `stale_source` is annotation state no
+   *  pass reads. */
+  allowWhileBuilding?: boolean;
+  /** Skip the edit-log row. `recordEdit` stamps `actor: 'user'`, which is
+   *  a lie for a machine-driven annotation; a derived flag is not
+   *  authorship. */
+  skipEdit?: boolean;
+  /** Suppress the merged-on-another-device toast. A bulk flagging pass
+   *  would otherwise stack one toast per scene. */
+  quiet?: boolean;
+}
+
+export interface StaleFlagResult {
+  flagged: number;
+  alreadyFlagged: number;
+  failed: number;
 }
 
 /** What an action tells `recordEdit` about the change it just made. The
@@ -1267,10 +1316,11 @@ export const useStoryStore = create<StoryState>((set, get) => {
     return stillOn(projectId, epoch);
   },
 
-  patchScene: async (sceneId, patchFn, editMeta) => {
+  patchScene: async (sceneId, patchFn, editMeta, opts) => {
     const { projectId } = get();
     if (!projectId) return false;
-    if (await refuseIfGated({})) return false;
+    if (await refuseIfGated({ allowWhileBuilding: opts?.allowWhileBuilding }))
+      return false;
     set({ isSaving: true });
     const epoch = storeEpoch;
 
@@ -1319,7 +1369,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
         if (stillOn(projectId, epoch)) set({ isSaving: false });
         return stillOn(projectId, epoch);
       }
-      await recordEdit(projectId, epoch, editMeta);
+      if (!opts?.skipEdit) await recordEdit(projectId, epoch, editMeta);
       const stillCurrentNow = stillOn(projectId, epoch);
       if (stillCurrentNow) set({ isSaving: false });
       return stillCurrentNow;
@@ -1335,33 +1385,41 @@ export const useStoryStore = create<StoryState>((set, get) => {
             fresh.data as unknown as Scene,
             fresh.server_ts
           );
-          if (outcome !== 'noop') await recordEdit(projectId, epoch, editMeta);
+          if (outcome !== 'noop' && !opts?.skipEdit) {
+            await recordEdit(projectId, epoch, editMeta);
+          }
           const stillCurrentNow = stillOn(projectId, epoch);
           if (stillCurrentNow) {
             set({ isSaving: false });
-            showToastGlobal(
-              'That scene was updated on another device — changes merged',
-              'warning'
-            );
+            if (!opts?.quiet) {
+              showToastGlobal(
+                'That scene was updated on another device — changes merged',
+                'warning'
+              );
+            }
           }
           return stillCurrentNow;
         } catch {
           if (stillOn(projectId, epoch)) {
             set({ isSaving: false });
-            showToastGlobal(
-              'That scene changed on another device — try again',
-              'error'
-            );
+            if (!opts?.quiet) {
+              showToastGlobal(
+                'That scene changed on another device — try again',
+                'error'
+              );
+            }
           }
           return false;
         }
       }
       if (stillOn(projectId, epoch)) {
         set({ isSaving: false });
-        showToastGlobal(
-          error instanceof Error ? error.message : 'Failed to save the scene',
-          'error'
-        );
+        if (!opts?.quiet) {
+          showToastGlobal(
+            error instanceof Error ? error.message : 'Failed to save the scene',
+            'error'
+          );
+        }
       }
       return false;
     }
@@ -1674,5 +1732,152 @@ export const useStoryStore = create<StoryState>((set, get) => {
 
   lockCanon: async () => setCanonLock(true),
   unlockCanon: async () => setCanonLock(false),
+
+  // --- Incremental re-ingestion (phase 11) --------------------------------
+
+  flagScenesStale: async (sceneIds) => {
+    const result: StaleFlagResult = { flagged: 0, alreadyFlagged: 0, failed: 0 };
+    const { projectId } = get();
+    if (!projectId || sceneIds.length === 0) return result;
+    const epoch = storeEpoch;
+
+    for (const sceneId of sceneIds) {
+      // Bail the moment the user leaves: this loop can outlive the visit,
+      // and every remaining PUT would land on a bible they walked away
+      // from. The scenes already flagged stay flagged, which is correct —
+      // the flag is idempotent and re-running is a no-op.
+      if (!stillOn(projectId, epoch)) break;
+
+      let skipped = false;
+      const ok = await get().patchScene(
+        sceneId,
+        (data) => {
+          if (data.annotations?.stale_source) {
+            skipped = true;
+            // Explicit no-op: no PUT, no `server_ts` churn, no edit row.
+            return null;
+          }
+          return {
+            ...data,
+            annotations: { ...data.annotations, stale_source: true },
+          };
+        },
+        {
+          target: { type: 'scene', id: sceneId },
+          classification: 'cosmetic',
+          diff: 'source marked stale',
+        },
+        // Divergence PARKS the checkpoint in error (storyIngestStore's
+        // diverged branch) or paused, and `isBuildActiveNow` counts both
+        // as build-active — so the default gate would refuse flagging in
+        // exactly the state that produces the need for it. Safe to allow:
+        // flagging is deliberately outside the walk (plan §5.6) and no
+        // pass reads `stale_source`.
+        { allowWhileBuilding: true, skipEdit: true, quiet: true }
+      );
+
+      if (skipped) result.alreadyFlagged++;
+      else if (ok) result.flagged++;
+      else result.failed++;
+    }
+
+    if (stillOn(projectId, epoch) && result.failed > 0) {
+      showToastGlobal(
+        result.flagged > 0
+          ? `Flagged ${result.flagged} scene(s); ${result.failed} could not be updated`
+          : `Could not flag ${result.failed} scene(s)`,
+        'warning'
+      );
+    }
+    return result;
+  },
+
+  clearSceneStale: async (sceneId) =>
+    get().patchScene(
+      sceneId,
+      (data) =>
+        data.annotations?.stale_source
+          ? {
+              ...data,
+              annotations: { ...data.annotations, stale_source: false },
+            }
+          : null,
+      {
+        target: { type: 'scene', id: sceneId },
+        classification: 'cosmetic',
+        diff: 'source no longer marked stale',
+      },
+      // Dismissing IS a user judgement, so this one keeps its edit row.
+      // It still tolerates a parked build for the same reason flagging
+      // does: the user must be able to clear a flag without first
+      // clearing a wedged checkpoint.
+      { allowWhileBuilding: true }
+    ),
+
+  advanceIngestWatermark: async (watermark, opts) => {
+    const projectId = opts?.projectId ?? get().projectId;
+    if (!projectId) return false;
+    // Deliberately NOT gated. The caller is the walk itself, so
+    // `refuseIfGated` would refuse against the very build doing the
+    // work. The lock is not a concern either: a build cannot start while
+    // canon is locked, and a lock landing mid-walk is the pre-existing
+    // race documented in the plan's §10, not something a refusal here
+    // would fix.
+    const epoch = storeEpoch;
+
+    const write = async (
+      current: StorySectionOut | null,
+      baseTs: number
+    ): Promise<void> => {
+      const existing = (current?.data ?? null) as unknown as MetaSection | null;
+      // No meta section means no bible — nothing to watermark, and
+      // minting one here would invent a bible out of a walk's tail.
+      if (!existing) throw new Error('No story to watermark yet');
+      const section = await storyApi.putSection(
+        projectId,
+        'meta',
+        {
+          ...existing,
+          updated_at: capturedAt(),
+          ingest_watermark: watermark,
+        } as unknown as Record<string, unknown>,
+        baseTs
+      );
+      if (stillOn(projectId, epoch)) {
+        set((s) => ({ sections: { ...s.sections, meta: section } }));
+      }
+    };
+
+    try {
+      // The walk may be running against a Work the store has never
+      // loaded (or has since left), so `sections.meta` can be stale or
+      // absent. Read through when we have nothing local rather than
+      // PUTting at base_ts 0 and 409ing on every incremental run.
+      const local = stillOn(projectId, epoch) ? (get().sections.meta ?? null) : null;
+      const current = local ?? (await storyApi.getSection(projectId, 'meta'));
+      await write(current, current?.server_ts ?? 0);
+      return true;
+    } catch (error) {
+      if (error instanceof StoryConflictError) {
+        try {
+          await write(error.current ?? null, error.currentTs);
+          return true;
+        } catch {
+          // Fall through to the shared failure path below.
+        }
+      }
+      // Never fatal to the run. The watermark not advancing costs the
+      // user a redundant re-walk next time — annoying and expensive, but
+      // recoverable — whereas failing the walk here would throw away a
+      // pass they already paid for.
+      if (stillOn(projectId, epoch)) {
+        showToastGlobal(
+          'Story built, but the read position could not be saved — the next build may re-read the chat',
+          'warning'
+        );
+      }
+      return false;
+    }
+  },
   };
 });

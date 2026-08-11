@@ -34,8 +34,21 @@ import {
   gatherIngestInputs,
   replayEntriesFrom,
 } from './ingestSources';
+import {
+  checkWatermark,
+  indexById,
+  driftBannerState,
+  localiseSceneDrift,
+  type DriftMessage,
+  type DriftScene,
+  type SceneDriftReport,
+  type WatermarkVerdict,
+} from '../../utils/storyBible/msgDrift';
 import { makeLlmCall } from '../../utils/storyIngest/llmBridge';
-import { planTranscriptChunks } from '../../utils/storyIngest/transcriptChunker';
+import {
+  extendChunkPlan,
+  planTranscriptChunks,
+} from '../../utils/storyIngest/transcriptChunker';
 import { Button, ConfirmDialog, Modal } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import type { Project, ProjectChatRef, StoryArchiveReason } from '../../api/client';
@@ -204,6 +217,9 @@ export function StoryTab({
     loadMoreArchives,
     restoreArchive,
     relinkSourceChat,
+    loadAllScenesWithData,
+    flagScenesStale,
+    clearSceneStale,
   } = useStoryStore();
   const characters = useCharacterStore((s) => s.characters);
   const personas = usePersonaStore((s) => s.personas);
@@ -237,9 +253,23 @@ export function StoryTab({
     messages: IngestMessage[];
     capturedWiFired: unknown;
     chunkCount: number;
+    /** True when `chunkCount` counts only the messages past the watermark
+     *  — the dialog says "the new messages" rather than "the whole chat". */
+    incremental: boolean;
   } | null>(null);
   const [archivesOpen, setArchivesOpen] = useState(false);
   const [pendingRestore, setPendingRestore] = useState<string | null>(null);
+  /** Upstream-drift state (phase 11). Derived per visit and never
+   *  persisted: representing it as a checkpoint status would trip
+   *  `isBuildActiveNow` and silently disable the whole review UI, and any
+   *  new persisted field is a backend `extra="forbid"` change. */
+  const [drift, setDrift] = useState<{
+    verdict: WatermarkVerdict;
+    scenes: SceneDriftReport | null;
+  } | null>(null);
+  const [driftDismissed, setDriftDismissed] = useState(false);
+  const [flagging, setFlagging] = useState(false);
+  const [pendingReingest, setPendingReingest] = useState(false);
 
   useEffect(() => {
     void load(project.id);
@@ -314,6 +344,47 @@ export function StoryTab({
     return messages;
   }, [sourceChat]);
 
+  /** The same per-visit fetch, in the shape drift comparison needs.
+   *
+   *  Deliberately built from the EVIDENCE cache rather than from
+   *  `gatherIngestInputs`: the raw rows still carry `swipes`, which the
+   *  ingest shape drops, so drift can resolve the exact swipe a ref names
+   *  instead of reporting `unverifiable` whenever the user has swiped.
+   *
+   *  Filtered to id-bearing messages because that is the population the
+   *  watermark counts (`gatherIngestInputs` drops the rest), and comparing
+   *  against a different population would read as phantom growth. */
+  const driftMessagesFrom = useCallback(
+    (messages: EvidenceMessage[]): DriftMessage[] => {
+      const out: DriftMessage[] = [];
+      for (const raw of messages) {
+        const m = raw as unknown as {
+          mes?: string;
+          send_date?: number;
+          swipe_id?: number;
+          swipes?: string[];
+          extra?: { ggbc_id?: unknown };
+        };
+        const id = typeof m.extra?.ggbc_id === 'string' ? m.extra.ggbc_id : '';
+        if (!id) continue;
+        const swipeIdx = typeof m.swipe_id === 'number' ? m.swipe_id : 0;
+        const content =
+          Array.isArray(m.swipes) && m.swipes[swipeIdx] !== undefined
+            ? m.swipes[swipeIdx]
+            : (m.mes ?? '');
+        out.push({
+          id,
+          content: content ?? '',
+          swipeIdx,
+          timestamp: typeof m.send_date === 'number' ? m.send_date : 0,
+          swipes: Array.isArray(m.swipes) ? m.swipes : null,
+        });
+      }
+      return out;
+    },
+    []
+  );
+
   const characterNameByAvatar = useMemo(
     () => new Map(characters.map((c) => [c.avatar, c.name])),
     [characters]
@@ -337,6 +408,138 @@ export function StoryTab({
     if (!sourceChat) return null;
     return resolveRefState(sourceChat, liveRefs);
   }, [sourceChat, liveRefs]);
+
+  const watermark = meta?.ingest_watermark ?? null;
+
+  /** Drift detection (phase 11 §4).
+   *
+   *  Gated three ways so the cost lands only where it buys something: no
+   *  watermark means nothing was ever walked (decidable from `meta` alone,
+   *  no fetch at all), an active build means the answer is about to change
+   *  anyway, and the work is deferred off the render path because it
+   *  fetches the whole chat.
+   *
+   *  Unlike phase 10's evidence fetch — which is lazy, firing only when a
+   *  card is expanded — this is EAGER for anyone with a walked bible. That
+   *  is a real new cost per visit, accepted because the alternative is a
+   *  persisted field (backend `extra="forbid"`) and because the gates
+   *  above bound who pays it. */
+  useEffect(() => {
+    if (!watermark?.last_msg || watermark.message_count <= 0) {
+      setDrift(null);
+      return;
+    }
+    if (buildActive || ingestRunning) return;
+
+    let cancelled = false;
+    const run = async () => {
+      const raw = await loadChatMessages();
+      if (cancelled || !raw) return;
+      const live = driftMessagesFrom(raw);
+      const index = indexById(live);
+      const verdict = await checkWatermark(watermark, live, index);
+      if (cancelled) return;
+
+      if (verdict.kind !== 'diverged') {
+        setDrift({ verdict, scenes: null });
+        return;
+      }
+      // Tier 2 only runs once tier 1 has already said something is wrong,
+      // so the per-scene fetch never happens on the common clean path.
+      const rows = await loadAllScenesWithData();
+      if (cancelled) return;
+      const scenes = rows
+        ? await localiseSceneDrift(
+            rows.map((row) => row.data as unknown as DriftScene),
+            live,
+            index
+          )
+        : null;
+      if (!cancelled) setDrift({ verdict, scenes });
+    };
+
+    const idle =
+      typeof window !== 'undefined' &&
+      typeof (window as unknown as { requestIdleCallback?: unknown })
+        .requestIdleCallback === 'function'
+        ? (
+            window as unknown as {
+              requestIdleCallback: (cb: () => void) => number;
+            }
+          ).requestIdleCallback(() => void run())
+        : (setTimeout(() => void run(), 0) as unknown as number);
+
+    return () => {
+      cancelled = true;
+      if (typeof window !== 'undefined') {
+        const cancel = (
+          window as unknown as { cancelIdleCallback?: (h: number) => void }
+        ).cancelIdleCallback;
+        if (cancel) cancel(idle);
+        else clearTimeout(idle);
+      }
+    };
+  }, [
+    watermark,
+    buildActive,
+    ingestRunning,
+    loadChatMessages,
+    driftMessagesFrom,
+    loadAllScenesWithData,
+  ]);
+
+  /** Divergence and new-messages are mutually exclusive verdicts, so the
+   *  banner renders at most one thing. Dismissal is per-visit and resets
+   *  when the verdict itself changes. */
+  const driftKind = drift?.verdict.kind ?? null;
+  useEffect(() => {
+    setDriftDismissed(false);
+  }, [driftKind]);
+
+  /** Every rule about what the banner shows and offers lives in this
+   *  pure function so it can be tested in plain node — including the one
+   *  that matters most, that a locked bible is never offered a re-ingest
+   *  (which would destroy the lock via `resetBible`). */
+  const banner = useMemo(
+    () =>
+      driftBannerState(drift?.verdict, drift?.scenes, {
+        canonLocked,
+        canManage,
+        hasPinnedPlan: (checkpoint?.chunk_plan.length ?? 0) > 0,
+      }),
+    [drift, canonLocked, canManage, checkpoint]
+  );
+  const newMessageCount = banner.newMessageCount;
+  // Memoised because the `?? []` fallback would otherwise mint a new
+  // array on every render, re-running the filter below each time.
+  const staleSceneIds = useMemo(
+    () => drift?.scenes?.downstreamSceneIds ?? [],
+    [drift]
+  );
+  /** Scenes the user has waved off this visit. Detection would otherwise
+   *  re-derive the same set on the next render and the badge would come
+   *  straight back, which reads as the dismiss having failed. */
+  const [dismissedScenes, setDismissedScenes] = useState<Set<string>>(new Set());
+  const staleSceneSet = useMemo(
+    () => new Set(staleSceneIds.filter((id) => !dismissedScenes.has(id))),
+    [staleSceneIds, dismissedScenes]
+  );
+
+  const dismissSceneStale = async (sceneId: string) => {
+    setDismissedScenes((prev) => new Set(prev).add(sceneId));
+    // Clear the persisted flag too, so Lock canon and any later consumer
+    // agree with what the user just decided. If the write is refused or
+    // fails, the badge must come BACK: a hidden badge sitting over a
+    // still-true `stale_source` is the one state this must never leave.
+    const ok = await clearSceneStale(sceneId);
+    if (!ok) {
+      setDismissedScenes((prev) => {
+        const next = new Set(prev);
+        next.delete(sceneId);
+        return next;
+      });
+    }
+  };
 
   const designate = async (chat: ProjectChatRef) => {
     const ok = await designateSourceChat(chat, {
@@ -536,7 +739,8 @@ export function StoryTab({
     profileId: string | null,
     messages: IngestMessage[],
     capturedWiFired: unknown,
-    confirmLongWalk: boolean
+    confirmLongWalk: boolean,
+    hasNewMessages = false
   ) => {
     if (!sourceChat || !coldStartSources) return;
     const profile = profileId
@@ -565,6 +769,7 @@ export function StoryTab({
       isGroupChat: false,
       chat: sourceChat.ref,
       confirmLongWalk,
+      hasNewMessages,
       llm: makeLlmCall({
         provider,
         model,
@@ -573,10 +778,25 @@ export function StoryTab({
       }),
       model,
     });
+    // The walk re-read the chat and moved the watermark to whatever it
+    // saw. Comparing that fresher watermark against this mount's older
+    // snapshot can report `anchor_deleted` for messages that plainly
+    // exist, so drop the snapshot and let the drift effect re-fetch.
+    evidenceCacheRef.current = null;
     await load(project.id);
   };
 
-  const startIngest = async (profileId: string | null) => {
+  /**
+   * Start a build.
+   *
+   * `incremental` means "continue this bible over the messages added since
+   * the watermark". It changes what the long-walk confirmation counts:
+   * the dialog authorises NEW spend, so it must be scoped to the
+   * extension. Gating on the cumulative plan would re-prompt on every
+   * message added to a long chat, asking the user to re-authorise chunks
+   * they already paid for.
+   */
+  const startIngest = async (profileId: string | null, incremental = false) => {
     if (!sourceChat || !coldStartSources) return;
     setPreparing(true);
     try {
@@ -585,21 +805,33 @@ export function StoryTab({
       );
       setStartOpen(false);
 
-      // A very long chat spends more of the user's key than usual —
+      // A very long walk spends more of the user's key than usual —
       // confirm before any model call, not mid-build (plan: "no silent
       // caps"). Cheap to check: chunk planning is pure and instant.
-      const plan = planTranscriptChunks(messages);
-      if (plan.exceedsSoftCap) {
+      const pinnedPlan = checkpoint?.chunk_plan ?? [];
+      const extension =
+        incremental && pinnedPlan.length > 0
+          ? extendChunkPlan(messages, pinnedPlan)
+          : null;
+      const chunkCount = extension
+        ? extension.chunks.length
+        : planTranscriptChunks(messages).chunks.length;
+      const exceeds = extension
+        ? extension.exceedsSoftCap
+        : planTranscriptChunks(messages).exceedsSoftCap;
+
+      if (exceeds) {
         setPendingLongWalk({
           profileId,
           messages,
           capturedWiFired,
-          chunkCount: plan.chunks.length,
+          chunkCount,
+          incremental,
         });
         return;
       }
 
-      await buildAndRun(profileId, messages, capturedWiFired, false);
+      await buildAndRun(profileId, messages, capturedWiFired, false, incremental);
     } catch (err) {
       showIngestError(err);
     } finally {
@@ -609,15 +841,59 @@ export function StoryTab({
 
   const confirmLongWalkAndRun = async () => {
     if (!pendingLongWalk) return;
-    const { profileId, messages, capturedWiFired } = pendingLongWalk;
+    const { profileId, messages, capturedWiFired, incremental } = pendingLongWalk;
     setPendingLongWalk(null);
     setPreparing(true);
     try {
-      await buildAndRun(profileId, messages, capturedWiFired, true);
+      await buildAndRun(profileId, messages, capturedWiFired, true, incremental);
     } catch (err) {
       showIngestError(err);
     } finally {
       setPreparing(false);
+    }
+  };
+
+  /** Pick up new messages without re-reading (or re-paying for) the chat. */
+  const updateStory = async () => {
+    if (canonLocked) return;
+    await startIngest(null, true);
+  };
+
+  /** Rebuild from scratch. Routed through `resetBible('reingest')`, which
+   *  snapshots to the archive first — the only reason this is offered as a
+   *  remedy for divergence at all. */
+  const reingestFromScratch = async () => {
+    if (!sourceChat) return;
+    setPendingReingest(false);
+    // Both links matter: reset wipes `meta`, so a failed re-designation
+    // leaves no source chat and therefore no coldStartSources. Opening
+    // the build modal anyway strands it behind an unusable state and it
+    // pops open unprompted the moment a later designate succeeds.
+    // Mirrors confirmChange's chained reset-then-designate.
+    if (!(await resetBible('reingest'))) return;
+    if (await designate(sourceChat.ref)) setStartOpen(true);
+  };
+
+  const flagStaleScenes = async () => {
+    // The per-row Dismiss is a newer and more specific judgement than
+    // this bulk action. Re-flagging a dismissed scene would persist
+    // `stale_source: true` while the badge — and therefore the row's own
+    // Dismiss button — stays hidden for the rest of the visit, leaving a
+    // Lock-canon warning the user has no control to clear.
+    const targets = staleSceneIds.filter((id) => !dismissedScenes.has(id));
+    if (targets.length === 0) return;
+    setFlagging(true);
+    try {
+      const result = await flagScenesStale(targets);
+      if (result.flagged > 0 || result.alreadyFlagged > 0) {
+        showToastGlobal(
+          `${result.flagged + result.alreadyFlagged} scene(s) marked as out of date`,
+          'success'
+        );
+      }
+      await load(project.id);
+    } finally {
+      setFlagging(false);
     }
   };
 
@@ -659,7 +935,7 @@ export function StoryTab({
           {archives.length === 0 && (
             <p className="text-xs text-[var(--color-text-secondary)]">
               No snapshots yet — one is taken automatically before a
-              reset or a source-chat change.
+              reset, a re-ingest, or a source-chat change.
             </p>
           )}
           {archives.map((a) => (
@@ -838,6 +1114,108 @@ export function StoryTab({
         </section>
       )}
 
+      {/* Upstream drift (phase 11). Inline and persistent, not a toast:
+          toasts auto-dismiss and this is a state, not an event. */}
+      {!driftDismissed && banner.kind !== 'none' && (
+        <>
+          {banner.kind === 'new_messages' && (
+            <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-sm text-[var(--color-text-primary)]">
+                    {newMessageCount} new{' '}
+                    {newMessageCount === 1 ? 'message' : 'messages'} since this
+                    story was built
+                  </h3>
+                  <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                    {canonLocked
+                      ? 'Canon is locked — unlock to bring them in.'
+                      : banner.canUpdate
+                        ? 'Reads only what’s new, so it costs a fraction of a rebuild.'
+                        : 'The build state for this story was cleared, so picking these up needs a full rebuild.'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {banner.canUpdate && (
+                    <Button
+                      variant="primary"
+                      onClick={() => void updateStory()}
+                      disabled={preparing || !coldStartSources}
+                    >
+                      <Sparkles size={16} />
+                      {preparing ? 'Starting…' : 'Update story'}
+                    </Button>
+                  )}
+                  <Button
+                    variant="secondary"
+                    onClick={() => setDriftDismissed(true)}
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {banner.kind === 'diverged' && (
+            <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-2 border border-[var(--color-warning)]">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="flex items-center gap-1.5 text-sm text-[var(--color-text-primary)]">
+                    <CircleAlert size={14} className="text-[var(--color-warning)]" />
+                    This chat’s history changed
+                  </h3>
+                  <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                    {canonLocked
+                      ? 'Some scenes may no longer match their source. Unlock canon to re-ingest.'
+                      : banner.staleSceneCount > 0
+                        ? `Some scenes may no longer match their source — ${banner.staleSceneCount} of them look affected.`
+                        : 'Some scenes may no longer match their source.'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Both actions are suppressed while locked, and that has
+                      to happen HERE: resetBible and designateSourceChat are
+                      ungated, so neither will refuse on our behalf — and
+                      re-ingest wipes `meta`, which would take the lock with
+                      it. */}
+                  {banner.canFlag && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => void flagStaleScenes()}
+                      disabled={flagging}
+                    >
+                      {flagging ? 'Marking…' : 'Mark affected scenes'}
+                    </Button>
+                  )}
+                  {banner.canReingest && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => setPendingReingest(true)}
+                      disabled={isSaving || preparing}
+                    >
+                      Re-ingest
+                    </Button>
+                  )}
+                  <Button
+                    variant="secondary"
+                    onClick={() => setDriftDismissed(true)}
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+              {banner.incompleteCheck && (
+                <p className="text-xs text-[var(--color-text-secondary)]">
+                  Some parts of this chat couldn’t be re-checked, so the list
+                  of affected scenes may be incomplete.
+                </p>
+              )}
+            </section>
+          )}
+        </>
+      )}
+
       <IngestProgressCard />
 
       {/* Build the groundwork */}
@@ -959,6 +1337,9 @@ export function StoryTab({
                 isFirst={i === 0}
                 canManage={canManage}
                 disabled={writesDisabled}
+                canonLocked={canonLocked}
+                stale={staleSceneSet.has(scene.id)}
+                onClearStale={() => void dismissSceneStale(scene.id)}
               />
             ))}
           </ul>
@@ -1102,11 +1483,26 @@ export function StoryTab({
 
       <ConfirmDialog
         isOpen={pendingLongWalk !== null}
-        title="This chat is long"
-        message={`Reading the whole chat will take about ${pendingLongWalk?.chunkCount ?? 0} passes over the model and will spend more of your key than usual. Continue?`}
+        title={pendingLongWalk?.incremental ? 'That’s a lot of new messages' : 'This chat is long'}
+        message={
+          pendingLongWalk?.incremental
+            ? `Reading the new messages will take about ${pendingLongWalk?.chunkCount ?? 0} passes over the model and will spend more of your key than usual. Continue?`
+            : `Reading the whole chat will take about ${pendingLongWalk?.chunkCount ?? 0} passes over the model and will spend more of your key than usual. Continue?`
+        }
         confirmLabel="Build anyway"
         onConfirm={() => void confirmLongWalkAndRun()}
         onClose={() => setPendingLongWalk(null)}
+      />
+
+      <ConfirmDialog
+        isOpen={pendingReingest}
+        title="Re-ingest from scratch?"
+        message="Every scene, fact and note built from this chat is deleted and rebuilt by reading the whole chat again, which spends your key. A snapshot is kept first, so this can be undone from the snapshots list below."
+        confirmLabel="Re-ingest"
+        danger
+        busy={isSaving}
+        onConfirm={() => void reingestFromScratch()}
+        onClose={() => setPendingReingest(false)}
       />
 
       {restoreConfirmDialog}

@@ -50,6 +50,7 @@ export type CanonErrorKind =
   | 'scene_pov';
 
 export type CanonWarningKind =
+  | 'scene_stale_source'
   | 'fact_established_in'
   | 'fact_supersedes'
   | 'fact_contradicts'
@@ -328,6 +329,16 @@ interface SceneRefs {
   pov: string | null;
 }
 
+/** `annotations.stale_source`, read defensively. Scene rows cross the
+ *  network as `Record<string, unknown>` and a pre-phase-11 row has no
+ *  `annotations` object at all — absent must read as "not stale", never
+ *  throw mid-check. */
+function readStaleSource(data: Record<string, unknown>): boolean {
+  const annotations = data.annotations;
+  if (!annotations || typeof annotations !== 'object') return false;
+  return (annotations as Record<string, unknown>).stale_source === true;
+}
+
 function readSceneRefs(data: Record<string, unknown>): SceneRefs {
   return {
     title: typeof data.title === 'string' ? data.title : '',
@@ -585,6 +596,21 @@ export function checkCanon(state: CanonCheckState): CanonCheckResult {
           message: `Scene “${label}” lists a fact that ${goneAs(found)}.`,
         });
       }
+    }
+
+    // Phase 11: the scene was flagged because the messages it was built
+    // from changed upstream. A warning rather than an error — the bible is
+    // still internally consistent, and there is no mechanical fix (only a
+    // re-ingest, or the user deciding it reads fine). Worth saying at lock
+    // time because locking is the moment the user declares this canon.
+    if (readStaleSource(row.data)) {
+      warnings.push({
+        class: 'warning',
+        kind: 'scene_stale_source',
+        ownerId: row.id,
+        refId: null,
+        message: `Scene “${label}” is marked out of date — the messages it was built from have changed.`,
+      });
     }
 
     if (characterIds) {

@@ -731,3 +731,49 @@ describe('checkCanon → planCanonFixes → cleanup is idempotent', () => {
     expect(sceneWrites).toEqual(['scene-1']);
   });
 });
+
+describe('stale source scenes (phase 11)', () => {
+  it('warns — not errors — for a scene whose source drifted upstream', () => {
+    const state: CanonCheckState = {
+      scenes: [
+        {
+          id: 's1',
+          data: {
+            title: 'The rooftop',
+            annotations: { stale_source: true },
+          },
+        } as unknown as SceneRow,
+      ],
+      facts: new Map(),
+    };
+
+    const { errors, warnings } = checkCanon(state);
+
+    // The bible is still internally consistent — nothing dangles. The
+    // problem is upstream, and there is no mechanical fix, so it must not
+    // block a lock.
+    expect(errors).toHaveLength(0);
+    const stale = warnings.filter((w) => w.kind === 'scene_stale_source');
+    expect(stale).toHaveLength(1);
+    expect(stale[0].ownerId).toBe('s1');
+    expect(stale[0].message).toContain('The rooftop');
+  });
+
+  it('says nothing for an unflagged scene or a pre-phase-11 row', () => {
+    const state: CanonCheckState = {
+      scenes: [
+        {
+          id: 's1',
+          data: { title: 'A', annotations: { stale_source: false } },
+        } as unknown as SceneRow,
+        // Rows written before the flag existed carry no annotations at
+        // all; absent must read as "fine", never throw.
+        { id: 's2', data: { title: 'B' } } as unknown as SceneRow,
+      ],
+      facts: new Map(),
+    };
+
+    const { warnings } = checkCanon(state);
+    expect(warnings.filter((w) => w.kind === 'scene_stale_source')).toHaveLength(0);
+  });
+});

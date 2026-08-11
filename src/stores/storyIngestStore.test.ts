@@ -7,6 +7,7 @@ const getScene = vi.fn();
 const bulkWriteScenes = vi.fn();
 const appendFact = vi.fn();
 const listFacts = vi.fn();
+const listScenes = vi.fn();
 const manifest = vi.fn();
 
 class FakeConflict extends Error {
@@ -37,6 +38,7 @@ vi.mock('../api/client', () => ({
     bulkWriteScenes: (...a: unknown[]) => bulkWriteScenes(...a),
     appendFact: (...a: unknown[]) => appendFact(...a),
     listFacts: (...a: unknown[]) => listFacts(...a),
+    listScenes: (...a: unknown[]) => listScenes(...a),
     manifest: (...a: unknown[]) => manifest(...a),
   },
   StoryConflictError: FakeConflict,
@@ -483,6 +485,14 @@ const VOICE_JSON = JSON.stringify({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // `nextFreeSequence` scans scene rows to find max(sequence); an empty
+  // page means "no scenes yet", so scene_count remains the floor.
+  listScenes.mockResolvedValue({
+    items: [],
+    next_after_sequence: null,
+    next_after_id: null,
+    has_more: false,
+  });
   // Reconcile (phase 8) pages the fact log on every completed run, so an
   // empty log is the default for every test that isn't about reconcile.
   listFacts.mockResolvedValue({ items: [], next_after_seq: null, has_more: false });
@@ -2161,5 +2171,460 @@ describe('reconcile (phase 8)', () => {
     expect(llm).not.toHaveBeenCalled();
     expect(sections.data('continuity')).toEqual({ contradictions: [] });
     expect(useStoryIngestStore.getState().completed).toContain('reconcile');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Incremental re-ingestion (phase 11)
+//
+// Every case here pins a behaviour that was WRONG in the plan's first
+// draft and got caught by the adversarial review. They are regression
+// pins first and feature tests second.
+// ---------------------------------------------------------------------------
+
+describe('incremental re-ingestion (phase 11)', () => {
+  const WALKED = 65; // forces two chunks at WALK_FORCE_SPLIT_MESSAGES=60
+
+  /** A walk reply that establishes a fact, so `appendedFactIds` is
+   *  non-empty. Without this the separate empty-set fallback masks any
+   *  bug in the coveredWholeExtension guard. */
+  function sceneJsonWithFact(title: string, endIdx: number, factText: string) {
+    return JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title,
+          summary: title.toLowerCase(),
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: endIdx,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [{ text: factText, category: 'reveal', local_idx: 0 }],
+        },
+      ],
+    });
+  }
+
+  function sceneJson(title: string, endIdx: number, closed = true) {
+    return JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title,
+          summary: title.toLowerCase(),
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: endIdx,
+          closed,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+  }
+
+  const VOICE_JSON = JSON.stringify({
+    style_summary: '',
+    register: 'mixed',
+    rhetorical_devices: [],
+    tendency: 'reactive',
+  });
+
+  const ENTITIES = {
+    characters: [{ id: 'char-ivy', canonical_name: 'Ivy', aliases: [] }],
+    objects: [],
+    factions: [],
+  };
+
+  /** A bible whose walk already finished over `WALKED` messages. */
+  function completedCheckpoint(over: Record<string, unknown> = {}) {
+    return {
+      status: 'complete',
+      current_pass: null,
+      prompt_version: PROMPT_VERSION,
+      chunk_index: 2,
+      chunk_plan: [
+        { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },
+        { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+      ],
+      last_ingested: {
+        msg_id: 'm64',
+        swipe_idx: 0,
+        fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+      },
+      open_scene: null,
+      lock: null,
+      token_usage: { input_tokens: 5, output_tokens: 5 },
+      replay_approx: false,
+      error: '',
+      ...over,
+    };
+  }
+
+  function wireIncremental(checkpoint: Record<string, unknown>) {
+    const sections = wireStatefulSections({
+      ingestion: checkpoint,
+      entities: ENTITIES,
+      meta: {
+        schema_version: '1.1',
+        bible_id: 'b1',
+        created_at: 'x',
+        updated_at: 'x',
+        source: {
+          platform: 'ggbc',
+          chat: {
+            kind: 'chat',
+            ref: { character_avatar: 'Ivy.png', file_name: 'chat1.jsonl' },
+            snapshot: { name: 'chat1.jsonl' },
+            captured_at: 'x',
+          },
+        },
+        ingest_watermark: {
+          message_count: WALKED,
+          last_msg: {
+            msg_id: 'm64',
+            swipe_idx: 0,
+            fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+          },
+        },
+      },
+    });
+    wireScenesAndFacts();
+    wireFactLog();
+    manifest.mockResolvedValue({
+      project_id: 'p1',
+      sections: [],
+      scene_count: 2,
+      fact_count: 0,
+      edit_count: 0,
+    });
+    return sections;
+  }
+
+  it('walks ONLY the new messages and does not rerun cold start', async () => {
+    const sections = wireIncremental(completedCheckpoint());
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(ok).toBe(true);
+    // Exactly ONE model call: the walk over the 5 new messages. Cold start
+    // would add two, and user_voice re-synthesis another — both are
+    // skipped on the incremental path. `entities` is asserted directly
+    // rather than via character ids, which are deterministic and
+    // identical either way.
+    expect(llm).toHaveBeenCalledTimes(1);
+    expect(putSection.mock.calls.filter((c) => c[1] === 'entities')).toHaveLength(0);
+    expect(bulkWriteScenes).toHaveBeenCalledTimes(1);
+
+    const plan = (sections.data('ingestion') as { chunk_plan: unknown[] }).chunk_plan;
+    expect(plan).toHaveLength(3); // two pinned + one extension entry
+  });
+
+  it('advances the watermark in META, not the checkpoint', async () => {
+    const sections = wireIncremental(completedCheckpoint());
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    const meta = sections.data('meta') as {
+      ingest_watermark: { message_count: number; last_msg: { msg_id: string } };
+    };
+    expect(meta.ingest_watermark.message_count).toBe(70);
+    expect(meta.ingest_watermark.last_msg.msg_id).toBe('m69');
+
+    // The durable cursor must NOT live in `ingestion`: resetIngestState
+    // wipes that whole section, and losing the watermark there would make
+    // the next build re-walk — and re-bill — the entire chat.
+    const ingestion = sections.data('ingestion') as Record<string, unknown>;
+    expect(ingestion.ingest_watermark).toBeUndefined();
+  });
+
+  it('starts a NEW scene rather than re-opening a completed walk’s open tail scene', async () => {
+    // A completed bible whose chat ended mid-scene: nothing force-closes
+    // the final chunk's scene, so open_scene survives completion. Treating
+    // that as "resume this scene" would let an incremental run rewrite a
+    // title the user set in the phase-10 review UI.
+    wireIncremental(completedCheckpoint({ open_scene: 'scene-tail' }));
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(ok).toBe(true);
+    // Confirms we really are on the extension path (a fresh rebuild would
+    // re-run cold start and re-walk both chunks), so the assertion below
+    // is about re-opening rather than about never getting here.
+    expect(llm).toHaveBeenCalledTimes(1);
+    // The tail scene is never even read, so it cannot be rewritten.
+    expect(getScene).not.toHaveBeenCalled();
+  });
+
+  it('re-opens the tail scene when the walk is genuinely in flight', async () => {
+    // The resume-gap case: current_pass is still 'transcript_walk', so the
+    // review UI has been gated shut and nothing can have been reviewed.
+    wireIncremental(
+      completedCheckpoint({
+        status: 'error',
+        current_pass: 'transcript_walk',
+        chunk_index: 1,
+        open_scene: 'scene-tail',
+      })
+    );
+    getScene.mockResolvedValue({
+      id: 'scene-tail',
+      sequence: 1,
+      server_ts: 5,
+      updated_at: 'x',
+      data: {
+        id: 'scene-tail',
+        sequence: 1,
+        title: 'Tail',
+        summary: '',
+        detailed_summary: '',
+        participants: [],
+        continuity_facts_established: [],
+        source: {
+          message_range: {
+            start: { msg_id: 'm60', swipe_idx: 0, fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 } },
+            end: { msg_id: 'm64', swipe_idx: 0, fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 } },
+          },
+          total_messages: 5,
+          swipe_resolutions: [],
+          excluded_segments: [],
+        },
+      },
+    });
+    const responses = [sceneJson('Scene B', 4), sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(getScene).toHaveBeenCalledWith('p1', 'scene-tail');
+  });
+
+  it('EXTENDS a paused walk’s pinned plan instead of reporting unwalked trailing messages', async () => {
+    // Phase 7's resume gap. The plan was pinned over 65 messages; the user
+    // kept roleplaying to 70 while the build was paused. Those 5 used to be
+    // counted and then abandoned with "rebuild to pick them up".
+    const sections = wireIncremental(
+      completedCheckpoint({
+        status: 'error',
+        current_pass: 'transcript_walk',
+        chunk_index: 1,
+      })
+    );
+    const responses = [sceneJson('Scene B', 4), sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm })
+    );
+
+    expect(ok).toBe(true);
+    const ingestion = sections.data('ingestion') as {
+      chunk_plan: unknown[];
+      chunk_index: number;
+      error: string;
+    };
+    expect(ingestion.chunk_plan).toHaveLength(3);
+    expect(ingestion.chunk_index).toBe(3);
+    expect(ingestion.error).not.toMatch(/rebuild to pick them up/i);
+  });
+
+  it('does NOT re-prompt the long-walk confirm for a small extension on a huge plan', async () => {
+    // The cap is scoped to the extension, so a user adding one message to
+    // an already-enormous chat is never asked to re-authorise the chunks
+    // they already paid for.
+    const bigPlan = Array.from({ length: 250 }, (_, n) => ({
+      start_msg_id: `m${n}`,
+      end_msg_id: `m${n}`,
+      est_tokens: 10,
+    }));
+    wireIncremental(
+      completedCheckpoint({
+        chunk_plan: bigPlan,
+        chunk_index: 250,
+        last_ingested: {
+          msg_id: 'm249',
+          swipe_idx: 0,
+          fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+        },
+      })
+    );
+    const responses = [sceneJson('Scene C', 0), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({
+        messages: longMessages(251),
+        llm,
+        hasNewMessages: true,
+        confirmLongWalk: false,
+      })
+    );
+
+    expect(ok).toBe(true);
+    // One call = the single extension chunk. A cumulative cap would have
+    // returned needs_confirmation and spent nothing; a full rebuild would
+    // have cost far more.
+    expect(llm).toHaveBeenCalledTimes(1);
+  });
+
+  it('walks new messages even when the checkpoint is parked mid-reconcile', async () => {
+    // Without the §6 narrowing, `resumableReconcile` skips the walk block
+    // entirely: Update would re-judge contradictions, never read the new
+    // messages, and still toast "Story built".
+    const sections = wireIncremental(
+      completedCheckpoint({ status: 'error', current_pass: 'reconcile' })
+    );
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(ok).toBe(true);
+    expect(bulkWriteScenes).toHaveBeenCalledTimes(1);
+    const meta = sections.data('meta') as {
+      ingest_watermark: { message_count: number };
+    };
+    expect(meta.ingest_watermark.message_count).toBe(70);
+  });
+
+  it('does NOT re-synthesise user_voice on an incremental run', async () => {
+    // writeSection is a full replace, so re-running synthesis would delete
+    // sample_passages the user pasted in by hand — destroyed as a side
+    // effect of adding two messages to a roleplay (plan §11).
+    const sections = wireIncremental(completedCheckpoint());
+    sections.inject('user_voice', {
+      style_summary: 'terse',
+      register: 'pulp',
+      rhetorical_devices: [],
+      tendency: 'directive',
+      sample_passages: [
+        { text: 'I wrote this myself.', source: { kind: 'user_annotation' } },
+      ],
+    });
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(putSection.mock.calls.filter((c) => c[1] === 'user_voice')).toHaveLength(0);
+    const voice = sections.data('user_voice') as {
+      sample_passages: { text: string }[];
+    };
+    expect(voice.sample_passages[0].text).toBe('I wrote this myself.');
+  });
+
+  it('refuses an incremental request when the build plan was cleared', async () => {
+    // resetIngestState() wipes `ingestion` (and the plan with it) while
+    // the watermark in `meta` survives. Falling through here would rerun
+    // cold start and re-walk the whole chat, silently, behind a button
+    // that promised a cheap update.
+    wireIncremental(completedCheckpoint({ chunk_plan: [], chunk_index: 0 }));
+    const llm = vi.fn(async () => sceneJson('Scene C', 4));
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(ok).toBe(false);
+    expect(llm).not.toHaveBeenCalled();
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a FULL reconcile when the walk resumed mid-plan', async () => {
+    // A crash-resumed walk appended only some of the new facts; the rest
+    // came from the dead process and have never been judged. Restricting
+    // reconcile to this process's ids would drop their groups entirely
+    // and still report success.
+    wireIncremental(
+      completedCheckpoint({
+        status: 'error',
+        current_pass: 'transcript_walk',
+        chunk_index: 1,
+      })
+    );
+    // Two contradictory facts the CRASHED run appended, never judged.
+    wireFactLog([
+      transcriptFact('fact-a', 'Ivy keeps the north wing sealed.'),
+      transcriptFact('fact-b', 'Ivy has never sealed the north wing.'),
+    ]);
+    const responses = [
+      sceneJsonWithFact('Scene B', 4, 'The northern gate rusted shut.'),
+      sceneJsonWithFact('Scene C', 4, 'The southern gate rusted shut.'),
+      VOICE_JSON,
+      '{"conflicts": []}',
+    ];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm })
+    );
+
+    // The judge must still have seen the pre-crash pair. With a restricted
+    // fact set it would only see the two gate facts this run appended, and
+    // the unjudged Ivy contradiction would be dropped in silence.
+    // Scope to the JUDGE's calls specifically. The walk prompt also
+    // carries the recent-facts digest, which contains these same texts,
+    // so matching across all calls would pass either way.
+    const calls = llm.mock.calls as unknown as [
+      { role: string; content: string }[],
+      unknown,
+    ][];
+    const judgePrompts = calls
+      .filter(([msgs]) =>
+        (msgs ?? []).some(
+          (m) => m.role === 'system' && m.content === RECONCILE_SYSTEM
+        )
+      )
+      .map(([msgs]) => JSON.stringify(msgs));
+
+    expect(judgePrompts.length).toBeGreaterThan(0);
+    // With a restricted fact set the judge would only see the two gate
+    // facts this run appended, and the pre-crash Ivy contradiction —
+    // never judged by anyone — would be dropped in silence.
+    expect(judgePrompts.some((x) => x.includes('north wing'))).toBe(true);
+  });
+
+  it('still skips the walk on a reconcile resume when nothing is new', async () => {
+    // The narrowing must not break the phase-8 behaviour it narrows: with
+    // no new messages, a parked reconcile still resumes cheaply.
+    wireIncremental(completedCheckpoint({ status: 'error', current_pass: 'reconcile' }));
+    const llm = vi.fn(async () => '{}');
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(WALKED), llm })
+    );
+
+    expect(ok).toBe(true);
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
   });
 });
