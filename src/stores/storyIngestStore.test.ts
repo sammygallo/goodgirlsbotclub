@@ -7,6 +7,7 @@ const getScene = vi.fn();
 const bulkWriteScenes = vi.fn();
 const appendFact = vi.fn();
 const listFacts = vi.fn();
+const listScenes = vi.fn();
 const manifest = vi.fn();
 
 class FakeConflict extends Error {
@@ -37,6 +38,7 @@ vi.mock('../api/client', () => ({
     bulkWriteScenes: (...a: unknown[]) => bulkWriteScenes(...a),
     appendFact: (...a: unknown[]) => appendFact(...a),
     listFacts: (...a: unknown[]) => listFacts(...a),
+    listScenes: (...a: unknown[]) => listScenes(...a),
     manifest: (...a: unknown[]) => manifest(...a),
   },
   StoryConflictError: FakeConflict,
@@ -483,6 +485,14 @@ const VOICE_JSON = JSON.stringify({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // `nextFreeSequence` scans scene rows to find max(sequence); an empty
+  // page means "no scenes yet", so scene_count remains the floor.
+  listScenes.mockResolvedValue({
+    items: [],
+    next_after_sequence: null,
+    next_after_id: null,
+    has_more: false,
+  });
   // Reconcile (phase 8) pages the fact log on every completed run, so an
   // empty log is the default for every test that isn't about reconcile.
   listFacts.mockResolvedValue({ items: [], next_after_seq: null, has_more: false });
@@ -2175,6 +2185,28 @@ describe('reconcile (phase 8)', () => {
 describe('incremental re-ingestion (phase 11)', () => {
   const WALKED = 65; // forces two chunks at WALK_FORCE_SPLIT_MESSAGES=60
 
+  /** A walk reply that establishes a fact, so `appendedFactIds` is
+   *  non-empty. Without this the separate empty-set fallback masks any
+   *  bug in the coveredWholeExtension guard. */
+  function sceneJsonWithFact(title: string, endIdx: number, factText: string) {
+    return JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title,
+          summary: title.toLowerCase(),
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: endIdx,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [{ text: factText, category: 'reveal', local_idx: 0 }],
+        },
+      ],
+    });
+  }
+
   function sceneJson(title: string, endIdx: number, closed = true) {
     return JSON.stringify({
       scenes: [
@@ -2283,11 +2315,12 @@ describe('incremental re-ingestion (phase 11)', () => {
     );
 
     expect(ok).toBe(true);
-    // One walk call for the 5 new messages + one user_voice call. If cold
-    // start had rerun there would be two more, and `entities` would be
-    // rewritten — assert the section write directly rather than relying on
-    // character ids, which are deterministic and identical either way.
-    expect(llm).toHaveBeenCalledTimes(2);
+    // Exactly ONE model call: the walk over the 5 new messages. Cold start
+    // would add two, and user_voice re-synthesis another — both are
+    // skipped on the incremental path. `entities` is asserted directly
+    // rather than via character ids, which are deterministic and
+    // identical either way.
+    expect(llm).toHaveBeenCalledTimes(1);
     expect(putSection.mock.calls.filter((c) => c[1] === 'entities')).toHaveLength(0);
     expect(bulkWriteScenes).toHaveBeenCalledTimes(1);
 
@@ -2336,7 +2369,7 @@ describe('incremental re-ingestion (phase 11)', () => {
     // Confirms we really are on the extension path (a fresh rebuild would
     // re-run cold start and re-walk both chunks), so the assertion below
     // is about re-opening rather than about never getting here.
-    expect(llm).toHaveBeenCalledTimes(2);
+    expect(llm).toHaveBeenCalledTimes(1);
     // The tail scene is never even read, so it cannot be rewritten.
     expect(getScene).not.toHaveBeenCalled();
   });
@@ -2451,10 +2484,10 @@ describe('incremental re-ingestion (phase 11)', () => {
     );
 
     expect(ok).toBe(true);
-    // Two calls = one extension chunk + user_voice. A cumulative cap would
-    // have returned needs_confirmation and spent nothing; a full rebuild
-    // would have cost far more.
-    expect(llm).toHaveBeenCalledTimes(2);
+    // One call = the single extension chunk. A cumulative cap would have
+    // returned needs_confirmation and spent nothing; a full rebuild would
+    // have cost far more.
+    expect(llm).toHaveBeenCalledTimes(1);
   });
 
   it('walks new messages even when the checkpoint is parked mid-reconcile', async () => {
@@ -2478,6 +2511,107 @@ describe('incremental re-ingestion (phase 11)', () => {
       ingest_watermark: { message_count: number };
     };
     expect(meta.ingest_watermark.message_count).toBe(70);
+  });
+
+  it('does NOT re-synthesise user_voice on an incremental run', async () => {
+    // writeSection is a full replace, so re-running synthesis would delete
+    // sample_passages the user pasted in by hand — destroyed as a side
+    // effect of adding two messages to a roleplay (plan §11).
+    const sections = wireIncremental(completedCheckpoint());
+    sections.inject('user_voice', {
+      style_summary: 'terse',
+      register: 'pulp',
+      rhetorical_devices: [],
+      tendency: 'directive',
+      sample_passages: [
+        { text: 'I wrote this myself.', source: { kind: 'user_annotation' } },
+      ],
+    });
+    const responses = [sceneJson('Scene C', 4), VOICE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(putSection.mock.calls.filter((c) => c[1] === 'user_voice')).toHaveLength(0);
+    const voice = sections.data('user_voice') as {
+      sample_passages: { text: string }[];
+    };
+    expect(voice.sample_passages[0].text).toBe('I wrote this myself.');
+  });
+
+  it('refuses an incremental request when the build plan was cleared', async () => {
+    // resetIngestState() wipes `ingestion` (and the plan with it) while
+    // the watermark in `meta` survives. Falling through here would rerun
+    // cold start and re-walk the whole chat, silently, behind a button
+    // that promised a cheap update.
+    wireIncremental(completedCheckpoint({ chunk_plan: [], chunk_index: 0 }));
+    const llm = vi.fn(async () => sceneJson('Scene C', 4));
+
+    const ok = await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm, hasNewMessages: true })
+    );
+
+    expect(ok).toBe(false);
+    expect(llm).not.toHaveBeenCalled();
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a FULL reconcile when the walk resumed mid-plan', async () => {
+    // A crash-resumed walk appended only some of the new facts; the rest
+    // came from the dead process and have never been judged. Restricting
+    // reconcile to this process's ids would drop their groups entirely
+    // and still report success.
+    wireIncremental(
+      completedCheckpoint({
+        status: 'error',
+        current_pass: 'transcript_walk',
+        chunk_index: 1,
+      })
+    );
+    // Two contradictory facts the CRASHED run appended, never judged.
+    wireFactLog([
+      transcriptFact('fact-a', 'Ivy keeps the north wing sealed.'),
+      transcriptFact('fact-b', 'Ivy has never sealed the north wing.'),
+    ]);
+    const responses = [
+      sceneJsonWithFact('Scene B', 4, 'The northern gate rusted shut.'),
+      sceneJsonWithFact('Scene C', 4, 'The southern gate rusted shut.'),
+      VOICE_JSON,
+      '{"conflicts": []}',
+    ];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(
+      runInput({ messages: longMessages(70), llm })
+    );
+
+    // The judge must still have seen the pre-crash pair. With a restricted
+    // fact set it would only see the two gate facts this run appended, and
+    // the unjudged Ivy contradiction would be dropped in silence.
+    // Scope to the JUDGE's calls specifically. The walk prompt also
+    // carries the recent-facts digest, which contains these same texts,
+    // so matching across all calls would pass either way.
+    const calls = llm.mock.calls as unknown as [
+      { role: string; content: string }[],
+      unknown,
+    ][];
+    const judgePrompts = calls
+      .filter(([msgs]) =>
+        (msgs ?? []).some(
+          (m) => m.role === 'system' && m.content === RECONCILE_SYSTEM
+        )
+      )
+      .map(([msgs]) => JSON.stringify(msgs));
+
+    expect(judgePrompts.length).toBeGreaterThan(0);
+    // With a restricted fact set the judge would only see the two gate
+    // facts this run appended, and the pre-crash Ivy contradiction —
+    // never judged by anyone — would be dropped in silence.
+    expect(judgePrompts.some((x) => x.includes('north wing'))).toBe(true);
   });
 
   it('still skips the walk on a reconcile resume when nothing is new', async () => {

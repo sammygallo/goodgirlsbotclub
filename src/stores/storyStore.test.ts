@@ -1736,6 +1736,23 @@ describe('flagScenesStale / clearSceneStale', () => {
     expect(putScene).not.toHaveBeenCalled();
   });
 
+  it('refuses clearSceneStale while canon is locked', async () => {
+    // The row's Dismiss button gates on this too — an optimistic hide
+    // over a still-true stale_source is the one state to avoid.
+    useStoryStore.setState({
+      projectId: 'p1',
+      sections: {
+        meta: metaSection(3, { canon_locked_at: '2026-08-10T12:00:00Z' }) as never,
+      },
+    });
+    getScene.mockResolvedValue(sceneRow('s1', 5));
+
+    const ok = await useStoryStore.getState().clearSceneStale('s1');
+
+    expect(ok).toBe(false);
+    expect(putScene).not.toHaveBeenCalled();
+  });
+
   it('writes no edit row for a machine-driven flag, but does for a user dismissal', async () => {
     useStoryStore.setState({ projectId: 'p1' });
     getScene.mockResolvedValue(sceneRow('s1', 5));

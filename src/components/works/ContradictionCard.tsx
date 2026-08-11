@@ -146,16 +146,24 @@ function byteLength(text: string): number {
 /** The evidence message in the shared comparator's shape.
  *
  *  `swipe_idx` IS the chosen swipe (sourceRefs' v1.1 amendment). Passing
- *  `swipes` through means the comparator can resolve the exact swipe the
- *  ref names rather than only the active one. A message with no `swipes`
- *  array at all has exactly one text, `mes`, which is swipe 0. */
+ *  `swipes` through lets the comparator resolve the exact swipe the ref
+ *  names rather than only the active one.
+ *
+ *  A message with no `swipes` array has exactly one text, `mes`, which is
+ *  swipe 0 — modelled here as a ONE-ELEMENT array rather than as "swipes
+ *  unavailable". The distinction matters: `swipes: null` means "we can't
+ *  see that swipe" and yields `unverifiable`, whereas a single-element
+ *  array means "there is exactly one swipe and it isn't the one you
+ *  asked for" — genuine drift. Getting this wrong would downgrade a real
+ *  "the message changed" into a hedged "couldn't be re-checked". */
 function asDriftMessage(msg: EvidenceMessage, id: string): DriftMessage {
+  const swipes = Array.isArray(msg.swipes) ? msg.swipes : [msg.mes];
   return {
     id,
-    content: Array.isArray(msg.swipes) ? (msg.swipes[0] ?? msg.mes) : msg.mes,
+    content: swipes[0] ?? msg.mes,
     swipeIdx: 0,
     timestamp: 0,
-    swipes: Array.isArray(msg.swipes) ? msg.swipes : null,
+    swipes,
   };
 }
 

@@ -371,7 +371,7 @@ describe('indexById', () => {
 // ---------------------------------------------------------------------------
 
 describe('driftBannerState', () => {
-  const open = { canonLocked: false, canManage: true };
+  const open = { canonLocked: false, canManage: true, hasPinnedPlan: true };
 
   function report(over: Partial<SceneDriftReport> = {}): SceneDriftReport {
     return {
@@ -391,6 +391,7 @@ describe('driftBannerState', () => {
       driftBannerState({ kind: 'new_messages', count: 3, anchorIndex: 1 }, null, {
         canonLocked: false,
         canManage: false,
+        hasPinnedPlan: true,
       }).kind
     ).toBe('none');
   });
@@ -427,7 +428,7 @@ describe('driftBannerState', () => {
     const s = driftBannerState(
       { kind: 'new_messages', count: 7, anchorIndex: 3 },
       null,
-      { canonLocked: true, canManage: true }
+      { canonLocked: true, canManage: true, hasPinnedPlan: true }
     );
     // Detection is a pure read, so the user is still TOLD — they are just
     // told to unlock first.
@@ -455,7 +456,7 @@ describe('driftBannerState', () => {
     const s = driftBannerState(
       { kind: 'diverged', reason: 'anchor_deleted', anchorIndex: -1 },
       report(),
-      { canonLocked: true, canManage: true }
+      { canonLocked: true, canManage: true, hasPinnedPlan: true }
     );
     expect(s.kind).toBe('diverged');
     expect(s.canReingest).toBe(false);
@@ -490,5 +491,39 @@ describe('driftBannerState', () => {
     expect(s.kind).toBe('diverged');
     expect(s.staleSceneCount).toBe(0);
     expect(s.canFlag).toBe(false);
+  });
+});
+
+describe('id churn must not mask a real edit (regression)', () => {
+  function msgOf(id: string, content: string): DriftMessage {
+    return { id, content, swipeIdx: 0, timestamp: 1000 };
+  }
+
+  it('does NOT suppress a drifted ref just because another ref was rekeyed', async () => {
+    const orig = [
+      msgOf('m1', 'alpha'),
+      msgOf('m2', 'beta'),
+      msgOf('m3', 'gamma'),
+      msgOf('m4', 'delta'),
+    ];
+    const scenes = [
+      scene('s1', 0, await refFor(orig[0]), await refFor(orig[1])),
+      scene('s2', 1, await refFor(orig[2]), await refFor(orig[3])),
+    ];
+    // m1 was rekeyed by a branch restore (same text, new id) — pure
+    // churn. m4 was genuinely EDITED. Testing only the dangling refs
+    // would find m1's text still present, declare churn, and throw away
+    // the drifted verdict on m4 entirely.
+    const live = [
+      msgOf('m1-rekeyed', 'alpha'),
+      orig[1],
+      orig[2],
+      msgOf('m4', 'delta REWRITTEN'),
+    ];
+
+    const r = await localiseSceneDrift(scenes, live);
+    expect(r.idChurnSuspected).toBe(false);
+    expect(r.divergedSceneId).toBe('s1');
+    expect(r.downstreamSceneIds).toEqual(['s1', 's2']);
   });
 });

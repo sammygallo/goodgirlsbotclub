@@ -505,8 +505,9 @@ export function StoryTab({
       driftBannerState(drift?.verdict, drift?.scenes, {
         canonLocked,
         canManage,
+        hasPinnedPlan: (checkpoint?.chunk_plan.length ?? 0) > 0,
       }),
-    [drift, canonLocked, canManage]
+    [drift, canonLocked, canManage, checkpoint]
   );
   const newMessageCount = banner.newMessageCount;
   const staleSceneIds = drift?.scenes?.downstreamSceneIds ?? [];
@@ -522,8 +523,17 @@ export function StoryTab({
   const dismissSceneStale = async (sceneId: string) => {
     setDismissedScenes((prev) => new Set(prev).add(sceneId));
     // Clear the persisted flag too, so Lock canon and any later consumer
-    // agree with what the user just decided.
-    await clearSceneStale(sceneId);
+    // agree with what the user just decided. If the write is refused or
+    // fails, the badge must come BACK: a hidden badge sitting over a
+    // still-true `stale_source` is the one state this must never leave.
+    const ok = await clearSceneStale(sceneId);
+    if (!ok) {
+      setDismissedScenes((prev) => {
+        const next = new Set(prev);
+        next.delete(sceneId);
+        return next;
+      });
+    }
   };
 
   const designate = async (chat: ProjectChatRef) => {
@@ -763,6 +773,11 @@ export function StoryTab({
       }),
       model,
     });
+    // The walk re-read the chat and moved the watermark to whatever it
+    // saw. Comparing that fresher watermark against this mount's older
+    // snapshot can report `anchor_deleted` for messages that plainly
+    // exist, so drop the snapshot and let the drift effect re-fetch.
+    evidenceCacheRef.current = null;
     await load(project.id);
   };
 
@@ -845,17 +860,26 @@ export function StoryTab({
   const reingestFromScratch = async () => {
     if (!sourceChat) return;
     setPendingReingest(false);
-    const ok = await resetBible('reingest');
-    if (!ok) return;
-    await designate(sourceChat.ref);
-    setStartOpen(true);
+    // Both links matter: reset wipes `meta`, so a failed re-designation
+    // leaves no source chat and therefore no coldStartSources. Opening
+    // the build modal anyway strands it behind an unusable state and it
+    // pops open unprompted the moment a later designate succeeds.
+    // Mirrors confirmChange's chained reset-then-designate.
+    if (!(await resetBible('reingest'))) return;
+    if (await designate(sourceChat.ref)) setStartOpen(true);
   };
 
   const flagStaleScenes = async () => {
-    if (staleSceneIds.length === 0) return;
+    // The per-row Dismiss is a newer and more specific judgement than
+    // this bulk action. Re-flagging a dismissed scene would persist
+    // `stale_source: true` while the badge — and therefore the row's own
+    // Dismiss button — stays hidden for the rest of the visit, leaving a
+    // Lock-canon warning the user has no control to clear.
+    const targets = staleSceneIds.filter((id) => !dismissedScenes.has(id));
+    if (targets.length === 0) return;
     setFlagging(true);
     try {
-      const result = await flagScenesStale(staleSceneIds);
+      const result = await flagScenesStale(targets);
       if (result.flagged > 0 || result.alreadyFlagged > 0) {
         showToastGlobal(
           `${result.flagged + result.alreadyFlagged} scene(s) marked as out of date`,
@@ -1101,7 +1125,9 @@ export function StoryTab({
                   <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
                     {canonLocked
                       ? 'Canon is locked — unlock to bring them in.'
-                      : 'Reads only what’s new, so it costs a fraction of a rebuild.'}
+                      : banner.canUpdate
+                        ? 'Reads only what’s new, so it costs a fraction of a rebuild.'
+                        : 'The build state for this story was cleared, so picking these up needs a full rebuild.'}
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1306,6 +1332,7 @@ export function StoryTab({
                 isFirst={i === 0}
                 canManage={canManage}
                 disabled={writesDisabled}
+                canonLocked={canonLocked}
                 stale={staleSceneSet.has(scene.id)}
                 onClearStale={() => void dismissSceneStale(scene.id)}
               />

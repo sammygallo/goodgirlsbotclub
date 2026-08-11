@@ -268,6 +268,9 @@ export async function localiseSceneDrift(
   let checkedScenes = 0;
   let unverifiableRefs = 0;
   const danglingRefs: MsgRef[] = [];
+  /** Dangling AND drifted. The churn test has to account for every ref
+   *  that broke, not just the ones whose id vanished — see below. */
+  const brokenRefs: MsgRef[] = [];
 
   for (let i = 0; i < ordered.length; i++) {
     const refs = sceneRefs(ordered[i]);
@@ -283,7 +286,10 @@ export async function localiseSceneDrift(
         continue;
       }
       if (verdict === 'dangling') danglingRefs.push(ref);
-      if (verdict !== 'live') broken = true;
+      if (verdict !== 'live') {
+        brokenRefs.push(ref);
+        broken = true;
+      }
     }
 
     if (broken && divergedAt === -1) divergedAt = i;
@@ -296,8 +302,17 @@ export async function localiseSceneDrift(
   // nothing-happened from the content side. If every ref we lost still
   // has its exact text sitting in the chat under some other id, the ids
   // moved and the history did not — do not flag scenes for that.
+  //
+  // BOTH halves of the discriminator are required, and the test runs over
+  // every BROKEN ref rather than only the dangling ones. Checking only
+  // dangling refs let a genuine edit be waved away: one rekeyed message
+  // plus one edited message would satisfy "all the dangling text is still
+  // there" and suppress the drifted verdict entirely. A real edit removes
+  // its old text from the chat, so including drifted refs here makes the
+  // second half fail and divergence is reported, which is the safe
+  // direction.
   const idChurnSuspected =
-    danglingRefs.length > 0 && (await allTextsStillPresent(danglingRefs, messages));
+    danglingRefs.length > 0 && (await allTextsStillPresent(brokenRefs, messages));
 
   if (divergedAt === -1 || idChurnSuspected) {
     return {
@@ -358,7 +373,22 @@ export interface DriftBannerState {
 export function driftBannerState(
   verdict: WatermarkVerdict | null | undefined,
   scenes: SceneDriftReport | null | undefined,
-  opts: { canonLocked: boolean; canManage: boolean }
+  opts: {
+    canonLocked: boolean;
+    canManage: boolean;
+    /** A pinned `chunk_plan` still exists to extend.
+     *
+     *  Load-bearing, because the watermark and the plan live in DIFFERENT
+     *  sections with different lifetimes: `meta` survives
+     *  `resetIngestState()`, the `ingestion` section does not. A user who
+     *  pressed "Build state looks stuck? Clear it" therefore has a live
+     *  watermark and no plan — and an Update offered in that state cannot
+     *  be served incrementally at all. It would fall through to a full
+     *  rebuild: cold start re-billed, `entities`/`world`/`rendering_hints`
+     *  clobbered, the whole chat re-walked, under a button whose own copy
+     *  promised "a fraction of a rebuild". */
+    hasPinnedPlan: boolean;
+  }
 ): DriftBannerState {
   const none: DriftBannerState = {
     kind: 'none',
@@ -382,7 +412,10 @@ export function driftBannerState(
       ...none,
       kind: 'new_messages',
       newMessageCount: verdict.count,
-      canUpdate: !opts.canonLocked,
+      // The banner still renders without a plan — the count is true and
+      // the user should know — but Update is withheld rather than
+      // quietly becoming a full rebuild.
+      canUpdate: !opts.canonLocked && opts.hasPinnedPlan,
     };
   }
 

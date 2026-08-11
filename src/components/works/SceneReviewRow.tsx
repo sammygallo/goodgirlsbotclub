@@ -23,6 +23,7 @@ export function SceneReviewRow({
   disabled,
   stale = false,
   onClearStale,
+  canonLocked = false,
 }: {
   scene: StorySceneSummary;
   /** No predecessor to merge into. Merge is hidden rather than disabled
@@ -43,6 +44,11 @@ export function SceneReviewRow({
   stale?: boolean;
   /** Clears the persisted flag AND hides the badge for this visit. */
   onClearStale?: () => void;
+  /** Canon is locked, so `clearSceneStale` would refuse. Kept separate
+   *  from `disabled`, which also covers an active build — dismissing is
+   *  deliberately allowed while a build is parked, since divergence is
+   *  what parks it. */
+  canonLocked?: boolean;
 }) {
   const patchScene = useStoryStore((s) => s.patchScene);
   const mergeSceneIntoPrevious = useStoryStore((s) => s.mergeSceneIntoPrevious);
@@ -155,7 +161,7 @@ export function SceneReviewRow({
                 variant="ghost"
                 size="sm"
                 onClick={onClearStale}
-                disabled={isSaving}
+                disabled={isSaving || canonLocked}
                 title="This scene is fine as it is"
               >
                 Dismiss

@@ -378,6 +378,23 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     /** Any mode that continues an existing bible rather than rebuilding. */
     const continuingBuild = resumableWalk || resumableReconcile || incrementalWalk;
 
+    // §5.2's must-not, ENFORCED rather than assumed. The watermark lives
+    // in `meta` and the chunk plan in `ingestion`, and those sections have
+    // different lifetimes: `resetIngestState()` wipes the plan while the
+    // watermark survives. That pairing — watermark live, plan gone — is
+    // exactly what would route an Update press into the fresh branch,
+    // re-billing cold start, full-replacing entities/world/rendering_hints
+    // and re-walking the entire chat, all under a button that promised a
+    // cheap update. Refuse before anything is written or spent; the UI
+    // withholds the button too, but the store is the choke point.
+    if (input.hasNewMessages && !continuingBuild) {
+      const message =
+        'This story’s build state was cleared, so the new messages can only be picked up by a full rebuild.';
+      finish({ error: message });
+      showToastGlobal(message, 'warning');
+      return false;
+    }
+
     set({
       currentPass: resumableReconcile
         ? 'reconcile'
@@ -741,15 +758,29 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         if (!stillOurs()) return false;
 
         // ---- post-walk: user_voice synthesis -------------------------
-        const voice = await runUserVoiceSynthesis({
-          messages: input.messages,
-          chat: input.chat,
-          llm: countingLlm,
-          signal: abort.signal,
-        });
-        if (abort.signal.aborted) throw abortError();
-        if (!stillOurs()) return false;
-        await writeSection(projectId, 'user_voice', voice.section);
+        //
+        // Skipped on the incremental path (plan §11, "no user_voice
+        // re-synthesis"). `writeSection` is a FULL REPLACE, so re-running
+        // it would delete the `sample_passages` the user pasted in
+        // themselves via `appendSamplePassage` — content nothing can
+        // recreate, destroyed as a side effect of adding two messages to
+        // a roleplay.
+        //
+        // A genuinely in-flight walk (`resumableWalk`) still runs it:
+        // there, user_voice may never have landed in the first place. And
+        // a checkpoint parked at 'reconcile' already has it durable, by
+        // the same invariant that lets reconcile-resume skip the walk.
+        if (!incrementalWalk) {
+          const voice = await runUserVoiceSynthesis({
+            messages: input.messages,
+            chat: input.chat,
+            llm: countingLlm,
+            signal: abort.signal,
+          });
+          if (abort.signal.aborted) throw abortError();
+          if (!stillOurs()) return false;
+          await writeSection(projectId, 'user_voice', voice.section);
+        }
 
         if (walkOutcome.unreadableChunks > 0) {
           notes.push(
@@ -796,9 +827,23 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         // a full reconcile, which is safe — deterministic contradiction
         // ids plus the existing-wins merge make over-judging cost tokens
         // and nothing else.
+        //
+        // Two conditions, and both are about the PRIOR run rather than
+        // this one. `<=` was the first draft here and it is a TAUTOLOGY —
+        // `chunk_index` can never exceed `chunk_plan.length`, so it
+        // rejected nothing and a crash-resumed walk passed a partial set.
+        //  - Equality: the walk began exactly at the extension's first
+        //    index, so no chunk before it was walked by another process.
+        //  - Settled prior run: a checkpoint parked at 'transcript_walk'
+        //    or 'reconcile' carries facts appended by a process that died
+        //    before reconcile ran. Those have never been judged, so
+        //    treating them as "old" is precisely the silent under-judge
+        //    this guard exists to prevent.
+        const priorRunSettled = existing === null || existing.current_pass === null;
         const coveredWholeExtension =
           walkOutcome.extensionStart !== null &&
-          walkOutcome.walkedFrom <= walkOutcome.extensionStart;
+          walkOutcome.walkedFrom === walkOutcome.extensionStart &&
+          priorRunSettled;
         newFactIds = coveredWholeExtension ? walkOutcome.appendedFactIds : null;
       }
 
@@ -1167,6 +1212,15 @@ async function loadRecentFactTexts(projectId: string): Promise<string[]> {
       for (const row of res.items ?? []) {
         const data = row?.data as Record<string, unknown> | undefined;
         if (isFactTombstone(data)) continue;
+        // Same exclusion runReconcilePass applies. Reconcile appends its
+        // synthetic `Card: …` facts LAST, so they occupy exactly the tail
+        // this samples — keeping them would evict real story facts from
+        // the seed and tell the model not to restate a claim that came
+        // from the character card rather than from the chat. The walk can
+        // never emit one, so they buy no dedupe either.
+        if ((data?.source as { kind?: unknown } | undefined)?.kind === 'card_field') {
+          continue;
+        }
         if (data && typeof data.text === 'string' && data.text.trim()) {
           texts.push(data.text.trim());
         }
@@ -1180,6 +1234,50 @@ async function loadRecentFactTexts(projectId: string): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/** Scene pages when scanning for the tail sequence. */
+const SCENE_SEQ_PAGE = 100;
+const MAX_SCENE_SEQ_PAGES = 200;
+
+/**
+ * The first `sequence` a newly minted scene may safely take.
+ *
+ * `manifest.scene_count` is a plain COUNT of scene rows, so it equals
+ * max(sequence)+1 only while no scene row has ever been deleted — and
+ * `mergeSceneIntoPrevious` DELETEs the victim without renumbering. After
+ * one merge, scene_count == max(sequence), so seeding a new scene from it
+ * re-issues a sequence still on the server. `(sequence, id)` is the sort
+ * both sides list by, so the tie puts a brand-new tail scene in the
+ * middle of the story at random.
+ *
+ * scene_count stays as a FLOOR for the opposite failure — duplicates
+ * already present, where it exceeds max(sequence)+1.
+ */
+async function nextFreeSequence(projectId: string): Promise<number> {
+  let maxSequence = -1;
+  let cursor: { sequence: number; id: string } | null = null;
+  for (let page = 0; page < MAX_SCENE_SEQ_PAGES; page++) {
+    const res = await storyApi.listScenes(projectId, {
+      limit: SCENE_SEQ_PAGE,
+      ...(cursor ? { afterSequence: cursor.sequence, afterId: cursor.id } : {}),
+    });
+    for (const row of res.items ?? []) {
+      if (row.sequence > maxSequence) maxSequence = row.sequence;
+    }
+    if (
+      !res.has_more ||
+      res.next_after_sequence === null ||
+      res.next_after_sequence === undefined ||
+      res.next_after_id === null ||
+      res.next_after_id === undefined
+    ) {
+      break;
+    }
+    cursor = { sequence: res.next_after_sequence, id: res.next_after_id };
+  }
+  const manifest = await storyApi.manifest(projectId);
+  return Math.max(maxSequence + 1, manifest.scene_count);
 }
 
 /**
@@ -1640,11 +1738,9 @@ async function runTranscriptWalkPass(opts: {
       // that alone re-issues sequence numbers already on the server.
       // scene_count is a plain COUNT of scene rows, so it exceeds
       // max(sequence) whenever duplicates already exist.
-      const manifest = await storyApi.manifest(projectId);
-      nextSequence = Math.max(sceneRow.sequence + 1, manifest.scene_count);
+      nextSequence = Math.max(sceneRow.sequence + 1, await nextFreeSequence(projectId));
     } else {
-      const manifest = await storyApi.manifest(projectId);
-      nextSequence = manifest.scene_count;
+      nextSequence = await nextFreeSequence(projectId);
     }
   } else {
     const planned = planTranscriptChunks(messages);
