@@ -7,7 +7,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'tools/**/*.test.ts'],
     // No result cache: it writes into node_modules/.vite/vitest, which risks
     // being swept up by the blanket `git add -f node_modules` this repo uses.
     cache: false,

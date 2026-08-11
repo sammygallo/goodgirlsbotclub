@@ -200,7 +200,7 @@ export function groupFacts(
     const entities = factEntities(fact, cast);
     const keys = entities.length > 0 ? entities : [WORLD_ENTITY];
     for (const entity of keys) {
-      const key = `${entity} ${fact.category}`;
+      const key = `${entity}\u0000${fact.category}`;
       let group = buckets.get(key);
       if (!group) {
         group = { entity, category: fact.category, facts: [] };

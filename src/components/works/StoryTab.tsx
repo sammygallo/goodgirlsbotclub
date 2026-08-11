@@ -299,7 +299,7 @@ export function StoryTab({
   const loadChatMessages = useCallback(async (): Promise<EvidenceMessage[] | null> => {
     const chat = sourceChat?.ref ?? null;
     if (!chat) return null;
-    const key = `${chat.character_avatar} ${chat.file_name}`;
+    const key = `${chat.character_avatar}\u0000${chat.file_name}`;
     const cache = evidenceCacheRef.current;
     if (cache?.key === key) return cache.inFlight ?? cache.messages;
     const inFlight = api
