@@ -617,8 +617,16 @@ enforced at the API with 413s naming the cap.
 `narrative.structure` detection, `scenes[].function` (beat/tension/mood/
 stakes), and `scenes[].transformations` are **optional and empty in v1.1**
 — the ingestion pipeline does not populate them; the first renderer's
-annotate pass does. The `ingestion` section's pass enum deliberately
-excludes `annotate`.
+annotate pass does.
+
+> **Superseded in 1.2 (step-3 phase 1, ggbc-backend 0021).** The
+> `ingestion` section's pass enum excluded `annotate` throughout v1.1,
+> because nothing consumed those three field groups. It no longer does:
+> `IngestPass` gained `annotate`, and step 3's annotate pass writes them.
+> The fields themselves are unchanged — still optional, still empty until
+> a user runs the pass. Because `IngestPass` is a strict `Literal`, this
+> ships backend-first; see
+> [story-state-step3-plan.md](story-state-step3-plan.md) §3.3 and §4.
 
 ### Version gate
 
