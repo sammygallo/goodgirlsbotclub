@@ -458,26 +458,44 @@ export function StoryTab({
       if (!cancelled) setDrift({ verdict, scenes });
     };
 
-    const idle =
-      typeof window !== 'undefined' &&
-      typeof (window as unknown as { requestIdleCallback?: unknown })
-        .requestIdleCallback === 'function'
-        ? (
-            window as unknown as {
-              requestIdleCallback: (cb: () => void) => number;
-            }
-          ).requestIdleCallback(() => void run())
-        : (setTimeout(() => void run(), 0) as unknown as number);
+    // Deferred off the critical render path — but WITH A DEADLINE.
+    //
+    // `requestIdleCallback(cb)` with no `timeout` is only ever run when
+    // the browser decides it has idle time, and it is allowed to decide
+    // "never". This app gives it plenty of reason to: an animated
+    // background, a live chat panel, and third-party extension scripts
+    // that throw on load. Without the deadline the drift check simply
+    // does not happen, and the banner never appears — no error, no
+    // warning, just silence.
+    //
+    // That is not hypothetical. It shipped, and on production the
+    // "N new messages" banner stayed hidden through repeated opens of
+    // the Story tab, appearing only after a full page reload settled
+    // the page enough for an idle slot to open up. Caught by driving
+    // the deployed site (2026-08-11); no unit test could see it,
+    // because jsdom has no `requestIdleCallback` and the suite has
+    // always taken the `setTimeout` fallback below.
+    const IDLE_DEADLINE_MS = 2000;
+
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const hasIdle =
+      typeof window !== 'undefined' && typeof w.requestIdleCallback === 'function';
+
+    // Track WHICH scheduler was used rather than inferring it from the
+    // presence of `cancelIdleCallback`: a browser exposing the canceller
+    // but not the scheduler would otherwise hand a timeout id to the
+    // wrong canceller and leak the callback.
+    const handle = hasIdle
+      ? w.requestIdleCallback!(() => void run(), { timeout: IDLE_DEADLINE_MS })
+      : (setTimeout(() => void run(), 0) as unknown as number);
 
     return () => {
       cancelled = true;
-      if (typeof window !== 'undefined') {
-        const cancel = (
-          window as unknown as { cancelIdleCallback?: (h: number) => void }
-        ).cancelIdleCallback;
-        if (cancel) cancel(idle);
-        else clearTimeout(idle);
-      }
+      if (hasIdle) w.cancelIdleCallback?.(handle);
+      else clearTimeout(handle);
     };
   }, [
     watermark,

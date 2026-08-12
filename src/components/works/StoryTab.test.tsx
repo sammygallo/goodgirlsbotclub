@@ -630,3 +630,63 @@ describe('stale scene flagging', () => {
     await waitFor(() => expect(storeActions.flagScenesStale).toHaveBeenCalledWith(['s2']));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scheduling of the drift check
+// ---------------------------------------------------------------------------
+
+describe('drift check scheduling', () => {
+  it('schedules with a TIMEOUT so an idle callback cannot starve', async () => {
+    // The bug this pins: `requestIdleCallback(cb)` with no `timeout` is
+    // run only when the browser feels idle, and it is entitled to never
+    // feel idle. On production the banner stayed hidden until a full
+    // page reload for exactly this reason.
+    //
+    // jsdom does not implement requestIdleCallback, so the rest of this
+    // suite silently exercises the setTimeout fallback and could never
+    // have caught it. Install a stub so the real branch is taken.
+    const calls: ({ timeout?: number } | undefined)[] = [];
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (h: number) => void;
+    };
+    w.requestIdleCallback = (_cb, opts) => {
+      calls.push(opts);
+      // Deliberately NEVER invoke cb — this models a page that never
+      // goes idle, which is the failing condition.
+      return 1;
+    };
+    w.cancelIdleCallback = () => {};
+
+    try {
+      getChatMessages.mockResolvedValue({
+        messages: [rawMsg('m0', 'one'), rawMsg('m1', 'two')],
+      });
+      setup({ watermark: await watermarkFor('m0', 'one', 1), chunkPlan: pinnedPlan(1) });
+
+      render(<StoryTab project={PROJECT} canManage />);
+      await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+
+      // Every scheduling must carry a bounded deadline.
+      for (const opts of calls) {
+        expect(opts?.timeout).toBeTypeOf('number');
+        expect(opts!.timeout).toBeGreaterThan(0);
+      }
+    } finally {
+      delete w.requestIdleCallback;
+      delete w.cancelIdleCallback;
+    }
+  });
+
+  it('still runs the check when requestIdleCallback is unavailable', async () => {
+    // The fallback path jsdom actually takes. Guards against a fix that
+    // makes the idle path correct while breaking the plain-timeout one.
+    getChatMessages.mockResolvedValue({
+      messages: [rawMsg('m0', 'one'), rawMsg('m1', 'two')],
+    });
+    setup({ watermark: await watermarkFor('m0', 'one', 1), chunkPlan: pinnedPlan(1) });
+
+    render(<StoryTab project={PROJECT} canManage />);
+    expect(await screen.findByText(/1 new message since this story was built/i)).toBeTruthy();
+  });
+});
