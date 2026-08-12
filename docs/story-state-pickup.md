@@ -1,5 +1,13 @@
 # Story-state (productization step 2) — session pickup
 
+> **⚠️ This document is a historical snapshot, last accurate 2026-07-30.**
+> **Step 2 is complete** — all phases 0–11 are merged and deployed as of
+> 2026-08-12. In particular, the "Phase 7 is draft, gated on the soak"
+> warning below is **no longer true**; that gate cleared and Phase 7 merged.
+> For current work see
+> [story-state-step3-plan.md](story-state-step3-plan.md) (renderers). Read
+> the phase tables below as history, not as state.
+
 Hand-off notes for continuing this work in a fresh session. The plan is
 [story-state-step2-plan.md](story-state-step2-plan.md) (phases 0–11 now,
 plus a resolved-decisions section 4 — read both before re-litigating
