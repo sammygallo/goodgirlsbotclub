@@ -8,15 +8,29 @@
 
 import type { MsgRef } from '../../types/storyBible';
 
-/** Passes in the order they run. `annotate` is deliberately absent: its
- *  only consumer is a step-3 renderer, so running it now would spend the
- *  user's tokens on output nothing reads (plan scope). */
+/** Passes in the order they run, plus the two that are not part of that
+ *  order at all.
+ *
+ *  `review` is a human checkpoint the pipeline cannot tick off. `annotate`
+ *  (step 3 phase 2) is a SEPARATE ENTRY POINT — it is re-runnable and
+ *  idempotent per scene where the linear pipeline is neither, and keeping
+ *  it out of `run()` is what stops it from ever reaching
+ *  `runTranscriptWalkPass` (step-3 plan §3.3). Earlier revisions of this
+ *  comment said annotate was excluded because nothing read its output;
+ *  step 3's renderer is that reader, and schema 1.2 added the value
+ *  backend-side.
+ *
+ *  Adding a value here is a BACKEND-FIRST change: `IngestPass` is a strict
+ *  `Literal` in ggbc-backend's `app/schemas/story.py`, so an older server
+ *  422s the entire ingestion-section body rather than ignoring the unknown
+ *  value. */
 export type IngestPass =
   | 'cold_start'
   | 'wi_replay'
   | 'transcript_walk'
   | 'reconcile'
-  | 'review';
+  | 'review'
+  | 'annotate';
 
 export type IngestStatus = 'idle' | 'running' | 'paused' | 'complete' | 'error';
 

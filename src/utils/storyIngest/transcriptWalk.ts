@@ -20,14 +20,17 @@ import {
   chatMessageSourceRef,
   deterministicUuid,
 } from '../storyBible/sourceRefs';
-import type {
-  BibleFact,
-  Confidence,
-  ExcludedSegment,
-  FactCategory,
-  MsgRef,
-  Scene,
-  SwipeResolution,
+import {
+  STALE_ANNOTATION_FLAG,
+  type BibleFact,
+  type Confidence,
+  type ExcludedSegment,
+  type FactCategory,
+  type MsgRef,
+  type Scene,
+  type SceneFunction,
+  type SceneTransformations,
+  type SwipeResolution,
 } from '../../types/storyBible';
 import {
   WALK_REPAIR_INSTRUCTION,
@@ -65,6 +68,16 @@ export interface OpenSceneCarry {
   excludedSegments: ExcludedSegment[];
   swipeResolutions: SwipeResolution[];
   totalMessages: number;
+  /** The annotate pass's output on this scene, carried so a continuation
+   *  does not destroy it (step-3 plan §3.9a).
+   *
+   *  This module cannot fetch it — it never touches storyApi — so the
+   *  store populates both fields at the reopen, where it already reads the
+   *  full scene row. They are `undefined` on a carry minted mid-walk from
+   *  a scene this run created, which is correct: a scene the walk just
+   *  minted has no annotation to preserve. */
+  function?: SceneFunction | null;
+  transformations?: SceneTransformations | null;
   /** Last known `server_ts` for this scene row (0 = never written yet). */
   serverTs: number;
 }
@@ -106,6 +119,65 @@ export interface ProcessChunkParams {
    *  module never touches usageStore itself. */
   llm: LlmCall;
   signal?: AbortSignal;
+}
+
+// ---------------------------------------------------------------------------
+// Annotation preservation (step-3 plan §3.9a)
+// ---------------------------------------------------------------------------
+
+/**
+ * Carry a stored scene's annotation onto a re-emitted version of it.
+ *
+ * The walk re-emits a scene under three shipped paths — the cross-chunk
+ * open-scene carry, a resumed walk replaying the chunk it died in, and
+ * phase 11's reuse-and-extend — and every one writes a full-replace scene
+ * body. `processChunk` handles the first from `OpenSceneCarry`; this
+ * handles the other two, from the row the server already holds, and the
+ * store calls it on the bulk write's conflict path (which is precisely
+ * "this scene already exists").
+ *
+ * The guard is the plan's, verbatim: same scene id (the caller pairs the
+ * rows by id), same `source.message_range.start`, and the new range
+ * CONTAINS the old. Containment is checked on `total_messages` rather than
+ * on the end ref, because `MsgRef` carries no ordering — with an identical
+ * start, a message count that did not shrink is the mechanical statement
+ * of "the new range covers everything the old one did".
+ *
+ * Deliberately NOT "message range unchanged": a continuing scene always
+ * gets a new end, so the stricter guard would exclude every path that
+ * actually occurs.
+ */
+export function preserveAnnotation(incoming: Scene, stored: Scene): Scene {
+  // The incoming row already carries an annotation (the open-scene carry
+  // got there first) — nothing to restore, and the stored row is the older
+  // of the two readings.
+  if (incoming.function || incoming.transformations) return incoming;
+  if (!stored.function && !stored.transformations) return incoming;
+
+  const storedStart = stored.source?.message_range?.start?.msg_id;
+  const incomingStart = incoming.source?.message_range?.start?.msg_id;
+  if (!storedStart || storedStart !== incomingStart) return incoming;
+
+  const storedTotal = stored.source?.total_messages ?? 0;
+  const incomingTotal = incoming.source?.total_messages ?? 0;
+  // The range SHRANK: the new scene is not the old one plus more, so its
+  // annotation is not a stale reading of this material — it is a reading
+  // of material this scene no longer holds.
+  if (incomingTotal < storedTotal) return incoming;
+
+  const widened = incomingTotal > storedTotal;
+  const existingFlags = incoming.annotations?.flagged_issues ?? [];
+  return {
+    ...incoming,
+    function: stored.function ?? null,
+    transformations: stored.transformations ?? null,
+    annotations: {
+      ...incoming.annotations,
+      flagged_issues: widened
+        ? [...existingFlags.filter((f) => f !== STALE_ANNOTATION_FLAG), STALE_ANNOTATION_FLAG]
+        : existingFlags,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +549,26 @@ export async function processChunk(
       sceneFactIds.push(factId);
     }
 
+    // Annotations the annotate pass wrote survive a re-emission (step-3
+    // plan §3.9a). Writing `null` here unconditionally — as this did until
+    // step 3 — silently discarded work the user paid for and corrected,
+    // on every cross-chunk carry, every resumed walk and every incremental
+    // extension.
+    //
+    // The guard the plan states is "same id, same `message_range.start`,
+    // and the new range contains the old". A continuation satisfies all
+    // three by construction: it reuses `carry.sceneId` and
+    // `carry.rangeStart` above, and `totalMessages` is the carry's total
+    // PLUS this chunk's messages, so the range always extends. It is the
+    // extension that makes the marker mandatory rather than optional — the
+    // beat and compression target were computed for strictly less material
+    // than the scene now holds.
+    const carriedFunction = isContinuing ? (carry!.function ?? null) : null;
+    const carriedTransformations = isContinuing
+      ? (carry!.transformations ?? null)
+      : null;
+    const annotationCarried = carriedFunction !== null || carriedTransformations !== null;
+
     const sceneData: Scene = {
       id: sceneId,
       sequence: sceneSequence,
@@ -486,7 +578,7 @@ export async function processChunk(
       setting: { location_ref: null, time_ref: null, atmosphere: '' },
       participants: participantIds,
       pov_character: null,
-      function: null,
+      function: carriedFunction,
       source: {
         message_range: { start: rangeStartRef, end: endRef },
         total_messages: totalMessages,
@@ -494,11 +586,11 @@ export async function processChunk(
         excluded_segments: excludedSegments,
       },
       continuity_facts_established: sceneFactIds,
-      transformations: null,
+      transformations: carriedTransformations,
       annotations: {
         user_notes: '',
         author_intent: '',
-        flagged_issues: [],
+        flagged_issues: annotationCarried ? [STALE_ANNOTATION_FLAG] : [],
         stale_source: false,
       },
     };
@@ -520,6 +612,12 @@ export async function processChunk(
             excludedSegments,
             swipeResolutions,
             totalMessages,
+            // Whatever this scene ends the chunk holding — the carried
+            // annotation for a continuing scene, null for one this chunk
+            // minted. Dropping them here would preserve the annotation
+            // across ONE chunk boundary and lose it at the next.
+            function: carriedFunction,
+            transformations: carriedTransformations,
             // PLACEHOLDER — this is the base_ts we're ABOUT to write with,
             // not the resulting server_ts. The caller MUST overwrite this
             // field with the real `server_ts` from the bulk-write response

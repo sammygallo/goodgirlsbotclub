@@ -2217,6 +2217,25 @@ export interface StoryScenePage {
   has_more: boolean;
 }
 
+/** GET /story/scenes/full — whole scene rows rather than the list
+ *  projection, for the callers that need `data` on every scene (the
+ *  annotate pass, and step 3's context assembler and exporter).
+ *
+ *  Its own route and its own page type, not a flag on `listScenes`: a
+ *  response model is per-route, so full rows returned through
+ *  `StoryScenePage`'s shape would be silently stripped of `data` rather
+ *  than erroring. */
+export interface StoryFullScenePage {
+  items: StorySceneOut[];
+  next_after_sequence: number | null;
+  next_after_id: string | null;
+  has_more: boolean;
+  /** True when the server's byte budget ended this page before its row
+   *  limit did. The cursor points at the last row INCLUDED, so resuming
+   *  picks up the first row the cut dropped. */
+  truncated_by_bytes: boolean;
+}
+
 export interface StoryLogEntry {
   /** Per-project cursor, dense and commit-ordered. */
   seq: number;
@@ -2639,6 +2658,27 @@ export const storyApi = {
     const qs = q.toString();
     return apiRequest<StoryScenePage>(
       `/projects/${projectId}/story/scenes${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  /** Whole scene rows in bulk — the N+1 killer. `listScenes` returns a
+   *  SQL projection with no `data`; this returns `SceneOut` rows, under a
+   *  tighter row limit (max 100) AND a server-side byte budget that can
+   *  end a page early. Callers must page until `has_more` is false rather
+   *  than assuming one call covers the bible. */
+  async listScenesFull(
+    projectId: string,
+    opts: { afterSequence?: number; afterId?: string; limit?: number } = {}
+  ): Promise<StoryFullScenePage> {
+    const q = new URLSearchParams();
+    if (opts.afterSequence !== undefined) {
+      q.set('after_sequence', String(opts.afterSequence));
+    }
+    if (opts.afterId) q.set('after_id', opts.afterId);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return apiRequest<StoryFullScenePage>(
+      `/projects/${projectId}/story/scenes/full${qs ? `?${qs}` : ''}`
     );
   },
 

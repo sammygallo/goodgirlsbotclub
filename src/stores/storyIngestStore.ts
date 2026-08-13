@@ -10,7 +10,16 @@ import {
 import { showToastGlobal } from '../components/ui/Toast';
 import { useUsageStore } from './usageStore';
 import { estimateTokens } from '../utils/tokenizer';
-import { runColdStart } from '../utils/storyIngest/coldStart';
+import { mergeRenderingHints, runColdStart } from '../utils/storyIngest/coldStart';
+import {
+  annotateScene,
+  applyAnnotation,
+  detectStructure,
+  mergeNarrativeStructure,
+  needsAnnotation,
+  STRUCTURE_SCENE_LIMIT,
+  type StructureSceneRef,
+} from '../utils/storyIngest/annotate';
 import { PROMPT_VERSION } from '../utils/storyIngest/prompts';
 import { replaySupported, replayWorldInfo } from '../utils/storyIngest/wiReplay';
 import type { ReplayEntry } from '../utils/storyIngest/wiReplay';
@@ -22,6 +31,7 @@ import {
 } from '../utils/storyIngest/transcriptChunker';
 import { buildMsgRef } from '../utils/storyBible/sourceRefs';
 import {
+  preserveAnnotation,
   processChunk,
   type KnownCastMember,
   type OpenSceneCarry,
@@ -41,8 +51,14 @@ import {
   runCardChecks,
   runGroupJudge,
 } from '../utils/storyIngest/reconcileJudge';
-import { isFactTombstone } from '../types/storyBible';
-import type { BibleFact, Contradiction, FactCategory, Scene } from '../types/storyBible';
+import { isFactTombstone, STALE_ANNOTATION_FLAG } from '../types/storyBible';
+import type {
+  BibleFact,
+  Contradiction,
+  FactCategory,
+  NarrativeSection,
+  Scene,
+} from '../types/storyBible';
 import {
   emptyCheckpoint,
   type ColdStartSources,
@@ -67,8 +83,16 @@ import {
  */
 
 /** Passes the pipeline runs, in order — the progress checklist renders
- *  from this. `review` is deliberately absent: it is a phase-10 human
- *  checkpoint, not something this pipeline can tick off. */
+ *  from this. Two `IngestPass` values are deliberately absent, for
+ *  different reasons:
+ *
+ *  - `review` is a phase-10 human checkpoint, not something this pipeline
+ *    can tick off.
+ *  - `annotate` (step 3) is a separate entry point, not a step of `run()`
+ *    — see `runAnnotate`. Adding it here would re-scale
+ *    `IngestProgressCard`'s progress bar (`total = INGEST_PASSES.length`)
+ *    by a pass a build never runs, so a completed build would stall the
+ *    bar at four fifths forever. */
 export const INGEST_PASSES: IngestPass[] = [
   'cold_start',
   'wi_replay',
@@ -83,12 +107,16 @@ export const INGEST_PASSES: IngestPass[] = [
 const WALK_CONFIRM_MESSAGE = (chunkCount: number) =>
   `This chat is long — about ${chunkCount} chunks to read, which will take a while and spend more of your key than usual. Build again to confirm.`;
 
+/** A label for EVERY pass, including the two `INGEST_PASSES` omits — the
+ *  checklist renders a subset, but any pass can appear as `current_pass`
+ *  in a persisted checkpoint. */
 export const PASS_LABELS: Record<IngestPass, string> = {
   cold_start: 'Reading the character and lorebooks',
   wi_replay: 'Checking which lore the story used',
   transcript_walk: 'Reading the chat',
   reconcile: 'Checking for contradictions',
   review: 'Ready for review',
+  annotate: 'Reading the shape of each scene',
 };
 
 /** A soft lock older than this is treated as abandoned (tab closed
@@ -129,6 +157,17 @@ export interface IngestRunInput {
   hasNewMessages?: boolean;
 }
 
+/** What the annotate entry point needs. Deliberately tiny next to
+ *  `IngestRunInput`: annotate reads the bible the server already holds,
+ *  so it needs no card sources, no transcript and no lorebooks. */
+export interface AnnotateRunInput {
+  projectId: string;
+  /** Calls the model on the user's key. Required — unlike cold start,
+   *  this pass has no mechanical half to fall back on. */
+  llm: LlmCall;
+  model?: string | null;
+}
+
 interface StoryIngestState {
   projectId: string | null;
   checkpoint: IngestCheckpoint | null;
@@ -137,11 +176,21 @@ interface StoryIngestState {
   currentPass: IngestPass | null;
   /** Passes finished in THIS run — drives the progress checklist. */
   completed: IngestPass[];
+  /** Per-scene progress for an annotate run. Null for a build: annotate
+   *  is not in `INGEST_PASSES`, so the pass checklist cannot represent it
+   *  and the card renders a scene counter instead. */
+  annotateProgress: { done: number; total: number } | null;
   error: string | null;
   abort: AbortController | null;
 
   loadCheckpoint: (projectId: string) => Promise<void>;
   run: (input: IngestRunInput) => Promise<boolean>;
+  /** The annotate pass (step 3 phase 2). A SEPARATE entry point from
+   *  `run()`, not a step of it: annotate is re-runnable and idempotent per
+   *  scene where the linear pipeline is neither, and an entry point that
+   *  never reaches `runTranscriptWalkPass` is what makes a parked annotate
+   *  safe to resume without widening that pass's inner gate. */
+  runAnnotate: (input: AnnotateRunInput) => Promise<boolean>;
   cancel: () => void;
   /** Escape hatch: clear a wedged checkpoint (stale lock, error state,
    *  prompt-version mismatch) without touching the bible itself. */
@@ -204,6 +253,7 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
   isRunning: false,
   currentPass: null,
   completed: [],
+  annotateProgress: null,
   error: null,
   abort: null,
 
@@ -229,6 +279,7 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       isRunning: false,
       currentPass: null,
       completed: [],
+      annotateProgress: null,
       error: null,
       abort: null,
     });
@@ -361,6 +412,29 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       existing.current_pass === 'reconcile' &&
       !input.hasNewMessages;
 
+    // Step 3's annotate pass parks on this same checkpoint, and a parked
+    // annotate is not merely an unrecognized state — without this it is
+    // MISCLASSIFIED as a fresh build, which re-pays cold start and
+    // re-walks the entire chat. Annotate only ever runs on a bible whose
+    // pipeline has settled (`runAnnotate` refuses otherwise), so
+    // everything upstream of reconcile is durable exactly as it is for
+    // `resumableReconcile` — which is why this shares that predicate's
+    // shape, its missing status check (both 'paused' and 'error' resume
+    // cheaply) and its `hasNewMessages` narrowing.
+    //
+    // The inner gate in `runTranscriptWalkPass` is NOT widened to match.
+    // The store's own note above spells out where that ends: widening one
+    // gate re-bills the whole chat, and widening both lands in
+    // `sliceChunksFromPlan`, where a deleted chunk-boundary message trips
+    // 'diverged' and tells the user to Reset story — destroying a
+    // complete, fully-paid bible. The shipped reconcile fix widened
+    // neither, and the walk-block skip below is how it stays that way.
+    const resumableAnnotate =
+      existing !== null &&
+      existing.prompt_version === PROMPT_VERSION &&
+      existing.current_pass === 'annotate' &&
+      !input.hasNewMessages;
+
     // Phase 11's third mode: a bible that already walked this chat to
     // completion (or parked in reconcile) and has since grown. It shares
     // resumableWalk's "cold start's output is load-bearing, read it back"
@@ -376,7 +450,11 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       !!input.hasNewMessages;
 
     /** Any mode that continues an existing bible rather than rebuilding. */
-    const continuingBuild = resumableWalk || resumableReconcile || incrementalWalk;
+    const continuingBuild =
+      resumableWalk || resumableReconcile || resumableAnnotate || incrementalWalk;
+    /** The two modes whose upstream passes are all durable, so the walk
+     *  block is skipped entirely. */
+    const skipWalkBlock = resumableReconcile || resumableAnnotate;
 
     // §5.2's must-not, ENFORCED rather than assumed. The watermark lives
     // in `meta` and the chunk plan in `ingestion`, and those sections have
@@ -396,18 +474,19 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     }
 
     set({
-      currentPass: resumableReconcile
+      currentPass: skipWalkBlock
         ? 'reconcile'
         : resumableWalk || incrementalWalk
           ? 'transcript_walk'
           : 'cold_start',
       // Passes that genuinely completed in the ORIGINAL run — show them
       // as done rather than reverting the checklist.
-      completed: resumableReconcile
+      completed: skipWalkBlock
         ? ['cold_start', 'wi_replay', 'transcript_walk']
         : resumableWalk || incrementalWalk
           ? ['cold_start', 'wi_replay']
           : [],
+      annotateProgress: null,
     });
 
     let checkpoint: IngestCheckpoint = continuingBuild
@@ -616,7 +695,15 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
 
         await writeSection(projectId, 'entities', cold.entities);
         await writeSection(projectId, 'world', cold.world);
-        await writeSection(projectId, 'rendering_hints', cold.renderingHints);
+        // MERGED, not replaced (step-3 plan §3.9b). `rendering_hints` is a
+        // field group step 3 owns — the Render tab's hints editor writes
+        // `novel` — and this write is reachable from "Rebuild the
+        // groundwork" with no reset and therefore no archive. Replacing it
+        // discarded a POV, a chapter plan and a set of style anchors the
+        // user had chosen, with nothing to restore from.
+        await writeSectionMerged(projectId, 'rendering_hints', (existing) =>
+          mergeRenderingHints(cold.renderingHints, existing)
+        );
 
         if (abort.signal.aborted) throw abortError();
         set({ completed: ['cold_start'], currentPass: 'wi_replay' });
@@ -695,11 +782,12 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
       // extension leaves it null.
       let newFactIds: Set<string> | null = null;
 
-      // A reconcile-resume skips this entire block. It must NEVER call
-      // runTranscriptWalkPass (which would re-bill the whole chat) and
-      // never re-synthesize user_voice — both are already durable, which
-      // is exactly what `current_pass: 'reconcile'` records.
-      if (!resumableReconcile) {
+      // A reconcile-resume or an annotate-resume skips this entire block.
+      // It must NEVER call runTranscriptWalkPass (which would re-bill the
+      // whole chat) and never re-synthesize user_voice — both are already
+      // durable, which is exactly what `current_pass: 'reconcile'` (or
+      // 'annotate', which only ever parks on a settled pipeline) records.
+      if (!skipWalkBlock) {
         // ---- pass 2: transcript walk ---------------------------------
         set({ currentPass: 'transcript_walk' });
         checkpoint = {
@@ -971,6 +1059,394 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
     }
   },
 
+  runAnnotate: async (input) => {
+    const { projectId } = input;
+    // Same synchronous claim as run(): reading and setting the flag either
+    // side of an await lets two clicks in one tick both start a paid pass.
+    // It is also what makes annotate and Build mutually exclusive without
+    // a second flag — they share this one.
+    if (get().isRunning) return false;
+    const abort = new AbortController();
+    set({
+      isRunning: true,
+      abort,
+      error: null,
+      completed: [],
+      annotateProgress: null,
+      currentPass: 'annotate',
+      projectId,
+    });
+
+    const stillOurs = () => get().projectId === projectId && get().abort === abort;
+    const finish = (patch: Partial<StoryIngestState>) => {
+      if (get().abort === abort) {
+        set({
+          isRunning: false,
+          abort: null,
+          currentPass: null,
+          annotateProgress: null,
+          ...patch,
+        });
+      }
+    };
+
+    try {
+      await get().loadCheckpoint(projectId);
+    } catch (error) {
+      finish({
+        error: error instanceof Error ? error.message : 'Failed to read build state',
+      });
+      showToastGlobal('Could not read the build state — try again', 'error');
+      return false;
+    }
+
+    const existing = get().checkpoint;
+    if (existing?.status === 'running' && !lockIsStale(existing)) {
+      showToastGlobal('This story is already being worked on another device', 'warning');
+      finish({});
+      return false;
+    }
+
+    // Annotate REFUSES on a checkpoint parked mid-pipeline, and this is
+    // load-bearing rather than tidy. `current_pass` is one field: writing
+    // 'annotate' over a parked 'transcript_walk' would destroy the only
+    // signal `resumableWalk` reads, turning a paid, half-finished walk
+    // into a fresh rebuild — the same class of loss `resumableAnnotate`
+    // exists to prevent, caused from the other direction. It is also what
+    // lets `resumableAnnotate` assert that everything upstream is durable.
+    //
+    // 'review' passes: it is a human checkpoint, never a pass in flight.
+    const parkedPass = existing?.current_pass ?? null;
+    if (parkedPass !== null && parkedPass !== 'annotate' && parkedPass !== 'review') {
+      const message =
+        'Finish or clear the story build before annotating — annotating now would lose its progress.';
+      finish({ error: message });
+      showToastGlobal(message, 'warning');
+      return false;
+    }
+
+    // Seeded from the EXISTING checkpoint, never from emptyCheckpoint():
+    // chunk_plan, chunk_index, last_ingested and open_scene are what make
+    // a future Build incremental rather than a full re-walk, and this pass
+    // has no business touching any of them. prompt_version rides along for
+    // the same reason — stamping the current one over a stale checkpoint
+    // would make an unresumable walk look resumable.
+    let checkpoint: IngestCheckpoint = {
+      ...(existing ?? emptyCheckpoint(PROMPT_VERSION)),
+      status: 'running',
+      current_pass: 'annotate',
+      model: input.model ?? existing?.model ?? null,
+      error: '',
+      lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
+    };
+
+    let inputTokens = checkpoint.token_usage.input_tokens;
+    let outputTokens = checkpoint.token_usage.output_tokens;
+
+    // Deliberately a second, smaller copy of run()'s saveCheckpoint rather
+    // than a shared helper: that one closes over a pass sequence's worth of
+    // state (chunk bookkeeping, the walk's outcome, reconcile's notes) and
+    // is the single choke point three phases of review fixes landed in.
+    // The fold below is the part that must not diverge — live spend becomes
+    // durable spend here and nowhere else.
+    const saveCheckpoint = async (next: IngestCheckpoint) => {
+      const folded: IngestCheckpoint = {
+        ...next,
+        token_usage: {
+          ...next.token_usage,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+        },
+      };
+      checkpoint = folded;
+      try {
+        const section = await putIngestion(projectId, folded, get().checkpointTs);
+        set({ checkpoint: folded, checkpointTs: section.server_ts });
+      } catch (error) {
+        if (error instanceof StoryConflictError) {
+          const section = await putIngestion(projectId, folded, error.currentTs);
+          set({ checkpoint: folded, checkpointTs: section.server_ts });
+        } else {
+          throw error;
+        }
+      }
+    };
+
+    const heartbeat = setInterval(() => {
+      if (!stillOurs()) {
+        clearInterval(heartbeat);
+        return;
+      }
+      if (!get().isRunning) return;
+      void saveCheckpoint({
+        ...checkpoint,
+        lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
+      }).catch(() => {
+        // A missed heartbeat is not fatal — the next scene's write refreshes it.
+      });
+    }, LOCK_STALE_MS / 2);
+
+    try {
+      await saveCheckpoint(checkpoint);
+
+      let consecutiveFailures = 0;
+      const countingLlm: LlmCall = async (msgs, opts) => {
+        const sent = msgs.reduce((n, m) => n + estimateTokens(m.content), 0);
+        try {
+          const reply = await input.llm(msgs, { ...opts, signal: abort.signal });
+          const got = estimateTokens(reply);
+          inputTokens += sent;
+          outputTokens += got;
+          useUsageStore.getState().recordGeneration(sent, got);
+          set((st) => ({
+            checkpoint: st.checkpoint
+              ? {
+                  ...st.checkpoint,
+                  token_usage: {
+                    ...st.checkpoint.token_usage,
+                    input_tokens: inputTokens,
+                    output_tokens: outputTokens,
+                  },
+                }
+              : st.checkpoint,
+          }));
+          consecutiveFailures = 0;
+          return reply;
+        } catch (error) {
+          // A request that reached the provider costs money even when the
+          // response never arrives.
+          if ((error as Error)?.name !== 'AbortError') {
+            inputTokens += sent;
+            useUsageStore.getState().recordGeneration(sent, 0);
+            consecutiveFailures++;
+          }
+          throw error;
+        }
+      };
+
+      const scenes = await loadAllScenesFull(projectId);
+      if (abort.signal.aborted) throw abortError();
+      if (!stillOurs()) return false;
+      if (scenes.length === 0) {
+        const message = 'There are no scenes to annotate yet — build the story first.';
+        await saveCheckpoint({
+          ...checkpoint,
+          status: 'complete',
+          current_pass: null,
+          error: '',
+          lock: null,
+        });
+        finish({});
+        showToastGlobal(message, 'warning');
+        return false;
+      }
+
+      // One paging run over the fact log, not one request per scene: the
+      // renderer's brief will want the same index, and `listFacts` has a
+      // `scene_id` filter that would make this N round trips.
+      const { facts } = await loadAllFacts(projectId);
+      const factById = new Map(facts.map((f) => [f.id, f.text]));
+      const factsByScene = new Map<string, string[]>();
+      for (const fact of facts) {
+        if (!fact.established_in) continue;
+        const list = factsByScene.get(fact.established_in) ?? [];
+        list.push(fact.text);
+        factsByScene.set(fact.established_in, list);
+      }
+
+      const parsed = scenes.map((row) => row.data as unknown as Scene);
+      const pending = parsed
+        .map((scene, i) => ({ scene, i }))
+        .filter(({ scene }) => needsAnnotation(scene));
+
+      set({ annotateProgress: { done: 0, total: pending.length } });
+
+      let unreadable = 0;
+      let annotated = 0;
+      for (const { scene, i } of pending) {
+        if (abort.signal.aborted) throw abortError();
+        if (!stillOurs()) return false;
+
+        // Scene facts, three sources deduped: the scene's own derived
+        // index, the log rows attributed to it, and nothing else — a
+        // bible-wide fact tail is the RENDERER's problem (plan §3.5), not
+        // this pass's, which is annotating one scene on its own terms.
+        const texts = Array.from(
+          new Set([
+            ...scene.continuity_facts_established
+              .map((id) => factById.get(id))
+              .filter((t): t is string => !!t),
+            ...(factsByScene.get(scene.id) ?? []),
+          ])
+        );
+
+        // A hard call failure costs THIS scene, not the pass. Every
+        // annotated scene is already durable and `needsAnnotation` skips
+        // it next time, so ending a 60-scene run on one provider blip
+        // would throw away nothing — but it would make the user press the
+        // button again for no reason. A dead connection is different, and
+        // MAX_CONSECUTIVE_ANNOTATE_FAILURES is where the two are told
+        // apart: past it, the pass stops rather than billing input tokens
+        // for every remaining scene against a provider that is not
+        // answering.
+        let outcome: Awaited<ReturnType<typeof annotateScene>>;
+        try {
+          outcome = await annotateScene({
+            scene,
+            position: i + 1,
+            totalScenes: parsed.length,
+            previousSummary: i > 0 ? parsed[i - 1].detailed_summary : '',
+            factTexts: texts,
+            llm: countingLlm,
+            signal: abort.signal,
+          });
+        } catch (error) {
+          if ((error as Error)?.name === 'AbortError') throw error;
+          if (consecutiveFailures >= MAX_CONSECUTIVE_ANNOTATE_FAILURES) {
+            throw new Error(
+              `The model stopped responding after ${consecutiveFailures} tries — annotation stopped. Nothing already annotated was lost.`
+            );
+          }
+          unreadable++;
+          set((st) => ({
+            annotateProgress: st.annotateProgress
+              ? { ...st.annotateProgress, done: st.annotateProgress.done + 1 }
+              : st.annotateProgress,
+          }));
+          continue;
+        }
+
+        if (outcome.annotation) {
+          const next = applyAnnotation(scene, outcome.annotation);
+          await putSceneWithRetry(projectId, scene.id, next, scenes[i].server_ts);
+          parsed[i] = next;
+          annotated++;
+        } else {
+          unreadable++;
+        }
+
+        if (abort.signal.aborted) throw abortError();
+        if (!stillOurs()) return false;
+        set((st) => ({
+          annotateProgress: st.annotateProgress
+            ? { ...st.annotateProgress, done: st.annotateProgress.done + 1 }
+            : st.annotateProgress,
+        }));
+        // Per-scene, mirroring the walk's per-chunk save: the write above
+        // IS the durable progress record (an annotated scene is skipped by
+        // `needsAnnotation` on the next run), so this only carries spend
+        // and the heartbeat.
+        await saveCheckpoint({
+          ...checkpoint,
+          lock: { client_id: CLIENT_ID, heartbeat_at: new Date().toISOString() },
+        });
+      }
+
+      // A run where nothing could be read has no beat map to detect a
+      // structure from, and spending one more call on the same connection
+      // would buy a reading of "unknown" for every scene.
+      if (annotated > 0 || unreadable === 0) {
+        const refs: StructureSceneRef[] = parsed.map((scene) => ({
+          id: scene.id,
+          title: scene.title,
+          beat: scene.function?.beat ?? null,
+          tension: scene.function?.tension ?? null,
+        }));
+        const structure = await detectStructure({
+          scenes: refs,
+          llm: countingLlm,
+          signal: abort.signal,
+        });
+        if (abort.signal.aborted) throw abortError();
+        if (!stillOurs()) return false;
+        if (structure.structure) {
+          // Read-merged: `writeSection` is a documented FULL REPLACE and
+          // this pass owns exactly one key of `narrative`.
+          const detected = structure.structure;
+          await writeSectionMerged(projectId, 'narrative', (existingSection) =>
+            mergeNarrativeStructure(
+              existingSection as Partial<NarrativeSection> | null,
+              detected
+            )
+          );
+        }
+      }
+
+      const notes: string[] = [];
+      if (unreadable > 0) {
+        notes.push(
+          `${unreadable} ${unreadable === 1 ? 'scene' : 'scenes'} could not be read and ${unreadable === 1 ? 'was' : 'were'} left unannotated.`
+        );
+      }
+      if (parsed.length > STRUCTURE_SCENE_LIMIT) {
+        notes.push(
+          `Only the first ${STRUCTURE_SCENE_LIMIT} scenes were used to detect the story's structure.`
+        );
+      }
+      const note = notes.join(' ').slice(0, 500);
+
+      await saveCheckpoint({
+        ...checkpoint,
+        status: 'complete',
+        current_pass: null,
+        error: note,
+        lock: null,
+      });
+
+      // The Story tab holds `narrative` only when something asked for it —
+      // `load`'s `wanted` list does not include it (nor `rendering_hints`).
+      // Lazy import for the same reason every other reach into storyStore
+      // is lazy: neither store may statically edge to the other.
+      try {
+        const mod = await import('./storyStore');
+        if (mod.useStoryStore.getState().projectId === projectId) {
+          await mod.useStoryStore.getState().loadSection('narrative');
+        }
+      } catch {
+        // A missed refresh costs a stale panel until the next load, never
+        // a pass the user already paid for.
+      }
+
+      finish({});
+      showToastGlobal(
+        note
+          ? `Annotated ${annotated} of ${pending.length} scenes — some could not be read`
+          : pending.length === 0
+            ? 'Every scene is already annotated'
+            : `Annotated ${annotated} ${annotated === 1 ? 'scene' : 'scenes'}`,
+        note ? 'warning' : 'success'
+      );
+      return true;
+    } catch (error) {
+      const aborted = (error as Error)?.name === 'AbortError';
+      const message = aborted
+        ? 'Annotation stopped'
+        : error instanceof Error
+          ? error.message
+          : 'Failed to annotate the story';
+      try {
+        // `current_pass` stays 'annotate' — that is what `resumableAnnotate`
+        // reads, and what stops the next Build press re-paying for cold
+        // start and the whole walk.
+        await saveCheckpoint({
+          ...checkpoint,
+          status: aborted ? 'paused' : 'error',
+          error: aborted ? '' : message.slice(0, 500),
+          lock: null,
+        });
+      } catch {
+        // Nothing further to try; the in-memory error below is what the
+        // user sees.
+      }
+      finish({ error: aborted ? null : message });
+      showToastGlobal(message, aborted ? 'warning' : 'error');
+      return false;
+    } finally {
+      clearInterval(heartbeat);
+      finish({});
+    }
+  },
+
   cancel: () => {
     get().abort?.abort();
   },
@@ -1070,10 +1546,71 @@ async function writeSection(
   }
 }
 
+/**
+ * Read-merge-write one section.
+ *
+ * `writeSection` above is a blind full replace, correct for a section a
+ * pass rebuilds wholesale from source. This is for a section the pass
+ * SHARES with the user — it reads first, folds its own body into what is
+ * there, and on a 409 re-reads and re-folds rather than re-PUTting the
+ * body it already computed. Same distinction, and the same reasoning, as
+ * `writeContinuityMerged` further down.
+ */
+async function writeSectionMerged(
+  projectId: string,
+  name: string,
+  merge: (existing: unknown) => unknown
+): Promise<void> {
+  const readAndMerge = async (): Promise<{ body: unknown; baseTs: number }> => {
+    try {
+      const existing = await storyApi.getSection(projectId, name);
+      return { body: merge(existing.data), baseTs: existing.server_ts };
+    } catch (error) {
+      // Only a genuine absence means "nothing to merge with". A network
+      // blip read as 404 would silently overwrite the user's hints with
+      // defaults, which is the exact loss this helper exists to stop.
+      if (!isMissingSection(error)) throw error;
+      return { body: merge(null), baseTs: 0 };
+    }
+  };
+
+  const first = await readAndMerge();
+  try {
+    await storyApi.putSection(
+      projectId,
+      name,
+      first.body as Record<string, unknown>,
+      first.baseTs
+    );
+  } catch (error) {
+    if (error instanceof StoryConflictError) {
+      const again = await readAndMerge();
+      await storyApi.putSection(
+        projectId,
+        name,
+        again.body as Record<string, unknown>,
+        again.baseTs
+      );
+      return;
+    }
+    throw error;
+  }
+}
+
 /** All-or-nothing scene batch write with the standard adopt-and-retry-once
  *  pattern: a bulk 409 lists every conflicting row's CURRENT server_ts,
  *  so a single retry with corrected base_ts values resolves it without
- *  a second round-trip per row. */
+ *  a second round-trip per row.
+ *
+ *  The retry is where step 3's annotation preservation lives (plan §3.9a).
+ *  A conflict on this route means the row already exists — which for the
+ *  walk means this scene is being RE-EMITTED — and the retry used to be a
+ *  blind adopt-and-re-PUT of a body carrying `function: null`. Every
+ *  re-emitted scene therefore lost the annotation the user paid for and
+ *  corrected. The conflicting rows are fetched and folded in instead;
+ *  `preserveAnnotation` owns the guard, and a fetch that fails leaves the
+ *  original body, which is the pre-step-3 behaviour rather than a lost
+ *  write. */
 async function bulkWriteScenesWithRetry(
   projectId: string,
   scenes: SceneBulkItem[]
@@ -1089,11 +1626,144 @@ async function bulkWriteScenesWithRetry(
   } catch (error) {
     if (error instanceof SceneBulkConflictError) {
       const currentTsById = new Map(error.conflicts.map((c) => [c.id, c.currentTs]));
+      const byId = new Map(scenes.map((s) => [s.id, s.data]));
+      const preserved = new Map<string, Record<string, unknown>>();
+      await Promise.all(
+        error.conflicts.map(async (conflict) => {
+          const incoming = byId.get(conflict.id);
+          if (!incoming) return;
+          try {
+            const stored = await storyApi.getScene(projectId, conflict.id);
+            const merged = preserveAnnotation(
+              incoming,
+              stored.data as unknown as Scene
+            );
+            if (merged !== incoming) {
+              preserved.set(conflict.id, merged as unknown as Record<string, unknown>);
+            }
+          } catch {
+            // Best-effort: the write below still lands, exactly as it did
+            // before annotations existed.
+          }
+        })
+      );
       const retried = payload.map((s) =>
-        currentTsById.has(s.id) ? { ...s, baseTs: currentTsById.get(s.id)! } : s
+        currentTsById.has(s.id)
+          ? {
+              ...s,
+              data: preserved.get(s.id) ?? s.data,
+              baseTs: currentTsById.get(s.id)!,
+            }
+          : s
       );
       const res = await storyApi.bulkWriteScenes(projectId, retried);
       return res.scenes;
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Annotate (step 3 phase 2) — server reads and the single-scene write
+// ---------------------------------------------------------------------------
+
+/** Consecutive hard call failures that end an annotate run. One blip
+ *  costs one scene; a provider that has stopped answering must not be
+ *  billed for the input tokens of every remaining scene. */
+const MAX_CONSECUTIVE_ANNOTATE_FAILURES = 3;
+
+/** Rows per full-scene page. Below the server's own ceiling of 100, since
+ *  a full page is whole scene bodies rather than the list projection. */
+const FULL_SCENE_PAGE = 50;
+/** Backstop against a server that never stops saying `has_more` — at 50 a
+ *  page this is 10k scenes, far past anything a chat produces. */
+const MAX_FULL_SCENE_PAGES = 200;
+
+/**
+ * Every scene with its full `data`, in sequence order.
+ *
+ * `GET /scenes/full` (backend step-3 phase 1), NOT `loadAllScenesWithData`:
+ * that one is a summary page followed by one GET per scene, with no cache
+ * and unbounded parallelism, and annotate would promote it to a hot path.
+ *
+ * Pages until `has_more` is false. The server can end a page early on its
+ * own byte budget, so a short page is not a last page — the cursor points
+ * at the last row INCLUDED, so the next request picks up the first row the
+ * cut dropped.
+ */
+async function loadAllScenesFull(projectId: string): Promise<StorySceneOut[]> {
+  const out: StorySceneOut[] = [];
+  let cursor: { sequence: number; id: string } | null = null;
+  for (let page = 0; page < MAX_FULL_SCENE_PAGES; page++) {
+    const res = await storyApi.listScenesFull(projectId, {
+      limit: FULL_SCENE_PAGE,
+      ...(cursor ? { afterSequence: cursor.sequence, afterId: cursor.id } : {}),
+    });
+    out.push(...(res.items ?? []));
+    if (
+      !res.has_more ||
+      res.next_after_sequence === null ||
+      res.next_after_sequence === undefined ||
+      res.next_after_id === null ||
+      res.next_after_id === undefined
+    ) {
+      break;
+    }
+    cursor = { sequence: res.next_after_sequence, id: res.next_after_id };
+  }
+  return out;
+}
+
+/**
+ * Write one annotated scene, adopting the winner's token once on a 409.
+ *
+ * Deliberately NOT `storyStore.patchScene`: that path refuses while the
+ * canon is locked and while a build is active, and annotate is exempt from
+ * both by design (plan §3.3 — the lock is narrowed to *user-authored*
+ * edits, and this pass IS the active build from the checkpoint's point of
+ * view). It also records an edit-log row per call, which would put one
+ * history entry per scene behind a single machine pass.
+ *
+ * The re-read on conflict matters: the winner may be the annotate pass on
+ * another device, or a user retitling the scene. Re-applying only the two
+ * annotation groups onto the WINNER's body is what keeps this from
+ * reverting their edit.
+ */
+async function putSceneWithRetry(
+  projectId: string,
+  sceneId: string,
+  scene: Scene,
+  baseTs: number
+): Promise<void> {
+  try {
+    await storyApi.putScene(
+      projectId,
+      sceneId,
+      scene as unknown as Record<string, unknown>,
+      baseTs
+    );
+  } catch (error) {
+    if (error instanceof StoryConflictError) {
+      const fresh = await storyApi.getScene(projectId, sceneId);
+      const winner = fresh.data as unknown as Scene;
+      const merged: Scene = {
+        ...winner,
+        function: scene.function ?? null,
+        transformations: scene.transformations ?? null,
+        annotations: {
+          ...winner.annotations,
+          flagged_issues: (winner.annotations?.flagged_issues ?? []).filter(
+            (f) => f !== STALE_ANNOTATION_FLAG
+          ),
+        },
+      };
+      await storyApi.putScene(
+        projectId,
+        sceneId,
+        merged as unknown as Record<string, unknown>,
+        fresh.server_ts
+      );
+      return;
     }
     throw error;
   }
@@ -1730,6 +2400,13 @@ async function runTranscriptWalkPass(opts: {
         excludedSegments: data.source.excluded_segments,
         swipeResolutions: data.source.swipe_resolutions,
         totalMessages: data.source.total_messages,
+        // The annotate pass's output, carried so the continuation write
+        // does not null it (step-3 plan §3.9a). This is the one place it
+        // CAN be read: `transcriptWalk` never touches storyApi, its
+        // `ProcessChunkParams` carries no stored scene, and the bulk 409
+        // body is `{id, current_ts}` with no room for it either.
+        function: data.function ?? null,
+        transformations: data.transformations ?? null,
         serverTs: sceneRow.server_ts,
       };
       // Take the max rather than trusting open_scene to be the tail.

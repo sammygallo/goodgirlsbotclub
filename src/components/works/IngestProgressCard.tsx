@@ -15,13 +15,11 @@ import { Button } from '../ui';
  * estimate as if it were a bill is how a fuel gauge loses trust.
  */
 export function IngestProgressCard() {
-  const { isRunning, currentPass, completed, checkpoint, error, cancel } =
+  const { isRunning, currentPass, completed, annotateProgress, checkpoint, error, cancel } =
     useStoryIngestStore();
 
   const usage = checkpoint?.token_usage;
   const spent = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
-  const done = completed.length;
-  const total = INGEST_PASSES.length;
 
   // Stays visible after a stop or failure: hiding it also hides the
   // reset hatch and the token subtotal, which is exactly when the user
@@ -30,15 +28,33 @@ export function IngestProgressCard() {
     checkpoint?.status === 'paused' || checkpoint?.status === 'error';
   if (!isRunning && !error && !stopped) return null;
 
+  // Annotate (step 3) is a separate entry point, not a step of the build
+  // pipeline, so it is deliberately absent from INGEST_PASSES — rendering
+  // it through the pass checklist would show four build passes with none
+  // of them current, and stall the bar. It gets a scene counter instead.
+  const annotating =
+    currentPass === 'annotate' ||
+    (!isRunning && checkpoint?.current_pass === 'annotate');
+  const done = annotating ? (annotateProgress?.done ?? 0) : completed.length;
+  const total = annotating
+    ? (annotateProgress?.total ?? 0)
+    : INGEST_PASSES.length;
+
   return (
     <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)]">
           {isRunning
-            ? 'Building the story'
+            ? annotating
+              ? 'Annotating scenes'
+              : 'Building the story'
             : checkpoint?.status === 'paused'
-              ? 'Build stopped'
-              : 'Build failed'}
+              ? annotating
+                ? 'Annotation stopped'
+                : 'Build stopped'
+              : annotating
+                ? 'Annotation failed'
+                : 'Build failed'}
         </h3>
         {isRunning && (
           <Button variant="secondary" onClick={cancel}>
@@ -47,7 +63,7 @@ export function IngestProgressCard() {
         )}
       </div>
 
-      {isRunning && (
+      {isRunning && total > 0 && (
         <div
           className="h-1.5 rounded-full bg-[var(--color-bg-tertiary)] overflow-hidden"
           role="progressbar"
@@ -62,7 +78,21 @@ export function IngestProgressCard() {
         </div>
       )}
 
-      <ul className="space-y-1">
+      {annotating && (
+        <p className="flex items-center gap-2 text-sm text-[var(--color-text-primary)]">
+          {isRunning ? (
+            <Loader2 size={14} className="animate-spin shrink-0" />
+          ) : (
+            <span className="w-3.5 h-3.5 rounded-full border border-[var(--color-border)] shrink-0" />
+          )}
+          <span>
+            {PASS_LABELS.annotate}
+            {total > 0 ? ` — ${done} of ${total}` : ''}
+          </span>
+        </p>
+      )}
+
+      <ul className={annotating ? 'hidden' : 'space-y-1'}>
         {INGEST_PASSES.map((pass) => {
           const isDone = completed.includes(pass);
           const isCurrent = currentPass === pass;
@@ -105,7 +135,13 @@ export function IngestProgressCard() {
               ENTIRE chat is already paid for and durable — was told
               "starts from the beginning", right beside the button that
               would have made it true. */}
-          {checkpoint?.current_pass === 'transcript_walk' &&
+          {checkpoint?.current_pass === 'annotate'
+            ? // Annotate's durable progress record is the scene rows
+              // themselves — an annotated scene is skipped on the next
+              // run — so a stopped pass genuinely resumes, and a Build
+              // press does NOT restart the pipeline (resumableAnnotate).
+              'Annotating again picks up where it stopped — scenes already annotated are skipped.'
+            : checkpoint?.current_pass === 'transcript_walk' &&
           checkpoint.chunk_plan.length > 0
             ? // The transcript walk (phase 7) checkpoints every chunk, so
               // this genuinely continues rather than starting over. Keyed

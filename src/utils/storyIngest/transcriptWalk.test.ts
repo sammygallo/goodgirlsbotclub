@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { processChunk } from './transcriptWalk';
+import { preserveAnnotation, processChunk } from './transcriptWalk';
 // deterministicUuid moved to sourceRefs (shared with coldStart's id minting);
 // these two cases stay here to pin the walk's own expectations of it.
 import { deterministicUuid } from '../storyBible/sourceRefs';
 import type { KnownCastMember, OpenSceneCarry, ProcessChunkParams } from './transcriptWalk';
 import type { WalkChunk } from './transcriptChunker';
 import type { IngestMessage } from './types';
+import type { Scene } from '../../types/storyBible';
 
 function msg(over: Partial<IngestMessage> = {}): IngestMessage {
   return {
@@ -268,6 +269,73 @@ describe('processChunk', () => {
     expect(result.openScene).not.toBeNull();
     expect(result.openScene!.sceneId).toBe('existing-scene-id');
     expect(result.openScene!.rangeStart.msg_id).toBe('earlier'); // start never moves
+  });
+
+  it('carries a continuing scene’s annotation and marks it for re-annotation', async () => {
+    // Step-3 plan §3.9a. This write used to be an unconditional
+    // `function: null`, so every cross-chunk carry silently discarded the
+    // annotate pass's output — and a continuing scene ALWAYS extends, so
+    // the marker is mandatory rather than optional.
+    const openScene: OpenSceneCarry = {
+      sceneId: 'existing-scene-id',
+      sequence: 5,
+      title: 'Ongoing',
+      summary: 'so far...',
+      detailedSummary: '',
+      participantIds: [],
+      factIds: [],
+      rangeStart: {
+        msg_id: 'earlier',
+        swipe_idx: 0,
+        fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+      },
+      excludedSegments: [],
+      swipeResolutions: [],
+      totalMessages: 3,
+      function: { beat: 'crisis', tension: 9, mood: 'tight', stakes: 'all' },
+      transformations: {
+        compression_recommendation: 'preserve',
+        compression_ratio_target: 1,
+        pacing_notes: 'hold',
+        dialogue_density: 0.7,
+      },
+      serverTs: 7,
+    };
+    const json = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: true,
+          title: 'Ongoing, continued',
+          summary: 'still going',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 1,
+          closed: false,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const llm = fakeLlmSequence([json]);
+    const result = await processChunk(baseParams({ llm, openScene, nextSequence: 6 }));
+
+    expect(result.scenes[0].data.function).toEqual(openScene.function);
+    expect(result.scenes[0].data.transformations).toEqual(openScene.transformations);
+    expect(result.scenes[0].data.annotations.flagged_issues).toEqual([
+      'annotation_stale',
+    ]);
+    // And the carry keeps them, or the NEXT chunk boundary loses what this
+    // one just preserved.
+    expect(result.openScene!.function).toEqual(openScene.function);
+    expect(result.openScene!.transformations).toEqual(openScene.transformations);
+  });
+
+  it('leaves a newly minted scene unannotated and unmarked', async () => {
+    const llm = fakeLlmSequence([VALID_SCENE_JSON]);
+    const result = await processChunk(baseParams({ llm }));
+    expect(result.scenes[0].data.function).toBeNull();
+    expect(result.scenes[0].data.annotations.flagged_issues).toEqual([]);
   });
 
   it('forces every scene but the last to closed:true regardless of model output', async () => {
@@ -786,5 +854,130 @@ describe('deterministicUuid', () => {
 
   it('differs for different seeds', () => {
     expect(deterministicUuid('a')).not.toBe(deterministicUuid('b'));
+  });
+});
+
+describe('preserveAnnotation (step 3 §3.9a)', () => {
+  const MREF = (id: string) => ({
+    msg_id: id,
+    swipe_idx: 0,
+    fingerprint: { sha: 'x', hash_alg: 'djb2' as const, send_date: 0 },
+  });
+
+  const FN = { beat: 'crisis' as const, tension: 9, mood: 'tight', stakes: 'all' };
+  const TR = {
+    compression_recommendation: 'preserve' as const,
+    compression_ratio_target: 1,
+    pacing_notes: '',
+    dialogue_density: 0.5,
+  };
+
+  function sceneWith(over: Record<string, unknown> = {}): Scene {
+    return {
+      id: 'sc1',
+      sequence: 0,
+      title: 'Tail',
+      summary: '',
+      detailed_summary: '',
+      setting: { location_ref: null, time_ref: null, atmosphere: '' },
+      participants: [],
+      pov_character: null,
+      function: null,
+      source: {
+        message_range: { start: MREF('m0'), end: MREF('m4') },
+        total_messages: 5,
+        swipe_resolutions: [],
+        excluded_segments: [],
+      },
+      continuity_facts_established: [],
+      transformations: null,
+      annotations: {
+        user_notes: '',
+        author_intent: '',
+        flagged_issues: [],
+        stale_source: false,
+      },
+      ...over,
+    } as Scene;
+  }
+
+  const stored = sceneWith({ function: FN, transformations: TR });
+
+  it('carries the annotation onto an EXTENDED re-emission and marks it stale', () => {
+    const incoming = sceneWith({
+      source: {
+        message_range: { start: MREF('m0'), end: MREF('m9') },
+        total_messages: 10,
+        swipe_resolutions: [],
+        excluded_segments: [],
+      },
+    });
+    const out = preserveAnnotation(incoming, stored);
+    expect(out.function).toEqual(FN);
+    expect(out.transformations).toEqual(TR);
+    expect(out.annotations.flagged_issues).toEqual(['annotation_stale']);
+  });
+
+  it('carries it WITHOUT the marker when the range is identical', () => {
+    const out = preserveAnnotation(sceneWith(), stored);
+    expect(out.function).toEqual(FN);
+    expect(out.annotations.flagged_issues).toEqual([]);
+  });
+
+  it('refuses when the range start moved — that is a different scene', () => {
+    const incoming = sceneWith({
+      source: {
+        message_range: { start: MREF('m2'), end: MREF('m9') },
+        total_messages: 8,
+        swipe_resolutions: [],
+        excluded_segments: [],
+      },
+    });
+    expect(preserveAnnotation(incoming, stored).function).toBeNull();
+  });
+
+  it('refuses when the new range SHRANK — the old reading covers material it no longer holds', () => {
+    const incoming = sceneWith({
+      source: {
+        message_range: { start: MREF('m0'), end: MREF('m1') },
+        total_messages: 2,
+        swipe_resolutions: [],
+        excluded_segments: [],
+      },
+    });
+    expect(preserveAnnotation(incoming, stored).function).toBeNull();
+  });
+
+  it('leaves an incoming annotation alone — the open-scene carry got there first', () => {
+    const own = { beat: 'rising' as const, tension: 2, mood: '', stakes: '' };
+    const incoming = sceneWith({ function: own });
+    expect(preserveAnnotation(incoming, stored).function).toEqual(own);
+  });
+
+  it('does not add the marker when the stored scene has no annotation', () => {
+    const out = preserveAnnotation(sceneWith(), sceneWith());
+    expect(out.annotations.flagged_issues).toEqual([]);
+    expect(out.function).toBeNull();
+  });
+
+  it('never doubles the marker across two re-emissions', () => {
+    const once = preserveAnnotation(
+      sceneWith({
+        source: {
+          message_range: { start: MREF('m0'), end: MREF('m9') },
+          total_messages: 10,
+          swipe_resolutions: [],
+          excluded_segments: [],
+        },
+        annotations: {
+          user_notes: '',
+          author_intent: '',
+          flagged_issues: ['annotation_stale'],
+          stale_source: false,
+        },
+      }),
+      stored
+    );
+    expect(once.annotations.flagged_issues).toEqual(['annotation_stale']);
   });
 });

@@ -70,6 +70,7 @@ vi.mock('./storyIngestStore', () => ({
 
 const { useStoryStore, hasBible } = await import('./storyStore');
 const { showToastGlobal } = await import('../components/ui/Toast');
+const { STORY_SCHEMA_VERSION } = await import('../types/storyBible');
 
 const CHAT = { character_avatar: 'Ivy.png', file_name: 'Ivy - 1' };
 
@@ -195,7 +196,7 @@ describe('designateSourceChat', () => {
     expect(projectId).toBe('p1');
     expect(name).toBe('meta');
     expect(baseTs).toBe(0);
-    expect(data.schema_version).toBe('1.0');
+    expect(data.schema_version).toBe(STORY_SCHEMA_VERSION);
     expect(data.bible_id).toBeTruthy();
     expect(data.source.platform).toBe('ggbc');
     expect(data.source.chat.kind).toBe('chat');
@@ -1344,6 +1345,48 @@ describe('mergeSceneIntoPrevious', () => {
     const ok = await useStoryStore.getState().mergeSceneIntoPrevious('sc1');
     expect(ok).toBe(false);
     expect(getScene).not.toHaveBeenCalled();
+  });
+
+  it('clears the survivor’s annotation — a widened scene loses it', async () => {
+    // Step-3 plan §3.9c. The survivor is spread wholesale while its range
+    // is rewritten to span both scenes, so a kept `function` described
+    // roughly half the material the scene ends up holding — and a render
+    // read that stale beat and compression target as canon.
+    getScene.mockImplementation((_p: string, id: string) =>
+      Promise.resolve({
+        id,
+        sequence: id === 'sc1' ? 0 : 1,
+        server_ts: id === 'sc1' ? 5 : 6,
+        updated_at: 'x',
+        data: sceneData(id, id === 'sc1' ? 0 : 1, {
+          function: { beat: 'midpoint', tension: 7, mood: 'tense', stakes: 'the door' },
+          transformations: {
+            compression_recommendation: 'preserve',
+            compression_ratio_target: 1,
+            pacing_notes: 'hold',
+            dialogue_density: 0.6,
+          },
+          annotations: {
+            user_notes: 'keep me',
+            author_intent: '',
+            flagged_issues: ['annotation_stale', 'user flag'],
+            stale_source: false,
+          },
+        }),
+      })
+    );
+
+    await useStoryStore.getState().mergeSceneIntoPrevious('sc2');
+
+    const [, , merged] = putScene.mock.calls[0];
+    const m = merged as Record<string, unknown>;
+    expect(m.function).toBeNull();
+    expect(m.transformations).toBeNull();
+    // The stale marker goes with the annotation it described; the user's
+    // own flag and notes do not.
+    const annotations = m.annotations as { flagged_issues: string[]; user_notes: string };
+    expect(annotations.flagged_issues).toEqual(['user flag', 'user flag']);
+    expect(annotations.user_notes).toBe('keep me');
   });
 });
 
