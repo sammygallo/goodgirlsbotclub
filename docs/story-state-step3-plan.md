@@ -720,19 +720,47 @@ unit-testable without a network.
 
 **Phase 1's bulk scene read.** Annotate write-back, the range picker, the
 context assembler and the export all need full scene rows, and the shipped
-path is N unbounded round trips (§2). Phase 1 adds `GET /scenes?full=true` so
+path is N unbounded round trips (§2). Phase 1 adds a bulk full-scene read so
 step 3 does not promote an N+1 to a hot path — but it must **not** simply
-reuse the existing page shape. `limit` is `le=500` default 200
-(`app/routers/story.py:555`) and `SCENE_MAX_BYTES` is 64KB, so a default full
-page is up to 12.8 MB and `limit=500` up to 32 MB — reintroducing exactly
-what the SQL projection exists to prevent (`:565-566`: *"a 'projection' that
-shipped full summaries would put megabytes on a bodyless GET"*). Full mode
-therefore gets its own row ceiling **and** a cumulative byte budget that ends
-the page early, mirroring `SCENE_BULK_MAX_BODY`'s reasoning (`:509-513`), and
-its own response model, since `ScenePage.items` is `SceneSummary` and FastAPI
-validates against it (`:548`, `app/schemas/story.py:1048-1055`). If this
+reuse the existing page shape. `limit` is `le=500` default 200 and
+`SCENE_MAX_BYTES` is 64KB, so a default full page is up to 12.8 MB and
+`limit=500` up to 32 MB — reintroducing exactly what the SQL projection
+exists to prevent (*"a 'projection' that shipped full summaries would put
+megabytes on a bodyless GET"*). Full mode therefore gets its own row ceiling
+**and** a cumulative byte budget that ends the page early, mirroring
+`SCENE_BULK_MAX_BODY`'s reasoning, and its own response model, since
+`ScenePage.items` is `SceneSummary` and FastAPI validates against it. If this
 slips, Phase 3 must say where the full-scene set is cached within a visit and
 bound the parallelism.
+
+**It shipped as `GET /scenes/full`, not the `?full=true` this plan first
+sketched** (ggbc-backend #58). The two cannot both be had: `response_model`
+is per-route, and this paragraph's own requirement — full mode needs its own
+response model — is what forces the split. Validating full rows against
+`ScenePage` would not error; it would silently strip `data` from every scene,
+which is the worst available failure for an export path. Keeping the query
+parameter would have meant a union response model plus per-mode `limit`
+defaults and ceilings fighting FastAPI's declarative `Query` validation.
+
+What shipped, so §3 and Phase 4 can code against it rather than against the
+sketch above:
+
+- `GET /projects/{id}/story/scenes/full` → `FullScenePage`, whose `items` are
+  whole `SceneOut` rows, keyset-paged on the `(sequence, id)` pair exactly
+  like `ScenePage`.
+- Two ceilings, each doing a job the other cannot: `FULL_SCENE_PAGE_MAX`
+  (100, default 50) bounds the **database read**; `FULL_SCENE_MAX_BYTES`
+  (4 MB) bounds the **response**, since by the time bytes are counted the
+  rows are already in memory.
+- `truncated_by_bytes` on the page reports an early cut, so a byte-limited
+  page is visibly that rather than looking like a short one.
+- The cursor points at the last row **included**, never the last row read: an
+  early cut resumes at the first row it dropped. A page also always emits at
+  least one row, or an empty page with `has_more` true would be a cursor that
+  never advances.
+- **Route declaration order is load-bearing.** `/scenes/full` must stay
+  declared above `/scenes/{scene_id}`; `full` is not a UUID, so the
+  parameterised route would otherwise shadow it with a 422. Pinned by a test.
 
 **Phase 7's reuse is partial, and saying otherwise sets up a claim that
 cannot hold.** Carried over unchanged: migration 0021, the render store, run
@@ -792,8 +820,9 @@ family:
 - reset deletes render rows **and their unit rows**, and reports the count
 - restore marks renders `stale_bible` inside the restore transaction
 - a reset racing a bulk render-unit write does not 500
-- `GET /scenes?full=true` ends a page early on the byte budget rather than
-  returning a multi-megabyte body (§4)
+- `GET /scenes/full` ends a page early on the byte budget rather than
+  returning a multi-megabyte body, and its cursor resumes at the first row
+  the cut dropped rather than skipping it (§4)
 
 **Mutation-tested pins, frontend:**
 
