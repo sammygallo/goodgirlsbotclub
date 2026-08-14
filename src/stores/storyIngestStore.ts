@@ -1682,9 +1682,14 @@ const MAX_FULL_SCENE_PAGES = 200;
 /**
  * Every scene with its full `data`, in sequence order.
  *
- * `GET /scenes/full` (backend step-3 phase 1), NOT `loadAllScenesWithData`:
- * that one is a summary page followed by one GET per scene, with no cache
- * and unbounded parallelism, and annotate would promote it to a hot path.
+ * `GET /scenes/full` (backend step-3 phase 1) — one request per 50 scenes
+ * rather than one per scene.
+ *
+ * Deliberately not `storyStore.loadAllScenesFull`, which pages the same
+ * endpoint: that one is scoped to the store's current project and its
+ * epoch, and reports failure by toasting and returning null. A run here
+ * carries its own project id and must see the throw, since a half-read
+ * bible would annotate against scenes it never loaded.
  *
  * Pages until `has_more` is false. The server can end a page early on its
  * own byte budget, so a short page is not a last page — the cursor points

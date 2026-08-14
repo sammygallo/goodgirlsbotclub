@@ -218,7 +218,7 @@ export function StoryTab({
     loadMoreArchives,
     restoreArchive,
     relinkSourceChat,
-    loadAllScenesWithData,
+    loadAllScenesFull,
     flagScenesStale,
     clearSceneStale,
   } = useStoryStore();
@@ -457,8 +457,8 @@ export function StoryTab({
         return;
       }
       // Tier 2 only runs once tier 1 has already said something is wrong,
-      // so the per-scene fetch never happens on the common clean path.
-      const rows = await loadAllScenesWithData();
+      // so the whole-bible fetch never happens on the common clean path.
+      const rows = await loadAllScenesFull();
       if (cancelled) return;
       const scenes = rows
         ? await localiseSceneDrift(
@@ -515,7 +515,7 @@ export function StoryTab({
     ingestRunning,
     loadChatMessages,
     driftMessagesFrom,
-    loadAllScenesWithData,
+    loadAllScenesFull,
   ]);
 
   /** Divergence and new-messages are mutually exclusive verdicts, so the
