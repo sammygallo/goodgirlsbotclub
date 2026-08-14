@@ -431,7 +431,18 @@ So the v1 context brief is:
 - `narrative.pov_default` / `tense_default` and the resolved
   `rendering_hints.novel`;
 - **world rules whose lorebook entry fires against this scene's window**, by
-  WI replay, plus all `constant` entries' rules by direct inclusion.
+  WI replay, plus all `constant` entries' rules by direct inclusion — and
+  nothing else. A rule whose entry did not fire is **excluded**, not
+  deprioritised; see the cap paragraph below.
+
+  The `constant` half reads the flag off the **entry**, and only when that
+  entry is still `enabled` with non-empty content — the same filter
+  `wiReplay` applies before scanning (`wiReplay.ts:99`). Without the filter
+  the two halves disagree: a disabled *keyword* entry correctly cannot fire,
+  while a disabled *constant* entry would be force-included into the one
+  category the cap drops last, letting lore the user switched off displace
+  rules that actually fired. Cold start refuses to mint rules from
+  switched-off entries for the same reason (`coldStart.ts:355-358`).
 
 Everything past the cap is dropped in a **stated priority order**, and the
 drop is surfaced in the UI and logged — never silent.
@@ -458,13 +469,39 @@ The assembler must also drop rows carrying `deleted_at` itself:
 back in the page.
 
 **Context cap: 24k tokens for the assembled brief**, with truncation priority
-(first dropped first): non-firing rules → bible-wide `established_in: null`
-facts → fact set beyond the scene's own → preceding-scene summary →
-participants' `dialogue_examples`. The mandatory core — target scene,
-participant records *minus* their dialogue examples, `user_voice`, hints — is
-never dropped; if it alone exceeds the cap the run refuses with a named error
-rather than silently rendering a partial brief. A number and an order are
-what make this testable in Phase 3 without a model.
+(first dropped first): bible-wide `established_in: null` facts → fact set
+beyond the scene's own → preceding-scene summary → participants'
+`dialogue_examples` → **firing rules, trimmed from the tail**. The mandatory
+core — target scene, participant records *minus* their dialogue examples,
+`user_voice`, hints — is never dropped; if it alone exceeds the cap the run
+refuses with a named error rather than silently rendering a partial brief. A
+number and an order are what make this testable in Phase 3 without a model.
+
+*(Two corrections to this paragraph, both found by the Phase 3 implementation
+and its adversarial review. Recorded rather than silently applied, because
+each changes what the assembler does.)*
+
+**(a) Non-firing rules are not in the brief at all, so they cannot head the
+drop order.** The list above previously began with them, which contradicted
+this section's own definition of the brief four paragraphs up — "world rules
+whose lorebook entry **fires** against this scene's window … plus all
+`constant` entries' rules". A category that is never included cannot be the
+first thing dropped. Read the other way — non-firing rules included by default
+and shed under pressure — the selector becomes a no-op for every bible that
+fits under the cap, which is precisely the *"all rules up to a cap — arbitrary
+truncation dressed as selection"* this decision was rewritten to escape.
+Exclusion is the point. Their count is still surfaced, as a **selection**
+fact ("N rules were not active in this scene") rather than a cap drop.
+
+**(b) Firing rules are droppable, last.** They were in neither the core nor
+the drop order, which left a third outcome this section forbids: a brief
+returned **over cap** with no drop record and no refusal. That is reachable on
+ordinary data, not corruption — cold start's `WORLD_RULE_BYTE_BUDGET` is 180KB
+and every `constant` entry's rule is included unconditionally, so a large
+always-on lorebook fills the category. Measured at 44k and 65k estimated
+tokens against the 24k cap during review. They are therefore trimmed from the
+tail, partially, with the count reported: a scene rendered with most of its
+world rules is worth having, where a refusal is worth nothing.
 
 **Cost, stated honestly.** WI keys are the author's own relevance model, not
 a semantic one, and the replay is *deliberately over-inclusive*
