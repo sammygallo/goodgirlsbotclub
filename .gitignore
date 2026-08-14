@@ -1,5 +1,17 @@
 # Dependencies
+#
+# This rule is mostly INERT: the ~14.7k files under node_modules/ are
+# force-added and committed on purpose (the droplet pulls a prebuilt image
+# and never installs). Git ignores nothing that is already tracked, so the
+# rule only governs paths nobody has force-added.
 node_modules/
+
+# ...with one deliberate exception. `tsc -b`'s incremental state is a BUILD
+# ARTIFACT, not a dependency: it is rewritten on every `npm run build`, so
+# committing it put a meaningless diff in every single pull request. Listed
+# explicitly rather than relying on `node_modules/` above, because the next
+# person to force-add the tree would otherwise sweep these back in.
+node_modules/.tmp/
 
 # Build output
 dist/
