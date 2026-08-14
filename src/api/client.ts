@@ -2236,6 +2236,105 @@ export interface StoryFullScenePage {
   truncated_by_bytes: boolean;
 }
 
+/** Closed vocabularies, DB CHECK + Pydantic `Literal` on the backend —
+ *  a value outside these is a 422, not a silently stored string. */
+export type StoryRenderFormat = 'novel' | 'screenplay';
+/** A RUN's lifecycle and nothing else. Staleness is orthogonal and lives
+ *  in `stale_bible`: a finished run whose bible was restored underneath it
+ *  is still `complete`. */
+export type StoryRenderStatus =
+  | 'running'
+  | 'paused'
+  | 'complete'
+  | 'aborted'
+  | 'error';
+/** One unit's outcome. `truncated` is load-bearing rather than cosmetic:
+ *  prose has no parser, so a response cut at the token ceiling — or a
+ *  stream that ended carrying no terminal signal at all — is
+ *  indistinguishable from a finished one by its text. */
+export type StoryRenderUnitStatus = 'pending' | 'complete' | 'truncated' | 'error';
+
+export interface StoryRenderSummary {
+  id: string;
+  format: StoryRenderFormat;
+  status: StoryRenderStatus;
+  stale_bible: boolean;
+  scene_id_start: string;
+  scene_id_end: string;
+  model: string | null;
+  prompt_version: string;
+  input_tokens: number;
+  output_tokens: number;
+  lock_client_id: string | null;
+  lock_heartbeat_at: string | null;
+  /** Derived in SQL against the DATABASE clock, never a pod's — so a
+   *  client with a skewed clock cannot mis-read a live lock as stale. */
+  lock_is_stale: boolean;
+  unit_count: number;
+  complete_unit_count: number;
+  server_ts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoryRenderOut extends StoryRenderSummary {
+  /** The hints SNAPSHOT the run was created with, resolved server-side
+   *  against `narrative`'s defaults. A later hints edit therefore cannot
+   *  reinterpret finished prose. */
+  hints: Record<string, unknown>;
+}
+
+export interface StoryRenderUnit {
+  scene_id: string;
+  sequence: number;
+  prose: string;
+  status: StoryRenderUnitStatus;
+  source_scene_ts: number;
+  continuity: Record<string, unknown> | null;
+  server_ts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoryRenderUnitSummary {
+  scene_id: string;
+  sequence: number;
+  status: StoryRenderUnitStatus;
+  source_scene_ts: number;
+  prose_bytes: number;
+  has_continuity: boolean;
+  /** The scene still exists but has been written since this prose was
+   *  rendered from it. A cosmetic retitle counts — false-stale is cheap,
+   *  false-fresh is not. */
+  is_stale: boolean;
+  /** The scene this prose was rendered from no longer exists. */
+  is_orphaned: boolean;
+  server_ts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoryRenderPage {
+  items: StoryRenderSummary[];
+  next_after_created_at: string | null;
+  next_after_id: string | null;
+  has_more: boolean;
+}
+
+export interface StoryRenderUnitPage {
+  items: StoryRenderUnitSummary[];
+  next_after_sequence: number | null;
+  next_after_scene_id: string | null;
+  has_more: boolean;
+}
+
+export interface StoryRenderProsePage {
+  items: StoryRenderUnit[];
+  next_after_sequence: number | null;
+  next_after_scene_id: string | null;
+  has_more: boolean;
+}
+
 export interface StoryLogEntry {
   /** Per-project cursor, dense and commit-ordered. */
   seq: number;
@@ -2358,6 +2457,46 @@ export class SceneBulkConflictError extends Error {
   }
 }
 
+/**
+ * Another device holds the project's render lock, LIVE (423).
+ *
+ * The lock is per project and across formats, so `holderRenderId` may name
+ * a different run than the one the request was about — the backend says so
+ * explicitly, and this type keeps that legible rather than flattening it
+ * into "locked".
+ *
+ * `takeable` is the whole reason this is a typed error rather than a
+ * message: a holder whose heartbeat has aged out still 423s, and only a
+ * deliberate `takeover: true` wins. That keeps a background retry from
+ * ping-ponging the lock during a network hiccup, and makes taking it a
+ * decision the user makes.
+ */
+export class RenderLockedError extends Error {
+  currentTs: number;
+  holderRenderId: string | null;
+  holderClientId: string | null;
+  holderHeartbeatAt: string | null;
+  takeable: boolean;
+  retryAfterSeconds: number;
+  constructor(detail: {
+    current_ts?: number;
+    holder_render_id?: string | null;
+    holder_client_id?: string | null;
+    holder_heartbeat_at?: string | null;
+    takeable?: boolean;
+    retry_after_seconds?: number;
+  }) {
+    super('render locked');
+    this.name = 'RenderLockedError';
+    this.currentTs = detail.current_ts ?? 0;
+    this.holderRenderId = detail.holder_render_id ?? null;
+    this.holderClientId = detail.holder_client_id ?? null;
+    this.holderHeartbeatAt = detail.holder_heartbeat_at ?? null;
+    this.takeable = detail.takeable ?? false;
+    this.retryAfterSeconds = detail.retry_after_seconds ?? 0;
+  }
+}
+
 async function storyWrite<T>(
   path: string,
   method: 'PUT' | 'POST' | 'DELETE',
@@ -2381,6 +2520,14 @@ async function storyWrite<T>(
       typeof detail?.current_ts === 'number' ? detail.current_ts : 0,
       detail?.current ?? null
     );
+  }
+  // 423 is the render lock, and it carries far more than "denied": who
+  // holds it, whether their heartbeat aged out, and how long to wait. A
+  // caller that only saw a status code could not draw the "Take over"
+  // affordance the backend is describing.
+  if (response.status === 423) {
+    const parsed = await response.json().catch(() => ({}));
+    throw new RenderLockedError((parsed?.detail ?? parsed) ?? {});
   }
   if (response.status === 413) {
     const parsed = await response.json().catch(() => ({}));
@@ -2679,6 +2826,197 @@ export const storyApi = {
     const qs = q.toString();
     return apiRequest<StoryFullScenePage>(
       `/projects/${projectId}/story/scenes/full${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  // --- Renders (step 3) ---------------------------------------------
+  //
+  // The lock is PER PROJECT and across formats, so every call below that
+  // takes a `clientId` is participating in one project-wide claim, not a
+  // per-run one. That is what stops two devices double-spending the
+  // user's key on the same bible in two different formats.
+
+  /** Create a run. Idempotent on `id`: a transport retry re-sends the
+   *  same id and gets 200 with the existing row rather than a second run.
+   *  The hints snapshot is built SERVER-side from `rendering_hints` plus
+   *  `narrative`'s defaults, so it is deliberately not in the body. */
+  async createRender(
+    projectId: string,
+    body: {
+      id: string;
+      format: StoryRenderFormat;
+      sceneIdStart: string;
+      sceneIdEnd: string;
+      clientId: string;
+      takeover?: boolean;
+      model?: string | null;
+      promptVersion?: string;
+    }
+  ): Promise<StoryRenderOut> {
+    return storyWrite<StoryRenderOut>(
+      `/projects/${projectId}/story/renders`,
+      'POST',
+      {
+        id: body.id,
+        format: body.format,
+        scene_id_start: body.sceneIdStart,
+        scene_id_end: body.sceneIdEnd,
+        client_id: body.clientId,
+        takeover: body.takeover ?? false,
+        model: body.model ?? null,
+        prompt_version: body.promptVersion ?? '',
+      }
+    );
+  },
+
+  async getRender(projectId: string, renderId: string): Promise<StoryRenderOut> {
+    return apiRequest<StoryRenderOut>(
+      `/projects/${projectId}/story/renders/${renderId}`
+    );
+  },
+
+  async listRenders(
+    projectId: string,
+    opts: { status?: StoryRenderStatus; limit?: number } = {}
+  ): Promise<StoryRenderPage> {
+    const q = new URLSearchParams();
+    if (opts.status) q.set('status', opts.status);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return apiRequest<StoryRenderPage>(
+      `/projects/${projectId}/story/renders${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  /** Acquire the lock OR heartbeat it — one endpoint for both, since the
+   *  holder refreshing is just the case where `lock_client_id` already
+   *  equals `clientId`.
+   *
+   *  `baseTs` is what makes this more than a ping: restore bumps every
+   *  run's `server_ts` when it marks them stale, so a worker rendering
+   *  against a bible that was replaced underneath it 409s here. */
+  async acquireRenderLock(
+    projectId: string,
+    renderId: string,
+    body: { clientId: string; baseTs: number; takeover?: boolean }
+  ): Promise<StoryRenderOut> {
+    return storyWrite<StoryRenderOut>(
+      `/projects/${projectId}/story/renders/${renderId}/lock`,
+      'POST',
+      {
+        client_id: body.clientId,
+        base_ts: body.baseTs,
+        takeover: body.takeover ?? false,
+      }
+    );
+  },
+
+  async releaseRenderLock(
+    projectId: string,
+    renderId: string,
+    body: { clientId: string; baseTs: number }
+  ): Promise<void> {
+    await storyWrite<Record<string, never>>(
+      `/projects/${projectId}/story/renders/${renderId}/lock`,
+      'DELETE',
+      { client_id: body.clientId, base_ts: body.baseTs }
+    );
+  },
+
+  async setRenderStatus(
+    projectId: string,
+    renderId: string,
+    body: { status: StoryRenderStatus; baseTs: number }
+  ): Promise<StoryRenderOut> {
+    return storyWrite<StoryRenderOut>(
+      `/projects/${projectId}/story/renders/${renderId}/status`,
+      'PUT',
+      { status: body.status, base_ts: body.baseTs }
+    );
+  },
+
+  /** Write one scene's prose — the endpoint that banks the model call,
+   *  and the only render route whose failure costs money. Throws
+   *  `RenderLockedError` (423) when another client holds the lock LIVE;
+   *  a null or stale lock never blocks, keeping this advisory. */
+  async putRenderUnit(
+    projectId: string,
+    renderId: string,
+    sceneId: string,
+    body: {
+      clientId: string;
+      baseTs: number;
+      sequence: number;
+      prose: string;
+      status: StoryRenderUnitStatus;
+      sourceSceneTs: number;
+      continuity?: Record<string, unknown> | null;
+      inputTokensDelta?: number;
+      outputTokensDelta?: number;
+    }
+  ): Promise<StoryRenderUnit> {
+    return storyWrite<StoryRenderUnit>(
+      `/projects/${projectId}/story/renders/${renderId}/units/${sceneId}`,
+      'PUT',
+      {
+        client_id: body.clientId,
+        base_ts: body.baseTs,
+        sequence: body.sequence,
+        prose: body.prose,
+        status: body.status,
+        source_scene_ts: body.sourceSceneTs,
+        continuity: body.continuity ?? null,
+        input_tokens_delta: body.inputTokensDelta ?? 0,
+        output_tokens_delta: body.outputTokensDelta ?? 0,
+      }
+    );
+  },
+
+  async listRenderUnits(
+    projectId: string,
+    renderId: string,
+    opts: { afterSequence?: number; afterSceneId?: string; limit?: number } = {}
+  ): Promise<StoryRenderUnitPage> {
+    const q = new URLSearchParams();
+    if (opts.afterSequence !== undefined) {
+      q.set('after_sequence', String(opts.afterSequence));
+    }
+    if (opts.afterSceneId) q.set('after_scene_id', opts.afterSceneId);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return apiRequest<StoryRenderUnitPage>(
+      `/projects/${projectId}/story/renders/${renderId}/units${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  /** Prose bodies, not the projection — the reader's and exporter's path.
+   *  Paged small (25) because each item is a whole chapter. */
+  async readRenderProse(
+    projectId: string,
+    renderId: string,
+    opts: { afterSequence?: number; afterSceneId?: string; limit?: number } = {}
+  ): Promise<StoryRenderProsePage> {
+    const q = new URLSearchParams();
+    if (opts.afterSequence !== undefined) {
+      q.set('after_sequence', String(opts.afterSequence));
+    }
+    if (opts.afterSceneId) q.set('after_scene_id', opts.afterSceneId);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return apiRequest<StoryRenderProsePage>(
+      `/projects/${projectId}/story/renders/${renderId}/prose${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  async deleteRender(
+    projectId: string,
+    renderId: string,
+    body: { clientId: string; baseTs: number }
+  ): Promise<void> {
+    await storyWrite<Record<string, never>>(
+      `/projects/${projectId}/story/renders/${renderId}`,
+      'DELETE',
+      { client_id: body.clientId, base_ts: body.baseTs }
     );
   },
 
