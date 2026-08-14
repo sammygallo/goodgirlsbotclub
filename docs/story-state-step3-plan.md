@@ -888,13 +888,32 @@ the store and worth surfacing rather than re-deriving:
   "Take over" affordance rather than a dead end. `resume` never takes over
   implicitly; the tab must ask and pass `takeover: true`.
 
-**Open from Phase 4's review.** Its adversarial pass confirmed and fixed six
-defects, but **15 of 41 agents died on a session limit**, so nine findings
-never received verdicts — among them `progress.done` regressing on resume,
-`resume` ignoring `stale_bible`, and two heartbeat items. They are neither
-confirmed nor cleared. Re-running that review is cheap (the workflow caches
-unchanged agents), and is worth doing before the tab makes this path
-reachable by real users.
+**Phase 4's review is CLOSED — nothing is outstanding.** Its first pass
+confirmed and fixed six defects, but 15 of 41 agents died on a session limit,
+leaving several findings without verdicts. A second, focused pass re-judged
+every one of those against the code as it then stood (deliberately not a
+cache replay of the first run, whose verdicts predated the six fixes and
+would have re-reported them as live). All ten agents completed: **two
+confirmed and fixed, three refuted.**
+
+- Fixed: `progress.done` went backwards on resume (a banked count seeded
+  against a positional index), and `resume` stranded the project-wide lock
+  when the status flip failed — no heartbeat exists at that point, so it was
+  a dead lock held for the full 120s expiry against every device and every
+  format.
+- Refuted, and deliberately unchanged: `resume` ignoring `stale_bible`
+  (restore sets the flag and nothing clears it, so a two-bible run IS
+  distinguishable); a stale `base_ts` on resume's lock acquire (premise
+  accurate, the 409-instead-of-423 chain does not exist against the
+  backend's contract); and the unguarded `scene.source.message_range` deref
+  (true as a code fact, but every writer of `story_scenes.data` goes through
+  `_validated_scene`, so the trigger is unreachable through the API).
+
+One of the two confirmed defects existed *only because of a fix made after
+the first review ran* — `resume`'s status flip kept using the raw
+`setRenderStatus` while the terminal writes moved to `setStatusWithRetry`.
+A cache replay would have missed it, which is the argument for re-verifying
+against current code rather than resuming a stale run.
 
 **Phase 7's reuse is partial, and saying otherwise sets up a claim that
 cannot hold.** Carried over unchanged: migration 0021, the render store, run
