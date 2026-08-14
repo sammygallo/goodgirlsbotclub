@@ -1,13 +1,29 @@
 # Productization Step 3 — Renderers: implementation plan
 
-> Status: **decisions approved 2026-08-12; revised after adversarial plan
-> review.** Successor to [story-state-step2-plan.md](story-state-step2-plan.md)
-> (phases 0–11, all merged and deployed; step 2 closed 2026-08-12).
+> Status: **decisions approved 2026-08-12. Phases 1–3 built, merged and
+> deployed 2026-08-13/14; Phase 4 is next.** Successor to
+> [story-state-step2-plan.md](story-state-step2-plan.md) (phases 0–11, all
+> merged and deployed; step 2 closed 2026-08-12).
 > Inputs: [story-state-schema-v1.md](story-state-schema-v1.md) — especially
 > its **Renderer consumption** section and the **v1.1 amendments** — and the
 > normative Pydantic module `app/schemas/story.py` in `ggbc-backend`.
 > Repos: `goodgirlsbotclub` (frontend), `ggbc-backend` (backend, migration
-> head **0020**).
+> head **0022**).
+>
+> **Shipped so far.** Phase 1 (backend): render tables, the `annotate` pass
+> value, reset/restore accounting and `GET /scenes/full` — ggbc-backend #56,
+> #57, #58, alembic head `0022_widen_render_token_counters`. Phase 2
+> (frontend): the annotate pass and §3.9's four preservation rules — #384,
+> plus a read-only beat map (#385) that is NOT in §4's table. §3.3 justifies
+> annotate as its own pass so a user can "read the beat map, and correct it";
+> the reading half had no phase assigned to it, and shipping a pass whose
+> output nothing displays is not worth the token cost. The correcting half
+> still waits for Phase 5 — until prose exists there is no way to judge which
+> beats are worth correcting. Phase 3: the `finish_reason` bridge (#386, split
+> out because it touches shared LLM plumbing) and the render engine (#387).
+>
+> Annotate has a **temporary** Story-tab entry point, explicitly marked as
+> such in the code. Phase 5's Render tab replaces it.
 >
 > **Revision note.** Two adversarial review passes have run against this
 > document. The first found that the original draft's mechanical context
@@ -23,6 +39,16 @@
 > annotate cannot strand a user, §3.9 gains the widened-scene case, and
 > `orphaned` is derived rather than stored. **The nine decisions themselves
 > are unchanged.**
+>
+> A **third** pass has since run — §5's "one over the implementation" — against
+> Phase 3's render engine: four lenses, 21 findings, each judged by two
+> independent skeptics, 10 confirmed and 11 refuted. It found two errors in
+> **this document** rather than only in the code, both now corrected in §3.5
+> and marked there as corrections: non-firing rules headed a truncation order
+> they could not be in, and firing rules were in neither the mandatory core nor
+> the drop order — which let the assembler return a brief 2.7× over the stated
+> cap with no drop record and no refusal. The nine decisions are still
+> unchanged.
 
 ---
 
