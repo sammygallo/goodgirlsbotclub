@@ -1,7 +1,10 @@
 # Productization Step 3 — Renderers: implementation plan
 
-> Status: **decisions approved 2026-08-12. Phases 1–3 built, merged and
-> deployed 2026-08-13/14; Phase 4 is next.** Successor to
+> Status: **decisions approved 2026-08-12. Phases 1–4 built and merged
+> 2026-08-13/14; Phase 5 is next — see "Phase 5 starting notes" in §4.**
+> Phases 1–3 are deployed; Phase 4 is merged but NOT yet exercised against
+> a real provider key, because Phase 5's tab is the only thing that can
+> invoke it. Successor to
 > [story-state-step2-plan.md](story-state-step2-plan.md) (phases 0–11, all
 > merged and deployed; step 2 closed 2026-08-12).
 > Inputs: [story-state-schema-v1.md](story-state-schema-v1.md) — especially
@@ -21,6 +24,10 @@
 > still waits for Phase 5 — until prose exists there is no way to judge which
 > beats are worth correcting. Phase 3: the `finish_reason` bridge (#386, split
 > out because it touches shared LLM plumbing) and the render engine (#387).
+> Phase 4: `storyRenderStore` — orchestration, the project-wide soft lock and
+> its independent heartbeat, `truncated` handling, §3.6's cross-gate, the
+> fuel gauge, abort **and resume** — plus the render half of the API client
+> (#389).
 >
 > Annotate has a **temporary** Story-tab entry point, explicitly marked as
 > such in the code. Phase 5's Render tab replaces it.
@@ -824,6 +831,89 @@ sketch above:
 - **Route declaration order is load-bearing.** `/scenes/full` must stay
   declared above `/scenes/{scene_id}`; `full` is not a UUID, so the
   parameterised route would otherwise shadow it with a 422. Pinned by a test.
+
+### Phase 5 starting notes — the state at its door
+
+*Written at the end of the Phase 4 session, against what actually shipped
+rather than against this plan's own predictions. Phases 1–4 are merged;
+none of the render path has ever run against a real provider key, because
+Phase 5's tab is the only thing that can invoke it.*
+
+**The store's real API.** `storyRenderStore` exposes `start`, `resume`,
+`cancel`, `clear`, plus `ingestionBlocksRender` and `unitStatusFor` as pure
+helpers the tab can call for gating and labels. Both entry points take
+`RenderSources`:
+
+```
+scenes, factRows, characters, worldRules, userVoice, hints, narrative,
+messages, wiEntries, wiScanDepth?, llm, model?, takeover?
+```
+
+plus `{projectId, format?, sceneIdStart, sceneIdEnd}` for `start` and
+`{projectId, renderId}` for `resume`.
+
+**The deviation Phase 5 has to absorb.** §4's Phase 4 row says the store
+gathers the assembler's inputs. It does not: `messages` and `wiEntries` are
+parameters, because `gatherIngestInputs` and `booksForChat` live in
+`components/works/` and no store here imports from `components/`. **The tab
+therefore owns that gathering**, exactly as `StoryTab` already does for a
+build — `gatherIngestInputs(sourceChat.ref)` and
+`replayEntriesFrom(booksForChat(avatar, fileName))`. Copy those call sites.
+
+**What the tab still has to build on the API client**, which is written and
+typed but has no consumer yet: `listRenders` (find a resumable or past
+run), `readRenderProse` (the reader and Phase 6's exporter — paged at 25
+because each item is a whole chapter), and `deleteRender`. `listRenderUnits`
+is used by `resume` and gives the reader its per-scene status, including the
+derived `is_stale` / `is_orphaned` flags §3.8 promises.
+
+**Gating the tab.** Per §3.3 the Render tab derives its OWN predicate from
+`canManage` and the build-active term, deliberately **not** from
+`writesDisabled` (which carries `canonLocked`). `ingestionBlocksRender` is
+the store's exported copy of §3.6's pass-aware rule — use it for the
+disabled state so the button and the store cannot disagree. Symmetrically,
+Build must be disabled while a render is in flight.
+
+**Things a reader/preflight must not get wrong**, all already enforced in
+the store and worth surfacing rather than re-deriving:
+
+- A unit is `complete` only on an explicit terminal `stop`; `truncated`
+  blocks export (§3.4). The reason lives in `continuity.terminal` /
+  `continuity.finish_reason` on the unit.
+- `continuity.unreadable: true` means the check could not be READ, which is
+  not "clean". The reader must not present it as verified.
+- `continuity.drops` and `rules_not_active` are the never-silent record of
+  what the 24k cap and the rule selector left out (§3.5). Surface them.
+- A `RenderLockedError` carries `takeable` — that flag is what draws a
+  "Take over" affordance rather than a dead end. `resume` never takes over
+  implicitly; the tab must ask and pass `takeover: true`.
+
+**Phase 4's review is CLOSED — nothing is outstanding.** Its first pass
+confirmed and fixed six defects, but 15 of 41 agents died on a session limit,
+leaving several findings without verdicts. A second, focused pass re-judged
+every one of those against the code as it then stood (deliberately not a
+cache replay of the first run, whose verdicts predated the six fixes and
+would have re-reported them as live). All ten agents completed: **two
+confirmed and fixed, three refuted.**
+
+- Fixed: `progress.done` went backwards on resume (a banked count seeded
+  against a positional index), and `resume` stranded the project-wide lock
+  when the status flip failed — no heartbeat exists at that point, so it was
+  a dead lock held for the full 120s expiry against every device and every
+  format.
+- Refuted, and deliberately unchanged: `resume` ignoring `stale_bible`
+  (restore sets the flag and nothing clears it, so a two-bible run IS
+  distinguishable); a stale `base_ts` on resume's lock acquire (premise
+  accurate, the 409-instead-of-423 chain does not exist against the
+  backend's contract); and the unguarded `scene.source.message_range` deref
+  (true as a code fact, but every writer of `story_scenes.data` goes through
+  `_validated_scene`, so the trigger is unreachable through the API).
+
+One of the two confirmed defects existed *only because of a fix made after
+the first review ran* — `resume`'s status flip kept using the raw
+`setRenderStatus` while the terminal writes moved to `setStatusWithRetry`.
+A cache replay would have missed it, which is the argument for re-verifying
+against current code rather than resuming a stale run.
 
 **Phase 7's reuse is partial, and saying otherwise sets up a claim that
 cannot hold.** Carried over unchanged: migration 0021, the render store, run
