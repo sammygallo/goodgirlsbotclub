@@ -16,6 +16,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { hasPermission } from '../../utils/permissions';
 import { Button, ConfirmDialog, Input, TextArea } from '../ui';
 import { StoryTab } from './StoryTab';
+import { RenderTab } from './RenderTab';
 import type { ProjectDeliverableType } from '../../api/client';
 
 const DELIVERABLE_LABELS: Record<ProjectDeliverableType, string> = {
@@ -331,7 +332,7 @@ function WorkDetail({
   const [description, setDescription] = useState(selected?.description ?? '');
   const [addAvatar, setAddAvatar] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [tab, setTab] = useState<'details' | 'story'>('details');
+  const [tab, setTab] = useState<'details' | 'story' | 'render'>('details');
 
   const characterName = useMemo(() => {
     const byAvatar = new Map(characters.map((c) => [c.avatar, c.name]));
@@ -359,13 +360,13 @@ function WorkDetail({
 
   return (
     <div className="space-y-6">
-      {/* Details / Story */}
+      {/* Details / Story / Render */}
       <div
         role="tablist"
         aria-label="Work sections"
         className="flex gap-1 p-1 rounded-lg bg-[var(--color-bg-secondary)]"
       >
-        {(['details', 'story'] as const).map((id, i, all) => (
+        {(['details', 'story', 'render'] as const).map((id, i, all) => (
           <button
             key={id}
             role="tab"
@@ -400,6 +401,22 @@ function WorkDetail({
       {tab === 'story' && (
         <div role="tabpanel" id="work-tabpanel-story" aria-labelledby="work-tab-story">
           <StoryTab project={selected} canManage={canManage} />
+        </div>
+      )}
+
+      {/* Only the selected tab is mounted. The Story tab CLEARS the story
+          store on unmount, so the Render tab has to load it for itself
+          rather than inheriting whatever the other tab left behind — see its
+          own mount effect. The render RUN survives the switch regardless: it
+          lives in `storyRenderStore`, which refuses to clear while something
+          is genuinely in flight. */}
+      {tab === 'render' && (
+        <div
+          role="tabpanel"
+          id="work-tabpanel-render"
+          aria-labelledby="work-tab-render"
+        >
+          <RenderTab project={selected} canManage={canManage} />
         </div>
       )}
 

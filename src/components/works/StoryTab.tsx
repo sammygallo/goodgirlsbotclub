@@ -14,13 +14,12 @@ import {
   hasUnreadableChecksNote,
   useStoryIngestStore,
 } from '../../stores/storyIngestStore';
+import { useStoryRenderStore } from '../../stores/storyRenderStore';
 import { useCharacterStore } from '../../stores/characterStore';
 import { usePersonaStore } from '../../stores/personaStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useConnectionProfileStore } from '../../stores/connectionProfileStore';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
-import { useChatLoreConfigStore } from '../../stores/chatLoreConfigStore';
-import { resolveEffectiveBooks } from '../../utils/worldInfoComposition';
 import { IngestProgressCard } from './IngestProgressCard';
 import { StartIngestModal } from './StartIngestModal';
 import { ContradictionCard } from './ContradictionCard';
@@ -30,6 +29,7 @@ import { VoiceConfidenceCard } from './VoiceConfidenceCard';
 import { LockCanonFooter } from './LockCanonFooter';
 import { SceneReviewRow } from './SceneReviewRow';
 import {
+  booksForChat,
   gatherColdStartSources,
   gatherIngestInputs,
   replayEntriesFrom,
@@ -45,7 +45,6 @@ import {
   type WatermarkVerdict,
 } from '../../utils/storyBible/msgDrift';
 import { makeLlmCall } from '../../utils/storyIngest/llmBridge';
-import { estimateAnnotateTokens } from '../../utils/storyIngest/annotate';
 import { BeatMapCard } from './BeatMapCard';
 import {
   extendChunkPlan,
@@ -227,7 +226,6 @@ export function StoryTab({
   const personas = usePersonaStore((s) => s.personas);
   const wiScanDepth = useWorldInfoStore((s) => s.scanDepth);
   const runIngest = useStoryIngestStore((s) => s.run);
-  const runAnnotate = useStoryIngestStore((s) => s.runAnnotate);
   const ingestRunning = useStoryIngestStore((s) => s.isRunning);
   const loadCheckpoint = useStoryIngestStore((s) => s.loadCheckpoint);
   const clearIngest = useStoryIngestStore((s) => s.clear);
@@ -246,12 +244,6 @@ export function StoryTab({
    *  held until the user confirms the discard it implies. */
   const [pendingChange, setPendingChange] = useState<ProjectChatRef | null>(null);
   const [startOpen, setStartOpen] = useState(false);
-  /** TEMPORARY (step 3 phase 2). The annotate pass has no home of its own
-   *  until Phase 5's Render tab, which defaults to "annotate first" when
-   *  `scenes[].function` is empty. This flag and the section it opens are
-   *  scaffolding so the pass can be exercised on a real key before then;
-   *  Phase 5 removes both. */
-  const [annotateOpen, setAnnotateOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
   /** A walk long enough to need an explicit "yes, this one's long"
    *  before it spends more of the user's key than usual (plan Phase 7:
@@ -306,22 +298,17 @@ export function StoryTab({
   /** Fact deletes, scene edits, sample paste, relink, lock — every §5
    *  action except the resolution-shaped ones — gates on this. */
   const writesDisabled = !canManage || canonLocked || buildActive;
-  /** Annotate's own gate (step-3 plan §3.3), deliberately NOT
-   *  `writesDisabled` — that composite carries `canonLocked`, and step 3
-   *  narrows the lock to *user-authored* edits. A locked bible is exactly
-   *  the state a user annotates in before rendering.
+  /** The symmetric half of §3.6's cross-gate (step 3 phase 5). The render
+   *  store refuses to START while a walk is live; this refuses to start a
+   *  WALK while a render is live, for the same reason read from the other
+   *  end — `transcript_walk` full-replaces the very scene rows the run in
+   *  flight is reading, one scene at a time, on the user's key.
    *
-   *  It mirrors `runAnnotate`'s own refusal rather than inventing one: the
-   *  store is the choke point, and a button that opens a modal the store
-   *  will then refuse is just a slower toast. Parking at `annotate` itself
-   *  is resumable and must stay clickable; parking anywhere else in the
-   *  pipeline is what would lose that pass's progress, since `current_pass`
-   *  is one field. */
-  const annotateBlocked =
-    checkpoint?.status === 'running' ||
-    (checkpoint?.current_pass != null &&
-      checkpoint.current_pass !== 'annotate' &&
-      checkpoint.current_pass !== 'review');
+   *  Only the in-flight case, deliberately. A `paused` render is data at
+   *  rest: it reads nothing until someone continues it, and blocking a
+   *  rebuild on one would strand a user who abandoned a render months ago
+   *  behind a bible they can never update. */
+  const renderInFlight = useStoryRenderStore((s) => s.isRunning);
   /** Contradiction resolutions (Keep/Defer/Reopen/Write my own) stay
    *  live during a build (plan §3.3): reconcile's existing-wins merge
    *  was designed resolution-safe, so the review UI shouldn't punish
@@ -729,40 +716,6 @@ export function StoryTab({
     if (next && !archivesLoaded) void loadArchives();
   };
 
-  // The scanner's own book set: globally active + the character's
-  // embedded/linked + persona-linked, plus whatever this chat's
-  // resolveEffectiveBooks config contributes (which folds in the legacy
-  // chat-linked map for chats that haven't been promoted to a v2 config).
-  // Ingesting every book in the library instead would write lore from
-  // unrelated stories into this bible as canon.
-  const booksForChat = useCallback(
-    (avatar: string, fileName: string) => {
-      const wi = useWorldInfoStore.getState();
-      const chars = useCharacterStore.getState();
-      const persona = usePersonaStore
-        .getState()
-        .getPersonaForContext(avatar, fileName);
-      const inheritedIds = Array.from(
-        new Set<string>([
-          ...wi.activeBookIds,
-          ...chars.getActiveBookIdsForCharacter(avatar),
-          ...(persona?.linkedBookIds ?? []),
-        ])
-      );
-      const chatConfig = fileName
-        ? useChatLoreConfigStore.getState().getEffectiveConfig(fileName)
-        : undefined;
-      const { effectiveBooks, effectiveActiveIds } = resolveEffectiveBooks(
-        wi.getComposableBooks(),
-        inheritedIds,
-        chatConfig
-      );
-      const activeIds = new Set(effectiveActiveIds);
-      return effectiveBooks.filter((b) => activeIds.has(b.id));
-    },
-    []
-  );
-
   const coldStartSources = useMemo(() => {
     if (!sourceChat) return null;
     const avatar = sourceChat.ref.character_avatar;
@@ -776,7 +729,7 @@ export function StoryTab({
       .getState()
       .getPersonaForContext(avatar, sourceChat.ref.file_name);
     return gatherColdStartSources(character, avatar, persona ?? null, relevant);
-  }, [sourceChat, characters, booksForChat, personas]);
+  }, [sourceChat, characters, personas]);
 
   const buildAndRun = async (
     profileId: string | null,
@@ -889,57 +842,6 @@ export function StoryTab({
     setPreparing(true);
     try {
       await buildAndRun(profileId, messages, capturedWiFired, true, incremental);
-    } catch (err) {
-      showIngestError(err);
-    } finally {
-      setPreparing(false);
-    }
-  };
-
-  /**
-   * Run the annotate pass (step 3 phase 2).
-   *
-   * TEMPORARY entry point — Phase 5's Render tab owns this properly.
-   *
-   * Deliberately NOT gated on `canonLocked`, and deliberately not routed
-   * through `writesDisabled`. Step 3 narrows the lock invariant to
-   * *user-authored* edits: annotate writes derived fields nothing else
-   * owns, and a locked bible is exactly the state a user annotates in
-   * before rendering. `writesDisabled` is a three-term composite that
-   * carries `canonLocked`, so inheriting it would drag the lock back in.
-   *
-   * The store is still the choke point — `runAnnotate` refuses on a
-   * checkpoint parked mid-pipeline, since writing `current_pass:
-   * 'annotate'` over a parked walk would destroy the signal
-   * `resumableWalk` reads. The button below only mirrors that refusal so
-   * the user is not offered a click that toasts at them.
-   */
-  const startAnnotate = async (profileId: string | null) => {
-    const profile = profileId
-      ? useConnectionProfileStore.getState().getProfile(profileId)
-      : null;
-    const settings = useSettingsStore.getState();
-    const provider = profile?.provider ?? settings.activeProvider;
-    const model = profile?.model ?? settings.activeModel;
-    const customUrl = profile
-      ? profile.customUrl
-      : (settings as unknown as { customEndpointUrl?: string }).customEndpointUrl;
-
-    setPreparing(true);
-    try {
-      setAnnotateOpen(false);
-      await runAnnotate({
-        projectId: project.id,
-        llm: makeLlmCall({
-          provider,
-          model,
-          customUrl,
-          characterName: coldStartSources?.characterName || 'Story',
-        }),
-        model,
-      });
-      // The pass rewrites scene rows and may add the `narrative` section.
-      await load(project.id);
     } catch (err) {
       showIngestError(err);
     } finally {
@@ -1330,7 +1232,9 @@ export function StoryTab({
             <Button
               variant="primary"
               onClick={() => setStartOpen(true)}
-              disabled={preparing || !coldStartSources || canonLocked}
+              disabled={
+                preparing || !coldStartSources || canonLocked || renderInFlight
+              }
             >
               <Sparkles size={16} />
               {preparing ? 'Starting…' : 'Build'}
@@ -1339,6 +1243,13 @@ export function StoryTab({
           {canonLocked && (
             <p className="text-xs text-[var(--color-text-secondary)]">
               Canon is locked — unlock to rebuild.
+            </p>
+          )}
+          {renderInFlight && (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              The story is being written out right now. Building would replace
+              the scenes that render is reading — stop it in the Render tab
+              first.
             </p>
           )}
           {checkpoint?.replay_approx && (
@@ -1357,40 +1268,6 @@ export function StoryTab({
             >
               Build state looks stuck? Clear it
             </button>
-          )}
-        </section>
-      )}
-
-      {/* TEMPORARY (step 3 phase 2) — Phase 5's Render tab replaces this
-          whole section, where "annotate first" becomes the default state
-          of the tab rather than a button of its own. */}
-      {canManage && !ingestRunning && (manifest?.scene_count ?? 0) > 0 && (
-        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-2">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="text-sm text-[var(--color-text-primary)]">
-                Annotate the scenes
-              </h3>
-              <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-                Records each scene’s beat, tension and how tightly to tell
-                it. Runs on your API key; scenes already annotated are
-                skipped.
-              </p>
-            </div>
-            <Button
-              variant="secondary"
-              onClick={() => setAnnotateOpen(true)}
-              disabled={preparing || annotateBlocked}
-            >
-              <Sparkles size={16} />
-              {preparing ? 'Starting…' : 'Annotate'}
-            </Button>
-          </div>
-          {annotateBlocked && (
-            <p className="text-xs text-[var(--color-text-secondary)]">
-              Finish or clear the story build first — annotating now would
-              lose its progress.
-            </p>
           )}
         </section>
       )}
@@ -1560,9 +1437,18 @@ export function StoryTab({
             <RotateCcw size={16} />
             Reset story
           </Button>
+          {/* Step-3 §3.8: the promise this used to make is no longer true.
+              Reset snapshots the BIBLE — scenes, facts, sections — and phase
+              9 made that recoverable. It does not snapshot rendered prose,
+              and it deletes both render tables in the same transaction. So
+              "this can be undone" is accurate for the story and false for
+              the writing, and the writing is the part that cost the most to
+              produce. */}
           <p className="text-xs text-[var(--color-text-secondary)] mt-1">
             Deletes everything built from this chat. The chat itself is
-            untouched, and a snapshot is kept below — this can be undone.
+            untouched, and a snapshot of the story is kept below. Anything
+            you've written out is deleted for good — snapshots don't cover
+            it.
           </p>
         </section>
       )}
@@ -1574,17 +1460,6 @@ export function StoryTab({
           estimatedTokens={estimateColdStartTokens(coldStartSources)}
           onStart={(profileId) => void startIngest(profileId)}
           onClose={() => setStartOpen(false)}
-          busy={preparing}
-        />
-      )}
-
-      {/* TEMPORARY (step 3 phase 2) — see the section above. */}
-      {annotateOpen && (
-        <StartIngestModal
-          mode="annotate"
-          estimatedTokens={estimateAnnotateTokens(manifest?.scene_count ?? 0)}
-          onStart={(profileId) => void startAnnotate(profileId)}
-          onClose={() => setAnnotateOpen(false)}
           busy={preparing}
         />
       )}
@@ -1602,7 +1477,11 @@ export function StoryTab({
       <ConfirmDialog
         isOpen={pendingChange !== null}
         title="Change the source chat?"
-        message="The story so far was built from the current chat, so changing it deletes every scene, fact and note first. The chats themselves are untouched."
+        // Not one of §3.8's three named strings, because it never promised
+        // recoverability — but it does reach `resetBible`, so leaving prose
+        // out of its list of casualties would be an omission of the same
+        // kind the other three were rewritten for.
+        message="The story so far was built from the current chat, so changing it deletes every scene, fact and note first — along with anything you've had written out, which is not kept. The chats themselves are untouched."
         confirmLabel="Change and start over"
         danger
         busy={isSaving}
@@ -1613,7 +1492,7 @@ export function StoryTab({
       <ConfirmDialog
         isOpen={confirmReset}
         title="Reset this story?"
-        message="Every scene, fact and note built from this chat is deleted, and the story has to be built again from scratch. A snapshot is kept, so this can be undone from the snapshots list below."
+        message="Every scene, fact and note built from this chat is deleted, and the story has to be built again from scratch. A snapshot of those is kept, so that part can be undone from the snapshots list below — but any prose you've had written out is deleted permanently and is not in the snapshot."
         confirmLabel="Reset story"
         danger
         busy={isSaving}
@@ -1640,7 +1519,7 @@ export function StoryTab({
       <ConfirmDialog
         isOpen={pendingReingest}
         title="Re-ingest from scratch?"
-        message="Every scene, fact and note built from this chat is deleted and rebuilt by reading the whole chat again, which spends your key. A snapshot is kept first, so this can be undone from the snapshots list below."
+        message="Every scene, fact and note built from this chat is deleted and rebuilt by reading the whole chat again, which spends your key. A snapshot of those is kept first, so that part can be undone from the snapshots list below — but any prose you've had written out is deleted permanently and is not in the snapshot."
         confirmLabel="Re-ingest"
         danger
         busy={isSaving}

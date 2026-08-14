@@ -130,6 +130,15 @@ export interface RenderResumeInput extends RenderSources {
   renderId: string;
 }
 
+/** Render ONE scene of an existing run again (plan §3.4's remedy for a
+ *  chapter the user did not like, and the only way a `truncated` unit is
+ *  ever re-billed — `resume` deliberately leaves those alone). */
+export interface RenderRerenderInput extends RenderResumeInput {
+  /** Must lie inside the run's own range; a scene outside it belongs to
+   *  no unit this run owns. */
+  sceneId: string;
+}
+
 export interface RenderProgress {
   done: number;
   total: number;
@@ -155,6 +164,10 @@ interface StoryRenderState {
   /** Continue a `paused` or `error` run, re-rendering only what is not
    *  already banked. */
   resume: (input: RenderResumeInput) => Promise<boolean>;
+  /** Re-render exactly one scene of an existing run, banked over its
+   *  current unit. Unlike `resume` this accepts a `complete` run — that
+   *  is its whole purpose. */
+  rerenderScene: (input: RenderRerenderInput) => Promise<boolean>;
   cancel: () => void;
   clear: () => void;
 }
@@ -207,144 +220,35 @@ export function unitStatusFor(
   return terminal === 'stop' ? 'complete' : 'truncated';
 }
 
-export const useStoryRenderStore = create<StoryRenderState>((set, get) => ({
-  projectId: null,
-  render: null,
-  isRunning: false,
-  currentSceneId: null,
-  progress: null,
-  lockedBy: null,
-  error: null,
-  abort: null,
+/** What distinguishes the two ways of continuing an existing run. Kept as
+ *  one discriminated parameter rather than two near-identical entry points
+ *  because everything else — the range from the run row, the unit read,
+ *  the lock re-take, the status flip and its lock release — is the same
+ *  sequence, and the last time two copies of it existed they drifted (the
+ *  raw `setRenderStatus` that stranded the project lock). */
+type ContinueMode = { kind: 'resume' } | { kind: 'rerender'; sceneId: string };
 
-  clear: () => {
-    // Same rule as storyIngestStore: NEVER drop a genuinely in-flight run.
-    // Wiping `isRunning` here orphaned ingestion runs — Stop stopped
-    // reaching them and a second press started a second paid run.
-    const { isRunning, abort } = get();
-    if (isRunning && abort && !abort.signal.aborted) {
-      set({ error: null, lockedBy: null });
-      return;
-    }
-    set({
-      projectId: null,
-      render: null,
-      isRunning: false,
-      currentSceneId: null,
-      progress: null,
-      lockedBy: null,
-      error: null,
-      abort: null,
-    });
-  },
-
-  cancel: () => {
-    get().abort?.abort();
-  },
-
-  start: async (input) => {
-    const { projectId } = input;
-    // Claimed SYNCHRONOUSLY, before any await: reading and setting either
-    // side of a suspension point lets two clicks in one tick both start a
-    // paid run.
-    if (get().isRunning) return false;
-    const abort = new AbortController();
-    set({
-      isRunning: true,
-      abort,
-      projectId,
-      error: null,
-      lockedBy: null,
-      currentSceneId: null,
-      progress: null,
-    });
-
-    const stillOurs = () => get().projectId === projectId && get().abort === abort;
-    const finish = (patch: Partial<StoryRenderState>) => {
-      if (get().abort === abort) {
-        set({ isRunning: false, abort: null, currentSceneId: null, ...patch });
-      }
-    };
-
-    // Scene range, resolved against the rows the caller handed us. Doing
-    // this BEFORE the run is created means a bad range costs nothing.
-    const ordered = [...input.scenes].sort(
-      (a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id)
-    );
-    const startIdx = ordered.findIndex((s) => s.id === input.sceneIdStart);
-    const endIdx = ordered.findIndex((s) => s.id === input.sceneIdEnd);
-    if (startIdx < 0 || endIdx < 0 || endIdx < startIdx) {
-      const message = 'That scene range could not be resolved — reload and try again.';
-      finish({ error: message });
-      showToastGlobal(message, 'error');
-      return false;
-    }
-    const range = ordered.slice(startIdx, endIdx + 1);
-
-    // §3.6's cross-gate, BEFORE the run row exists — a walk that is about
-    // to full-replace these scene rows makes the whole render worthless,
-    // and refusing after creating the run would leave a dead row behind.
-    const gate = await ingestionGateMessage(projectId);
-    if (gate) {
-      finish({ error: gate });
-      showToastGlobal(gate, 'warning');
-      return false;
-    }
-
-    let render: StoryRenderOut;
-    try {
-      render = await storyApi.createRender(projectId, {
-        // Minted here so a transport retry re-sends the same id and the
-        // server's idempotency absorbs it — one press can never become
-        // two paid runs.
-        id: crypto.randomUUID(),
-        format: input.format ?? 'novel',
-        sceneIdStart: input.sceneIdStart,
-        sceneIdEnd: input.sceneIdEnd,
-        clientId: CLIENT_ID,
-        takeover: input.takeover ?? false,
-        model: input.model ?? null,
-        promptVersion: RENDER_PROMPT_VERSION,
-      });
-    } catch (error) {
-      if (error instanceof RenderLockedError) {
-        finish({
-          lockedBy: error,
-          error: error.takeable
-            ? 'Another device left a render running. You can take it over.'
-            : 'This story is being rendered on another device.',
-        });
-        showToastGlobal(
-          error.takeable
-            ? 'Another device left a render running'
-            : 'This story is being rendered on another device',
-          'warning'
-        );
-        return false;
-      }
-      const message =
-        error instanceof Error ? error.message : 'Could not start the render';
-      finish({ error: message });
-      showToastGlobal(message, 'error');
-      return false;
-    }
-
-    return driveRender({
-      projectId,
-      render,
-      fullRange: range,
-      // A fresh run renders everything in range.
-      toRender: new Set(range.map((r) => r.id)),
-      seed: { truncated: 0, errored: 0 },
-      input,
-      abort,
-      stillOurs,
-      emit: (patch) => set(patch),
-      finish,
-    });
-  },
-
-  resume: async (input) => {
+export const useStoryRenderStore = create<StoryRenderState>((set, get) => {
+  /**
+   * Continue an existing run: `resume` picks up everything not banked,
+   * `rerender` redoes exactly one scene.
+   *
+   * The differences are deliberately narrow and all named here:
+   *
+   *  - **Which statuses are refused.** `resume` refuses `complete` and
+   *    `aborted`, because continuing a finished run would silently re-bill
+   *    every scene in it. A re-render of one named scene is the user asking
+   *    for exactly that, on exactly one scene, so it accepts any status.
+   *  - **What is re-rendered.** `resume` takes the complement of what is
+   *    banked; `rerender` takes the one scene, whatever its unit says —
+   *    including `truncated`, which `resume` alone must never touch.
+   *  - **The closing toast.** A one-scene run inside a forty-scene render
+   *    must not report "Rendered 40 scenes".
+   */
+  const continueRun = async (
+    input: RenderResumeInput,
+    mode: ContinueMode
+  ): Promise<boolean> => {
     const { projectId } = input;
     if (get().isRunning) return false;
     const abort = new AbortController();
@@ -376,7 +280,10 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => ({
       return false;
     }
 
-    if (render.status === 'complete' || render.status === 'aborted') {
+    if (
+      mode.kind === 'resume' &&
+      (render.status === 'complete' || render.status === 'aborted')
+    ) {
       // Nothing to continue. Re-rendering a finished run from here would
       // silently re-bill every scene in it.
       const message = 'That render is already finished.';
@@ -405,6 +312,16 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => ({
     }
     const range = ordered.slice(startIdx, endIdx + 1);
 
+    if (mode.kind === 'rerender' && !range.some((r) => r.id === mode.sceneId)) {
+      // Outside the run's own span. Writing a unit here would attach prose
+      // to a render that does not claim that scene, and the reader — which
+      // lists units, not scenes — would show a chapter from nowhere.
+      const message = 'That scene is not part of this render.';
+      finish({ render, error: message });
+      showToastGlobal(message, 'error');
+      return false;
+    }
+
     const gate = await ingestionGateMessage(projectId);
     if (gate) {
       finish({ render, error: gate });
@@ -417,16 +334,21 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => ({
     //  - a missing unit was never rendered;
     //  - `error` is a transient failure worth one more try;
     //  - `pending` never got its call;
-    //  - `truncated` is deliberately NOT re-rendered. It is a finished
-    //    call whose output hit the cap, so re-running it unchanged would
-    //    very likely truncate again and bill for the privilege. §3.4's
-    //    remedy is an explicit per-scene re-render, which is the user's
-    //    decision to make.
+    //  - `truncated` is deliberately NOT re-rendered by a resume. It is a
+    //    finished call whose output hit the cap, so re-running it
+    //    unchanged would very likely truncate again and bill for the
+    //    privilege. §3.4's remedy is the explicit per-scene re-render
+    //    below, which is the user's decision to make.
     const done = new Set<string>();
     let truncated = 0;
     // Errored units are RE-rendered on resume, so they start the new run's
     // tally at zero rather than carrying the old failure forward.
-    const errored = 0;
+    let errored = 0;
+    /** The status the re-render's target already carried, so its OLD
+     *  verdict can be taken back out of the seed below. Without this a
+     *  scene that was truncated and truncates again is counted twice, and
+     *  the run reports more cut chapters than it has. */
+    let targetPrior: StoryRenderUnitStatus | null = null;
     try {
       let cursor: { sequence: number; sceneId: string } | null = null;
       for (let page = 0; page < MAX_UNIT_PAGES; page++) {
@@ -441,6 +363,14 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => ({
           if (unit.status === 'truncated') {
             done.add(unit.scene_id);
             truncated++;
+          }
+          // Only a re-render carries prior `error` units forward, because
+          // it leaves them alone. A resume re-renders every one of them, so
+          // counting them here would report the same failure twice once the
+          // fresh attempt fails again.
+          if (mode.kind === 'rerender') {
+            if (unit.status === 'error') errored++;
+            if (unit.scene_id === mode.sceneId) targetPrior = unit.status;
           }
         }
         if (
@@ -469,7 +399,17 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => ({
       return false;
     }
 
-    const toRender = new Set(range.filter((r) => !done.has(r.id)).map((r) => r.id));
+    let toRender: Set<string>;
+    if (mode.kind === 'rerender') {
+      toRender = new Set([mode.sceneId]);
+      // Take the target's OLD verdict back out before the loop adds its
+      // new one. A truncated scene that truncates again is still ONE cut
+      // chapter, not two.
+      if (targetPrior === 'truncated') truncated--;
+      if (targetPrior === 'error') errored--;
+    } else {
+      toRender = new Set(range.filter((r) => !done.has(r.id)).map((r) => r.id));
+    }
 
     // Re-take the project lock. A reload mints a new CLIENT_ID, so the
     // previous holder is this same human on the same machine — but the
@@ -551,14 +491,158 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => ({
       fullRange: range,
       toRender,
       seed: { truncated, errored },
+      scope: mode.kind === 'rerender' ? 'scene' : 'run',
       input,
       abort,
       stillOurs,
       emit: (patch) => set(patch),
       finish,
     });
-  },
-}));
+  };
+
+  return {
+    projectId: null,
+    render: null,
+    isRunning: false,
+    currentSceneId: null,
+    progress: null,
+    lockedBy: null,
+    error: null,
+    abort: null,
+
+    clear: () => {
+      // Same rule as storyIngestStore: NEVER drop a genuinely in-flight run.
+      // Wiping `isRunning` here orphaned ingestion runs — Stop stopped
+      // reaching them and a second press started a second paid run.
+      const { isRunning, abort } = get();
+      if (isRunning && abort && !abort.signal.aborted) {
+        set({ error: null, lockedBy: null });
+        return;
+      }
+      set({
+        projectId: null,
+        render: null,
+        isRunning: false,
+        currentSceneId: null,
+        progress: null,
+        lockedBy: null,
+        error: null,
+        abort: null,
+      });
+    },
+
+    cancel: () => {
+      get().abort?.abort();
+    },
+
+    start: async (input) => {
+      const { projectId } = input;
+      // Claimed SYNCHRONOUSLY, before any await: reading and setting either
+      // side of a suspension point lets two clicks in one tick both start a
+      // paid run.
+      if (get().isRunning) return false;
+      const abort = new AbortController();
+      set({
+        isRunning: true,
+        abort,
+        projectId,
+        error: null,
+        lockedBy: null,
+        currentSceneId: null,
+        progress: null,
+      });
+
+      const stillOurs = () => get().projectId === projectId && get().abort === abort;
+      const finish = (patch: Partial<StoryRenderState>) => {
+        if (get().abort === abort) {
+          set({ isRunning: false, abort: null, currentSceneId: null, ...patch });
+        }
+      };
+
+      // Scene range, resolved against the rows the caller handed us. Doing
+      // this BEFORE the run is created means a bad range costs nothing.
+      const ordered = [...input.scenes].sort(
+        (a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id)
+      );
+      const startIdx = ordered.findIndex((s) => s.id === input.sceneIdStart);
+      const endIdx = ordered.findIndex((s) => s.id === input.sceneIdEnd);
+      if (startIdx < 0 || endIdx < 0 || endIdx < startIdx) {
+        const message = 'That scene range could not be resolved — reload and try again.';
+        finish({ error: message });
+        showToastGlobal(message, 'error');
+        return false;
+      }
+      const range = ordered.slice(startIdx, endIdx + 1);
+
+      // §3.6's cross-gate, BEFORE the run row exists — a walk that is about
+      // to full-replace these scene rows makes the whole render worthless,
+      // and refusing after creating the run would leave a dead row behind.
+      const gate = await ingestionGateMessage(projectId);
+      if (gate) {
+        finish({ error: gate });
+        showToastGlobal(gate, 'warning');
+        return false;
+      }
+
+      let render: StoryRenderOut;
+      try {
+        render = await storyApi.createRender(projectId, {
+          // Minted here so a transport retry re-sends the same id and the
+          // server's idempotency absorbs it — one press can never become
+          // two paid runs.
+          id: crypto.randomUUID(),
+          format: input.format ?? 'novel',
+          sceneIdStart: input.sceneIdStart,
+          sceneIdEnd: input.sceneIdEnd,
+          clientId: CLIENT_ID,
+          takeover: input.takeover ?? false,
+          model: input.model ?? null,
+          promptVersion: RENDER_PROMPT_VERSION,
+        });
+      } catch (error) {
+        if (error instanceof RenderLockedError) {
+          finish({
+            lockedBy: error,
+            error: error.takeable
+              ? 'Another device left a render running. You can take it over.'
+              : 'This story is being rendered on another device.',
+          });
+          showToastGlobal(
+            error.takeable
+              ? 'Another device left a render running'
+              : 'This story is being rendered on another device',
+            'warning'
+          );
+          return false;
+        }
+        const message =
+          error instanceof Error ? error.message : 'Could not start the render';
+        finish({ error: message });
+        showToastGlobal(message, 'error');
+        return false;
+      }
+
+      return driveRender({
+        projectId,
+        render,
+        fullRange: range,
+        // A fresh run renders everything in range.
+        toRender: new Set(range.map((r) => r.id)),
+        seed: { truncated: 0, errored: 0 },
+        input,
+        abort,
+        stillOurs,
+        emit: (patch) => set(patch),
+        finish,
+      });
+    },
+
+    resume: (input) => continueRun(input, { kind: 'resume' }),
+
+    rerenderScene: ({ sceneId, ...rest }) =>
+      continueRun(rest, { kind: 'rerender', sceneId }),
+  };
+});
 
 
 /** Consecutive scene failures that end a run. One blip costs one scene; a
@@ -622,6 +706,11 @@ async function driveRender(opts: {
   fullRange: StorySceneOut[];
   toRender: Set<string>;
   seed: { truncated: number; errored: number };
+  /** What the closing toast is ABOUT. A one-scene re-render inside a
+   *  forty-scene run finishes the same way a whole run does — same status
+   *  flip, same lock release — but telling the user it "rendered 40
+   *  scenes" when it rendered one and re-billed one is a lie about spend. */
+  scope?: 'run' | 'scene';
   input: RenderSources;
   abort: AbortController;
   stillOurs: () => boolean;
@@ -637,6 +726,12 @@ async function driveRender(opts: {
   let truncated = opts.seed.truncated;
   let errored = opts.seed.errored;
   let consecutiveFailures = 0;
+
+  /** A re-render is REPLACING something. Every other caller is filling a
+   *  gap, where an `error` unit is strictly better than no record at all;
+   *  a re-render's failure would instead trade finished prose for that
+   *  empty record. See the guard at the unit write. */
+  const keepProseOnError = opts.scope === 'scene';
 
   // A COUNT of finished scenes, seeded with what a previous run banked —
   // NOT the loop's positional index. The two disagree whenever the banked
@@ -779,21 +874,23 @@ async function driveRender(opts: {
         // and a run that stops on scene 3 of 40 has spent the user's key
         // for nothing.
         errored++;
-        await writeUnit({
-          projectId,
-          renderId: render.id,
-          sceneId: row.id,
-          clientId: CLIENT_ID,
-          sequence: row.sequence,
-          prose: '',
-          status: 'error',
-          sourceSceneTs: row.server_ts,
-          continuity: {
-            refused: brief.reason,
-            core_tokens: brief.coreTokens,
-            cap_tokens: brief.capTokens,
-          },
-        });
+        if (!keepProseOnError) {
+          await writeUnit({
+            projectId,
+            renderId: render.id,
+            sceneId: row.id,
+            clientId: CLIENT_ID,
+            sequence: row.sequence,
+            prose: '',
+            status: 'error',
+            sourceSceneTs: row.server_ts,
+            continuity: {
+              refused: brief.reason,
+              core_tokens: brief.coreTokens,
+              cap_tokens: brief.capTokens,
+            },
+          });
+        }
         completed++;
         emit({
           progress: { done: completed, total: fullRange.length, truncated, errored },
@@ -892,6 +989,27 @@ async function driveRender(opts: {
 
       if (!stillOurs()) return false;
 
+      if (status === 'error' && keepProseOnError) {
+        // A re-render that failed must leave the chapter it was replacing
+        // exactly as it was. `writeUnit` is a full replace, so banking the
+        // failure here would swap finished prose for an empty `error` unit
+        // — destroying paid-for output because the RETRY failed, which is
+        // the one outcome a "render this scene again" button must never
+        // have. The failure is still reported: `errored` is counted, the
+        // toast says so, and no token is silently unaccounted for.
+        completed++;
+        emit({
+          progress: { done: completed, total: fullRange.length, truncated, errored },
+        });
+        if (abortAfterProse) throw abortError();
+        if (consecutiveFailures >= MAX_CONSECUTIVE_SCENE_FAILURES) {
+          throw new Error(
+            `The model stopped responding after ${consecutiveFailures} scenes — render stopped. Everything already rendered is saved.`
+          );
+        }
+        continue;
+      }
+
       await writeUnit({
         projectId,
         renderId: render.id,
@@ -943,14 +1061,30 @@ async function driveRender(opts: {
       render: done,
       progress: { done: total, total, truncated, errored },
     });
-    showToastGlobal(
-      truncated > 0
-        ? `Rendered ${total} scenes — ${truncated} came back cut short`
-        : errored > 0
-          ? `Rendered ${total - errored} of ${total} scenes`
-          : `Rendered ${total} ${total === 1 ? 'scene' : 'scenes'}`,
-      truncated > 0 || errored > 0 ? 'warning' : 'success'
-    );
+    if (opts.scope === 'scene') {
+      // Compared against the SEED, not against zero: the seeds carry the
+      // rest of the run's verdicts, so only a rise here belongs to the
+      // scene the user just paid to redo.
+      const cut = truncated > opts.seed.truncated;
+      const failed = errored > opts.seed.errored;
+      showToastGlobal(
+        failed
+          ? 'That scene could not be rendered — nothing was replaced'
+          : cut
+            ? 'Scene rendered again, but it came back cut short'
+            : 'Scene rendered again',
+        failed ? 'error' : cut ? 'warning' : 'success'
+      );
+    } else {
+      showToastGlobal(
+        truncated > 0
+          ? `Rendered ${total} scenes — ${truncated} came back cut short`
+          : errored > 0
+            ? `Rendered ${total - errored} of ${total} scenes`
+            : `Rendered ${total} ${total === 1 ? 'scene' : 'scenes'}`,
+        truncated > 0 || errored > 0 ? 'warning' : 'success'
+      );
+    }
     return true;
   } catch (error) {
     const aborted = (error as Error)?.name === 'AbortError';

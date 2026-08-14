@@ -9,8 +9,11 @@
 
 import { api, type ProjectChatRef } from '../../api/client';
 import type { CharacterInfo } from '../../api/client';
-import type { Persona } from '../../stores/personaStore';
-import type { WorldInfoBook } from '../../stores/worldInfoStore';
+import { usePersonaStore, type Persona } from '../../stores/personaStore';
+import { useWorldInfoStore, type WorldInfoBook } from '../../stores/worldInfoStore';
+import { useCharacterStore } from '../../stores/characterStore';
+import { useChatLoreConfigStore } from '../../stores/chatLoreConfigStore';
+import { resolveEffectiveBooks } from '../../utils/worldInfoComposition';
 import type { ReplayEntry } from '../../utils/storyIngest/wiReplay';
 import type {
   ColdStartSources,
@@ -61,6 +64,48 @@ export function gatherColdStartSources(
       })),
     })),
   };
+}
+
+/**
+ * The scanner's own book set for one chat: globally active + the
+ * character's embedded/linked + persona-linked, plus whatever this chat's
+ * `resolveEffectiveBooks` config contributes (which folds in the legacy
+ * chat-linked map for chats not yet promoted to a v2 config).
+ *
+ * Ingesting every book in the library instead would write lore from
+ * unrelated stories into this bible as canon.
+ *
+ * Shared by the Story tab's build and the Render tab's rule selector, and
+ * that sharing is the point: the renderer replays world-info activation
+ * against the SAME book set the ingestion walked (step-3 plan §3.5). Two
+ * copies of this resolution order would eventually disagree, and the
+ * symptom — rules quietly missing from rendered prose — looks nothing like
+ * its cause.
+ *
+ * Reads stores through `getState()` rather than hooks so it is callable
+ * from event handlers and effects, not only from render.
+ */
+export function booksForChat(avatar: string, fileName: string): WorldInfoBook[] {
+  const wi = useWorldInfoStore.getState();
+  const chars = useCharacterStore.getState();
+  const persona = usePersonaStore.getState().getPersonaForContext(avatar, fileName);
+  const inheritedIds = Array.from(
+    new Set<string>([
+      ...wi.activeBookIds,
+      ...chars.getActiveBookIdsForCharacter(avatar),
+      ...(persona?.linkedBookIds ?? []),
+    ])
+  );
+  const chatConfig = fileName
+    ? useChatLoreConfigStore.getState().getEffectiveConfig(fileName)
+    : undefined;
+  const { effectiveBooks, effectiveActiveIds } = resolveEffectiveBooks(
+    wi.getComposableBooks(),
+    inheritedIds,
+    chatConfig
+  );
+  const activeIds = new Set(effectiveActiveIds);
+  return effectiveBooks.filter((b) => activeIds.has(b.id));
 }
 
 export function replayEntriesFrom(books: WorldInfoBook[]): ReplayEntry[] {

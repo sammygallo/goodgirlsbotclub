@@ -481,6 +481,43 @@ export interface RenderingHintsSection {
   };
 }
 
+/**
+ * The section as it exists before anyone has chosen anything.
+ *
+ * Every renderer-facing default is deliberately `null` rather than a
+ * concrete value: `resolveHints` falls through a null `pov`/`tense` to
+ * `narrative`'s canonical defaults (schema D4), so seeding them here with
+ * a guess would override the bible's own answer with an invented one.
+ *
+ * Two callers, and they must agree: cold start writes this as the section's
+ * initial value, and the Render tab's hints editor seeds its form from it
+ * when the section does not exist yet. A second literal is how the two
+ * would drift into writing different shapes at the same `extra="forbid"`
+ * endpoint.
+ */
+export function emptyRenderingHintsSection(): RenderingHintsSection {
+  return {
+    novel: {
+      pov: null,
+      pov_character: null,
+      tense: null,
+      chapter_breaks: [],
+      chapter_titles: [],
+      compression_level: 'balanced',
+      target_word_count: null,
+      style_anchors: [],
+    },
+    screenplay: { format: 'fountain', sluglines_inferred: true, page_target: null },
+    graphic_novel: {
+      pages_per_scene: 1,
+      panel_density: 'standard',
+      art_style_brief: '',
+      character_consistency_refs: [],
+    },
+    storyboard: { aspect_ratio: '16:9', panels_per_scene: 4 },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // narrative section (step 3 — the annotate pass writes `structure`)
 // ---------------------------------------------------------------------------

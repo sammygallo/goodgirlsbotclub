@@ -941,6 +941,67 @@ annotate pass cannot checkpoint at all. This is a *value* rejection, not the
 `extra="forbid"` skew (relaxing leaves to `extra="allow"`) would not touch
 this gate.
 
+### Phase 5, as shipped — the deviations a later phase must not undo
+
+*Written at the end of the Phase 5 session, against what landed rather than
+what §4's one-line row predicted.*
+
+**The store gained a third entry point.** §4 lists "per-scene re-render" as
+tab work, but `storyRenderStore` exposed only `start`/`resume`, and neither
+can do it: `resume` refuses a `complete` run (continuing one would re-bill
+every scene) and deliberately never re-renders a `truncated` unit. So
+`rerenderScene` was added as a generalisation of `resume` rather than a
+second copy of it — one `continueRun` with a discriminated mode, because the
+last time two copies of that sequence existed they drifted and the drift
+stranded the project-wide lock.
+
+Three things are true only of the re-render mode, and all three are pinned
+and mutation-tested:
+
+- It accepts **any** run status, including `complete`.
+- It re-renders a `truncated` unit — the only path that ever does.
+- **A failed re-render writes NOTHING.** `writeUnit` is a full replace, so
+  banking an `error` over an existing unit would swap finished, paid-for
+  prose for an empty row — destroying output because the *retry* failed.
+  Every other caller is filling a gap, where an `error` unit beats no record;
+  a re-render is replacing, where it does not. The failure is still counted
+  and toasted, so nothing is silently swallowed.
+
+**`storyStore` gained two members.** `saveNovelHints` (the hints editor's
+writer — a patch over the stored section, since a full replace would delete
+the three renderer groups step 3 does not own) and `loadAllScenesFull` (the
+render path's whole-scene read, through `GET /scenes/full`). The latter is a
+SECOND reader beside `loadAllScenesWithData` rather than a rewrite of it: the
+shipped one is a summary page plus a GET per scene, called on an explicit
+click, while this is called before every run, preflight and reader open, and
+§4 is explicit that this step must not promote an N+1 to a hot path.
+
+`saveNovelHints` is gated `allowWhileLocked: true`. That is §3.3's narrowing
+applied consistently — a locked bible is the state §1 describes rendering
+FROM, and refusing here would make the tab unusable in its primary case. The
+build term is NOT waived: cold start full-replaces this section.
+
+**`booksForChat` moved to `ingestSources.ts`**, out of `StoryTab`'s closure.
+The renderer replays world-info activation against the same book set the
+ingestion walked (§3.5), so two copies of that resolution order would
+eventually disagree — and the symptom, rules quietly missing from rendered
+prose, looks nothing like its cause.
+
+**Four confirm strings changed, not three.** §3.8 names the helper copy, the
+reset confirm and the re-ingest confirm. The **change-source-chat** confirm
+also reaches `resetBible`; it was not on the list because it never promised
+recoverability, but it enumerated what reset destroys and prose was missing
+from that list. Fixed for the same reason as the other three.
+
+**The Render tab loads the story store itself.** Only one Works tab is
+mounted at a time and `StoryTab` clears the store on unmount, so a switch
+from Story to Render arrives with an empty manifest — which the tab would
+otherwise render as "nothing to write out yet" on a fully built bible.
+
+**Not yet verified against a real provider key.** The suite is green and the
+app boots, but no render has been run end to end. That is still the open
+item, and it is Phase 6's precondition as much as this phase's.
+
 **Schema version.** Adding `annotate` bumps `meta.schema_version` to **1.2**
 by the project's own convention (additive, backend-first). Nothing enforces
 it either way — `SCHEMA_VERSION_RE` accepts any `1.x`
