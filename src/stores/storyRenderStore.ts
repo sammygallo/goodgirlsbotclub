@@ -510,12 +510,24 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => ({
     }
 
     try {
-      const running = await storyApi.setRenderStatus(projectId, render.id, {
-        status: 'running',
-        baseTs: renderTs,
-      });
+      // `setStatusWithRetry`, not the raw call: the token was read before
+      // the ingestion gate and a full page over the units, so another
+      // device's heartbeat can legitimately have moved it in between.
+      const running = await setStatusWithRetry(
+        projectId,
+        render.id,
+        'running',
+        renderTs
+      );
+      renderTs = running.server_ts;
       render = running;
     } catch (error) {
+      // RELEASE THE LOCK WE JUST TOOK. It is per project and across
+      // formats, and no heartbeat is running yet — `driveRender` creates
+      // that, and we never reach it — so bailing out while holding it
+      // locks every device and every format out of every render until the
+      // 120s expiry, with nothing refreshing it in the meantime.
+      await releaseLockQuietly(projectId, render.id, renderTs);
       const message =
         error instanceof Error ? error.message : 'Could not resume the render';
       finish({ render, error: message });
@@ -625,6 +637,20 @@ async function driveRender(opts: {
   let truncated = opts.seed.truncated;
   let errored = opts.seed.errored;
   let consecutiveFailures = 0;
+
+  // A COUNT of finished scenes, seeded with what a previous run banked —
+  // NOT the loop's positional index. The two disagree whenever the banked
+  // scenes are not a leading run of the range, and `i + 1` then emits a
+  // value BELOW the seed, so the progress bar visibly goes backwards.
+  //
+  // Reachable without anything exotic: `start` records a failed scene as
+  // an `error` unit and carries on, and `resume` re-renders `error` units,
+  // so one transient failure followed by a stop is enough. A probe during
+  // review produced the sequence 3 → 1 → 5 on a five-scene run.
+  //
+  // Counting instead of indexing also makes the final value land exactly
+  // on `total`, which indexing cannot guarantee when the tail is banked.
+  let completed = fullRange.length - toRender.size;
 
   // Novel-shaped, and it is the run's own record of how it was
   // configured. A screenplay run's snapshot is screenplay-shaped, which
@@ -768,7 +794,10 @@ async function driveRender(opts: {
             cap_tokens: brief.capTokens,
           },
         });
-        emit({ progress: { done: i + 1, total: fullRange.length, truncated, errored } });
+        completed++;
+        emit({
+          progress: { done: completed, total: fullRange.length, truncated, errored },
+        });
         continue;
       }
 
@@ -880,7 +909,10 @@ async function driveRender(opts: {
         outputTokensDelta: outputTokens - spentBefore.output,
       });
 
-      emit({ progress: { done: i + 1, total: fullRange.length, truncated, errored } });
+      completed++;
+      emit({
+        progress: { done: completed, total: fullRange.length, truncated, errored },
+      });
 
       // Banked first, THEN the abort propagates — that ordering is the
       // whole point of deferring it.
