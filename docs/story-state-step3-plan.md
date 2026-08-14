@@ -1,7 +1,10 @@
 # Productization Step 3 — Renderers: implementation plan
 
-> Status: **decisions approved 2026-08-12. Phases 1–3 built, merged and
-> deployed 2026-08-13/14; Phase 4 is next.** Successor to
+> Status: **decisions approved 2026-08-12. Phases 1–4 built and merged
+> 2026-08-13/14; Phase 5 is next — see "Phase 5 starting notes" in §4.**
+> Phases 1–3 are deployed; Phase 4 is merged but NOT yet exercised against
+> a real provider key, because Phase 5's tab is the only thing that can
+> invoke it. Successor to
 > [story-state-step2-plan.md](story-state-step2-plan.md) (phases 0–11, all
 > merged and deployed; step 2 closed 2026-08-12).
 > Inputs: [story-state-schema-v1.md](story-state-schema-v1.md) — especially
@@ -21,6 +24,10 @@
 > still waits for Phase 5 — until prose exists there is no way to judge which
 > beats are worth correcting. Phase 3: the `finish_reason` bridge (#386, split
 > out because it touches shared LLM plumbing) and the render engine (#387).
+> Phase 4: `storyRenderStore` — orchestration, the project-wide soft lock and
+> its independent heartbeat, `truncated` handling, §3.6's cross-gate, the
+> fuel gauge, abort **and resume** — plus the render half of the API client
+> (#389).
 >
 > Annotate has a **temporary** Story-tab entry point, explicitly marked as
 > such in the code. Phase 5's Render tab replaces it.
