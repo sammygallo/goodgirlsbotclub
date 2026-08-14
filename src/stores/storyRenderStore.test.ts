@@ -691,3 +691,103 @@ describe('review fixes', () => {
     expect(prompt).not.toContain('third person omniscient');
   });
 });
+
+describe('review follow-ups (verified against current code)', () => {
+  const resumeInput2 = (over: Record<string, unknown> = {}) =>
+    ({
+      projectId: 'p1',
+      renderId: 'r1',
+      scenes: [
+        sceneRow('s1', 0),
+        sceneRow('s2', 1),
+        sceneRow('s3', 2),
+        sceneRow('s4', 3),
+        sceneRow('s5', 4),
+      ],
+      factRows: [],
+      characters: [],
+      worldRules: [],
+      userVoice: null,
+      hints: null,
+      narrative: null,
+      messages: [],
+      wiEntries: [],
+      llm: vi.fn(async () => ({ text: 'Prose.', terminal: 'stop', finishReason: 'stop' })),
+      ...over,
+    }) as Parameters<ReturnType<typeof useStoryRenderStore.getState>['resume']>[0];
+
+  it('progress.done never goes backwards when banked scenes are not a leading run', async () => {
+    // The review's probe produced 3 → 1 → 5 here. Reachable without
+    // anything exotic: `start` banks a failed scene as `error` and carries
+    // on, and `resume` re-renders `error` units.
+    getRender.mockResolvedValue({
+      ...RENDER,
+      status: 'paused',
+      scene_id_start: 's1',
+      scene_id_end: 's5',
+      server_ts: 30,
+    });
+    listRenderUnits.mockResolvedValue({
+      items: [
+        { scene_id: 's1', sequence: 0, status: 'error' },
+        { scene_id: 's2', sequence: 1, status: 'complete' },
+        { scene_id: 's3', sequence: 2, status: 'complete' },
+        { scene_id: 's4', sequence: 3, status: 'complete' },
+      ],
+      next_after_sequence: null,
+      next_after_scene_id: null,
+      has_more: false,
+    });
+
+    const seen: number[] = [];
+    const unsub = useStoryRenderStore.subscribe((st) => {
+      const d = st.progress?.done;
+      if (typeof d === 'number' && seen[seen.length - 1] !== d) seen.push(d);
+    });
+    await useStoryRenderStore.getState().resume(resumeInput2());
+    unsub();
+
+    expect(seen.length).toBeGreaterThan(0);
+    for (let i = 1; i < seen.length; i++) {
+      expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]);
+    }
+    // And it lands exactly on the total, which indexing cannot guarantee
+    // when the tail is banked.
+    expect(useStoryRenderStore.getState().progress).toMatchObject({ done: 5, total: 5 });
+  });
+
+  it('releases the lock it just took when the status flip fails', async () => {
+    // The lock is per project AND across formats, and no heartbeat exists
+    // yet — driveRender creates it and is never reached — so bailing out
+    // while holding it locks every device out until the 120s expiry.
+    getRender.mockResolvedValue({ ...RENDER, status: 'paused', server_ts: 30 });
+    setRenderStatus.mockRejectedValue(new Error('network'));
+
+    const ok = await useStoryRenderStore.getState().resume(resumeInput2());
+
+    expect(ok).toBe(false);
+    expect(acquireRenderLock).toHaveBeenCalled();
+    expect(releaseRenderLock).toHaveBeenCalled();
+  });
+
+  it('retries the resume status flip on a 409 rather than bailing', async () => {
+    // The token was read before the ingestion gate and a full page over
+    // the units, so another device's heartbeat can legitimately move it.
+    getRender.mockResolvedValue({ ...RENDER, status: 'paused', server_ts: 30 });
+    setRenderStatus
+      .mockRejectedValueOnce(new FakeConflict(88))
+      .mockImplementation(async (_p, _r, body) => ({
+        ...RENDER,
+        status: body.status,
+        server_ts: 90,
+      }));
+
+    const ok = await useStoryRenderStore.getState().resume(resumeInput2());
+
+    expect(ok).toBe(true);
+    expect(setRenderStatus.mock.calls[1][2]).toMatchObject({
+      status: 'running',
+      baseTs: 88,
+    });
+  });
+});
