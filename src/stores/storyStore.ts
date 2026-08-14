@@ -18,6 +18,8 @@ import {
   isFactTombstone,
   STALE_ANNOTATION_FLAG,
   type Contradiction,
+  type SceneFunction,
+  type SceneTransformations,
   type ContinuitySection,
   type Edit,
   type EditClassification,
@@ -127,6 +129,19 @@ interface StoryState {
    *  Deliberately not cached and not held in state: it runs once, on an
    *  explicit user action, against scene counts the plan calls small. */
   loadAllScenesWithData: () => Promise<StorySceneOut[] | null>;
+
+  // --- Beat map (step 3 phase 2) ----------------------------------------
+
+  /** The annotate pass's output for every scene, in sequence order. Null
+   *  means "not loaded", which is NOT the same as "no scenes annotated" —
+   *  it is fetched only when the beat map is opened, since the scene-list
+   *  projection carries no `data` and reading it means pulling whole
+   *  rows. Invalidated by `load()` and `clear()`. */
+  beatMap: BeatMapEntry[] | null;
+  beatMapLoading: boolean;
+  /** Page every scene's annotation into `beatMap`. Cheap to call
+   *  repeatedly — returns immediately once loaded. */
+  loadBeatMap: () => Promise<void>;
   /** The one continuity writer for resolution-shaped changes. `patchFn`
    *  is pure and re-run against the winner's entries on conflict, so the
    *  user's intent survives a 409 instead of being merged away or blindly
@@ -222,6 +237,10 @@ const FACT_INDEX_PAGE = 500;
 const MAX_FACT_INDEX_PAGES = 500;
 /** Same backstop for the scene pager behind the lock-canon check. */
 const MAX_SCENE_INDEX_PAGES = 200;
+/** Rows per `/scenes/full` page for the beat map. Below the server's own
+ *  ceiling of 100, since a full page is whole scene bodies rather than
+ *  the list projection. */
+const BEAT_MAP_PAGE = 50;
 /** Backend `EDIT_MAX_BYTES` is 16 KiB on the normalized row; the diff is
  *  the only free-form field, so it gets a clamp with headroom to spare. */
 const EDIT_DIFF_MAX = 2000;
@@ -267,6 +286,55 @@ function factTextFor(
     );
   if (!row || isFactTombstone(row.data)) return '(text unavailable)';
   return String(row.data?.text ?? '').slice(0, 200);
+}
+
+/**
+ * One scene's annotate-pass output, flattened for display.
+ *
+ * A view model, deliberately not `Scene`: the beat map holds every scene
+ * at once, and keeping whole rows in state would park the detailed
+ * summaries and message ranges of a 200-scene bible in memory to render
+ * four short fields.
+ */
+export interface BeatMapEntry {
+  id: string;
+  sequence: number;
+  title: string;
+  /** Null when this scene has not been annotated. */
+  beat: SceneFunction['beat'] | null;
+  tension: number | null;
+  mood: string;
+  stakes: string;
+  compression: SceneTransformations['compression_recommendation'] | null;
+  compressionRatio: number | null;
+  pacingNotes: string;
+  /** The scene grew after it was annotated, so its beat and compression
+   *  target were read from less material than it now holds (§3.9a). */
+  stale: boolean;
+}
+
+function beatMapEntry(row: StorySceneOut): BeatMapEntry {
+  const data = row.data as unknown as Partial<Scene> | undefined;
+  const fn = data?.function ?? null;
+  const tr = data?.transformations ?? null;
+  return {
+    id: row.id,
+    sequence: row.sequence,
+    title: typeof data?.title === 'string' ? data.title : '',
+    beat: fn?.beat ?? null,
+    tension: typeof fn?.tension === 'number' ? fn.tension : null,
+    mood: fn?.mood ?? '',
+    stakes: fn?.stakes ?? '',
+    compression: tr?.compression_recommendation ?? null,
+    compressionRatio:
+      typeof tr?.compression_ratio_target === 'number'
+        ? tr.compression_ratio_target
+        : null,
+    pacingNotes: tr?.pacing_notes ?? '',
+    stale: (data?.annotations?.flagged_issues ?? []).includes(
+      STALE_ANNOTATION_FLAG
+    ),
+  };
 }
 
 /** Fold `victim` into `survivor`, which precedes it.
@@ -351,6 +419,8 @@ export const useStoryStore = create<StoryState>((set, get) => {
   // patch, clear()). Without it a slow paging run can trail a fresh
   // load() and stamp its stale map over new rows.
   let factIndexSeq = 0;
+  // Same shape as factIndexSeq, for the beat map's own paging run.
+  let beatMapSeq = 0;
 
   // Bumped by clear(), which the Story tab calls whenever it unmounts or
   // switches Works. `projectId` alone can't see a leave-and-return: the
@@ -579,6 +649,8 @@ export const useStoryStore = create<StoryState>((set, get) => {
   archivesCursor: null,
   archivesHasMore: false,
   factIndex: null,
+  beatMap: null,
+  beatMapLoading: false,
   isLoading: false,
   isSaving: false,
   error: null,
@@ -592,6 +664,7 @@ export const useStoryStore = create<StoryState>((set, get) => {
     // allowed to write too — the epoch check alone doesn't order two
     // calls within the same visit.
     factIndexSeq++;
+    beatMapSeq++;
     set({
       projectId: null,
       manifest: null,
@@ -616,6 +689,10 @@ export const useStoryStore = create<StoryState>((set, get) => {
       // The epoch bump alone doesn't drop this — a cached index would
       // otherwise show one Work's facts inside the next Work's cards.
       factIndex: null,
+      // Same reasoning, and the same failure if it is missed: one Work's
+      // beats rendered under the next Work's scene titles.
+      beatMap: null,
+      beatMapLoading: false,
       error: null,
     });
   },
@@ -683,9 +760,16 @@ export const useStoryStore = create<StoryState>((set, get) => {
         // run that started before this reload from stamping its stale
         // map after the null lands.
         factIndex: null,
+        // Same invalidation, and this is the load that matters most for
+        // it: an annotate run ends by calling load(), so dropping the
+        // cache here is what makes a re-run's new beats visible without
+        // the beat map needing its own invalidation hook.
+        beatMap: null,
+        beatMapLoading: false,
         isLoading: false,
       });
       factIndexSeq++;
+      beatMapSeq++;
     } catch (error) {
       if (!stillOn(projectId, epoch)) return;
       set({
@@ -1159,6 +1243,61 @@ export const useStoryStore = create<StoryState>((set, get) => {
         );
       }
       return null;
+    }
+  },
+
+  // --- Beat map (step 3 phase 2 — reading the annotate pass's output) ----
+
+  loadBeatMap: async () => {
+    const { projectId, beatMap } = get();
+    if (!projectId) return;
+    // Cached until the next load()/clear(), like factIndex. An annotate
+    // run ends with a load(), so a re-run's output is picked up without
+    // this needing its own invalidation.
+    if (beatMap) return;
+    const epoch = storeEpoch;
+    const seq = ++beatMapSeq;
+    set({ beatMapLoading: true });
+    try {
+      const rows: BeatMapEntry[] = [];
+      let cursor: { sequence: number; id: string } | null = null;
+      for (let page = 0; page < MAX_SCENE_INDEX_PAGES; page++) {
+        // `/scenes/full` (backend step-3 phase 1), NOT
+        // `loadAllScenesWithData` — that one is a summary page plus a GET
+        // per scene, and the step-3 plan is explicit that this step must
+        // not promote that N+1 to a hot path. One request per 50 scenes
+        // instead of one per scene.
+        const res = await storyApi.listScenesFull(projectId, {
+          ...(cursor ? { afterSequence: cursor.sequence, afterId: cursor.id } : {}),
+          limit: BEAT_MAP_PAGE,
+        });
+        for (const row of res.items ?? []) {
+          rows.push(beatMapEntry(row));
+        }
+        // A short page is NOT a last page: the server can end one early on
+        // its own byte budget, and the cursor then points at the last row
+        // INCLUDED so the next request resumes at the first row it
+        // dropped. Only `has_more` decides.
+        if (
+          !res.has_more ||
+          res.next_after_sequence === null ||
+          res.next_after_sequence === undefined ||
+          res.next_after_id === null ||
+          res.next_after_id === undefined
+        ) {
+          break;
+        }
+        cursor = { sequence: res.next_after_sequence, id: res.next_after_id };
+      }
+      if (!stillOn(projectId, epoch) || seq !== beatMapSeq) return;
+      set({ beatMap: rows, beatMapLoading: false });
+    } catch (error) {
+      if (!stillOn(projectId, epoch) || seq !== beatMapSeq) return;
+      set({ beatMapLoading: false });
+      showToastGlobal(
+        error instanceof Error ? error.message : 'Failed to load the beat map',
+        'error'
+      );
     }
   },
 

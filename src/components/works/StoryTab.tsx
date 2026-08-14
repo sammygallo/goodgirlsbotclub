@@ -46,6 +46,7 @@ import {
 } from '../../utils/storyBible/msgDrift';
 import { makeLlmCall } from '../../utils/storyIngest/llmBridge';
 import { estimateAnnotateTokens } from '../../utils/storyIngest/annotate';
+import { BeatMapCard } from './BeatMapCard';
 import {
   extendChunkPlan,
   planTranscriptChunks,
@@ -1393,6 +1394,10 @@ export function StoryTab({
           )}
         </section>
       )}
+
+      {/* The annotate pass's output. Read-only, and shown to viewers too —
+          reads take `project:view` (plan §4, Permissions). */}
+      {(manifest?.scene_count ?? 0) > 0 && <BeatMapCard />}
 
       {/* What the bible holds so far */}
       <section>
