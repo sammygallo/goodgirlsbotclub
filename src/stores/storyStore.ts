@@ -16,6 +16,7 @@ import { showToastGlobal } from '../components/ui/Toast';
 import {
   STORY_SCHEMA_VERSION,
   isFactTombstone,
+  STALE_ANNOTATION_FLAG,
   type Contradiction,
   type ContinuitySection,
   type Edit,
@@ -273,7 +274,19 @@ function factTextFor(
  *  Pure so the byte-budget check and the tests can run it without
  *  touching the network. The survivor keeps its own identity fields
  *  (title, setting, pov, user notes) — a merge is "this scene absorbed
- *  the next one", not "these two became a third thing". */
+ *  the next one", not "these two became a third thing".
+ *
+ *  Its `function` and `transformations` are the exception, and they are
+ *  DROPPED rather than kept (step-3 plan §3.9c). The spread used to carry
+ *  them through while the range below was rewritten to span both scenes,
+ *  so the survivor's beat, tension and compression target described
+ *  roughly half the material it ended up holding — and a render re-read
+ *  that stale annotation as canon. One rule covers this and the walk's
+ *  re-emission: a widened scene loses its annotation. The walk PRESERVES
+ *  its annotation under a stale marker instead, because it re-emits every
+ *  continuing scene and dropping there would make preservation pointless;
+ *  a merge is a one-off user action, so the honest answer is to re-run
+ *  annotate on the survivor. */
 export function mergeScenes(survivor: Scene, victim: Scene): Scene {
   const join = (a: string, b: string): string =>
     [a?.trim(), b?.trim()].filter(Boolean).join(' ');
@@ -284,6 +297,8 @@ export function mergeScenes(survivor: Scene, victim: Scene): Scene {
     summary: join(survivor.summary, victim.summary),
     detailed_summary: join(survivor.detailed_summary, victim.detailed_summary),
     participants: union(survivor.participants, victim.participants),
+    function: null,
+    transformations: null,
     // The scene→fact index IS healed by this union; the fact→scene back
     // pointer (`established_in` on the victim's facts) dangles forever,
     // because facts are append-only and there is nothing to heal them
@@ -312,10 +327,14 @@ export function mergeScenes(survivor: Scene, victim: Scene): Scene {
     },
     annotations: {
       ...survivor.annotations,
+      // The stale-annotation marker goes with the annotation it describes:
+      // with `function`/`transformations` nulled above, a surviving marker
+      // would be a flag about nothing, and `needsAnnotation` already reads
+      // the null.
       flagged_issues: [
         ...(survivor.annotations?.flagged_issues ?? []),
         ...(victim.annotations?.flagged_issues ?? []),
-      ],
+      ].filter((f) => f !== STALE_ANNOTATION_FLAG),
     },
   };
 }

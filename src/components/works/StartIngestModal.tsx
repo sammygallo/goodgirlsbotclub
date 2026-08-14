@@ -5,8 +5,30 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import { isWeakModel } from '../../utils/storyIngest/modelStrength';
 import { Button, Modal } from '../ui';
 
+/** Copy that differs between the two passes this preflight fronts. The
+ *  structure — connection picker, weak-model warning, token estimate,
+ *  provider-terms note — is identical for both, and duplicating it into a
+ *  second modal is how the two would drift. */
+const COPY = {
+  build: {
+    title: 'Build the story groundwork',
+    lead: 'This reads the character card, your persona and any lorebooks to lay the groundwork for the story. It runs on your own API key.',
+    estimateNote:
+      "A rough figure from our own tokenizer, not your provider's count — treat it as a ballpark. It covers the groundwork's two model calls; reading the chat and checking it for contradictions cost more on top, sized to how long the story is.",
+    confirm: 'Build groundwork',
+  },
+  annotate: {
+    title: 'Annotate the scenes',
+    lead: "This reads each scene and records what it does — its beat, how tense it is, and how tightly it should be told when the story is written out. It runs on your own API key.",
+    estimateNote:
+      "A rough figure from our own tokenizer, not your provider's count — treat it as a ballpark. It assumes every scene needs annotating; scenes already annotated are skipped, so the real figure is often lower.",
+    confirm: 'Annotate scenes',
+  },
+} as const;
+
 /**
- * Pre-flight for a bible build (story-state phase 6).
+ * Pre-flight for a bible build (story-state phase 6) or an annotate run
+ * (step 3 phase 2).
  *
  * Two things the user must see before we spend their key: WHICH model
  * this will run on (their own connection profiles, so a cheap one can be
@@ -14,18 +36,24 @@ import { Button, Modal } from '../ui';
  * estimate is framed as an estimate everywhere, because it comes from a
  * tokenizer profile rather than the provider's own accounting and will
  * be wrong by tens of percent on some providers.
+ *
+ * The weak-model warning applies to both passes for the same reason:
+ * each depends on the model consistently returning structured output.
  */
 export function StartIngestModal({
+  mode = 'build',
   estimatedTokens,
   onStart,
   onClose,
   busy,
 }: {
+  mode?: 'build' | 'annotate';
   estimatedTokens: number;
   onStart: (profileId: string | null) => void;
   onClose: () => void;
   busy: boolean;
 }) {
+  const copy = COPY[mode];
   const { profiles, activeProfileId } = useConnectionProfileStore();
   const [profileId, setProfileId] = useState<string | null>(activeProfileId);
   const settingsActiveModel = useSettingsStore((s) => s.activeModel);
@@ -38,12 +66,9 @@ export function StartIngestModal({
   const weakModel = isWeakModel(selectedModel);
 
   return (
-    <Modal isOpen onClose={onClose} title="Build the story groundwork">
+    <Modal isOpen onClose={onClose} title={copy.title}>
       <div className="space-y-4">
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          This reads the character card, your persona and any lorebooks to
-          lay the groundwork for the story. It runs on your own API key.
-        </p>
+        <p className="text-sm text-[var(--color-text-secondary)]">{copy.lead}</p>
 
         {profiles.length > 0 && (
           <label className="block space-y-1">
@@ -69,10 +94,10 @@ export function StartIngestModal({
           <p className="flex items-start gap-1.5 text-xs text-[var(--color-warning)]">
             <AlertTriangle size={13} className="shrink-0 mt-0.5" />
             <span>
-              This looks like a smaller/cheaper model. Building the story
-              relies on the model consistently returning structured
-              output — a stronger model will generally give more reliable
-              results, but this one can still build now.
+              This looks like a smaller/cheaper model. This pass relies on
+              the model consistently returning structured output — a
+              stronger model will generally give more reliable results,
+              but this one can still run now.
             </span>
           </p>
         )}
@@ -82,11 +107,7 @@ export function StartIngestModal({
             ~{estimatedTokens.toLocaleString()} tokens (estimated)
           </p>
           <p className="text-xs text-[var(--color-text-secondary)]">
-            A rough figure from our own tokenizer, not your provider's
-            count — treat it as a ballpark. It covers the groundwork's two
-            model calls; reading the chat and checking it for
-            contradictions cost more on top, sized to how long the story
-            is.
+            {copy.estimateNote}
           </p>
         </div>
 
@@ -104,7 +125,7 @@ export function StartIngestModal({
             onClick={() => onStart(profileId)}
             disabled={busy}
           >
-            {busy ? 'Starting…' : 'Build groundwork'}
+            {busy ? 'Starting…' : copy.confirm}
           </Button>
         </div>
       </div>

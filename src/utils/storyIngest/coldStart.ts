@@ -37,6 +37,54 @@ import {
 } from './prompts';
 import type { ColdStartSources, LlmCall } from './types';
 
+/**
+ * Fold cold start's hardcoded rendering hints into whatever is already
+ * stored, defaults filling ABSENT keys only (step-3 plan §3.9b).
+ *
+ * `rendering_hints` is a fourth field group step 3 owns — the Render tab's
+ * hints editor writes `novel` — and cold start full-replaces the whole
+ * section. "Rebuild the groundwork" reaches that write with no reset and
+ * therefore no archive, so a replace silently discarded a POV, a chapter
+ * plan and a set of style anchors the user had chosen, with no way back.
+ *
+ * "Absent" means the key is missing or null, NOT falsy: `false`, `0` and
+ * `''` are all legitimate user choices here (`sluglines_inferred: false`,
+ * `page_target: 0`, an empty `art_style_brief`), and a `||` fallback would
+ * overwrite each of them with a default while looking correct.
+ *
+ * One level of nesting only. That is the shape of this section — four
+ * sub-objects of scalars and lists — and a generic deep merge would have
+ * to invent an answer for arrays that neither "replace" nor "concatenate"
+ * gets right for `chapter_breaks`.
+ */
+export function mergeRenderingHints(
+  defaults: RenderingHintsSection,
+  existing: unknown
+): RenderingHintsSection {
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return defaults;
+  }
+  const stored = existing as Record<string, unknown>;
+  const out = {} as Record<string, unknown>;
+  for (const [group, groupDefaults] of Object.entries(defaults)) {
+    const storedGroup = stored[group];
+    if (!storedGroup || typeof storedGroup !== 'object' || Array.isArray(storedGroup)) {
+      out[group] = groupDefaults;
+      continue;
+    }
+    const merged: Record<string, unknown> = { ...(groupDefaults as object) };
+    for (const [key, value] of Object.entries(storedGroup as Record<string, unknown>)) {
+      // Unknown keys are dropped rather than passed through: the backend
+      // section model is `extra="forbid"`, so echoing one back would 422
+      // the write and fail the whole build over a stray field.
+      if (!(key in merged)) continue;
+      if (value !== undefined && value !== null) merged[key] = value;
+    }
+    out[group] = merged;
+  }
+  return out as unknown as RenderingHintsSection;
+}
+
 function cardFieldRef(avatar: string, field: string, excerpt?: string): SourceRef {
   return {
     kind: 'card_field',

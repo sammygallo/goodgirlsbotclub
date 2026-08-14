@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { dialogueExamplesFrom, runColdStart } from './coldStart';
+import { dialogueExamplesFrom, mergeRenderingHints, runColdStart } from './coldStart';
 import { firstJsonObject, extractJsonObjects } from './prompts';
 import type { ColdStartSources } from './types';
 
@@ -289,5 +289,76 @@ describe('id stability across reruns', () => {
 
     expect(after.world.rules?.[0].id).toBe(before.world.rules?.[0].id);
     expect(after.world.rules?.[0].text).not.toBe(before.world.rules?.[0].text);
+  });
+});
+
+describe('mergeRenderingHints (step 3 §3.9b)', () => {
+  const defaults = {
+    novel: {
+      pov: null,
+      pov_character: null,
+      tense: null,
+      chapter_breaks: [],
+      chapter_titles: [],
+      compression_level: 'balanced' as const,
+      target_word_count: null,
+      style_anchors: [],
+    },
+    screenplay: {
+      format: 'fountain' as const,
+      sluglines_inferred: true,
+      page_target: null,
+    },
+    graphic_novel: {
+      pages_per_scene: 1,
+      panel_density: 'standard' as const,
+      art_style_brief: '',
+      character_consistency_refs: [],
+    },
+    storyboard: { aspect_ratio: '16:9' as const, panels_per_scene: 4 },
+  };
+
+  it('returns the defaults when nothing is stored', () => {
+    expect(mergeRenderingHints(defaults, null)).toEqual(defaults);
+    expect(mergeRenderingHints(defaults, 'not an object')).toEqual(defaults);
+    expect(mergeRenderingHints(defaults, [])).toEqual(defaults);
+  });
+
+  it('keeps every stored value and fills only what is absent', () => {
+    const merged = mergeRenderingHints(defaults, {
+      novel: { pov: 'first', style_anchors: ['spare'] },
+    });
+    expect(merged.novel.pov).toBe('first');
+    expect(merged.novel.style_anchors).toEqual(['spare']);
+    // Absent keys take the default rather than vanishing — the section is
+    // `extra="forbid"` AND fully required on the backend.
+    expect(merged.novel.compression_level).toBe('balanced');
+    expect(merged.storyboard).toEqual(defaults.storyboard);
+  });
+
+  it('keeps falsy user choices — false, 0 and empty string are answers', () => {
+    const merged = mergeRenderingHints(defaults, {
+      screenplay: { sluglines_inferred: false, page_target: 0 },
+      graphic_novel: { art_style_brief: '' },
+      novel: { style_anchors: [] },
+    });
+    expect(merged.screenplay.sluglines_inferred).toBe(false);
+    expect(merged.screenplay.page_target).toBe(0);
+    expect(merged.graphic_novel.art_style_brief).toBe('');
+    expect(merged.novel.style_anchors).toEqual([]);
+  });
+
+  it('treats an explicit null as absent', () => {
+    const merged = mergeRenderingHints(defaults, { novel: { compression_level: null } });
+    expect(merged.novel.compression_level).toBe('balanced');
+  });
+
+  it('drops unknown stored keys rather than echoing a 422 back', () => {
+    const merged = mergeRenderingHints(defaults, {
+      novel: { pov: 'first', from_an_older_build: 'x' },
+      comic_script: { anything: 1 },
+    }) as unknown as Record<string, Record<string, unknown>>;
+    expect(merged.novel.from_an_older_build).toBeUndefined();
+    expect(merged.comic_script).toBeUndefined();
   });
 });

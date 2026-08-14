@@ -216,6 +216,85 @@ Contradictions (JSON object):`;
 
 export const CARD_CHECK_REPAIR_INSTRUCTION = RECONCILE_REPAIR_INSTRUCTION;
 
+// ---------------------------------------------------------------------------
+// Annotate (step 3 phase 2). Two prompt shapes: one per scene, filling
+// `function` + `transformations`, and one bible-wide, filling
+// `narrative.structure`.
+//
+// PROMPT_VERSION is deliberately NOT bumped for these, on reconcile's
+// precedent: they ADD prompts rather than change cold start's or the
+// walk's, so every mid-walk checkpoint out there stays resumable. Bumping
+// would strand each of them into a fresh paid rebuild for no benefit.
+//
+// The per-scene call reads ONE scene, not the whole bible: the renderer's
+// input here is a beat and a compression target, both of which are
+// properties of the scene itself. A whole-bible call would cost the
+// transcript on every scene and buy an ordering the structure call below
+// already provides.
+// ---------------------------------------------------------------------------
+
+export const ANNOTATE_SYSTEM = `You annotate ONE scene of a story for a renderer that will later turn the story into novel prose. You are not rewriting the scene — you are describing what it does and how tightly it should be told.
+
+Output rules:
+- Return ONLY a JSON object. No prose, no markdown fences.
+- Shape: {"beat": "rising", "tension": 5, "mood": "", "stakes": "", "compression_recommendation": "compress", "compression_ratio_target": 0.5, "pacing_notes": "", "dialogue_density": 0.5}
+- "beat" must be exactly one of: inciting, rising, midpoint, crisis, climax, denouement, interlude.
+- "tension" is an integer 1–10: 1 is downtime, 10 is the story's peak. Judge it against the story so far, not against fiction in general.
+- "mood" is a few words on the emotional register (e.g. "wary, close-quartered"). "stakes" is one short sentence on what stands to be won or lost. Leave either as "" when the scene genuinely does not say.
+- "compression_recommendation" must be exactly one of: cut, compress, preserve, expand — how this scene should be handled in prose. Use "cut" only for filler that carries nothing later scenes need, and "expand" for a scene the chat rushed through that the story needs to land.
+- "compression_ratio_target" is 0–1: the fraction of the scene's length the prose should keep. 1.0 keeps everything, 0.3 tells roughly a third of it. Keep it consistent with your recommendation.
+- "dialogue_density" is 0–1: how much of THIS scene is spoken dialogue rather than action or narration. Judge it from the text, do not guess a default.
+- "pacing_notes" is one short sentence of direction for the prose (e.g. "hold on the arrival, summarise the walk there"). Leave "" when there is nothing useful to say.`;
+
+export function annotatePrompt(opts: {
+  title: string;
+  sequence: number;
+  totalScenes: number;
+  previousSummary: string;
+  summary: string;
+  detailedSummary: string;
+  excerpt: string;
+}): string {
+  return `Scene ${opts.sequence + 1} of ${opts.totalScenes}: ${opts.title || '(untitled)'}
+
+What came just before:
+${opts.previousSummary || '(this is the first scene)'}
+
+Summary:
+${opts.summary || '(none recorded)'}
+
+Detailed summary:
+${opts.detailedSummary || '(none recorded)'}
+
+What the scene establishes:
+${opts.excerpt || '(nothing recorded)'}
+
+Annotation (JSON object):`;
+}
+
+export const ANNOTATE_REPAIR_INSTRUCTION = `That response could not be parsed as a JSON object matching the required shape (see the system instructions). Return ONLY the corrected JSON object — no prose, no markdown fences, no explanation.`;
+
+export const STRUCTURE_SYSTEM = `You read a story's scene list — in order, with each scene's beat and tension — and name the narrative structure it actually has.
+
+Rules:
+- Return ONLY a JSON object. No prose, no markdown fences.
+- Shape: {"detected_type": "three_act", "detection_confidence": 0.6, "acts": [{"label": "Setup", "first_scene": 1, "last_scene": 7, "beat_function": ""}]}
+- "detected_type" must be exactly one of: three_act, kishotenketsu, episodic, slice_of_life, none_yet.
+- Most ongoing roleplays are "episodic" or "slice_of_life" and have no dramatic arc at all. Say so. Forcing a three-act reading onto a chat that does not have one is the failure mode this check exists to avoid — return "none_yet" with a low confidence when the story is too short or too shapeless to call.
+- "detection_confidence" is 0–1 and is your OWN certainty, not the story's quality.
+- "first_scene"/"last_scene" are scene NUMBERS from the list below (1-based, inclusive). They must not overlap between acts, and must run in order.
+- "acts" must be empty when "detected_type" is "none_yet".
+- "beat_function" is one short sentence on what the act does for the story. "label" is a short name like "Setup" or "Ki".`;
+
+export function structurePrompt(sceneLines: string): string {
+  return `Scenes in order (number, title, beat, tension):
+${sceneLines}
+
+Narrative structure (JSON object):`;
+}
+
+export const STRUCTURE_REPAIR_INSTRUCTION = ANNOTATE_REPAIR_INSTRUCTION;
+
 // JSON-recovery helpers now live in the shared LLM toolkit; re-exported here
 // so existing ingestion imports keep working.
 export { extractJsonObjects, firstJsonObject, asString, asStringList } from '../llm/json';

@@ -4,6 +4,8 @@ import type { Contradiction } from '../types/storyBible';
 const getSection = vi.fn();
 const putSection = vi.fn();
 const getScene = vi.fn();
+const putScene = vi.fn();
+const listScenesFull = vi.fn();
 const bulkWriteScenes = vi.fn();
 const appendFact = vi.fn();
 const listFacts = vi.fn();
@@ -35,6 +37,8 @@ vi.mock('../api/client', () => ({
     getSection: (...a: unknown[]) => getSection(...a),
     putSection: (...a: unknown[]) => putSection(...a),
     getScene: (...a: unknown[]) => getScene(...a),
+    putScene: (...a: unknown[]) => putScene(...a),
+    listScenesFull: (...a: unknown[]) => listScenesFull(...a),
     bulkWriteScenes: (...a: unknown[]) => bulkWriteScenes(...a),
     appendFact: (...a: unknown[]) => appendFact(...a),
     listFacts: (...a: unknown[]) => listFacts(...a),
@@ -2626,5 +2630,554 @@ describe('incremental re-ingestion (phase 11)', () => {
 
     expect(ok).toBe(true);
     expect(bulkWriteScenes).not.toHaveBeenCalled();
+  });
+});
+
+describe('annotate pass (step 3 phase 2)', () => {
+  const MREF = (id: string) => ({
+    msg_id: id,
+    swipe_idx: 0,
+    fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+  });
+
+  const ENTITIES = {
+    characters: [{ id: 'char-ivy', canonical_name: 'Ivy', aliases: [] }],
+    objects: [],
+    factions: [],
+  };
+
+  /** A settled bible: the whole pipeline ran to completion. */
+  function settledCheckpoint(over: Record<string, unknown> = {}) {
+    return {
+      status: 'complete',
+      current_pass: null,
+      prompt_version: PROMPT_VERSION,
+      chunk_index: 2,
+      chunk_plan: [
+        { start_msg_id: 'm0', end_msg_id: 'm59', est_tokens: 100 },
+        { start_msg_id: 'm60', end_msg_id: 'm64', est_tokens: 50 },
+      ],
+      last_ingested: MREF('m64'),
+      open_scene: null,
+      lock: null,
+      token_usage: { input_tokens: 5, output_tokens: 5 },
+      replay_approx: false,
+      error: '',
+      ...over,
+    };
+  }
+
+  function sceneData(over: Record<string, unknown> = {}) {
+    return {
+      id: 'sc1',
+      sequence: 0,
+      title: 'Arrival',
+      summary: 'They arrive.',
+      detailed_summary: 'They arrive at the Reach after dark.',
+      setting: { location_ref: null, time_ref: null, atmosphere: '' },
+      participants: [],
+      pov_character: null,
+      function: null,
+      source: {
+        message_range: { start: MREF('m0'), end: MREF('m3') },
+        total_messages: 4,
+        swipe_resolutions: [],
+        excluded_segments: [],
+      },
+      continuity_facts_established: [],
+      transformations: null,
+      annotations: {
+        user_notes: '',
+        author_intent: '',
+        flagged_issues: [],
+        stale_source: false,
+      },
+      ...over,
+    };
+  }
+
+  const ANNOTATION = {
+    beat: 'rising',
+    tension: 6,
+    mood: 'wary',
+    stakes: 'Whether they are let in.',
+    compression_recommendation: 'compress',
+    compression_ratio_target: 0.5,
+    pacing_notes: 'Hold on the door.',
+    dialogue_density: 0.4,
+  };
+  const ANNOTATE_JSON = JSON.stringify(ANNOTATION);
+  const STRUCTURE_JSON = JSON.stringify({
+    detected_type: 'episodic',
+    detection_confidence: 0.4,
+    acts: [],
+  });
+
+  /** Full-scene pages plus a putScene that records what landed. */
+  function wireScenesFull(rows: { id: string; sequence: number; data: Record<string, unknown> }[]) {
+    const stored = new Map(rows.map((r) => [r.id, { ...r, server_ts: 7 }]));
+    listScenesFull.mockImplementation(async () => ({
+      items: [...stored.values()].map((r) => ({
+        id: r.id,
+        sequence: r.sequence,
+        data: r.data,
+        server_ts: r.server_ts,
+        updated_at: 'x',
+      })),
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    }));
+    putScene.mockImplementation(
+      async (_p: string, id: string, data: Record<string, unknown>) => {
+        const row = stored.get(id)!;
+        row.data = data;
+        row.server_ts += 1;
+        return { id, sequence: row.sequence, data, server_ts: row.server_ts, updated_at: 'x' };
+      }
+    );
+    return stored;
+  }
+
+  function annotateInput(llm: (...a: never[]) => Promise<string>) {
+    return { projectId: 'p1', llm, model: 'test-model' } as Parameters<
+      ReturnType<typeof useStoryIngestStore.getState>['runAnnotate']
+    >[0];
+  }
+
+  it('annotates only the scenes that need it, and writes narrative.structure', async () => {
+    const sections = wireStatefulSections({ ingestion: settledCheckpoint() });
+    const stored = wireScenesFull([
+      { id: 'sc1', sequence: 0, data: sceneData() },
+      {
+        id: 'sc2',
+        sequence: 1,
+        // Already annotated, and not marked stale — skipped entirely.
+        data: sceneData({
+          id: 'sc2',
+          sequence: 1,
+          function: { beat: 'midpoint', tension: 8, mood: '', stakes: '' },
+          transformations: {
+            compression_recommendation: 'preserve',
+            compression_ratio_target: 1,
+            pacing_notes: '',
+            dialogue_density: 0.5,
+          },
+        }),
+      },
+    ]);
+    const responses = [ANNOTATE_JSON, STRUCTURE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    const ok = await useStoryIngestStore.getState().runAnnotate(annotateInput(llm));
+
+    expect(ok).toBe(true);
+    // One scene call plus one structure call — sc2 is not re-paid for.
+    expect(llm).toHaveBeenCalledTimes(2);
+    expect(putScene).toHaveBeenCalledTimes(1);
+    expect(stored.get('sc1')!.data.function).toEqual({
+      beat: 'rising',
+      tension: 6,
+      mood: 'wary',
+      stakes: 'Whether they are let in.',
+    });
+    expect(sections.data('narrative')!.structure).toMatchObject({
+      detected_type: 'episodic',
+    });
+    // The pipeline's own bookkeeping is untouched: a later Build must
+    // still be able to walk incrementally rather than from scratch.
+    const ingestion = sections.data('ingestion') as Record<string, unknown>;
+    expect(ingestion.chunk_plan).toHaveLength(2);
+    expect(ingestion.chunk_index).toBe(2);
+    expect(ingestion.status).toBe('complete');
+    expect(ingestion.current_pass).toBeNull();
+  });
+
+  it('re-annotates a scene the walk marked stale, and clears the marker', async () => {
+    wireStatefulSections({ ingestion: settledCheckpoint() });
+    const stored = wireScenesFull([
+      {
+        id: 'sc1',
+        sequence: 0,
+        data: sceneData({
+          function: { beat: 'interlude', tension: 2, mood: '', stakes: '' },
+          transformations: {
+            compression_recommendation: 'cut',
+            compression_ratio_target: 0.2,
+            pacing_notes: '',
+            dialogue_density: 0.5,
+          },
+          annotations: {
+            user_notes: 'mine',
+            author_intent: '',
+            flagged_issues: ['annotation_stale', 'user flag'],
+            stale_source: false,
+          },
+        }),
+      },
+    ]);
+    const responses = [ANNOTATE_JSON, STRUCTURE_JSON];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().runAnnotate(annotateInput(llm));
+
+    const data = stored.get('sc1')!.data as Record<string, never>;
+    expect((data.function as unknown as { beat: string }).beat).toBe('rising');
+    // The marker is cleared — re-annotating IS what resolves it — but the
+    // user's own flag and notes survive.
+    expect(
+      (data.annotations as unknown as { flagged_issues: string[] }).flagged_issues
+    ).toEqual(['user flag']);
+    expect((data.annotations as unknown as { user_notes: string }).user_notes).toBe('mine');
+  });
+
+  it('refuses on a checkpoint parked mid-walk rather than overwriting current_pass', async () => {
+    // Writing 'annotate' over a parked 'transcript_walk' would destroy the
+    // only signal resumableWalk reads, turning a paid half-finished walk
+    // into a full rebuild.
+    const sections = wireStatefulSections({
+      ingestion: settledCheckpoint({ status: 'paused', current_pass: 'transcript_walk' }),
+    });
+    const llm = vi.fn(async () => ANNOTATE_JSON);
+
+    const ok = await useStoryIngestStore.getState().runAnnotate(annotateInput(llm));
+
+    expect(ok).toBe(false);
+    expect(llm).not.toHaveBeenCalled();
+    expect(listScenesFull).not.toHaveBeenCalled();
+    const ingestion = sections.data('ingestion') as Record<string, unknown>;
+    expect(ingestion.current_pass).toBe('transcript_walk');
+  });
+
+  it('a stopped annotate parks at current_pass "annotate"', async () => {
+    const sections = wireStatefulSections({ ingestion: settledCheckpoint() });
+    wireScenesFull([{ id: 'sc1', sequence: 0, data: sceneData() }]);
+    const llm = vi.fn(async () => {
+      useStoryIngestStore.getState().cancel();
+      const e = new Error('aborted');
+      e.name = 'AbortError';
+      throw e;
+    });
+
+    const ok = await useStoryIngestStore.getState().runAnnotate(annotateInput(llm));
+
+    expect(ok).toBe(false);
+    const ingestion = sections.data('ingestion') as Record<string, unknown>;
+    expect(ingestion.status).toBe('paused');
+    expect(ingestion.current_pass).toBe('annotate');
+  });
+
+  it('a Build press on a parked annotate does NOT re-run cold start or the walk', async () => {
+    // §3.3's pin. Without resumableAnnotate this checkpoint falls to the
+    // fresh-build branch: cold start is re-billed, entities/world are
+    // full-replaced, and the entire chat is re-walked.
+    const sections = wireStatefulSections({
+      ingestion: settledCheckpoint({ status: 'paused', current_pass: 'annotate' }),
+      entities: ENTITIES,
+    });
+    wireScenesAndFacts();
+    wireFactLog();
+    const entitiesTsBefore = sections.ts('entities');
+    // Typed parameter, so `mock.calls` carries the system prompt rather
+    // than an empty tuple — the assertion below reads it.
+    const llm = vi.fn(async (msgs: { content: string }[]) => {
+      void msgs;
+      return '{}';
+    });
+
+    const ok = await useStoryIngestStore
+      .getState()
+      .run(runInput({ messages: longMessages(65), llm }));
+
+    expect(ok).toBe(true);
+    // Cold start's two calls and the walk's per-chunk calls all absent.
+    const systems = llm.mock.calls.map((c) => c[0][0].content);
+    expect(systems).not.toContain(WALK_SYSTEM);
+    expect(systems).not.toContain(USER_VOICE_SYSTEM);
+    expect(bulkWriteScenes).not.toHaveBeenCalled();
+    // The sections cold start full-replaces are untouched.
+    expect(sections.ts('entities')).toBe(entitiesTsBefore);
+    expect(sections.data('rendering_hints')).toBeUndefined();
+  });
+
+  it('preserves an annotation when a resumed walk EXTENDS the open scene', async () => {
+    // §3.9a's pin. The extension is the point: a continuing scene always
+    // gets a new end, so a test holding the range fixed would exercise
+    // nothing. The annotation survives AND the scene is marked for
+    // re-annotation, because its beat was read from less material.
+    wireStatefulSections({
+      ingestion: settledCheckpoint({
+        status: 'error',
+        current_pass: 'transcript_walk',
+        chunk_index: 1,
+        open_scene: 'scene-tail',
+      }),
+      entities: ENTITIES,
+      meta: {
+        schema_version: '1.2',
+        bible_id: 'b1',
+        created_at: 'x',
+        updated_at: 'x',
+        source: {
+          platform: 'ggbc',
+          chat: {
+            kind: 'chat',
+            ref: { character_avatar: 'Ivy.png', file_name: 'chat1.jsonl' },
+            snapshot: { name: 'chat1.jsonl' },
+            captured_at: 'x',
+          },
+        },
+      },
+    });
+    wireScenesAndFacts();
+    wireFactLog();
+    manifest.mockResolvedValue({
+      project_id: 'p1',
+      sections: [],
+      scene_count: 1,
+      fact_count: 0,
+      edit_count: 0,
+    });
+    getScene.mockResolvedValue({
+      id: 'scene-tail',
+      sequence: 0,
+      server_ts: 5,
+      updated_at: 'x',
+      data: sceneData({
+        id: 'scene-tail',
+        title: 'Tail',
+        function: { beat: 'crisis', tension: 9, mood: 'tight', stakes: 'everything' },
+        transformations: {
+          compression_recommendation: 'preserve',
+          compression_ratio_target: 1,
+          pacing_notes: 'let it breathe',
+          dialogue_density: 0.7,
+        },
+        source: {
+          message_range: { start: MREF('m60'), end: MREF('m64') },
+          total_messages: 5,
+          swipe_resolutions: [],
+          excluded_segments: [],
+        },
+      }),
+    });
+    const continuing = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: true,
+          title: 'Tail',
+          summary: 'more',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 4,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const responses = [
+      continuing,
+      JSON.stringify({
+        style_summary: '',
+        register: 'mixed',
+        rhetorical_devices: [],
+        tendency: 'reactive',
+      }),
+    ];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore
+      .getState()
+      .run(runInput({ messages: longMessages(65), llm }));
+
+    const written = bulkWriteScenes.mock.calls
+      .flatMap((c) => c[1] as { id: string; data: Record<string, unknown> }[])
+      .find((s) => s.id === 'scene-tail');
+    expect(written).toBeDefined();
+    expect(written!.data.function).toEqual({
+      beat: 'crisis',
+      tension: 9,
+      mood: 'tight',
+      stakes: 'everything',
+    });
+    expect(written!.data.transformations).toMatchObject({
+      compression_recommendation: 'preserve',
+    });
+    expect(
+      (written!.data.annotations as { flagged_issues: string[] }).flagged_issues
+    ).toContain('annotation_stale');
+  });
+
+  it('survives one failed call but stops when the model goes away', async () => {
+    wireStatefulSections({ ingestion: settledCheckpoint() });
+    const stored = wireScenesFull([
+      { id: 'sc1', sequence: 0, data: sceneData() },
+      { id: 'sc2', sequence: 1, data: sceneData({ id: 'sc2', sequence: 1 }) },
+    ]);
+    let call = 0;
+    const llm = vi.fn(async () => {
+      // First scene: one transient failure. Second: annotates fine.
+      if (++call === 1) throw new Error('provider 500');
+      return ANNOTATE_JSON;
+    });
+
+    const ok = await useStoryIngestStore.getState().runAnnotate(annotateInput(llm));
+
+    expect(ok).toBe(true);
+    // sc1 was skipped, sc2 landed — one blip must not cost the whole run.
+    expect(stored.get('sc1')!.data.function).toBeNull();
+    expect(stored.get('sc2')!.data.function).toMatchObject({ beat: 'rising' });
+  });
+
+  it('stops rather than billing every remaining scene against a dead provider', async () => {
+    const sections = wireStatefulSections({ ingestion: settledCheckpoint() });
+    wireScenesFull(
+      Array.from({ length: 10 }, (_, i) => ({
+        id: `sc${i}`,
+        sequence: i,
+        data: sceneData({ id: `sc${i}`, sequence: i }),
+      }))
+    );
+    const llm = vi.fn(async () => {
+      throw new Error('402 payment required');
+    });
+
+    const ok = await useStoryIngestStore.getState().runAnnotate(annotateInput(llm));
+
+    expect(ok).toBe(false);
+    // Each scene retries once on an unparseable answer, so the ceiling is
+    // per-scene attempts, not per call. Far short of all ten scenes.
+    expect(llm.mock.calls.length).toBeLessThan(10);
+    const ingestion = sections.data('ingestion') as Record<string, unknown>;
+    expect(ingestion.status).toBe('error');
+    expect(ingestion.current_pass).toBe('annotate');
+  });
+
+  it('restores an annotation on the bulk write’s conflict path', async () => {
+    // §3.9a's other half: a re-emitted NON-open scene. The 409 means the
+    // row already exists, and the retry used to be a blind re-PUT of a
+    // body carrying `function: null`.
+    wireStatefulSections({});
+    wireFactLog();
+    const batches: { id: string; data: Record<string, unknown> }[][] = [];
+    let call = 0;
+    bulkWriteScenes.mockImplementation(
+      async (_p: string, scenes: { id: string; data: Record<string, unknown> }[]) => {
+        batches.push(scenes);
+        if (++call === 1) {
+          throw new FakeBulkConflict(scenes.map((s) => ({ id: s.id, currentTs: 9 })));
+        }
+        return {
+          written: scenes.length,
+          scenes: scenes.map((s) => ({
+            id: s.id,
+            sequence: 0,
+            data: s.data,
+            server_ts: 20,
+            updated_at: 'x',
+          })),
+        };
+      }
+    );
+    getScene.mockImplementation(async (_p: string, id: string) => ({
+      id,
+      sequence: 0,
+      server_ts: 9,
+      updated_at: 'x',
+      data: sceneData({
+        id,
+        function: { beat: 'midpoint', tension: 7, mood: 'm', stakes: 's' },
+        transformations: {
+          compression_recommendation: 'compress',
+          compression_ratio_target: 0.5,
+          pacing_notes: '',
+          dialogue_density: 0.5,
+        },
+        source: {
+          message_range: { start: MREF('m0'), end: MREF('m1') },
+          total_messages: 2,
+          swipe_resolutions: [],
+          excluded_segments: [],
+        },
+      }),
+    }));
+    const walkJson = JSON.stringify({
+      scenes: [
+        {
+          continues_open_scene: false,
+          title: 'Scene A',
+          summary: 's',
+          detailed_summary: '',
+          participants: [],
+          start_local_idx: 0,
+          end_local_idx: 3,
+          closed: true,
+          excluded_local_idxs: [],
+          facts: [],
+        },
+      ],
+    });
+    const responses = ['{}', '{}', walkJson, '{}'];
+    let i = 0;
+    const llm = vi.fn(async () => responses[Math.min(i++, responses.length - 1)]);
+
+    await useStoryIngestStore.getState().run(runInput({ messages: longMessages(4), llm }));
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0][0].data.function).toBeNull();
+    expect(batches[1][0].data.function).toMatchObject({ beat: 'midpoint' });
+    expect(
+      (batches[1][0].data.annotations as { flagged_issues: string[] }).flagged_issues
+    ).toContain('annotation_stale');
+  });
+
+  it('"Rebuild the groundwork" does not reset user-edited rendering hints', async () => {
+    // §3.9b's pin. Cold start's write used to be a full replace, reachable
+    // with no reset and therefore no archive: a POV, a chapter plan and a
+    // set of style anchors vanished with nothing to restore from.
+    const sections = wireStatefulSections({
+      rendering_hints: {
+        novel: {
+          pov: 'first',
+          pov_character: 'char-ivy',
+          tense: 'present',
+          chapter_breaks: ['sc1'],
+          chapter_titles: [],
+          compression_level: 'tight',
+          target_word_count: 40000,
+          style_anchors: ['spare', 'cold'],
+        },
+        screenplay: { format: 'fountain', sluglines_inferred: false, page_target: null },
+        graphic_novel: {
+          pages_per_scene: 1,
+          panel_density: 'standard',
+          art_style_brief: '',
+          character_consistency_refs: [],
+        },
+        storyboard: { aspect_ratio: '16:9', panels_per_scene: 4 },
+      },
+    });
+    wireFactLog();
+
+    await useStoryIngestStore.getState().run(runInput());
+
+    const hints = sections.data('rendering_hints') as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(hints.novel.pov).toBe('first');
+    expect(hints.novel.style_anchors).toEqual(['spare', 'cold']);
+    expect(hints.novel.target_word_count).toBe(40000);
+    // `false` is a user CHOICE, not an absence — a `||` fallback would
+    // have quietly flipped it back to the default.
+    expect(hints.screenplay.sluglines_inferred).toBe(false);
+    // Defaults still fill in what the stored section never had.
+    expect(hints.storyboard).toBeDefined();
   });
 });

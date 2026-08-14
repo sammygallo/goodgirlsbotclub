@@ -68,9 +68,24 @@ vi.mock('./SceneReviewRow', () => ({
     <li data-testid={`scene-${scene.id}`} data-stale={stale ? 'yes' : 'no'} />
   ),
 }));
+// Mounted-means-open, matching the real component — it takes no `isOpen`
+// prop, so the previous `isOpen ? … : null` mock rendered null in every
+// test and the modal could never be asserted on. The confirm button lets
+// a test drive the flow through to the store call.
 vi.mock('./StartIngestModal', () => ({
-  StartIngestModal: ({ isOpen }: { isOpen: boolean }) =>
-    isOpen ? <div data-testid="start-ingest-modal" /> : null,
+  StartIngestModal: ({
+    mode = 'build',
+    onStart,
+  }: {
+    mode?: 'build' | 'annotate';
+    onStart: (profileId: string | null) => void;
+  }) => (
+    <div data-testid={mode === 'annotate' ? 'annotate-modal' : 'start-ingest-modal'}>
+      <button type="button" onClick={() => onStart(null)}>
+        confirm {mode}
+      </button>
+    </div>
+  ),
 }));
 
 const gatherIngestInputs = vi.fn();
@@ -233,6 +248,8 @@ const storeActions = {
 
 const runIngest =
   vi.fn<(input: Record<string, unknown>) => Promise<boolean>>(async () => true);
+const runAnnotate =
+  vi.fn<(input: Record<string, unknown>) => Promise<boolean>>(async () => true);
 
 /** Assemble both stores for one scenario. */
 function setup(opts: {
@@ -240,10 +257,16 @@ function setup(opts: {
   canonLocked?: boolean;
   chunkPlan?: unknown[];
   checkpointStatus?: string | null;
+  currentPass?: string | null;
+  /** Overrides MANIFEST.scene_count — the annotate section gates on it. */
+  sceneCount?: number;
   scenes?: { id: string; sequence: number; title: string; summary: string }[];
 }) {
   storyState = {
-    manifest: MANIFEST,
+    manifest:
+      opts.sceneCount === undefined
+        ? MANIFEST
+        : { ...MANIFEST, scene_count: opts.sceneCount },
     sections: {
       meta: metaSection({
         ...(opts.watermark ? { ingest_watermark: opts.watermark } : {}),
@@ -264,6 +287,7 @@ function setup(opts: {
   };
   ingestState = {
     run: runIngest,
+    runAnnotate,
     isRunning: false,
     loadCheckpoint: vi.fn(),
     clear: vi.fn(),
@@ -273,7 +297,7 @@ function setup(opts: {
         ? null
         : {
             status: opts.checkpointStatus ?? 'complete',
-            current_pass: null,
+            current_pass: opts.currentPass ?? null,
             chunk_plan: opts.chunkPlan ?? [],
             chunk_index: (opts.chunkPlan ?? []).length,
             error: '',
@@ -688,5 +712,92 @@ describe('drift check scheduling', () => {
 
     render(<StoryTab project={PROJECT} canManage />);
     expect(await screen.findByText(/1 new message since this story was built/i)).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The annotate pass's temporary entry point (step 3 phase 2)
+//
+// TEMPORARY along with the button itself — Phase 5's Render tab replaces
+// both. What is NOT temporary is the rule these pin: annotate is exempt
+// from the canon lock (plan §3.3 narrows that invariant to user-authored
+// edits) but must mirror the store's refusal on a checkpoint parked
+// mid-pipeline.
+// ---------------------------------------------------------------------------
+
+describe('annotate entry point', () => {
+  const SCENES = [{ id: 's1', sequence: 0, title: 'One', summary: '' }];
+
+  const annotateButton = () =>
+    screen.queryByRole('button', { name: /^annotate$/i }) as HTMLButtonElement | null;
+
+  it('offers annotate once the bible has scenes', async () => {
+    setup({ scenes: SCENES });
+    await renderTab();
+    expect(annotateButton()).not.toBeNull();
+    expect(annotateButton()!.disabled).toBe(false);
+  });
+
+  it('stays available while canon is LOCKED', async () => {
+    // The §3.3 narrowing, and the one most likely to be undone by someone
+    // reaching for `writesDisabled`: that composite carries `canonLocked`.
+    // A locked bible is exactly the state a user annotates in before
+    // rendering, and annotate writes derived fields no user authored.
+    setup({ scenes: SCENES, canonLocked: true });
+    await renderTab();
+
+    // Build IS locked out, so this asserts the two are genuinely
+    // independent rather than the lock simply not being applied.
+    expect(
+      (screen.getByRole('button', { name: /^build$/i }) as HTMLButtonElement).disabled
+    ).toBe(true);
+    expect(annotateButton()!.disabled).toBe(false);
+  });
+
+  it('refuses while a walk is parked — mirroring runAnnotate', async () => {
+    // `current_pass` is one field: writing 'annotate' over a parked walk
+    // destroys the signal resumableWalk reads.
+    setup({
+      scenes: SCENES,
+      checkpointStatus: 'paused',
+      currentPass: 'transcript_walk',
+      chunkPlan: pinnedPlan(2),
+    });
+    await renderTab();
+
+    expect(annotateButton()!.disabled).toBe(true);
+    expect(screen.getByText(/finish or clear the story build first/i)).toBeTruthy();
+  });
+
+  it('stays available when ANNOTATE itself is parked — that is resumable', async () => {
+    setup({ scenes: SCENES, checkpointStatus: 'paused', currentPass: 'annotate' });
+    await renderTab();
+    expect(annotateButton()!.disabled).toBe(false);
+  });
+
+  it('is hidden for a bible with no scenes, and for a view-only user', async () => {
+    setup({ sceneCount: 0 });
+    await renderTab();
+    expect(annotateButton()).toBeNull();
+
+    cleanup();
+    setup({ scenes: SCENES });
+    await renderTab(false);
+    expect(annotateButton()).toBeNull();
+  });
+
+  it('runs the pass on the chosen connection and reloads after', async () => {
+    setup({ scenes: SCENES });
+    await renderTab();
+
+    await userEvent.click(annotateButton()!);
+    await userEvent.click(await screen.findByRole('button', { name: /confirm annotate/i }));
+
+    await waitFor(() => expect(runAnnotate).toHaveBeenCalled());
+    expect(runAnnotate.mock.calls[0][0]).toMatchObject({ projectId: 'p1', model: 'm' });
+    // The pass rewrites scene rows and may add the `narrative` section.
+    await waitFor(() => expect(storeActions.load).toHaveBeenCalledWith('p1'));
+    // And the preflight closes rather than sitting over the result.
+    expect(screen.queryByTestId('annotate-modal')).toBeNull();
   });
 });

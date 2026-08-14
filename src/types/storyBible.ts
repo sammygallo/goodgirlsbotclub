@@ -15,7 +15,14 @@
 
 import type { ProjectChatRef } from '../api/client';
 
-export const STORY_SCHEMA_VERSION = '1.0';
+/** The bible schema version this client WRITES when it mints a `meta`
+ *  section. An existing bible keeps whatever it recorded — nothing
+ *  compares these for equality, and `SCHEMA_VERSION_RE` on the backend
+ *  accepts any `1.x`, so this is documentation discipline rather than a
+ *  gate. 1.2 is the additive bump for the annotate pass (step 3 phase 2):
+ *  `IngestPass` gained `annotate` and `scenes[].function`,
+ *  `scenes[].transformations` and `narrative.structure` now have a writer. */
+export const STORY_SCHEMA_VERSION = '1.2';
 
 export type HashAlg = 'sha256' | 'djb2';
 
@@ -23,6 +30,7 @@ export type Confidence = 'explicit' | 'inferred' | 'contested';
 export type FactCategory = 'reveal' | 'introduction' | 'change' | 'world_rule';
 export type ChatPov = 'second-present' | 'first-past' | 'third-mixed';
 export type RenderPov = 'first' | 'third_limited' | 'third_omniscient';
+export type Tense = 'past' | 'present';
 export type ContentRating = 'general' | 'teen' | 'mature' | 'explicit';
 
 /** The eight bible sections, in the order the Story tab shows them. */
@@ -355,7 +363,7 @@ export interface SceneSetting {
   atmosphere: string;
 }
 
-/** Filled by the deferred step-3 annotate pass — always null in v1. */
+/** Filled by the step-3 annotate pass; null until a user runs it. */
 export interface SceneFunction {
   beat:
     | 'inciting'
@@ -394,13 +402,31 @@ export interface SceneSource {
   excluded_segments: ExcludedSegment[];
 }
 
-/** Filled by the deferred step-3 annotate pass — always null in v1. */
+/** Filled by the step-3 annotate pass; null until a user runs it. */
 export interface SceneTransformations {
   compression_recommendation: 'cut' | 'compress' | 'preserve' | 'expand';
   compression_ratio_target: number;
   pacing_notes: string;
   dialogue_density: number;
 }
+
+/** Marker written into `annotations.flagged_issues` when a scene's
+ *  `function`/`transformations` were computed for LESS material than the
+ *  scene now holds — a continuing scene re-emitted by the transcript walk
+ *  with an extended message range (step-3 plan §3.9a).
+ *
+ *  A sentinel in an existing free-form list rather than a new schema
+ *  field, deliberately: `annotations` is `extra="forbid"` on the backend,
+ *  so a new key would 422 the whole scene write against a server that has
+ *  not been redeployed. The annotate pass clears it when it re-annotates,
+ *  so it is self-healing rather than sticky.
+ *
+ *  It is NOT a merge marker: `mergeScenes` nulls the annotation outright
+ *  (§3.9c), because there the survivor's beat describes roughly half the
+ *  material it ends up holding — too wrong to keep. Here the annotation is
+ *  kept because a resumed walk re-emits EVERY continuing scene, so
+ *  dropping it would make preservation itself pointless. */
+export const STALE_ANNOTATION_FLAG = 'annotation_stale';
 
 export interface SceneAnnotations {
   user_notes: string;
@@ -452,6 +478,61 @@ export interface RenderingHintsSection {
   storyboard: {
     aspect_ratio: '2.39:1' | '16:9' | '4:3';
     panels_per_scene: number;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// narrative section (step 3 — the annotate pass writes `structure`)
+// ---------------------------------------------------------------------------
+
+export interface Act {
+  id: string;
+  label: string;
+  /** `[first_scene_id, last_scene_id]`, or null when the model could not
+   *  place the act against real scenes. */
+  scene_range: [string, string] | null;
+  beat_function: string;
+}
+
+export interface NarrativeStructure {
+  detected_type:
+    | 'three_act'
+    | 'kishotenketsu'
+    | 'episodic'
+    | 'slice_of_life'
+    | 'none_yet';
+  /** Model self-assessment, not a measurement — same basis as
+   *  `UserVoiceSection.confidence`. */
+  detection_confidence: number;
+  acts: Act[];
+}
+
+export interface Theme {
+  theme: string;
+  evidence: SourceRef[];
+}
+
+/** Everything except `structure` is untouched by step 3's annotate pass —
+ *  it writes `structure` and read-merges the rest through, because
+ *  `writeSection` is a FULL REPLACE. */
+export interface NarrativeSection {
+  structure: NarrativeStructure;
+  themes: Theme[];
+  motifs: string[];
+  unresolved_threads: string[];
+  /** Canonical defaults; `rendering_hints.novel` overrides only when set. */
+  pov_default: RenderPov | null;
+  tense_default: Tense | null;
+}
+
+export function emptyNarrativeSection(): NarrativeSection {
+  return {
+    structure: { detected_type: 'none_yet', detection_confidence: 0, acts: [] },
+    themes: [],
+    motifs: [],
+    unresolved_threads: [],
+    pov_default: null,
+    tense_default: null,
   };
 }
 
