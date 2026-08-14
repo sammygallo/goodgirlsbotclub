@@ -4,6 +4,7 @@ const manifest = vi.fn();
 const getSection = vi.fn();
 const putSection = vi.fn();
 const listScenes = vi.fn();
+const listScenesFull = vi.fn();
 const listFacts = vi.fn();
 const reset = vi.fn();
 const listArchives = vi.fn();
@@ -40,6 +41,7 @@ vi.mock('../api/client', () => ({
     getSection: (...a: unknown[]) => getSection(...a),
     putSection: (...a: unknown[]) => putSection(...a),
     listScenes: (...a: unknown[]) => listScenes(...a),
+    listScenesFull: (...a: unknown[]) => listScenesFull(...a),
     listFacts: (...a: unknown[]) => listFacts(...a),
     listEdits: vi.fn(),
     reset: (...a: unknown[]) => reset(...a),
@@ -104,6 +106,13 @@ beforeEach(() => {
   manifest.mockResolvedValue(emptyManifest);
   listScenes.mockResolvedValue({ items: [], next_after_sequence: null, next_after_id: null, has_more: false });
   listFacts.mockResolvedValue({ items: [], next_after_seq: null, has_more: false });
+  listScenesFull.mockResolvedValue({
+    items: [],
+    next_after_sequence: null,
+    next_after_id: null,
+    has_more: false,
+    truncated_by_bytes: false,
+  });
   listArchives.mockResolvedValue({
     archives: [],
     next_after_created_at: null,
@@ -1820,5 +1829,262 @@ describe('flagScenesStale / clearSceneStale', () => {
     await useStoryStore.getState().clearSceneStale('s1');
     // Dismissing IS a user judgement, so it keeps its audit row.
     expect(appendEdit).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Beat map (step 3 phase 2 — reading the annotate pass's output)
+// ---------------------------------------------------------------------------
+
+describe('loadBeatMap', () => {
+  const MREF = (id: string) => ({
+    msg_id: id,
+    swipe_idx: 0,
+    fingerprint: { sha: 'x', hash_alg: 'djb2', send_date: 0 },
+  });
+
+  function fullRow(
+    id: string,
+    sequence: number,
+    over: Record<string, unknown> = {}
+  ) {
+    return {
+      id,
+      sequence,
+      server_ts: 5,
+      updated_at: 'x',
+      data: {
+        id,
+        sequence,
+        title: `Scene ${sequence}`,
+        summary: '',
+        detailed_summary: '',
+        setting: { location_ref: null, time_ref: null, atmosphere: '' },
+        participants: [],
+        pov_character: null,
+        function: null,
+        source: {
+          message_range: { start: MREF('m0'), end: MREF('m3') },
+          total_messages: 4,
+          swipe_resolutions: [],
+          excluded_segments: [],
+        },
+        continuity_facts_established: [],
+        transformations: null,
+        annotations: {
+          user_notes: '',
+          author_intent: '',
+          flagged_issues: [],
+          stale_source: false,
+        },
+        ...over,
+      },
+    };
+  }
+
+  const ANNOTATED = {
+    function: { beat: 'crisis', tension: 9, mood: 'tight', stakes: 'the door' },
+    transformations: {
+      compression_recommendation: 'compress',
+      compression_ratio_target: 0.4,
+      pacing_notes: 'move',
+      dialogue_density: 0.6,
+    },
+  };
+
+  it('flattens annotated and unannotated scenes', async () => {
+    listScenesFull.mockResolvedValue({
+      items: [fullRow('s1', 0, ANNOTATED), fullRow('s2', 1)],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+    useStoryStore.setState({ projectId: 'p1', beatMap: null });
+
+    await useStoryStore.getState().loadBeatMap();
+
+    const map = useStoryStore.getState().beatMap!;
+    expect(map).toHaveLength(2);
+    expect(map[0]).toMatchObject({
+      id: 's1',
+      beat: 'crisis',
+      tension: 9,
+      compression: 'compress',
+      compressionRatio: 0.4,
+      stale: false,
+    });
+    // An unannotated scene is a null beat, NOT an omitted row — the panel
+    // says "N of M annotated", which needs the unannotated ones present.
+    expect(map[1]).toMatchObject({ id: 's2', beat: null, tension: null });
+    expect(useStoryStore.getState().beatMapLoading).toBe(false);
+  });
+
+  it('surfaces the walk’s stale marker', async () => {
+    listScenesFull.mockResolvedValue({
+      items: [
+        fullRow('s1', 0, {
+          ...ANNOTATED,
+          annotations: {
+            user_notes: '',
+            author_intent: '',
+            flagged_issues: ['annotation_stale'],
+            stale_source: false,
+          },
+        }),
+      ],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+    useStoryStore.setState({ projectId: 'p1', beatMap: null });
+
+    await useStoryStore.getState().loadBeatMap();
+    expect(useStoryStore.getState().beatMap![0].stale).toBe(true);
+  });
+
+  it('pages on has_more, NOT on page length', async () => {
+    // The server can end a page early on its own byte budget, so a short
+    // page is not a last page. Treating length as the signal would drop
+    // every scene past the first cut.
+    listScenesFull
+      .mockResolvedValueOnce({
+        items: [fullRow('s1', 0, ANNOTATED)],
+        next_after_sequence: 0,
+        next_after_id: 's1',
+        has_more: true,
+        truncated_by_bytes: true,
+      })
+      .mockResolvedValueOnce({
+        items: [fullRow('s2', 1, ANNOTATED)],
+        next_after_sequence: null,
+        next_after_id: null,
+        has_more: false,
+        truncated_by_bytes: false,
+      });
+    useStoryStore.setState({ projectId: 'p1', beatMap: null });
+
+    await useStoryStore.getState().loadBeatMap();
+
+    expect(listScenesFull).toHaveBeenCalledTimes(2);
+    expect(useStoryStore.getState().beatMap).toHaveLength(2);
+    // Resumes from the last row INCLUDED.
+    expect(listScenesFull.mock.calls[1][1]).toMatchObject({
+      afterSequence: 0,
+      afterId: 's1',
+    });
+  });
+
+  it('is cached — a second call does not re-fetch', async () => {
+    listScenesFull.mockResolvedValue({
+      items: [fullRow('s1', 0, ANNOTATED)],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+    useStoryStore.setState({ projectId: 'p1', beatMap: null });
+
+    await useStoryStore.getState().loadBeatMap();
+    await useStoryStore.getState().loadBeatMap();
+    expect(listScenesFull).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reload drops the cache, so a re-annotate is visible', async () => {
+    // The whole reason the beat map needs no invalidation hook of its
+    // own: runAnnotate ends with load(). If that stopped dropping the
+    // cache, a user would annotate, watch it succeed, and still see the
+    // pre-annotate beats.
+    listScenesFull.mockResolvedValue({
+      items: [fullRow('s1', 0)],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+    useStoryStore.setState({ projectId: 'p1', beatMap: null });
+    await useStoryStore.getState().loadBeatMap();
+    expect(useStoryStore.getState().beatMap![0].beat).toBeNull();
+
+    await useStoryStore.getState().load('p1');
+    expect(useStoryStore.getState().beatMap).toBeNull();
+
+    listScenesFull.mockResolvedValue({
+      items: [fullRow('s1', 0, ANNOTATED)],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+    await useStoryStore.getState().loadBeatMap();
+    expect(useStoryStore.getState().beatMap![0].beat).toBe('crisis');
+  });
+
+  it('a run that outlives the visit does not land (epoch guard)', async () => {
+    let release: (v: unknown) => void = () => {};
+    listScenesFull.mockImplementation(
+      () =>
+        new Promise((r) => {
+          release = r;
+        })
+    );
+    useStoryStore.setState({ projectId: 'p1', beatMap: null });
+
+    const inFlight = useStoryStore.getState().loadBeatMap();
+    useStoryStore.getState().clear();
+    release({
+      items: [fullRow('s1', 0, ANNOTATED)],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+    await inFlight;
+
+    expect(useStoryStore.getState().beatMap).toBeNull();
+  });
+
+  it('a run that a reload superseded does not land (ordering guard)', async () => {
+    // The case the EPOCH guard cannot catch: `load()` stays inside the
+    // same visit, so the epoch is unchanged. An annotate run ends with a
+    // load(), so this is exactly the live sequence — open the beat map,
+    // annotate, and the pre-annotate paging run resolves late. Without the
+    // seq guard it stamps its stale, unannotated rows over the fresh ones
+    // and the user sees "0 of N annotated" after a successful run.
+    let release: (v: unknown) => void = () => {};
+    listScenesFull.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          release = r;
+        })
+    );
+    useStoryStore.setState({ projectId: 'p1', beatMap: null });
+
+    const stale = useStoryStore.getState().loadBeatMap();
+    await useStoryStore.getState().load('p1');
+
+    // A fresh run lands the annotated rows.
+    listScenesFull.mockResolvedValue({
+      items: [fullRow('s1', 0, ANNOTATED)],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+    await useStoryStore.getState().loadBeatMap();
+    expect(useStoryStore.getState().beatMap![0].beat).toBe('crisis');
+
+    // Now the pre-reload run finally answers, with unannotated rows.
+    release({
+      items: [fullRow('s1', 0)],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+    await stale;
+
+    expect(useStoryStore.getState().beatMap![0].beat).toBe('crisis');
   });
 });

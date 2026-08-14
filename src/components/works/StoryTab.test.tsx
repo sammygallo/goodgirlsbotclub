@@ -106,9 +106,14 @@ interface StoryState {
   [k: string]: unknown;
 }
 let storyState: StoryState;
-const useStoryStoreMock = Object.assign(() => storyState, {
-  getState: () => storyState,
-});
+// Selector-aware, like the ingest mock: `StoryTab` destructures the whole
+// store, but child components (BeatMapCard) subscribe with selectors, and
+// a mock that ignores the selector hands them the entire state object.
+const useStoryStoreMock = Object.assign(
+  (selector?: (s: StoryState) => unknown) =>
+    selector ? selector(storyState) : storyState,
+  { getState: () => storyState }
+);
 vi.mock('../../stores/storyStore', async () => {
   const actual = await vi.importActual<typeof import('../../stores/storyStore')>(
     '../../stores/storyStore'
@@ -228,6 +233,8 @@ function metaSection(extra: Record<string, unknown> = {}) {
   };
 }
 
+const loadBeatMap = vi.fn(async () => {});
+
 const storeActions = {
   load: vi.fn(),
   clear: vi.fn(),
@@ -241,6 +248,8 @@ const storeActions = {
   relinkSourceChat: vi.fn(async () => true),
   loadAllScenesWithData:
     vi.fn<() => Promise<Record<string, unknown>[] | null>>(async () => []),
+  loadBeatMap,
+  loadSection: vi.fn(async () => {}),
   flagScenesStale: vi.fn(async () => ({ flagged: 0, alreadyFlagged: 0, failed: 0 })),
   clearSceneStale: vi.fn(async () => true),
   patchContinuity: vi.fn(async () => true),
@@ -260,6 +269,7 @@ function setup(opts: {
   currentPass?: string | null;
   /** Overrides MANIFEST.scene_count — the annotate section gates on it. */
   sceneCount?: number;
+  beatMap?: Record<string, unknown>[] | null;
   scenes?: { id: string; sequence: number; title: string; summary: string }[];
 }) {
   storyState = {
@@ -275,6 +285,8 @@ function setup(opts: {
     },
     scenes: opts.scenes ?? [],
     scenesHasMore: false,
+    beatMap: opts.beatMap ?? null,
+    beatMapLoading: false,
     facts: [],
     factsHasMore: false,
     archives: [],
@@ -799,5 +811,84 @@ describe('annotate entry point', () => {
     await waitFor(() => expect(storeActions.load).toHaveBeenCalledWith('p1'));
     // And the preflight closes rather than sitting over the result.
     expect(screen.queryByTestId('annotate-modal')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Beat map panel (step 3 phase 2)
+// ---------------------------------------------------------------------------
+
+describe('beat map panel', () => {
+  const SCENES = [{ id: 's1', sequence: 0, title: 'One', summary: '' }];
+
+  const entry = (over: Record<string, unknown> = {}) => ({
+    id: 's1',
+    sequence: 0,
+    title: 'Arrival',
+    beat: 'crisis',
+    tension: 9,
+    mood: 'tight',
+    stakes: 'the door',
+    compression: 'compress',
+    compressionRatio: 0.4,
+    pacingNotes: '',
+    stale: false,
+    ...over,
+  });
+
+  it('does not fetch until it is opened', async () => {
+    // Reading a beat means pulling whole scene rows, since the list
+    // projection carries no `data`. A bible with hundreds of scenes must
+    // not pay that on every Story-tab open.
+    setup({ scenes: SCENES });
+    await renderTab();
+
+    expect(loadBeatMap).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: /beat map/i }));
+    await waitFor(() => expect(loadBeatMap).toHaveBeenCalled());
+  });
+
+  it('renders each scene’s beat, tension and compression once loaded', async () => {
+    setup({ scenes: SCENES, beatMap: [entry()] });
+    await renderTab();
+    await userEvent.click(screen.getByRole('button', { name: /beat map/i }));
+
+    expect(screen.getByText(/crisis/)).toBeTruthy();
+    expect(screen.getByText(/tension 9\/10/)).toBeTruthy();
+    expect(screen.getByText(/compress to 40%/)).toBeTruthy();
+    expect(screen.getByText(/1 of 1 scene annotated/)).toBeTruthy();
+  });
+
+  it('flags a scene the walk marked stale, and counts it', async () => {
+    setup({ scenes: SCENES, beatMap: [entry({ stale: true })] });
+    await renderTab();
+    await userEvent.click(screen.getByRole('button', { name: /beat map/i }));
+
+    expect(screen.getByText(/1 to re-check/)).toBeTruthy();
+    expect(screen.getByText(/grew after it was annotated/i)).toBeTruthy();
+  });
+
+  it('shows an unannotated scene as such rather than hiding it', async () => {
+    setup({
+      scenes: SCENES,
+      beatMap: [entry(), entry({ id: 's2', sequence: 1, beat: null, tension: null })],
+    });
+    await renderTab();
+    await userEvent.click(screen.getByRole('button', { name: /beat map/i }));
+
+    expect(screen.getByText(/not annotated/)).toBeTruthy();
+    expect(screen.getByText(/1 of 2 scenes annotated/)).toBeTruthy();
+  });
+
+  it('is hidden for a bible with no scenes', async () => {
+    setup({ sceneCount: 0 });
+    await renderTab();
+    expect(screen.queryByRole('button', { name: /beat map/i })).toBeNull();
+  });
+
+  it('is available to a view-only user — reads take project:view', async () => {
+    setup({ scenes: SCENES, beatMap: [entry()] });
+    await renderTab(false);
+    expect(screen.queryByRole('button', { name: /beat map/i })).not.toBeNull();
   });
 });
