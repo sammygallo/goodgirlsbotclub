@@ -37,6 +37,36 @@ import {
 import type { LlmCall } from './types';
 
 // ---------------------------------------------------------------------------
+// Preflight
+// ---------------------------------------------------------------------------
+
+/** Rough per-scene cost: the system prompt, the scene's summaries, its
+ *  fact excerpt and the small JSON answer. Measured against the prompt
+ *  shapes above rather than derived from a real bible, so it is a
+ *  ballpark — which is all the preflight claims it is. */
+const ANNOTATE_TOKENS_PER_SCENE = 700;
+/** The one bible-wide structure call: a line per scene plus its answer. */
+const STRUCTURE_CALL_TOKENS = 900;
+
+/**
+ * Preflight estimate for an annotate run, in tokens.
+ *
+ * Deliberately an UPPER bound over `sceneCount`: the caller (the Story
+ * tab) knows how many scenes exist but not how many still need
+ * annotating — that needs the full rows, which only the run itself
+ * fetches. Quoting the whole-bible figure and saying already-annotated
+ * scenes are skipped is honest in the direction that cannot surprise
+ * someone spending their own money.
+ *
+ * Same basis and the same caveat as `estimateColdStartTokens`: a
+ * tokenizer profile, not the provider's accounting.
+ */
+export function estimateAnnotateTokens(sceneCount: number): number {
+  if (sceneCount <= 0) return 0;
+  return sceneCount * ANNOTATE_TOKENS_PER_SCENE + STRUCTURE_CALL_TOKENS;
+}
+
+// ---------------------------------------------------------------------------
 // Selection
 // ---------------------------------------------------------------------------
 

@@ -45,6 +45,7 @@ import {
   type WatermarkVerdict,
 } from '../../utils/storyBible/msgDrift';
 import { makeLlmCall } from '../../utils/storyIngest/llmBridge';
+import { estimateAnnotateTokens } from '../../utils/storyIngest/annotate';
 import {
   extendChunkPlan,
   planTranscriptChunks,
@@ -225,6 +226,7 @@ export function StoryTab({
   const personas = usePersonaStore((s) => s.personas);
   const wiScanDepth = useWorldInfoStore((s) => s.scanDepth);
   const runIngest = useStoryIngestStore((s) => s.run);
+  const runAnnotate = useStoryIngestStore((s) => s.runAnnotate);
   const ingestRunning = useStoryIngestStore((s) => s.isRunning);
   const loadCheckpoint = useStoryIngestStore((s) => s.loadCheckpoint);
   const clearIngest = useStoryIngestStore((s) => s.clear);
@@ -243,6 +245,12 @@ export function StoryTab({
    *  held until the user confirms the discard it implies. */
   const [pendingChange, setPendingChange] = useState<ProjectChatRef | null>(null);
   const [startOpen, setStartOpen] = useState(false);
+  /** TEMPORARY (step 3 phase 2). The annotate pass has no home of its own
+   *  until Phase 5's Render tab, which defaults to "annotate first" when
+   *  `scenes[].function` is empty. This flag and the section it opens are
+   *  scaffolding so the pass can be exercised on a real key before then;
+   *  Phase 5 removes both. */
+  const [annotateOpen, setAnnotateOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
   /** A walk long enough to need an explicit "yes, this one's long"
    *  before it spends more of the user's key than usual (plan Phase 7:
@@ -297,6 +305,22 @@ export function StoryTab({
   /** Fact deletes, scene edits, sample paste, relink, lock — every §5
    *  action except the resolution-shaped ones — gates on this. */
   const writesDisabled = !canManage || canonLocked || buildActive;
+  /** Annotate's own gate (step-3 plan §3.3), deliberately NOT
+   *  `writesDisabled` — that composite carries `canonLocked`, and step 3
+   *  narrows the lock to *user-authored* edits. A locked bible is exactly
+   *  the state a user annotates in before rendering.
+   *
+   *  It mirrors `runAnnotate`'s own refusal rather than inventing one: the
+   *  store is the choke point, and a button that opens a modal the store
+   *  will then refuse is just a slower toast. Parking at `annotate` itself
+   *  is resumable and must stay clickable; parking anywhere else in the
+   *  pipeline is what would lose that pass's progress, since `current_pass`
+   *  is one field. */
+  const annotateBlocked =
+    checkpoint?.status === 'running' ||
+    (checkpoint?.current_pass != null &&
+      checkpoint.current_pass !== 'annotate' &&
+      checkpoint.current_pass !== 'review');
   /** Contradiction resolutions (Keep/Defer/Reopen/Write my own) stay
    *  live during a build (plan §3.3): reconcile's existing-wins merge
    *  was designed resolution-safe, so the review UI shouldn't punish
@@ -871,6 +895,57 @@ export function StoryTab({
     }
   };
 
+  /**
+   * Run the annotate pass (step 3 phase 2).
+   *
+   * TEMPORARY entry point — Phase 5's Render tab owns this properly.
+   *
+   * Deliberately NOT gated on `canonLocked`, and deliberately not routed
+   * through `writesDisabled`. Step 3 narrows the lock invariant to
+   * *user-authored* edits: annotate writes derived fields nothing else
+   * owns, and a locked bible is exactly the state a user annotates in
+   * before rendering. `writesDisabled` is a three-term composite that
+   * carries `canonLocked`, so inheriting it would drag the lock back in.
+   *
+   * The store is still the choke point — `runAnnotate` refuses on a
+   * checkpoint parked mid-pipeline, since writing `current_pass:
+   * 'annotate'` over a parked walk would destroy the signal
+   * `resumableWalk` reads. The button below only mirrors that refusal so
+   * the user is not offered a click that toasts at them.
+   */
+  const startAnnotate = async (profileId: string | null) => {
+    const profile = profileId
+      ? useConnectionProfileStore.getState().getProfile(profileId)
+      : null;
+    const settings = useSettingsStore.getState();
+    const provider = profile?.provider ?? settings.activeProvider;
+    const model = profile?.model ?? settings.activeModel;
+    const customUrl = profile
+      ? profile.customUrl
+      : (settings as unknown as { customEndpointUrl?: string }).customEndpointUrl;
+
+    setPreparing(true);
+    try {
+      setAnnotateOpen(false);
+      await runAnnotate({
+        projectId: project.id,
+        llm: makeLlmCall({
+          provider,
+          model,
+          customUrl,
+          characterName: coldStartSources?.characterName || 'Story',
+        }),
+        model,
+      });
+      // The pass rewrites scene rows and may add the `narrative` section.
+      await load(project.id);
+    } catch (err) {
+      showIngestError(err);
+    } finally {
+      setPreparing(false);
+    }
+  };
+
   /** Pick up new messages without re-reading (or re-paying for) the chat. */
   const updateStory = async () => {
     if (canonLocked) return;
@@ -1285,6 +1360,40 @@ export function StoryTab({
         </section>
       )}
 
+      {/* TEMPORARY (step 3 phase 2) — Phase 5's Render tab replaces this
+          whole section, where "annotate first" becomes the default state
+          of the tab rather than a button of its own. */}
+      {canManage && !ingestRunning && (manifest?.scene_count ?? 0) > 0 && (
+        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-sm text-[var(--color-text-primary)]">
+                Annotate the scenes
+              </h3>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                Records each scene’s beat, tension and how tightly to tell
+                it. Runs on your API key; scenes already annotated are
+                skipped.
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => setAnnotateOpen(true)}
+              disabled={preparing || annotateBlocked}
+            >
+              <Sparkles size={16} />
+              {preparing ? 'Starting…' : 'Annotate'}
+            </Button>
+          </div>
+          {annotateBlocked && (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Finish or clear the story build first — annotating now would
+              lose its progress.
+            </p>
+          )}
+        </section>
+      )}
+
       {/* What the bible holds so far */}
       <section>
         <h3 className="text-xs uppercase tracking-wide text-[var(--color-text-secondary)] mb-2">
@@ -1460,6 +1569,17 @@ export function StoryTab({
           estimatedTokens={estimateColdStartTokens(coldStartSources)}
           onStart={(profileId) => void startIngest(profileId)}
           onClose={() => setStartOpen(false)}
+          busy={preparing}
+        />
+      )}
+
+      {/* TEMPORARY (step 3 phase 2) — see the section above. */}
+      {annotateOpen && (
+        <StartIngestModal
+          mode="annotate"
+          estimatedTokens={estimateAnnotateTokens(manifest?.scene_count ?? 0)}
+          onStart={(profileId) => void startAnnotate(profileId)}
+          onClose={() => setAnnotateOpen(false)}
           busy={preparing}
         />
       )}
