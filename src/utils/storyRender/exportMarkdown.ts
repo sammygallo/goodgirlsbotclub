@@ -68,6 +68,16 @@ export interface MarkdownInput {
   /** `chapter_breaks` and `chapter_titles` come from here. Null means the
    *  user has set no hints, which is the one-chapter-per-scene default. */
   hints: RenderingHintsSection['novel'] | null;
+  /**
+   * The run's range anchors could not be resolved against the current
+   * scene list, so nobody could check whether chapters are MISSING.
+   *
+   * The statuses of the units that exist still gated this export; what
+   * could not be established is whether the run covered scenes it has no
+   * row for. Said out loud in the notice rather than silently assumed
+   * either way — §3.5's never-silent rule applied to the export itself.
+   */
+  completenessUnverified?: boolean;
 }
 
 /**
@@ -143,7 +153,11 @@ export function renderMarkdown(input: MarkdownInput): string {
 
   const parts: string[] = [];
 
-  const notice = staleNotice(units, input.sceneTitles);
+  const notice = staleNotice(
+    units,
+    input.sceneTitles,
+    input.completenessUnverified === true
+  );
   if (notice) parts.push(notice);
 
   parts.push(`# ${input.title.trim() || 'Untitled'}`);
@@ -226,11 +240,14 @@ function chapterLabel(sequence: number, sceneTitle: string | undefined): string 
  */
 function staleNotice(
   units: ExportUnit[],
-  sceneTitles: Map<string, string>
+  sceneTitles: Map<string, string>,
+  completenessUnverified: boolean
 ): string | null {
   const stale = units.filter((u) => u.isStale && !u.isOrphaned);
   const orphaned = units.filter((u) => u.isOrphaned);
-  if (stale.length === 0 && orphaned.length === 0) return null;
+  if (stale.length === 0 && orphaned.length === 0 && !completenessUnverified) {
+    return null;
+  }
 
   const name = (u: ExportUnit) => chapterLabel(u.sequence, sceneTitles.get(u.sceneId));
   const lines = ['<!--', 'Exported from Good Girls Bot Club.', ''];
@@ -247,6 +264,15 @@ function staleNotice(
     lines.push(
       `These chapters were written from scenes that no longer exist. The prose`,
       `is kept as written and cannot be re-rendered: ${orphaned.map(name).join(', ')}.`,
+      ''
+    );
+  }
+
+  if (completenessUnverified) {
+    lines.push(
+      `The scenes this render was made from have changed, so we could not`,
+      `check whether any chapters are missing from it. What is here is`,
+      `everything the render holds.`,
       ''
     );
   }
