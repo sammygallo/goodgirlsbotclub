@@ -1,0 +1,31 @@
+scene: 1f0c2d84-6a37-4b91-9e52-0d7c8a4b3e10 — The ledger says otherwise
+position: 2 of 3
+precedingSummary: present
+
+participants (1):
+  - 3b415bb4-fa4e-418c-b120-b345b52d2c90 Ivy
+
+facts.own (0):
+facts.sceneAttributed (0):
+facts.unattributed (1):
+  - 92c92ca8-5882-42a2-99d5-f12da5adb326: Ivy never leaves the Reach.
+
+rules (2):
+  - rule-1: The Reach archive is sealed to outsiders after dark.
+  - rule-2: Ledgers record intent to enter, not entry itself.
+
+userVoice: present
+  style_summary: Spare, concrete, dialogue-forward. Trusts the reader to infer.
+  devices: understatement, repetition with variation
+
+hints:
+  compressionLevel: "tight"
+  pov: "third_limited"
+  povCharacterId: "3b415bb4-fa4e-418c-b120-b345b52d2c90"
+  styleAnchors: ["no dream sequences","sparse, concrete description"]
+  targetWordCount: 60000
+  tense: "past"
+
+drops (0):
+
+caveats: {"approximate":true,"constantsOnly":false,"unresolvedRules":2}

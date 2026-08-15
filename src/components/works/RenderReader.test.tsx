@@ -39,6 +39,60 @@ vi.mock('../ui/Toast', () => ({
   showToastGlobal: (...a: unknown[]) => showToastGlobal(...a),
 }));
 
+// The continuity panel (phase 6) is a sibling with its OWN exhaustive read
+// of the same endpoint. Every test here pins how the READER's fetches
+// interleave, using `mockResolvedValueOnce` chains and call counts, so a
+// second component drawing from the same queue would rewrite what each
+// assertion is measuring. Its own behaviour is pinned in its own suite.
+// Stubbed to a single button so a test can drive `onOpenChapter` without
+// the panel's own exhaustive read landing in these `mockResolvedValueOnce`
+// chains. Its own behaviour is pinned in its own suite.
+let openTarget = 's1';
+vi.mock('./RenderContinuityPanel', () => ({
+  RenderContinuityPanel: ({ onOpenChapter }: { onOpenChapter: (id: string) => void }) => (
+    <button type="button" onClick={() => onOpenChapter(openTarget)}>
+      panel: open chapter
+    </button>
+  ),
+}));
+
+/**
+ * A store mock that behaves like the real one in the ONE way that matters
+ * here: `sections` is updated only when the write RESOLVES. That delay is
+ * what made two quick chapter-break ticks clobber each other, so a mock
+ * that updated synchronously would pin nothing.
+ */
+let novelHints: Record<string, unknown> = { chapter_breaks: [], chapter_titles: [] };
+/** Set true to hold the NEXT write open, so a second edit is issued while
+ *  the first is still in flight — the window the defect lived in. */
+let blockNextSave = false;
+let releaseHeld: (() => void) | null = null;
+const saveNovelHints = vi.fn(async (patch: Record<string, unknown>) => {
+  if (blockNextSave) {
+    blockNextSave = false;
+    await new Promise<void>((r) => {
+      releaseHeld = r;
+    });
+  }
+  novelHints = { ...novelHints, ...patch };
+  return true;
+});
+function storeState() {
+  return {
+    sections: { rendering_hints: { data: { novel: novelHints }, server_ts: 1 } },
+    saveNovelHints,
+  };
+}
+vi.mock('../../stores/storyStore', () => ({
+  useStoryStore: Object.assign(
+    (selector?: (s: Record<string, unknown>) => unknown) => {
+      const state = storeState();
+      return selector ? selector(state) : state;
+    },
+    { getState: () => storeState() }
+  ),
+}));
+
 const { RenderReader } = await import('./RenderReader');
 
 // ---------------------------------------------------------------------------
@@ -174,5 +228,80 @@ describe('a failed prose page', () => {
     render(<RenderReader {...props()} />);
 
     expect(await screen.findByText(/couldn't read this render/i)).toBeTruthy();
+  });
+});
+
+describe('chapter-break editing (phase 6)', () => {
+  beforeEach(() => {
+    novelHints = { chapter_breaks: [], chapter_titles: [] };
+    blockNextSave = false;
+    releaseHeld = null;
+    readRenderProse.mockResolvedValue(
+      page([unit('s1', 0, 'one'), unit('s2', 1, 'two')], null)
+    );
+  });
+
+  it('two ticks inside one round trip keep BOTH breaks', async () => {
+    // The phase-6 review's HIGH. Each handler used to derive the whole
+    // `chapter_breaks` array from a memo over the store, and the store
+    // updates only when the PUT resolves — so the second tick read the
+    // same empty set, sent ['s2'], and deleted the first break. The user
+    // set two, saw one, and was told another device had merged it.
+    render(<RenderReader {...props()} />);
+    await screen.findByText(/1\. Scene 1/);
+
+    await userEvent.click(screen.getByRole('button', { name: /1\. Scene 1/i }));
+    await userEvent.click(screen.getByRole('button', { name: /2\. Scene 2/i }));
+
+    const boxes = screen.getAllByRole('checkbox');
+    // Hold the first write open so the second is issued while it is in
+    // flight — the exact window the defect lived in.
+    blockNextSave = true;
+    await userEvent.click(boxes[0]);
+    await userEvent.click(boxes[1]);
+    await waitFor(() => expect(releaseHeld).not.toBeNull());
+    releaseHeld?.();
+
+    await waitFor(() =>
+      expect(novelHints.chapter_breaks).toEqual(expect.arrayContaining(['s1', 's2']))
+    );
+    expect((novelHints.chapter_breaks as string[]).length).toBe(2);
+  });
+
+  it('an emptied title removes its entry rather than storing a blank', async () => {
+    novelHints = {
+      chapter_breaks: [],
+      chapter_titles: [{ scene_id: 's1', title: 'Kept' }],
+    };
+    render(<RenderReader {...props()} />);
+    await screen.findByText(/1\. Scene 1/);
+    await userEvent.click(screen.getByRole('button', { name: /1\. Scene 1/i }));
+
+    const field = screen.getByDisplayValue('Kept');
+    await userEvent.clear(field);
+    await userEvent.tab();
+
+    await waitFor(() => expect(novelHints.chapter_titles).toEqual([]));
+  });
+});
+
+describe('opening a flagged chapter from the continuity panel', () => {
+  it('pages the chapter in rather than showing an empty row', async () => {
+    // The panel reads EVERY chapter, so it can flag one the reader has not
+    // paged in. Expanding it used to land on "This chapter hasn't been
+    // loaded yet" — a dead end pointing at a button the user would have to
+    // press an unknown number of times.
+    openTarget = 's2';
+    readRenderProse
+      .mockResolvedValueOnce(page([unit('s1', 0, 'one')], { sequence: 0, sceneId: 's1' }))
+      .mockResolvedValueOnce(page([unit('s2', 1, 'CHAPTER TWO PROSE')], null));
+
+    render(<RenderReader {...props()} />);
+    await screen.findByText(/2\. Scene 2/);
+
+    await userEvent.click(screen.getByRole('button', { name: /panel: open chapter/i }));
+
+    await waitFor(() => expect(screen.getByText(/CHAPTER TWO PROSE/)).toBeTruthy());
+    expect(screen.queryByText(/hasn't been loaded yet/)).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, CircleAlert, Sparkles, Trash2 } from 'lucide-react';
+import { BookOpen, CircleAlert, Download, Sparkles, Trash2 } from 'lucide-react';
 import { useStoryStore } from '../../stores/storyStore';
 import { useStoryIngestStore } from '../../stores/storyIngestStore';
 import {
@@ -17,6 +17,11 @@ import {
   estimateRenderRun,
   type RenderEstimate,
 } from '../../utils/storyRender/estimate';
+import { collectRunForExport } from '../../utils/storyRender/exportRun';
+import {
+  blockerMessage,
+  type ExportBlocker,
+} from '../../utils/storyRender/exportMarkdown';
 import { booksForChat, gatherIngestInputs, replayEntriesFrom } from './ingestSources';
 import { IngestProgressCard } from './IngestProgressCard';
 import { RenderHintsEditor } from './RenderHintsEditor';
@@ -24,7 +29,7 @@ import { RenderProgressCard } from './RenderProgressCard';
 import { RenderReader } from './RenderReader';
 import { StartIngestModal } from './StartIngestModal';
 import { StartRenderModal } from './StartRenderModal';
-import { Button, ConfirmDialog } from '../ui';
+import { Button, ConfirmDialog, Modal } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import {
   storyApi,
@@ -109,6 +114,16 @@ export function RenderTab({
   const [annotateOpen, setAnnotateOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<StoryRenderSummary | null>(null);
+  /** The run an export is currently reading, so its button can say so and
+   *  a second click cannot start a second read of the same run. */
+  const [exportingId, setExportingId] = useState<string | null>(null);
+  /** Decision 1's refusal, held as state rather than toasted: it lists
+   *  every blocked chapter AND offers the re-render that fixes each one,
+   *  which a toast cannot do. */
+  const [exportRefusal, setExportRefusal] = useState<{
+    renderId: string;
+    blockers: ExportBlocker[];
+  } | null>(null);
   /** Bumped whenever a run ends, so the reader and the render list re-read
    *  instead of showing the state from before it. */
   const [reloadToken, setReloadToken] = useState(0);
@@ -485,6 +500,67 @@ export function RenderTab({
     }
   };
 
+  /**
+   * Export a run to Markdown (phase 6).
+   *
+   * Read-only — no lock, no `preparing` gate, and deliberately allowed
+   * while another run is in flight: taking a copy of a finished book costs
+   * nothing and blocks nothing. `exportingId` exists only to stop a second
+   * click re-reading the same run.
+   *
+   * The DOM half lives here because the collector is pure; everything
+   * above the download is testable in plain node.
+   */
+  const exportRender = async (summary: StoryRenderSummary) => {
+    if (exportingId || !fullScenes) return;
+    setExportingId(summary.id);
+    try {
+      const result = await collectRunForExport(
+        {
+          projectId: project.id,
+          renderId: summary.id,
+          sceneIdStart: summary.scene_id_start,
+          sceneIdEnd: summary.scene_id_end,
+        },
+        fullScenes,
+        // Read at call time, NOT from this render's closure. Clicking
+        // Export blurs a chapter-title field, which fires its save — so
+        // the closure's `sections` is one write behind precisely when the
+        // user has just edited a title and immediately exported it.
+        (
+          useStoryStore.getState().sections.rendering_hints?.data as unknown as
+            | RenderingHintsSection
+            | undefined
+        )?.novel ?? null,
+        project.name
+      );
+
+      if (!result.ok) {
+        if (result.emptyRun) {
+          showToastGlobal('That render has no chapters to export yet.', 'warning');
+          return;
+        }
+        setExportRefusal({ renderId: summary.id, blockers: result.blockers });
+        return;
+      }
+
+      const blob = new Blob([result.markdown], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = result.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      showToastGlobal(
+        error instanceof Error ? error.message : 'Could not export that render',
+        'error'
+      );
+    } finally {
+      setExportingId(null);
+    }
+  };
+
   // --- render -----------------------------------------------------------
 
   if (!manifest || (manifest.scene_count ?? 0) === 0) {
@@ -723,6 +799,19 @@ export function RenderTab({
                     {r.model ? ` · ${r.model}` : ''}
                   </span>
                 </button>
+                {/* Export is a READ. It takes `project:view` like the
+                    reader does, so it is offered without `canManage` and
+                    stays available while another run is in flight. */}
+                <button
+                  type="button"
+                  onClick={() => void exportRender(r)}
+                  disabled={exportingId !== null || !fullScenes}
+                  aria-label="Export this render as Markdown"
+                  title="Export as Markdown"
+                  className="p-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                >
+                  <Download size={14} />
+                </button>
                 {canManage && (
                   <button
                     type="button"
@@ -776,6 +865,59 @@ export function RenderTab({
           onClose={() => setAnnotateOpen(false)}
           busy={preparing}
         />
+      )}
+
+      {/* Decision 1's refusal. It names every blocked chapter and offers
+          the fix for each, because "some chapters aren't finished" without
+          saying which is a guessing loop. */}
+      {exportRefusal && (
+        <Modal
+          isOpen
+          onClose={() => setExportRefusal(null)}
+          title="This story isn’t finished yet"
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-[var(--color-text-secondary)]">
+              {exportRefusal.blockers.length === 1
+                ? 'One chapter is not ready, so exporting now would produce a file that reads as a finished book with a gap in it.'
+                : `${exportRefusal.blockers.length} chapters are not ready, so exporting now would produce a file that reads as a finished book with gaps in it.`}
+            </p>
+            <ul className="space-y-1">
+              {exportRefusal.blockers.map((b) => (
+                <li
+                  key={b.sceneId}
+                  className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2"
+                >
+                  <span className="flex-1 min-w-0 text-sm text-[var(--color-text-primary)] truncate">
+                    {b.title}{' '}
+                    <span className="text-[var(--color-text-secondary)]">
+                      — {blockerMessage(b.reason)}
+                    </span>
+                  </span>
+                  {/* `missing` has no unit to replace, so the fix is
+                      continuing the run, not re-rendering one chapter. */}
+                  {canManage && b.reason !== 'missing' && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setExportRefusal(null);
+                        void renderOneScene(exportRefusal.renderId, b.sceneId);
+                      }}
+                      disabled={renderDisabled || preparing}
+                    >
+                      Write it again
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end">
+              <Button variant="secondary" onClick={() => setExportRefusal(null)}>
+                Close
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       <ConfirmDialog

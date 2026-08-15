@@ -1,0 +1,27 @@
+scene: 1f0c2d84-6a37-4b91-9e52-0d7c8a4b3e10 — The ledger says otherwise
+position: 2 of 3
+precedingSummary: present
+
+participants (1):
+  - 3b415bb4-fa4e-418c-b120-b345b52d2c90 Ivy
+
+facts.own (0):
+facts.sceneAttributed (0):
+facts.unattributed (1):
+  - 92c92ca8-5882-42a2-99d5-f12da5adb326: Ivy never leaves the Reach.
+
+rules (0):
+
+userVoice: none
+
+hints:
+  compressionLevel: "balanced"
+  pov: null
+  povCharacterId: null
+  styleAnchors: []
+  targetWordCount: null
+  tense: null
+
+drops (0):
+
+caveats: {"approximate":false,"constantsOnly":true,"unresolvedRules":0}

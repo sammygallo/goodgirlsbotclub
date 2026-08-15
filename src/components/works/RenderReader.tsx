@@ -9,7 +9,9 @@ import {
 import { DROP_LABELS, readUnitNotes } from '../../utils/storyRender/unitNotes';
 import { showToastGlobal } from '../ui/Toast';
 import { Button } from '../ui';
-import type { Scene } from '../../types/storyBible';
+import { useStoryStore } from '../../stores/storyStore';
+import { RenderContinuityPanel } from './RenderContinuityPanel';
+import type { RenderingHintsSection, Scene } from '../../types/storyBible';
 
 /** Prose pages are whole chapters, so the server pages them at 25 and this
  *  asks for exactly that rather than inventing a second number. */
@@ -106,6 +108,115 @@ export function RenderReader({
   const [loadingProse, setLoadingProse] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [failed, setFailed] = useState(false);
+  /** Any hint write in flight, for a saving indicator ONLY.
+   *
+   *  Deliberately not used to disable the controls. Disabling the row that
+   *  was saving is what swallowed a click outright: the title input's blur
+   *  fires the save, React flushes that state update before dispatching
+   *  the click that CAUSED the blur, and the checkbox the user aimed at
+   *  was already disabled by the time the click arrived. The write queue
+   *  below makes overlapping edits safe, so nothing needs disabling. */
+  const [hintSaving, setHintSaving] = useState(false);
+
+  // Chapter grouping (phase 6, plan Decision 3). `chapter_breaks` and
+  // `chapter_titles` were in the schema with no writer, which left the
+  // exporter's grouping unreachable — this is that writer.
+  //
+  // Read from the LIVE section rather than the run's snapshot, and that is
+  // deliberate: breaks and titles are a presentation choice over prose that
+  // already exists, so changing them must re-group the next EXPORT without
+  // re-rendering a word. The snapshot governs how prose is written; this
+  // governs how it is arranged afterwards.
+  const sections = useStoryStore((s) => s.sections);
+  const saveNovelHints = useStoryStore((s) => s.saveNovelHints);
+  const novelHints = (
+    sections.rendering_hints?.data as unknown as RenderingHintsSection | undefined
+  )?.novel;
+  const chapterBreaks = useMemo(
+    () => new Set(novelHints?.chapter_breaks ?? []),
+    [novelHints]
+  );
+  const chapterTitles = useMemo(
+    () => new Map((novelHints?.chapter_titles ?? []).map((t) => [t.scene_id, t.title])),
+    [novelHints]
+  );
+
+  /**
+   * Serialize hint writes, and derive each patch from the store at the
+   * moment it RUNS rather than when it was queued.
+   *
+   * Both halves are load-bearing, and the first version of this had
+   * neither. `chapter_breaks` and `chapter_titles` are whole arrays, so a
+   * patch is only correct relative to the state it was computed from —
+   * and `saveNovelHints` updates `sections` only after its PUT resolves.
+   * Tick two chapters inside one round trip and the second handler read
+   * the same empty set, computed `['s3']` instead of `['s2','s3']`, and
+   * deleted the first break. The 409 path made it worse rather than
+   * better: it re-folds the SAME stale patch over the winner, so the lost
+   * edit is lost twice and the user is told "saved (merged with another
+   * device)" — their own edit, blamed on a device that does not exist.
+   *
+   * Queueing alone would not fix it (the stale array would still be sent)
+   * and re-deriving alone would not either (two in-flight writes still
+   * race). Together they do: each write starts after the previous one has
+   * landed in the store, and reads what landed.
+   */
+  const hintQueue = useRef<Promise<void>>(Promise.resolve());
+  const hintPending = useRef(0);
+  const queueHintWrite = useCallback(
+    (
+      derive: (
+        live: RenderingHintsSection['novel'] | undefined
+      ) => Partial<RenderingHintsSection['novel']>
+    ) => {
+      hintPending.current += 1;
+      setHintSaving(true);
+      hintQueue.current = hintQueue.current
+        .then(async () => {
+          const live = (
+            useStoryStore.getState().sections.rendering_hints?.data as unknown as
+              | RenderingHintsSection
+              | undefined
+          )?.novel;
+          await saveNovelHints(derive(live));
+        })
+        // A failed write already toasted inside the store. Swallowing here
+        // keeps one failure from poisoning every write queued behind it.
+        .catch(() => {})
+        .finally(() => {
+          hintPending.current -= 1;
+          if (hintPending.current === 0) setHintSaving(false);
+        });
+      return hintQueue.current;
+    },
+    [saveNovelHints]
+  );
+
+  const toggleBreak = useCallback(
+    (sceneId: string) =>
+      queueHintWrite((live) => {
+        const next = new Set(live?.chapter_breaks ?? []);
+        if (next.has(sceneId)) next.delete(sceneId);
+        else next.add(sceneId);
+        return { chapter_breaks: [...next] };
+      }),
+    [queueHintWrite]
+  );
+
+  const setChapterTitle = useCallback(
+    (sceneId: string, title: string) =>
+      queueHintWrite((live) => {
+        const trimmed = title.trim();
+        const rest = (live?.chapter_titles ?? []).filter((t) => t.scene_id !== sceneId);
+        // An empty title REMOVES the entry rather than storing a blank one:
+        // the serializer falls back to the scene's own title, and a stored
+        // blank would be an invisible override of it.
+        return {
+          chapter_titles: trimmed ? [...rest, { scene_id: sceneId, title: trimmed }] : rest,
+        };
+      }),
+    [queueHintWrite]
+  );
 
   /**
    * Which render/reload the currently displayed state belongs to.
@@ -250,6 +361,63 @@ export function RenderReader({
     }
   }, [projectId, renderId, proseCursor, proseHasMore, loadingProse]);
 
+  /**
+   * Expand a chapter, paging its prose in first if it is not loaded yet.
+   *
+   * The continuity panel reads EVERY chapter, so it can flag one the
+   * reader has not paged in — the reader loads 25 at a time. Clicking that
+   * flag used to expand a row reading "This chapter hasn't been loaded yet
+   * — use Load more chapters below", which is a dead end pointing at a
+   * button the user would have to press an unknown number of times.
+   *
+   * Pages forward from wherever the reader already is, merging as it goes,
+   * and advances the shared cursor so "Load more" does not re-read what
+   * this just fetched.
+   */
+  const openChapter = useCallback(
+    async (sceneId: string) => {
+      setExpanded((prev) => new Set(prev).add(sceneId));
+      if (bodies.has(sceneId) || !proseHasMore) return;
+
+      const token = tokenRef.current;
+      setLoadingProse(true);
+      let cursor = proseCursor;
+      let hasMore = true;
+      try {
+        for (let page = 0; page < MAX_PAGES && hasMore; page++) {
+          const res = await storyApi.readRenderProse(projectId, renderId, {
+            limit: PROSE_PAGE,
+            ...(cursor
+              ? { afterSequence: cursor.sequence, afterSceneId: cursor.sceneId }
+              : {}),
+          });
+          if (tokenRef.current !== token) return;
+          const items = res.items ?? [];
+          setBodies((prev) => {
+            const next = new Map(prev);
+            for (const unit of items) next.set(unit.scene_id, unit);
+            return next;
+          });
+          cursor = nextCursor(res);
+          hasMore = cursor !== null;
+          if (items.some((u) => u.scene_id === sceneId)) break;
+        }
+        if (tokenRef.current !== token) return;
+        setProseCursor(cursor);
+        setProseHasMore(hasMore);
+      } catch (error) {
+        if (tokenRef.current !== token) return;
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Could not read the prose',
+          'error'
+        );
+      } finally {
+        setLoadingProse(false);
+      }
+    },
+    [bodies, proseCursor, proseHasMore, projectId, renderId]
+  );
+
   const chapters: Chapter[] = useMemo(
     () =>
       (summaries ?? [])
@@ -311,6 +479,14 @@ export function RenderReader({
         </p>
       )}
 
+      <RenderContinuityPanel
+        projectId={projectId}
+        renderId={renderId}
+        reloadToken={reloadToken}
+        titleFor={titleFor}
+        onOpenChapter={(sceneId) => void openChapter(sceneId)}
+      />
+
       <ul className="space-y-2">
         {chapters.map((chapter, i) => (
           <ChapterRow
@@ -320,6 +496,12 @@ export function RenderReader({
             open={expanded.has(chapter.sceneId)}
             canManage={canManage}
             disabled={disabled}
+            startsChapter={chapterBreaks.has(chapter.sceneId)}
+            chapterTitle={chapterTitles.get(chapter.sceneId) ?? ''}
+            hintSaving={hintSaving}
+            anyBreakSet={chapterBreaks.size > 0}
+            onToggleBreak={() => void toggleBreak(chapter.sceneId)}
+            onRetitle={(title) => void setChapterTitle(chapter.sceneId, title)}
             onToggle={() =>
               setExpanded((prev) => {
                 const next = new Set(prev);
@@ -352,6 +534,12 @@ function ChapterRow({
   open,
   canManage,
   disabled,
+  startsChapter,
+  chapterTitle,
+  hintSaving,
+  anyBreakSet,
+  onToggleBreak,
+  onRetitle,
   onToggle,
   onRerender,
 }: {
@@ -360,6 +548,18 @@ function ChapterRow({
   open: boolean;
   canManage: boolean;
   disabled: boolean;
+  /** This scene is listed in `chapter_breaks`. */
+  startsChapter: boolean;
+  /** Its explicit `chapter_titles` entry, '' when it has none. */
+  chapterTitle: string;
+  /** A hint write is in flight somewhere. Shown, never used to disable —
+   *  see the note on `hintSaving` in the parent. */
+  hintSaving: boolean;
+  /** Whether ANY break is set, which is what decides the grouping mode —
+   *  no breaks at all means one chapter per scene. */
+  anyBreakSet: boolean;
+  onToggleBreak: () => void;
+  onRetitle: (title: string) => void;
   onToggle: () => void;
   onRerender: () => void;
 }) {
@@ -367,6 +567,14 @@ function ChapterRow({
   const notes = useMemo(() => readUnitNotes(body?.continuity), [body]);
   const truncated = summary.status === 'truncated';
   const errored = summary.status === 'error';
+  const [titleDraft, setTitleDraft] = useState(chapterTitle);
+  // Re-seed when the stored value changes underneath (another device, or a
+  // save landing), but never while the field is focused — that would eat
+  // the user's keystrokes mid-edit.
+  const titleRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (document.activeElement !== titleRef.current) setTitleDraft(chapterTitle);
+  }, [chapterTitle]);
 
   return (
     <li className="rounded-lg bg-[var(--color-bg-secondary)] overflow-hidden">
@@ -417,6 +625,47 @@ function ChapterRow({
 
       {open && (
         <div className="px-3 pb-3 space-y-3 border-t border-[var(--color-border)] pt-3">
+          {/* Chapter grouping. Lives behind the expander rather than in the
+              row header: it is a deliberate act, and the header is already
+              carrying status, staleness and re-render. */}
+          {canManage && (
+            <div className="space-y-2 rounded-lg bg-[var(--color-bg-tertiary)] p-2.5">
+              <label className="flex items-start gap-2 text-xs text-[var(--color-text-primary)]">
+                <input
+                  type="checkbox"
+                  checked={startsChapter}
+                  onChange={onToggleBreak}
+                  className="mt-0.5"
+                />
+                <span>
+                  Start a new chapter here
+                  <span className="block text-[var(--color-text-secondary)]">
+                    {anyBreakSet
+                      ? 'Scenes after this one join it until the next break.'
+                      : 'With no breaks set, every scene is its own chapter.'}
+                  </span>
+                </span>
+              </label>
+              <input
+                ref={titleRef}
+                type="text"
+                value={titleDraft}
+                placeholder={chapter.title || 'Chapter title (optional)'}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={() => {
+                  if (titleDraft.trim() !== chapterTitle.trim()) onRetitle(titleDraft);
+                }}
+                maxLength={120}
+                className="w-full px-2 py-1 rounded bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-xs text-[var(--color-text-primary)] disabled:opacity-50"
+              />
+              <p className="text-[11px] text-[var(--color-text-secondary)]">
+                Grouping and titles apply when you export. Nothing is written
+                again and nothing is charged.
+                {hintSaving ? ' · Saving…' : ''}
+              </p>
+            </div>
+          )}
+
           {body === null ? (
             <p className="text-sm text-[var(--color-text-secondary)]">
               This chapter hasn't been loaded yet — use “Load more chapters”
