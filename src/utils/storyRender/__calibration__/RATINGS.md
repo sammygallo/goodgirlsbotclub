@@ -189,3 +189,42 @@ correcting that copy.
 **What to watch on a re-render.** If the annotated fixtures start inventing
 at this rate, the annotation groups have stopped reaching the prompt —
 check `full-brief`'s golden before assuming the model changed.
+
+---
+
+## Verification: the compression-precedence fix (2026-08-15)
+
+The `full-brief` rating above reported that `compression_level` and a
+scene's `transformations` entered `Direction:` as unranked siblings, and
+that the scene-level one won. This is the measurement of the fix, on the
+same fixture and the same model (`claude-opus-4-7`), one sample each.
+
+| Prompt | Words | |
+|---|---|---|
+| Two unranked bullets (the defect) | 322 | "Compress hard" beat "Balanced" (275) — backwards |
+| Fix v1 — `preserve` = *"give it room at the density above"* | **455** | **worse than the defect** |
+| Fix v2 — `preserve` = *"cut this one last"* | **268** | now under `balanced`'s 275 |
+
+**v1 is the interesting one.** Making the user's setting govern was
+correct, but the adjustment I wrote for `preserve` said to "give it room",
+which is an expansion licence — and removing the concrete "90% of its
+length" anchor at the same time took away the only number pulling the
+other way. The result was longer prose than the bug it was fixing.
+
+The rule that came out of it, and which a test now enforces: **an
+adjustment may say what to cut FIRST or LAST; it may never ask for more
+prose.** Relative ordering is the only thing the annotate pass knows that
+the user's setting does not.
+
+**Quality at 268 words.** Tighter, and it holds: the dialogue example
+("The archive does not run itself") survives, the appearance detail
+survives, and world rule 2 survives paraphrased — "The ledger records
+intent. Not passage." The verbal tic ("As you like.") is gone, which is a
+fair casualty of a harder cut and the kind of thing to watch if the level
+is pushed further.
+
+**Caveat, stated because it matters:** one sample per variant. LLM output
+varies run to run, so the exact numbers are not repeatable. The direction
+is consistent and the mechanism for v1's regression is understood, which
+is what makes this evidence rather than an anecdote — but do not treat 268
+as a threshold.

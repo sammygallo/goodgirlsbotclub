@@ -32,8 +32,8 @@ Spare, concrete, dialogue-forward. Trusts the reader to infer. Devices they favo
 Direction:
 - Point of view: third person limited, through Ivy.
 - Tense: past.
-- Compress hard. Summarise transitions, keep only the lines that carry the scene.
-- This scene was read as "preserve" at roughly 90% of its length. let the contradiction land cleanly; hold the beat where Sam registers the reversal
+- How much to compress — this governs: Compress hard. Summarise transitions, keep only the lines that carry the scene. Of the scenes in this story, cut this one last — it carries more than its neighbours.
+- Pacing: let the contradiction land cleanly; hold the beat where Sam registers the reversal
 - Its beat is "rising", tension 7/10. Mood: tense, adversarial, quietly alarmed. At stake: Sam's ability to trust Ivy — and whatever the north wing hides.
 - Aim for roughly 60000 words across the whole work.
 - Style anchors: no dream sequences; sparse, concrete description.

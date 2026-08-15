@@ -626,7 +626,14 @@ export function RenderTab({
               </h3>
               <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
                 {needsAnnotate
-                  ? 'Nothing is annotated yet. This records each scene’s beat, tension and how tightly to tell it — the renderer reads all of it, and prose written without it is flatter.'
+                  ? // Not "flatter" — that claim was wrong, and a calibration
+                    // render on 2026-08-15 showed the opposite. Unannotated
+                    // prose came back LONGER than annotated (357 words vs 275)
+                    // and invented a named character the story does not
+                    // contain, because nothing told it how much to keep or
+                    // what the scene was for. The honest pitch is control, not
+                    // quality.
+                    'Nothing is annotated yet. This records each scene’s beat, tension and how tightly to tell it. Without it the renderer has nothing to hold it to length or to the point, so chapters run long and invent detail your story doesn’t have.'
                   : `Records each scene’s beat, tension and how tightly to tell it.${
                       scenesAnnotated !== null && fullScenes
                         ? ` ${scenesAnnotated} of ${fullScenes.length} done.`
