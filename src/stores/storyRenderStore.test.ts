@@ -791,3 +791,165 @@ describe('review follow-ups (verified against current code)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-scene re-render (step 3, phase 5)
+//
+// §3.4's remedy for a chapter the user did not like, and the ONLY path that
+// re-bills a `truncated` unit — `resume` deliberately leaves those alone.
+//
+// It shares `resume`'s whole sequence (range from the run row, unit read,
+// lock re-take, status flip, terminal write) because the last time two
+// copies of that sequence existed they drifted, and the drift stranded the
+// project-wide lock. What is NOT shared is asserted here.
+// ---------------------------------------------------------------------------
+
+describe('rerenderScene', () => {
+  const rerenderInput = (over: Record<string, unknown> = {}) =>
+    ({
+      projectId: 'p1',
+      renderId: 'r1',
+      sceneId: 's1',
+      scenes: [sceneRow('s1', 0), sceneRow('s2', 1)],
+      factRows: [],
+      characters: [],
+      worldRules: [],
+      userVoice: null,
+      hints: null,
+      narrative: null,
+      messages: [],
+      wiEntries: [],
+      llm: vi.fn(async () => ({ text: 'Better prose.', terminal: 'stop', finishReason: 'stop' })),
+      ...over,
+    }) as Parameters<
+      ReturnType<typeof useStoryRenderStore.getState>['rerenderScene']
+    >[0];
+
+  const banked = (items: Record<string, unknown>[]) => {
+    listRenderUnits.mockResolvedValue({
+      items,
+      next_after_sequence: null,
+      next_after_scene_id: null,
+      has_more: false,
+    });
+  };
+
+  beforeEach(() => {
+    getRender.mockResolvedValue({ ...RENDER, status: 'complete', server_ts: 30 });
+  });
+
+  it('accepts a COMPLETE run, which resume refuses', async () => {
+    // The whole point: a finished book is exactly what a user re-renders one
+    // chapter of. `resume` refuses `complete` because continuing one would
+    // re-bill every scene; this bills exactly one, by name.
+    banked([
+      { scene_id: 's1', sequence: 0, status: 'complete' },
+      { scene_id: 's2', sequence: 1, status: 'complete' },
+    ]);
+
+    const ok = await useStoryRenderStore.getState().rerenderScene(rerenderInput());
+
+    expect(ok).toBe(true);
+    expect(putRenderUnit).toHaveBeenCalledTimes(1);
+    expect(putRenderUnit.mock.calls[0][2]).toBe('s1');
+  });
+
+  it('re-renders a TRUNCATED unit — the one thing resume will not do', async () => {
+    banked([{ scene_id: 's1', sequence: 0, status: 'truncated' }]);
+
+    await useStoryRenderStore.getState().rerenderScene(rerenderInput());
+
+    expect(putRenderUnit).toHaveBeenCalledTimes(1);
+    expect(putRenderUnit.mock.calls[0][2]).toBe('s1');
+    expect(putRenderUnit.mock.calls[0][3]).toMatchObject({ status: 'complete' });
+  });
+
+  it('does not count the replaced chapter twice when it truncates again', async () => {
+    // The seed carries the rest of the run's verdicts, so the target's OLD
+    // verdict has to come back out before this attempt adds its new one.
+    // Without that, one cut chapter is reported as two.
+    banked([
+      { scene_id: 's1', sequence: 0, status: 'truncated' },
+      { scene_id: 's2', sequence: 1, status: 'complete' },
+    ]);
+
+    await useStoryRenderStore.getState().rerenderScene(
+      rerenderInput({
+        llm: vi.fn(async () => ({
+          text: 'Still cut',
+          terminal: 'length',
+          finishReason: 'length',
+        })),
+      })
+    );
+
+    expect(useStoryRenderStore.getState().progress).toMatchObject({ truncated: 1 });
+  });
+
+  it('LEAVES THE EXISTING PROSE ALONE when the re-render fails', async () => {
+    // The defect this pins is data loss, not a wrong number. `writeUnit` is
+    // a full replace, so banking a failure here swaps finished, paid-for
+    // prose for an empty `error` unit — destroying output because the RETRY
+    // failed. A "write this chapter again" button must never be able to
+    // leave the user with less than they started with.
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+
+    const ok = await useStoryRenderStore.getState().rerenderScene(
+      rerenderInput({
+        llm: vi.fn(async () => {
+          throw new Error('502 from the provider');
+        }),
+      })
+    );
+
+    expect(ok).toBe(true);
+    // NOTHING was written over the good chapter.
+    expect(putRenderUnit).not.toHaveBeenCalled();
+    // And the failure is still reported rather than swallowed.
+    expect(useStoryRenderStore.getState().progress).toMatchObject({ errored: 1 });
+  });
+
+  it('refuses a scene outside the run’s own range', async () => {
+    // A unit written here would attach prose to a render that does not
+    // claim that scene, and the reader lists units, not scenes.
+    getRender.mockResolvedValue({
+      ...RENDER,
+      status: 'complete',
+      scene_id_start: 's1',
+      scene_id_end: 's1',
+      server_ts: 30,
+    });
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+
+    const ok = await useStoryRenderStore
+      .getState()
+      .rerenderScene(rerenderInput({ sceneId: 's2' }));
+
+    expect(ok).toBe(false);
+    expect(putRenderUnit).not.toHaveBeenCalled();
+    expect(acquireRenderLock).not.toHaveBeenCalled();
+  });
+
+  it('releases the lock when the status flip fails', async () => {
+    // Identical to resume's own pin, and it has to be: no heartbeat exists
+    // at this point, so bailing while holding the project-wide lock locks
+    // every device and every format out for the full expiry.
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+    setRenderStatus.mockRejectedValue(new Error('nope'));
+
+    const ok = await useStoryRenderStore.getState().rerenderScene(rerenderInput());
+
+    expect(ok).toBe(false);
+    expect(releaseRenderLock).toHaveBeenCalled();
+  });
+
+  it('still honours §3.6’s build cross-gate', async () => {
+    ingestState.checkpoint = { status: 'paused', current_pass: 'transcript_walk' };
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+
+    const ok = await useStoryRenderStore.getState().rerenderScene(rerenderInput());
+
+    expect(ok).toBe(false);
+    expect(acquireRenderLock).not.toHaveBeenCalled();
+  });
+});

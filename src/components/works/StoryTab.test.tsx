@@ -93,6 +93,9 @@ vi.mock('./ingestSources', () => ({
   gatherIngestInputs: (...a: unknown[]) => gatherIngestInputs(...a),
   gatherColdStartSources: () => ({ characterName: 'Ivy', characterAvatar: 'Ivy.png' }),
   replayEntriesFrom: () => [],
+  // Moved out of StoryTab in step-3 phase 5 so the Render tab can replay
+  // world-info activation against the SAME book set the build walked.
+  booksForChat: () => [],
 }));
 
 vi.mock('../../utils/storyIngest/llmBridge', () => ({ makeLlmCall: () => vi.fn() }));
@@ -137,6 +140,18 @@ vi.mock('../../stores/storyIngestStore', () => ({
   useStoryIngestStore: useStoryIngestStoreMock,
   estimateColdStartTokens: () => 100,
   hasUnreadableChecksNote: () => false,
+}));
+
+// The render store's only job in this suite is the SYMMETRIC half of
+// §3.6's cross-gate: the render store refuses to start while a walk is
+// live, and the Story tab has to refuse a walk while a render is live.
+let renderStoreState: Record<string, unknown> = { isRunning: false };
+vi.mock('../../stores/storyRenderStore', () => ({
+  useStoryRenderStore: Object.assign(
+    (selector?: (s: Record<string, unknown>) => unknown) =>
+      selector ? selector(renderStoreState) : renderStoreState,
+    { getState: () => renderStoreState }
+  ),
 }));
 
 function simpleStore(state: Record<string, unknown>) {
@@ -267,7 +282,6 @@ function setup(opts: {
   chunkPlan?: unknown[];
   checkpointStatus?: string | null;
   currentPass?: string | null;
-  /** Overrides MANIFEST.scene_count — the annotate section gates on it. */
   sceneCount?: number;
   beatMap?: Record<string, unknown>[] | null;
   scenes?: { id: string; sequence: number; title: string; summary: string }[];
@@ -328,6 +342,7 @@ function pinnedPlan(n: number) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  renderStoreState = { isRunning: false };
   storyApiMock.manifest.mockResolvedValue(MANIFEST);
   gatherIngestInputs.mockResolvedValue({ messages: [], capturedWiFired: null });
 });
@@ -728,93 +743,6 @@ describe('drift check scheduling', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The annotate pass's temporary entry point (step 3 phase 2)
-//
-// TEMPORARY along with the button itself — Phase 5's Render tab replaces
-// both. What is NOT temporary is the rule these pin: annotate is exempt
-// from the canon lock (plan §3.3 narrows that invariant to user-authored
-// edits) but must mirror the store's refusal on a checkpoint parked
-// mid-pipeline.
-// ---------------------------------------------------------------------------
-
-describe('annotate entry point', () => {
-  const SCENES = [{ id: 's1', sequence: 0, title: 'One', summary: '' }];
-
-  const annotateButton = () =>
-    screen.queryByRole('button', { name: /^annotate$/i }) as HTMLButtonElement | null;
-
-  it('offers annotate once the bible has scenes', async () => {
-    setup({ scenes: SCENES });
-    await renderTab();
-    expect(annotateButton()).not.toBeNull();
-    expect(annotateButton()!.disabled).toBe(false);
-  });
-
-  it('stays available while canon is LOCKED', async () => {
-    // The §3.3 narrowing, and the one most likely to be undone by someone
-    // reaching for `writesDisabled`: that composite carries `canonLocked`.
-    // A locked bible is exactly the state a user annotates in before
-    // rendering, and annotate writes derived fields no user authored.
-    setup({ scenes: SCENES, canonLocked: true });
-    await renderTab();
-
-    // Build IS locked out, so this asserts the two are genuinely
-    // independent rather than the lock simply not being applied.
-    expect(
-      (screen.getByRole('button', { name: /^build$/i }) as HTMLButtonElement).disabled
-    ).toBe(true);
-    expect(annotateButton()!.disabled).toBe(false);
-  });
-
-  it('refuses while a walk is parked — mirroring runAnnotate', async () => {
-    // `current_pass` is one field: writing 'annotate' over a parked walk
-    // destroys the signal resumableWalk reads.
-    setup({
-      scenes: SCENES,
-      checkpointStatus: 'paused',
-      currentPass: 'transcript_walk',
-      chunkPlan: pinnedPlan(2),
-    });
-    await renderTab();
-
-    expect(annotateButton()!.disabled).toBe(true);
-    expect(screen.getByText(/finish or clear the story build first/i)).toBeTruthy();
-  });
-
-  it('stays available when ANNOTATE itself is parked — that is resumable', async () => {
-    setup({ scenes: SCENES, checkpointStatus: 'paused', currentPass: 'annotate' });
-    await renderTab();
-    expect(annotateButton()!.disabled).toBe(false);
-  });
-
-  it('is hidden for a bible with no scenes, and for a view-only user', async () => {
-    setup({ sceneCount: 0 });
-    await renderTab();
-    expect(annotateButton()).toBeNull();
-
-    cleanup();
-    setup({ scenes: SCENES });
-    await renderTab(false);
-    expect(annotateButton()).toBeNull();
-  });
-
-  it('runs the pass on the chosen connection and reloads after', async () => {
-    setup({ scenes: SCENES });
-    await renderTab();
-
-    await userEvent.click(annotateButton()!);
-    await userEvent.click(await screen.findByRole('button', { name: /confirm annotate/i }));
-
-    await waitFor(() => expect(runAnnotate).toHaveBeenCalled());
-    expect(runAnnotate.mock.calls[0][0]).toMatchObject({ projectId: 'p1', model: 'm' });
-    // The pass rewrites scene rows and may add the `narrative` section.
-    await waitFor(() => expect(storeActions.load).toHaveBeenCalledWith('p1'));
-    // And the preflight closes rather than sitting over the result.
-    expect(screen.queryByTestId('annotate-modal')).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Beat map panel (step 3 phase 2)
 // ---------------------------------------------------------------------------
 
@@ -890,5 +818,36 @@ describe('beat map panel', () => {
     setup({ scenes: SCENES, beatMap: [entry()] });
     await renderTab(false);
     expect(screen.queryByRole('button', { name: /beat map/i })).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The render cross-gate, from this side (step 3 phase 5)
+// ---------------------------------------------------------------------------
+
+describe('build vs. a render in flight', () => {
+  const buildButton = () =>
+    screen.getByRole('button', { name: /^build$/i }) as HTMLButtonElement;
+
+  it('refuses a build while a render is running', async () => {
+    // The symmetric half of §3.6. `transcript_walk` full-replaces the very
+    // scene rows the run in flight is reading one at a time, on the user's
+    // key — so the gate has to hold from both ends, not just the one the
+    // render store enforces.
+    renderStoreState = { isRunning: true };
+    setup({});
+    await renderTab();
+
+    expect(buildButton().disabled).toBe(true);
+    expect(screen.getByText(/being written out right now/i)).toBeTruthy();
+  });
+
+  it('allows a build when no render is in flight', async () => {
+    // A PARKED render is data at rest: it reads nothing until someone
+    // continues it, and blocking on one would strand a user who abandoned a
+    // render behind a bible they can never update again.
+    setup({});
+    await renderTab();
+    expect(buildButton().disabled).toBe(false);
   });
 });

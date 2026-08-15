@@ -15,9 +15,11 @@ import {
 import { showToastGlobal } from '../components/ui/Toast';
 import {
   STORY_SCHEMA_VERSION,
+  emptyRenderingHintsSection,
   isFactTombstone,
   STALE_ANNOTATION_FLAG,
   type Contradiction,
+  type RenderingHintsSection,
   type SceneFunction,
   type SceneTransformations,
   type ContinuitySection,
@@ -129,6 +131,22 @@ interface StoryState {
    *  Deliberately not cached and not held in state: it runs once, on an
    *  explicit user action, against scene counts the plan calls small. */
   loadAllScenesWithData: () => Promise<StorySceneOut[] | null>;
+  /**
+   * The same whole-scene set, read through `GET /scenes/full` (step 3
+   * phase 1) instead of a summary page plus a GET per scene.
+   *
+   * A second reader rather than a rewrite of the one above, because the
+   * two have different failure appetites. Lock-canon and drift call that
+   * one on an explicit click over "scene counts the plan calls small"; the
+   * render path calls this one before every run, every preflight estimate
+   * and every reader open, and the step-3 plan is explicit that this step
+   * must not promote an N+1 to a hot path.
+   *
+   * A short page is NOT a last page — the server ends one early on its own
+   * byte budget and points the cursor at the last row INCLUDED — so only
+   * `has_more` terminates the loop.
+   */
+  loadAllScenesFull: () => Promise<StorySceneOut[] | null>;
 
   // --- Beat map (step 3 phase 2) ----------------------------------------
 
@@ -164,6 +182,24 @@ interface StoryState {
   mergeSceneIntoPrevious: (sceneId: string) => Promise<boolean>;
   /** Add a user-written passage to `user_voice.sample_passages`. */
   appendSamplePassage: (text: string) => Promise<boolean>;
+  /**
+   * Write the Render tab's novel hints (step 3 phase 5).
+   *
+   * Patches `rendering_hints.novel` and leaves the other three renderer
+   * groups verbatim — the section is a single full-replace row, so writing
+   * only what the editor knows about would delete `screenplay`,
+   * `graphic_novel` and `storyboard` on every save.
+   *
+   * Deliberately permitted while canon is LOCKED. §3.3 narrows the lock
+   * invariant to user-authored *bible* edits and exempts the render path;
+   * a locked bible is precisely the state §1 describes a user rendering
+   * from, so refusing here would make the whole tab unusable in its
+   * primary case. The build gate still applies: cold start full-replaces
+   * this section, and a save landing mid-walk would be clobbered.
+   */
+  saveNovelHints: (
+    patch: Partial<RenderingHintsSection['novel']>
+  ) => Promise<boolean>;
   /** Point the bible at the same roleplay under a new identity, keeping
    *  the capture snapshot and the ingest watermark untouched. */
   relinkSourceChat: (chat: ProjectChatRef) => Promise<boolean>;
@@ -241,6 +277,11 @@ const MAX_SCENE_INDEX_PAGES = 200;
  *  ceiling of 100, since a full page is whole scene bodies rather than
  *  the list projection. */
 const BEAT_MAP_PAGE = 50;
+/** Same page size, same reason, for the render path's whole-scene read.
+ *  Deliberately its own constant: the beat map wants annotations and the
+ *  renderer wants summaries, so a future tuning of one is not a silent
+ *  retuning of the other. */
+const FULL_SCENE_PAGE = 50;
 /** Backend `EDIT_MAX_BYTES` is 16 KiB on the normalized row; the diff is
  *  the only free-form field, so it gets a clamp with headroom to spare. */
 const EDIT_DIFF_MAX = 2000;
@@ -1246,6 +1287,43 @@ export const useStoryStore = create<StoryState>((set, get) => {
     }
   },
 
+  loadAllScenesFull: async () => {
+    const { projectId } = get();
+    if (!projectId) return null;
+    const epoch = storeEpoch;
+    try {
+      const rows: StorySceneOut[] = [];
+      let cursor: { sequence: number; id: string } | null = null;
+      for (let page = 0; page < MAX_SCENE_INDEX_PAGES; page++) {
+        const res = await storyApi.listScenesFull(projectId, {
+          ...(cursor ? { afterSequence: cursor.sequence, afterId: cursor.id } : {}),
+          limit: FULL_SCENE_PAGE,
+        });
+        rows.push(...(res.items ?? []));
+        if (
+          !res.has_more ||
+          res.next_after_sequence === null ||
+          res.next_after_sequence === undefined ||
+          res.next_after_id === null ||
+          res.next_after_id === undefined
+        ) {
+          break;
+        }
+        cursor = { sequence: res.next_after_sequence, id: res.next_after_id };
+      }
+      if (!stillOn(projectId, epoch)) return null;
+      return rows;
+    } catch (error) {
+      if (stillOn(projectId, epoch)) {
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to load scenes',
+          'error'
+        );
+      }
+      return null;
+    }
+  },
+
   // --- Beat map (step 3 phase 2 — reading the annotate pass's output) ----
 
   loadBeatMap: async () => {
@@ -1778,6 +1856,103 @@ export const useStoryStore = create<StoryState>((set, get) => {
         set({ isSaving: false });
         showToastGlobal(
           error instanceof Error ? error.message : 'Failed to add the sample',
+          'error'
+        );
+      }
+      return false;
+    }
+  },
+
+  saveNovelHints: async (patch) => {
+    const { projectId } = get();
+    if (!projectId) return false;
+    // `allowWhileLocked` — see the interface doc. The build term is NOT
+    // waived: cold start full-replaces this section.
+    if (await refuseIfGated({ allowWhileLocked: true })) return false;
+    set({ isSaving: true });
+    const epoch = storeEpoch;
+
+    /** Fold the patch over whatever the server currently holds. Pure, and
+     *  re-run against the WINNER on a 409 — the user chose a POV, not a
+     *  whole section, so replaying their intent is right where replaying a
+     *  stale snapshot would revert a concurrent edit to another field. */
+    const build = (existing: unknown): RenderingHintsSection => {
+      const base =
+        existing && typeof existing === 'object' && !Array.isArray(existing)
+          ? (existing as unknown as RenderingHintsSection)
+          : emptyRenderingHintsSection();
+      const defaults = emptyRenderingHintsSection();
+      return {
+        // The three groups this step does not own, kept verbatim. A
+        // missing group falls back to its default rather than to
+        // `undefined`, which the section model rejects outright.
+        screenplay: base.screenplay ?? defaults.screenplay,
+        graphic_novel: base.graphic_novel ?? defaults.graphic_novel,
+        storyboard: base.storyboard ?? defaults.storyboard,
+        novel: { ...defaults.novel, ...(base.novel ?? {}), ...patch },
+      };
+    };
+
+    const write = async (
+      current: StorySectionOut | null,
+      baseTs: number
+    ): Promise<void> => {
+      const section = await storyApi.putSection(
+        projectId,
+        'rendering_hints',
+        build(current?.data ?? null) as unknown as Record<string, unknown>,
+        baseTs
+      );
+      if (stillOn(projectId, epoch)) {
+        set((s) => ({ sections: { ...s.sections, rendering_hints: section } }));
+      }
+    };
+
+    const diff = Object.keys(patch).join(', ') || 'no change';
+    try {
+      const current = get().sections.rendering_hints ?? null;
+      await write(current, current?.server_ts ?? 0);
+      await recordEdit(projectId, epoch, {
+        target: { type: 'hints' },
+        classification: 'substantive',
+        diff: `render hints: ${diff}`,
+      });
+      const stillCurrentNow = stillOn(projectId, epoch);
+      if (stillCurrentNow) set({ isSaving: false });
+      return stillCurrentNow;
+    } catch (error) {
+      if (error instanceof StoryConflictError) {
+        try {
+          await write(error.current ?? null, error.currentTs);
+          await recordEdit(projectId, epoch, {
+            target: { type: 'hints' },
+            classification: 'substantive',
+            diff: `render hints: ${diff}`,
+          });
+          const stillCurrentNow = stillOn(projectId, epoch);
+          if (stillCurrentNow) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'Render settings saved (merged with another device)',
+              'warning'
+            );
+          }
+          return stillCurrentNow;
+        } catch {
+          if (stillOn(projectId, epoch)) {
+            set({ isSaving: false });
+            showToastGlobal(
+              'Render settings changed on another device — try again',
+              'error'
+            );
+          }
+          return false;
+        }
+      }
+      if (stillOn(projectId, epoch)) {
+        set({ isSaving: false });
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Failed to save render settings',
           'error'
         );
       }

@@ -25,6 +25,7 @@ import type {
   SourceRef,
   WorldSection,
 } from '../../types/storyBible';
+import { emptyRenderingHintsSection } from '../../types/storyBible';
 import { capturedAt, createIdMinter } from '../storyBible/sourceRefs';
 import {
   ATTRIBUTES_SYSTEM,
@@ -394,26 +395,7 @@ export async function runColdStart(
     });
   }
 
-  const renderingHints: RenderingHintsSection = {
-    novel: {
-      pov: null,
-      pov_character: null,
-      tense: null,
-      chapter_breaks: [],
-      chapter_titles: [],
-      compression_level: 'balanced',
-      target_word_count: null,
-      style_anchors: [],
-    },
-    screenplay: { format: 'fountain', sluglines_inferred: true, page_target: null },
-    graphic_novel: {
-      pages_per_scene: 1,
-      panel_density: 'standard',
-      art_style_brief: '',
-      character_consistency_refs: [],
-    },
-    storyboard: { aspect_ratio: '16:9', panels_per_scene: 4 },
-  };
+  const renderingHints: RenderingHintsSection = emptyRenderingHintsSection();
 
   // --- the two model calls ------------------------------------------
   if (llm && sources.description.trim()) {
