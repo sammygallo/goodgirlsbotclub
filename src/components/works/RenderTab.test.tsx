@@ -102,9 +102,17 @@ vi.mock('./StartIngestModal', () => ({
   ),
 }));
 
-const gatherIngestInputs = vi.fn(async () => ({ messages: [], capturedWiFired: null }));
+// The mocks below carry explicit signatures because an un-annotated
+// `vi.fn(async () => …)` infers a ZERO-arg tuple: forwarding with a
+// spread, and reading `.mock.calls[0][0]`, are then both type errors.
+// `vitest run` never sees them — only `tsc -b`, which the Docker build
+// runs and the test workflow does not.
+const gatherIngestInputs = vi.fn<(chat: unknown) => Promise<unknown>>(async () => ({
+  messages: [],
+  capturedWiFired: null,
+}));
 vi.mock('./ingestSources', () => ({
-  gatherIngestInputs: (...a: unknown[]) => gatherIngestInputs(...a),
+  gatherIngestInputs: (chat: unknown) => gatherIngestInputs(chat),
   replayEntriesFrom: () => [],
   booksForChat: () => [],
 }));
@@ -235,15 +243,17 @@ const storeActions = {
   loadAllFactsById: vi.fn(async () => new Map()),
 };
 
+type ActionCall = (input: Record<string, unknown>) => Promise<boolean>;
+
 const renderActions = {
-  start: vi.fn(async () => true),
-  resume: vi.fn(async () => true),
-  rerenderScene: vi.fn(async () => true),
+  start: vi.fn<ActionCall>(async () => true),
+  resume: vi.fn<ActionCall>(async () => true),
+  rerenderScene: vi.fn<ActionCall>(async () => true),
   clear: vi.fn(),
   cancel: vi.fn(),
 };
 
-const runAnnotate = vi.fn(async () => true);
+const runAnnotate = vi.fn<ActionCall>(async () => true);
 const loadCheckpoint = vi.fn(async () => {});
 
 function setup(
