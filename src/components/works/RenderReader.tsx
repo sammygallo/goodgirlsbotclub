@@ -108,9 +108,15 @@ export function RenderReader({
   const [loadingProse, setLoadingProse] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [failed, setFailed] = useState(false);
-  /** The scene whose hint write is in flight, so its controls can be
-   *  disabled without freezing every other row. */
-  const [savingHint, setSavingHint] = useState<string | null>(null);
+  /** Any hint write in flight, for a saving indicator ONLY.
+   *
+   *  Deliberately not used to disable the controls. Disabling the row that
+   *  was saving is what swallowed a click outright: the title input's blur
+   *  fires the save, React flushes that state update before dispatching
+   *  the click that CAUSED the blur, and the checkbox the user aimed at
+   *  was already disabled by the time the click arrived. The write queue
+   *  below makes overlapping edits safe, so nothing needs disabling. */
+  const [hintSaving, setHintSaving] = useState(false);
 
   // Chapter grouping (phase 6, plan Decision 3). `chapter_breaks` and
   // `chapter_titles` were in the schema with no writer, which left the
@@ -135,39 +141,81 @@ export function RenderReader({
     [novelHints]
   );
 
-  const toggleBreak = useCallback(
-    async (sceneId: string) => {
-      const next = new Set(chapterBreaks);
-      if (next.has(sceneId)) next.delete(sceneId);
-      else next.add(sceneId);
-      setSavingHint(sceneId);
-      try {
-        await saveNovelHints({ chapter_breaks: [...next] });
-      } finally {
-        setSavingHint(null);
-      }
+  /**
+   * Serialize hint writes, and derive each patch from the store at the
+   * moment it RUNS rather than when it was queued.
+   *
+   * Both halves are load-bearing, and the first version of this had
+   * neither. `chapter_breaks` and `chapter_titles` are whole arrays, so a
+   * patch is only correct relative to the state it was computed from —
+   * and `saveNovelHints` updates `sections` only after its PUT resolves.
+   * Tick two chapters inside one round trip and the second handler read
+   * the same empty set, computed `['s3']` instead of `['s2','s3']`, and
+   * deleted the first break. The 409 path made it worse rather than
+   * better: it re-folds the SAME stale patch over the winner, so the lost
+   * edit is lost twice and the user is told "saved (merged with another
+   * device)" — their own edit, blamed on a device that does not exist.
+   *
+   * Queueing alone would not fix it (the stale array would still be sent)
+   * and re-deriving alone would not either (two in-flight writes still
+   * race). Together they do: each write starts after the previous one has
+   * landed in the store, and reads what landed.
+   */
+  const hintQueue = useRef<Promise<void>>(Promise.resolve());
+  const hintPending = useRef(0);
+  const queueHintWrite = useCallback(
+    (
+      derive: (
+        live: RenderingHintsSection['novel'] | undefined
+      ) => Partial<RenderingHintsSection['novel']>
+    ) => {
+      hintPending.current += 1;
+      setHintSaving(true);
+      hintQueue.current = hintQueue.current
+        .then(async () => {
+          const live = (
+            useStoryStore.getState().sections.rendering_hints?.data as unknown as
+              | RenderingHintsSection
+              | undefined
+          )?.novel;
+          await saveNovelHints(derive(live));
+        })
+        // A failed write already toasted inside the store. Swallowing here
+        // keeps one failure from poisoning every write queued behind it.
+        .catch(() => {})
+        .finally(() => {
+          hintPending.current -= 1;
+          if (hintPending.current === 0) setHintSaving(false);
+        });
+      return hintQueue.current;
     },
-    [chapterBreaks, saveNovelHints]
+    [saveNovelHints]
+  );
+
+  const toggleBreak = useCallback(
+    (sceneId: string) =>
+      queueHintWrite((live) => {
+        const next = new Set(live?.chapter_breaks ?? []);
+        if (next.has(sceneId)) next.delete(sceneId);
+        else next.add(sceneId);
+        return { chapter_breaks: [...next] };
+      }),
+    [queueHintWrite]
   );
 
   const setChapterTitle = useCallback(
-    async (sceneId: string, title: string) => {
-      const trimmed = title.trim();
-      const rest = (novelHints?.chapter_titles ?? []).filter(
-        (t) => t.scene_id !== sceneId
-      );
-      // An empty title REMOVES the entry rather than storing a blank one:
-      // the serializer falls back to the scene's own title, and a stored
-      // blank would be an invisible override of it.
-      const next = trimmed ? [...rest, { scene_id: sceneId, title: trimmed }] : rest;
-      setSavingHint(sceneId);
-      try {
-        await saveNovelHints({ chapter_titles: next });
-      } finally {
-        setSavingHint(null);
-      }
-    },
-    [novelHints, saveNovelHints]
+    (sceneId: string, title: string) =>
+      queueHintWrite((live) => {
+        const trimmed = title.trim();
+        const rest = (live?.chapter_titles ?? []).filter((t) => t.scene_id !== sceneId);
+        // An empty title REMOVES the entry rather than storing a blank one:
+        // the serializer falls back to the scene's own title, and a stored
+        // blank would be an invisible override of it.
+        return {
+          chapter_titles: trimmed ? [...rest, { scene_id: sceneId, title: trimmed }] : rest,
+        };
+      }),
+    [queueHintWrite]
   );
 
   /**
@@ -313,6 +361,63 @@ export function RenderReader({
     }
   }, [projectId, renderId, proseCursor, proseHasMore, loadingProse]);
 
+  /**
+   * Expand a chapter, paging its prose in first if it is not loaded yet.
+   *
+   * The continuity panel reads EVERY chapter, so it can flag one the
+   * reader has not paged in — the reader loads 25 at a time. Clicking that
+   * flag used to expand a row reading "This chapter hasn't been loaded yet
+   * — use Load more chapters below", which is a dead end pointing at a
+   * button the user would have to press an unknown number of times.
+   *
+   * Pages forward from wherever the reader already is, merging as it goes,
+   * and advances the shared cursor so "Load more" does not re-read what
+   * this just fetched.
+   */
+  const openChapter = useCallback(
+    async (sceneId: string) => {
+      setExpanded((prev) => new Set(prev).add(sceneId));
+      if (bodies.has(sceneId) || !proseHasMore) return;
+
+      const token = tokenRef.current;
+      setLoadingProse(true);
+      let cursor = proseCursor;
+      let hasMore = true;
+      try {
+        for (let page = 0; page < MAX_PAGES && hasMore; page++) {
+          const res = await storyApi.readRenderProse(projectId, renderId, {
+            limit: PROSE_PAGE,
+            ...(cursor
+              ? { afterSequence: cursor.sequence, afterSceneId: cursor.sceneId }
+              : {}),
+          });
+          if (tokenRef.current !== token) return;
+          const items = res.items ?? [];
+          setBodies((prev) => {
+            const next = new Map(prev);
+            for (const unit of items) next.set(unit.scene_id, unit);
+            return next;
+          });
+          cursor = nextCursor(res);
+          hasMore = cursor !== null;
+          if (items.some((u) => u.scene_id === sceneId)) break;
+        }
+        if (tokenRef.current !== token) return;
+        setProseCursor(cursor);
+        setProseHasMore(hasMore);
+      } catch (error) {
+        if (tokenRef.current !== token) return;
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Could not read the prose',
+          'error'
+        );
+      } finally {
+        setLoadingProse(false);
+      }
+    },
+    [bodies, proseCursor, proseHasMore, projectId, renderId]
+  );
+
   const chapters: Chapter[] = useMemo(
     () =>
       (summaries ?? [])
@@ -379,9 +484,7 @@ export function RenderReader({
         renderId={renderId}
         reloadToken={reloadToken}
         titleFor={titleFor}
-        onOpenChapter={(sceneId) =>
-          setExpanded((prev) => new Set(prev).add(sceneId))
-        }
+        onOpenChapter={(sceneId) => void openChapter(sceneId)}
       />
 
       <ul className="space-y-2">
@@ -395,7 +498,7 @@ export function RenderReader({
             disabled={disabled}
             startsChapter={chapterBreaks.has(chapter.sceneId)}
             chapterTitle={chapterTitles.get(chapter.sceneId) ?? ''}
-            hintBusy={savingHint === chapter.sceneId}
+            hintSaving={hintSaving}
             anyBreakSet={chapterBreaks.size > 0}
             onToggleBreak={() => void toggleBreak(chapter.sceneId)}
             onRetitle={(title) => void setChapterTitle(chapter.sceneId, title)}
@@ -433,7 +536,7 @@ function ChapterRow({
   disabled,
   startsChapter,
   chapterTitle,
-  hintBusy,
+  hintSaving,
   anyBreakSet,
   onToggleBreak,
   onRetitle,
@@ -449,7 +552,9 @@ function ChapterRow({
   startsChapter: boolean;
   /** Its explicit `chapter_titles` entry, '' when it has none. */
   chapterTitle: string;
-  hintBusy: boolean;
+  /** A hint write is in flight somewhere. Shown, never used to disable —
+   *  see the note on `hintSaving` in the parent. */
+  hintSaving: boolean;
   /** Whether ANY break is set, which is what decides the grouping mode —
    *  no breaks at all means one chapter per scene. */
   anyBreakSet: boolean;
@@ -529,7 +634,6 @@ function ChapterRow({
                 <input
                   type="checkbox"
                   checked={startsChapter}
-                  disabled={hintBusy}
                   onChange={onToggleBreak}
                   className="mt-0.5"
                 />
@@ -546,7 +650,6 @@ function ChapterRow({
                 ref={titleRef}
                 type="text"
                 value={titleDraft}
-                disabled={hintBusy}
                 placeholder={chapter.title || 'Chapter title (optional)'}
                 onChange={(e) => setTitleDraft(e.target.value)}
                 onBlur={() => {
@@ -558,6 +661,7 @@ function ChapterRow({
               <p className="text-[11px] text-[var(--color-text-secondary)]">
                 Grouping and titles apply when you export. Nothing is written
                 again and nothing is charged.
+                {hintSaving ? ' · Saving…' : ''}
               </p>
             </div>
           )}

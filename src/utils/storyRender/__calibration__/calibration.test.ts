@@ -119,7 +119,17 @@ function describeBrief(brief: ReturnType<typeof assembleRenderBrief>): string {
   lines.push('');
 
   lines.push(`rules (${brief.rules.length}):`);
-  for (const r of brief.rules) lines.push(`  - ${r.id ?? '(no id)'}`);
+  for (const r of brief.rules) lines.push(`  - ${r.id ?? '(no id)'}: ${r.text}`);
+  lines.push('');
+
+  // The review found this missing: `user_voice` reached the prompt but
+  // appeared in no golden, so the brief could stop carrying the author's
+  // voice with nothing to show for it.
+  lines.push(`userVoice: ${brief.userVoice ? 'present' : 'none'}`);
+  if (brief.userVoice) {
+    lines.push(`  style_summary: ${brief.userVoice.style_summary}`);
+    lines.push(`  devices: ${(brief.userVoice.rhetorical_devices ?? []).join(', ')}`);
+  }
   lines.push('');
 
   lines.push('hints:');

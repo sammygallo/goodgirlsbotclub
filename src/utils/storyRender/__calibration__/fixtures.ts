@@ -13,7 +13,7 @@
 
 import type { AssembleInput } from '../contextAssembler';
 import type { StoryLogEntry } from '../../../api/client';
-import type { BibleCharacter, Scene } from '../../../types/storyBible';
+import type { BibleCharacter, Scene, WorldRule } from '../../../types/storyBible';
 
 export interface CalibrationFixture {
   /** Also the golden filename stem. */
@@ -221,8 +221,111 @@ const firstSceneUnannotated: CalibrationFixture = {
   },
 };
 
+/**
+ * Fixture 4 — everything the other three leave out.
+ *
+ * The phase-6 review found that fixtures 1–3 all shared empty rules, a null
+ * `userVoice`, null hints and a bare character, so EVERY conditional block
+ * in `prosePrompt` was skipped by every golden. A verifier gutted
+ * `characterBrief` and deleted the world-rules and author-voice
+ * interpolations outright: 129 tests stayed green and all six goldens were
+ * byte-identical. A harness whose whole job is catching "what silently
+ * stopped reaching the model" would have missed the model being told
+ * nothing about who anyone is.
+ *
+ * So this fixture populates every optional branch at once: a full character
+ * (aliases, appearance, traits, register, speech, tics, arc, dialogue
+ * examples), world rules, an author voice, and hints that set POV, tense,
+ * word count and style anchors. It is deliberately maximal — its golden is
+ * the one that fails when any of those stops being sent.
+ */
+const fullBrief: CalibrationFixture = {
+  name: 'full-brief',
+  description:
+    'Every optional block populated at once: character voice profile, world rules, author voice, and hints setting POV, tense, word count and style anchors.',
+  provenance:
+    'Hand-built. Exists because the review proved the other fixtures skipped every conditional block in prosePrompt.',
+  ratedProse: false,
+  input: {
+    ...ivyLedger.input,
+    characters: [
+      {
+        id: IVY_ID,
+        canonical_name: 'Ivy',
+        aliases: ['the Keeper', 'Ives'],
+        role: 'protagonist',
+        is_user_persona: false,
+        background: 'Keeper of the Reach archive for nineteen years.',
+        relationships: [],
+        physical_description: {
+          summary: 'Tall, grey at the temples, ink on the side of her right hand.',
+        },
+        personality: {
+          traits: [{ trait: 'exacting' }, { trait: 'evasive' }, { trait: 'unhurried' }],
+          voice_profile: {
+            register: 'formal, clipped',
+            speech_patterns: 'Answers the question asked and no more.',
+            verbal_tics: ['"As you like."', 'repeats a denial verbatim rather than rephrasing'],
+            dialogue_examples: [
+              { text: 'The archive does not run itself.' },
+              { text: "You've misread it." },
+            ],
+          },
+        },
+        arc: { current_state: 'Cornered by her own contradictory answers.' },
+      } as unknown as BibleCharacter,
+    ],
+    rules: {
+      included: [
+        {
+          id: 'rule-1',
+          text: 'The Reach archive is sealed to outsiders after dark.',
+          category: 'social',
+          established_in: null,
+        },
+        {
+          id: 'rule-2',
+          text: 'Ledgers record intent to enter, not entry itself.',
+          category: 'social',
+          established_in: null,
+        },
+      ] as unknown as WorldRule[],
+      nonFiring: [
+        { id: 'rule-3', text: 'Boundary stones are re-cut every ninth year.' },
+      ] as unknown as WorldRule[],
+      caveats: { approximate: true, constantsOnly: false, unresolvedRules: 2 },
+    },
+    userVoice: {
+      style_summary: 'Spare, concrete, dialogue-forward. Trusts the reader to infer.',
+      register: 'literary',
+      rhetorical_devices: ['understatement', 'repetition with variation'],
+      diction: {
+        sentence_length: { distribution: 'short, with occasional long compound' },
+        paragraph_density: 'sparse',
+        preferred_vocabulary: ['ledger', 'threshold', 'quiet'],
+        avoided_vocabulary: ['suddenly', 'very'],
+      },
+      pov_preferences: {},
+      interaction_style: {},
+      sample_passages: [],
+      confidence: 0.8,
+    } as unknown as AssembleInput['userVoice'],
+    hints: {
+      pov: 'third_limited',
+      pov_character: IVY_ID,
+      tense: 'past',
+      chapter_breaks: [],
+      chapter_titles: [],
+      compression_level: 'tight',
+      target_word_count: 60000,
+      style_anchors: ['no dream sequences', 'sparse, concrete description'],
+    },
+  },
+};
+
 export const CALIBRATION_FIXTURES: CalibrationFixture[] = [
   ivyLedger,
   capOverflow,
   firstSceneUnannotated,
+  fullBrief,
 ];

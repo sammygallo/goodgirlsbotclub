@@ -523,8 +523,15 @@ export function RenderTab({
           sceneIdEnd: summary.scene_id_end,
         },
         fullScenes,
-        (sections.rendering_hints?.data as unknown as RenderingHintsSection | undefined)
-          ?.novel ?? null,
+        // Read at call time, NOT from this render's closure. Clicking
+        // Export blurs a chapter-title field, which fires its save — so
+        // the closure's `sections` is one write behind precisely when the
+        // user has just edited a title and immediately exported it.
+        (
+          useStoryStore.getState().sections.rendering_hints?.data as unknown as
+            | RenderingHintsSection
+            | undefined
+        )?.novel ?? null,
         project.name
       );
 

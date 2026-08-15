@@ -12,6 +12,8 @@ facts.unattributed (1):
 
 rules (0):
 
+userVoice: none
+
 hints:
   compressionLevel: "balanced"
   pov: null
