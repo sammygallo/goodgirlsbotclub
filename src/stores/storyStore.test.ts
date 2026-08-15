@@ -1263,6 +1263,78 @@ describe('loadAllFactsById', () => {
   });
 });
 
+describe('loadAllScenesFull', () => {
+  const row = (id: string, sequence: number) => ({
+    id,
+    sequence,
+    server_ts: sequence,
+    updated_at: 'x',
+    data: { id, sequence, participants: [`p${sequence}`] },
+  });
+
+  beforeEach(() => {
+    useStoryStore.setState({ projectId: 'p1' });
+  });
+
+  it('pages on has_more, NOT on page length', async () => {
+    // The server can end a page early on its own byte budget, so a short
+    // page is not a last page. The callers here — the drift localiser and
+    // the lock-canon check — read a partial set as scenes that are MISSING
+    // their refs, which is how a truncated fetch manufactures errors.
+    listScenesFull
+      .mockResolvedValueOnce({
+        items: [row('s1', 0)],
+        next_after_sequence: 0,
+        next_after_id: 's1',
+        has_more: true,
+        truncated_by_bytes: true,
+      })
+      .mockResolvedValueOnce({
+        items: [row('s2', 1)],
+        next_after_sequence: null,
+        next_after_id: null,
+        has_more: false,
+        truncated_by_bytes: false,
+      });
+
+    const scenes = await useStoryStore.getState().loadAllScenesFull();
+
+    expect(scenes?.map((s) => s.id)).toEqual(['s1', 's2']);
+    expect(listScenesFull).toHaveBeenCalledTimes(2);
+    // Resumes from the last row INCLUDED.
+    expect(listScenesFull.mock.calls[1][1]).toMatchObject({
+      afterSequence: 0,
+      afterId: 's1',
+    });
+    // One request per page, not one per scene.
+    expect(getScene).not.toHaveBeenCalled();
+  });
+
+  it('is deliberately uncached — a second call re-fetches', async () => {
+    listScenesFull.mockResolvedValue({
+      items: [row('s1', 0)],
+      next_after_sequence: null,
+      next_after_id: null,
+      has_more: false,
+      truncated_by_bytes: false,
+    });
+
+    await useStoryStore.getState().loadAllScenesFull();
+    await useStoryStore.getState().loadAllScenesFull();
+
+    // Both callers act on the answer — flagging scenes stale, locking the
+    // canon — so a cached bible from an earlier visit is the wrong input.
+    expect(listScenesFull).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a failed fetch as null, not as an empty bible', async () => {
+    listScenesFull.mockRejectedValue(new Error('boom'));
+
+    expect(await useStoryStore.getState().loadAllScenesFull()).toBeNull();
+    expect(showToastGlobal).toHaveBeenCalled();
+  });
+});
+
 describe('mergeSceneIntoPrevious', () => {
   const sceneData = (id: string, seq: number, extra: Record<string, unknown> = {}) => ({
     id,

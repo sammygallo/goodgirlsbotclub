@@ -123,24 +123,21 @@ interface StoryState {
   /** Page the whole fact log into `factIndex`. Cheap to call repeatedly —
    *  returns the cached map unless it's been invalidated. */
   loadAllFactsById: () => Promise<Map<string, StoryLogEntry> | null>;
-  /** Every scene with its FULL payload, paged to exhaustion.
-   *
-   *  The lock-canon check reads scene ref fields (participants,
-   *  continuity_facts_established, pov_character) that list summaries
-   *  don't carry, so this is a fetch per scene on top of the paging.
-   *  Deliberately not cached and not held in state: it runs once, on an
-   *  explicit user action, against scene counts the plan calls small. */
-  loadAllScenesWithData: () => Promise<StorySceneOut[] | null>;
   /**
-   * The same whole-scene set, read through `GET /scenes/full` (step 3
-   * phase 1) instead of a summary page plus a GET per scene.
+   * Every scene with its FULL payload, paged to exhaustion, read through
+   * `GET /scenes/full` (step 3 phase 1) — one request per 50 scenes
+   * rather than a summary page plus a GET per scene.
    *
-   * A second reader rather than a rewrite of the one above, because the
-   * two have different failure appetites. Lock-canon and drift call that
-   * one on an explicit click over "scene counts the plan calls small"; the
-   * render path calls this one before every run, every preflight estimate
-   * and every reader open, and the step-3 plan is explicit that this step
-   * must not promote an N+1 to a hot path.
+   * Every caller needs scene ref fields (participants,
+   * continuity_facts_established, pov_character) that list summaries
+   * don't carry: the render path before every run, every preflight
+   * estimate and every reader open, and lock-canon and drift on an
+   * explicit click. The step-3 plan is explicit that this step must not
+   * promote an N+1 to a hot path, and the click-driven callers are no
+   * reason to keep a second, slower reader alive beside this one.
+   *
+   * Deliberately not cached and not held in state — every caller acts on
+   * the answer, so a bible from an earlier visit is the wrong input.
    *
    * A short page is NOT a last page — the server ends one early on its own
    * byte budget and points the cursor at the last row INCLUDED — so only
@@ -277,10 +274,10 @@ const MAX_SCENE_INDEX_PAGES = 200;
  *  ceiling of 100, since a full page is whole scene bodies rather than
  *  the list projection. */
 const BEAT_MAP_PAGE = 50;
-/** Same page size, same reason, for the render path's whole-scene read.
- *  Deliberately its own constant: the beat map wants annotations and the
- *  renderer wants summaries, so a future tuning of one is not a silent
- *  retuning of the other. */
+/** Same page size, same reason, for `loadAllScenesFull`'s whole-scene
+ *  read. Deliberately its own constant: the beat map wants annotations
+ *  and its callers want summaries, so a future tuning of one is not a
+ *  silent retuning of the other. */
 const FULL_SCENE_PAGE = 50;
 /** Backend `EDIT_MAX_BYTES` is 16 KiB on the normalized row; the diff is
  *  the only free-form field, so it gets a clamp with headroom to spare. */
@@ -1247,46 +1244,6 @@ export const useStoryStore = create<StoryState>((set, get) => {
     }
   },
 
-  loadAllScenesWithData: async () => {
-    const { projectId } = get();
-    if (!projectId) return null;
-    const epoch = storeEpoch;
-    try {
-      const summaries: StorySceneSummary[] = [];
-      let cursor: { sequence: number; id: string } | null = null;
-      for (let page = 0; page < MAX_SCENE_INDEX_PAGES; page++) {
-        const res = await storyApi.listScenes(projectId, {
-          ...(cursor
-            ? { afterSequence: cursor.sequence, afterId: cursor.id }
-            : {}),
-          limit: SCENE_PAGE,
-        });
-        summaries.push(...res.items);
-        if (
-          !res.has_more ||
-          res.next_after_sequence === null ||
-          res.next_after_id === null
-        ) {
-          break;
-        }
-        cursor = { sequence: res.next_after_sequence, id: res.next_after_id };
-      }
-      const full = await Promise.all(
-        summaries.map((s) => storyApi.getScene(projectId, s.id))
-      );
-      if (!stillOn(projectId, epoch)) return null;
-      return full;
-    } catch (error) {
-      if (stillOn(projectId, epoch)) {
-        showToastGlobal(
-          error instanceof Error ? error.message : 'Failed to load scenes',
-          'error'
-        );
-      }
-      return null;
-    }
-  },
-
   loadAllScenesFull: async () => {
     const { projectId } = get();
     if (!projectId) return null;
@@ -1340,11 +1297,9 @@ export const useStoryStore = create<StoryState>((set, get) => {
       const rows: BeatMapEntry[] = [];
       let cursor: { sequence: number; id: string } | null = null;
       for (let page = 0; page < MAX_SCENE_INDEX_PAGES; page++) {
-        // `/scenes/full` (backend step-3 phase 1), NOT
-        // `loadAllScenesWithData` — that one is a summary page plus a GET
-        // per scene, and the step-3 plan is explicit that this step must
-        // not promote that N+1 to a hot path. One request per 50 scenes
-        // instead of one per scene.
+        // `/scenes/full` (backend step-3 phase 1): one request per 50
+        // scenes rather than one per scene, which is what the step-3
+        // plan requires of a hot path.
         const res = await storyApi.listScenesFull(projectId, {
           ...(cursor ? { afterSequence: cursor.sequence, afterId: cursor.id } : {}),
           limit: BEAT_MAP_PAGE,

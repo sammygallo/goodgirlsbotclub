@@ -261,7 +261,7 @@ const storeActions = {
   loadMoreArchives: vi.fn(),
   restoreArchive: vi.fn(),
   relinkSourceChat: vi.fn(async () => true),
-  loadAllScenesWithData:
+  loadAllScenesFull:
     vi.fn<() => Promise<Record<string, unknown>[] | null>>(async () => []),
   loadBeatMap,
   loadSection: vi.fn(async () => {}),
@@ -644,7 +644,7 @@ describe('stale scene flagging', () => {
   async function divergedWithScenes() {
     getChatMessages.mockResolvedValue({ messages: [rawMsg('m0', 'EDITED')] });
     const wm = await watermarkFor('m0', 'one', 1);
-    storeActions.loadAllScenesWithData.mockResolvedValue([
+    storeActions.loadAllScenesFull.mockResolvedValue([
       {
         id: 's2',
         sequence: 1,

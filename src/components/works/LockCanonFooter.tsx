@@ -234,7 +234,7 @@ export function LockCanonFooter({
       // fields checked below — so the full rows are fetched here rather
       // than paged into state. A null result is a failed fetch, and
       // checking against a partial scene set would invent errors.
-      const scenes = await useStoryStore.getState().loadAllScenesWithData();
+      const scenes = await useStoryStore.getState().loadAllScenesFull();
       if (!scenes) return;
 
       await Promise.all([
