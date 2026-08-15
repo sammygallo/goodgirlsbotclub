@@ -9,7 +9,9 @@ import {
 import { DROP_LABELS, readUnitNotes } from '../../utils/storyRender/unitNotes';
 import { showToastGlobal } from '../ui/Toast';
 import { Button } from '../ui';
-import type { Scene } from '../../types/storyBible';
+import { useStoryStore } from '../../stores/storyStore';
+import { RenderContinuityPanel } from './RenderContinuityPanel';
+import type { RenderingHintsSection, Scene } from '../../types/storyBible';
 
 /** Prose pages are whole chapters, so the server pages them at 25 and this
  *  asks for exactly that rather than inventing a second number. */
@@ -106,6 +108,67 @@ export function RenderReader({
   const [loadingProse, setLoadingProse] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [failed, setFailed] = useState(false);
+  /** The scene whose hint write is in flight, so its controls can be
+   *  disabled without freezing every other row. */
+  const [savingHint, setSavingHint] = useState<string | null>(null);
+
+  // Chapter grouping (phase 6, plan Decision 3). `chapter_breaks` and
+  // `chapter_titles` were in the schema with no writer, which left the
+  // exporter's grouping unreachable — this is that writer.
+  //
+  // Read from the LIVE section rather than the run's snapshot, and that is
+  // deliberate: breaks and titles are a presentation choice over prose that
+  // already exists, so changing them must re-group the next EXPORT without
+  // re-rendering a word. The snapshot governs how prose is written; this
+  // governs how it is arranged afterwards.
+  const sections = useStoryStore((s) => s.sections);
+  const saveNovelHints = useStoryStore((s) => s.saveNovelHints);
+  const novelHints = (
+    sections.rendering_hints?.data as unknown as RenderingHintsSection | undefined
+  )?.novel;
+  const chapterBreaks = useMemo(
+    () => new Set(novelHints?.chapter_breaks ?? []),
+    [novelHints]
+  );
+  const chapterTitles = useMemo(
+    () => new Map((novelHints?.chapter_titles ?? []).map((t) => [t.scene_id, t.title])),
+    [novelHints]
+  );
+
+  const toggleBreak = useCallback(
+    async (sceneId: string) => {
+      const next = new Set(chapterBreaks);
+      if (next.has(sceneId)) next.delete(sceneId);
+      else next.add(sceneId);
+      setSavingHint(sceneId);
+      try {
+        await saveNovelHints({ chapter_breaks: [...next] });
+      } finally {
+        setSavingHint(null);
+      }
+    },
+    [chapterBreaks, saveNovelHints]
+  );
+
+  const setChapterTitle = useCallback(
+    async (sceneId: string, title: string) => {
+      const trimmed = title.trim();
+      const rest = (novelHints?.chapter_titles ?? []).filter(
+        (t) => t.scene_id !== sceneId
+      );
+      // An empty title REMOVES the entry rather than storing a blank one:
+      // the serializer falls back to the scene's own title, and a stored
+      // blank would be an invisible override of it.
+      const next = trimmed ? [...rest, { scene_id: sceneId, title: trimmed }] : rest;
+      setSavingHint(sceneId);
+      try {
+        await saveNovelHints({ chapter_titles: next });
+      } finally {
+        setSavingHint(null);
+      }
+    },
+    [novelHints, saveNovelHints]
+  );
 
   /**
    * Which render/reload the currently displayed state belongs to.
@@ -311,6 +374,16 @@ export function RenderReader({
         </p>
       )}
 
+      <RenderContinuityPanel
+        projectId={projectId}
+        renderId={renderId}
+        reloadToken={reloadToken}
+        titleFor={titleFor}
+        onOpenChapter={(sceneId) =>
+          setExpanded((prev) => new Set(prev).add(sceneId))
+        }
+      />
+
       <ul className="space-y-2">
         {chapters.map((chapter, i) => (
           <ChapterRow
@@ -320,6 +393,12 @@ export function RenderReader({
             open={expanded.has(chapter.sceneId)}
             canManage={canManage}
             disabled={disabled}
+            startsChapter={chapterBreaks.has(chapter.sceneId)}
+            chapterTitle={chapterTitles.get(chapter.sceneId) ?? ''}
+            hintBusy={savingHint === chapter.sceneId}
+            anyBreakSet={chapterBreaks.size > 0}
+            onToggleBreak={() => void toggleBreak(chapter.sceneId)}
+            onRetitle={(title) => void setChapterTitle(chapter.sceneId, title)}
             onToggle={() =>
               setExpanded((prev) => {
                 const next = new Set(prev);
@@ -352,6 +431,12 @@ function ChapterRow({
   open,
   canManage,
   disabled,
+  startsChapter,
+  chapterTitle,
+  hintBusy,
+  anyBreakSet,
+  onToggleBreak,
+  onRetitle,
   onToggle,
   onRerender,
 }: {
@@ -360,6 +445,16 @@ function ChapterRow({
   open: boolean;
   canManage: boolean;
   disabled: boolean;
+  /** This scene is listed in `chapter_breaks`. */
+  startsChapter: boolean;
+  /** Its explicit `chapter_titles` entry, '' when it has none. */
+  chapterTitle: string;
+  hintBusy: boolean;
+  /** Whether ANY break is set, which is what decides the grouping mode —
+   *  no breaks at all means one chapter per scene. */
+  anyBreakSet: boolean;
+  onToggleBreak: () => void;
+  onRetitle: (title: string) => void;
   onToggle: () => void;
   onRerender: () => void;
 }) {
@@ -367,6 +462,14 @@ function ChapterRow({
   const notes = useMemo(() => readUnitNotes(body?.continuity), [body]);
   const truncated = summary.status === 'truncated';
   const errored = summary.status === 'error';
+  const [titleDraft, setTitleDraft] = useState(chapterTitle);
+  // Re-seed when the stored value changes underneath (another device, or a
+  // save landing), but never while the field is focused — that would eat
+  // the user's keystrokes mid-edit.
+  const titleRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (document.activeElement !== titleRef.current) setTitleDraft(chapterTitle);
+  }, [chapterTitle]);
 
   return (
     <li className="rounded-lg bg-[var(--color-bg-secondary)] overflow-hidden">
@@ -417,6 +520,48 @@ function ChapterRow({
 
       {open && (
         <div className="px-3 pb-3 space-y-3 border-t border-[var(--color-border)] pt-3">
+          {/* Chapter grouping. Lives behind the expander rather than in the
+              row header: it is a deliberate act, and the header is already
+              carrying status, staleness and re-render. */}
+          {canManage && (
+            <div className="space-y-2 rounded-lg bg-[var(--color-bg-tertiary)] p-2.5">
+              <label className="flex items-start gap-2 text-xs text-[var(--color-text-primary)]">
+                <input
+                  type="checkbox"
+                  checked={startsChapter}
+                  disabled={hintBusy}
+                  onChange={onToggleBreak}
+                  className="mt-0.5"
+                />
+                <span>
+                  Start a new chapter here
+                  <span className="block text-[var(--color-text-secondary)]">
+                    {anyBreakSet
+                      ? 'Scenes after this one join it until the next break.'
+                      : 'With no breaks set, every scene is its own chapter.'}
+                  </span>
+                </span>
+              </label>
+              <input
+                ref={titleRef}
+                type="text"
+                value={titleDraft}
+                disabled={hintBusy}
+                placeholder={chapter.title || 'Chapter title (optional)'}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={() => {
+                  if (titleDraft.trim() !== chapterTitle.trim()) onRetitle(titleDraft);
+                }}
+                maxLength={120}
+                className="w-full px-2 py-1 rounded bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-xs text-[var(--color-text-primary)] disabled:opacity-50"
+              />
+              <p className="text-[11px] text-[var(--color-text-secondary)]">
+                Grouping and titles apply when you export. Nothing is written
+                again and nothing is charged.
+              </p>
+            </div>
+          )}
+
           {body === null ? (
             <p className="text-sm text-[var(--color-text-secondary)]">
               This chapter hasn't been loaded yet — use “Load more chapters”

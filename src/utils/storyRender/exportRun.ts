@@ -156,7 +156,16 @@ async function pageUnits(
   return out;
 }
 
-async function pageProse(
+/**
+ * Every chapter body in a run.
+ *
+ * Exported because the continuity panel needs the same exhaustive read —
+ * verdicts live on the unit payload, and a panel that counted only the
+ * chapters the reader happened to have paged in would answer "does this
+ * book contradict itself" with "the first 25 don't". One implementation of
+ * the `has_more` rule, so the pin on it covers both callers.
+ */
+export async function pageProse(
   projectId: string,
   renderId: string
 ): Promise<StoryRenderUnit[]> {

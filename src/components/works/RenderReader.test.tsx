@@ -39,6 +39,28 @@ vi.mock('../ui/Toast', () => ({
   showToastGlobal: (...a: unknown[]) => showToastGlobal(...a),
 }));
 
+// The continuity panel (phase 6) is a sibling with its OWN exhaustive read
+// of the same endpoint. Every test here pins how the READER's fetches
+// interleave, using `mockResolvedValueOnce` chains and call counts, so a
+// second component drawing from the same queue would rewrite what each
+// assertion is measuring. Its own behaviour is pinned in its own suite.
+vi.mock('./RenderContinuityPanel', () => ({
+  RenderContinuityPanel: () => null,
+}));
+
+// Chapter-break editing writes through the store; this suite is about
+// paging, and the real store would pull its whole dependency graph in.
+const saveNovelHints = vi.fn(async () => true);
+vi.mock('../../stores/storyStore', () => ({
+  useStoryStore: Object.assign(
+    (selector?: (s: Record<string, unknown>) => unknown) => {
+      const state = { sections: {}, saveNovelHints };
+      return selector ? selector(state) : state;
+    },
+    { getState: () => ({ sections: {}, saveNovelHints }) }
+  ),
+}));
+
 const { RenderReader } = await import('./RenderReader');
 
 // ---------------------------------------------------------------------------
