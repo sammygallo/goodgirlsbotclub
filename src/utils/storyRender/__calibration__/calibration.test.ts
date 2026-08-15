@@ -74,15 +74,31 @@ describe('calibration — the corpus is honest about itself', () => {
     }
   });
 
-  it('only fixtures built from a real render claim a rating', () => {
+  it('a rating records what produced it', () => {
     // The guard against the failure mode §6 names: a corpus that looks
-    // rated but is not. A hand-built fixture can pin the brief; it can say
-    // nothing about whether the prose reads well, because no prose was
-    // ever generated from it.
+    // rated but is not. A rating that cannot say which model wrote the
+    // prose, or when, is not a rating — it is a checkbox.
+    //
+    // This deliberately does NOT require the fixture's input to be real.
+    // An earlier version did, which conflated where the INPUT came from
+    // with whether prose was actually generated and read, and would have
+    // blocked rating the hand-built fixtures after their prose was
+    // genuinely rendered and criticised.
     for (const f of CALIBRATION_FIXTURES) {
       if (!f.ratedProse) continue;
-      expect(f.provenance.toLowerCase().startsWith('real'), `${f.name}`).toBe(true);
+      expect(f.ratedProse.model, `${f.name} rating has no model`).toMatch(/\S/);
+      expect(f.ratedProse.date, `${f.name} rating has no date`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     }
+  });
+
+  it('at least one fixture is built from a real transcript', () => {
+    // Hand-built fixtures can walk every branch and still describe a story
+    // nobody played. The corpus needs at least one input that came off a
+    // real render, or it is measuring the renderer against its own author's
+    // imagination.
+    expect(
+      CALIBRATION_FIXTURES.some((f) => f.provenance.toLowerCase().startsWith('real'))
+    ).toBe(true);
   });
 });
 

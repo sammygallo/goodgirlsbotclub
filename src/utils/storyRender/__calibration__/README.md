@@ -57,17 +57,36 @@ fixtures built from a real render may set `ratedProse`. A hand-built
 fixture is a perfectly good golden-brief test and is *not* evidence about
 prose quality, because no prose was ever generated from it.
 
-| Fixture | Path it walks | Provenance | Rated prose |
+**Input provenance and rating are separate questions**, and the fixture
+type keeps them separate. `provenance` says where the INPUT came from;
+`ratedProse` says whether prose was actually generated from it and read,
+and records the model and date that produced it. A hand-built input still
+produces real prose, and a real reading of that prose is real evidence
+about how the renderer behaves given that brief — it is simply not
+evidence about real-world transcripts. One test enforces that a rating
+names its model and date; another enforces that at least one fixture's
+input came off a real render.
+
+| Fixture | Path it walks | Input | Rated prose |
 |---|---|---|---|
 | `ivy-ledger` | The ordinary one: annotated beat, one participant, a fact tail under the cap | **Real** — the 2026-08-15 verification render | yes |
-| `cap-overflow` | A bible-wide fact tail far over the 24k cap, so the drop is recorded | Hand-built | no |
-| `first-scene-unannotated` | Opening scene: no preceding summary, no beat, no transformations | Hand-built | no |
+| `full-brief` | Every optional block at once: character voice profile, world rules, author voice, POV/tense/word-count/style anchors | Hand-built | yes |
+| `first-scene-unannotated` | Opening scene: no preceding summary, no beat, no transformations | Hand-built | yes |
+| `cap-overflow` | A bible-wide fact tail far over the 24k cap, so the drop is recorded | Hand-built | **no, deliberately** |
 
-The plan asks for 3–5 transcripts. There are three, and **only one has
-rated prose** — deliberately. Fabricating ratings for prose nobody
-generated would produce exactly the corpus-shaped object that §6 names as
-the risk. The honest way to grow this set is to rate real renders as they
-happen; see RATINGS.md for the format.
+`cap-overflow` is unrated on purpose. After the drop, its prompt differs
+from `ivy-ledger`'s by exactly one line — the fact list becomes "(none
+recorded)" — so prose from it would duplicate an existing rating rather
+than add one. Its job is the drop record, and the golden already pins
+that. A rating there would be coverage-shaped rather than useful, which is
+the failure §6 names.
+
+Rating the two hand-built fixtures was worth the key it spent: `full-brief`
+proved the optional blocks not only reach the model but are *used* (its
+verbal tic, dialogue example, world rule and appearance all surface in the
+prose), and it exposed a genuine conflict between `compression_level` and a
+scene's own `transformations` that nothing in the prompt ranks. Both are
+written up in RATINGS.md.
 
 `cap-overflow`'s own history is the argument for reading goldens: its
 first version used 400 facts, never reached the cap, and its golden said

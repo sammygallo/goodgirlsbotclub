@@ -22,9 +22,20 @@ export interface CalibrationFixture {
   description: string;
   /** Where the material came from. Real transcript, or hand-built. */
   provenance: string;
-  /** True only when prose was actually generated from this input, read, and
-   *  rated in RATINGS.md. Never set this for a hand-built fixture. */
-  ratedProse: boolean;
+  /**
+   * Set only when prose was actually generated from this input, read, and
+   * written up in RATINGS.md — recording WHAT produced it.
+   *
+   * Deliberately independent of `provenance`. An earlier version of this
+   * file required provenance to start with "Real" before a fixture could
+   * carry a rating, which conflated two different questions: where the
+   * INPUT came from, and whether prose was actually generated and read. A
+   * hand-built input still produces real prose, and a real reading of it
+   * is real evidence about how the renderer behaves given that brief — it
+   * is simply not evidence about real-world transcripts. Both facts are
+   * worth recording, so both are recorded, separately.
+   */
+  ratedProse: { model: string; date: string } | null;
   input: AssembleInput;
 }
 
@@ -73,7 +84,7 @@ const ivyLedger: CalibrationFixture = {
     'Mid-story scene with an annotated beat, two contradicting facts and one participant. The ordinary path.',
   provenance:
     'Real. Scene 2 of the 2026-08-15 verification render (project "Ivy smoke test"), copied from story_scenes/story_facts.',
-  ratedProse: true,
+  ratedProse: { model: 'claude-opus-4-7', date: '2026-08-15' },
   input: {
     scene: {
       id: '1f0c2d84-6a37-4b91-9e52-0d7c8a4b3e10',
@@ -172,7 +183,11 @@ const capOverflow: CalibrationFixture = {
   description:
     'A fact tail far larger than the cap, so the brief must drop in the stated order and record what it dropped.',
   provenance: 'Hand-built. Not evidence about prose quality.',
-  ratedProse: false,
+  // Deliberately unrated: after the drop its prompt differs from
+  // ivy-ledger's by ONE line (the fact list becomes "(none recorded)"), so
+  // prose from it would duplicate an existing rating rather than add one.
+  // Its job is the drop record, which the golden already pins.
+  ratedProse: null,
   input: {
     ...ivyLedger.input,
     // Same shape as fixture 1, with a bible-wide fact tail no cap can hold.
@@ -208,7 +223,7 @@ const firstSceneUnannotated: CalibrationFixture = {
   description:
     'Opening scene, no preceding summary, no beat or transformations — the unannotated path.',
   provenance: 'Hand-built from fixture 1 by clearing the annotation groups.',
-  ratedProse: false,
+  ratedProse: { model: 'claude-opus-4-7', date: '2026-08-15' },
   input: {
     ...ivyLedger.input,
     scene: {
@@ -245,7 +260,7 @@ const fullBrief: CalibrationFixture = {
     'Every optional block populated at once: character voice profile, world rules, author voice, and hints setting POV, tense, word count and style anchors.',
   provenance:
     'Hand-built. Exists because the review proved the other fixtures skipped every conditional block in prosePrompt.',
-  ratedProse: false,
+  ratedProse: { model: 'claude-opus-4-7', date: '2026-08-15' },
   input: {
     ...ivyLedger.input,
     characters: [
