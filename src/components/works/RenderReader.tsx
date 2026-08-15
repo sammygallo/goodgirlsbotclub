@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ChevronDown, ChevronRight, CircleAlert, RefreshCw } from 'lucide-react';
 import {
   storyApi,
@@ -107,6 +107,23 @@ export function RenderReader({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [failed, setFailed] = useState(false);
 
+  /**
+   * Which render/reload the currently displayed state belongs to.
+   *
+   * `loadMoreProse` is fired by a button, so it has no effect cleanup to
+   * cancel it — and its response is merged into a Map keyed by `scene_id`.
+   * Two renders OF THE SAME STORY carry the same scene ids, so a page that
+   * arrives after the user switched runs does not add rows that look wrong;
+   * it silently REPLACES the new run's prose with the old run's, and moves
+   * the cursor to a position in the wrong run's sequence. The guard has to
+   * be an identity check, not a mounted check.
+   *
+   * Stamped in the effect below rather than during render: that effect's
+   * deps ARE this identity, and a click handler cannot run before the effect
+   * that reset the state it would be paging.
+   */
+  const tokenRef = useRef('');
+
   const titleFor = useMemo(() => {
     const byId = new Map(
       scenes.map((row) => [row.id, (row.data as unknown as Scene)?.title ?? ''])
@@ -116,6 +133,8 @@ export function RenderReader({
 
   // --- unit summaries -------------------------------------------------
   useEffect(() => {
+    const token = `${projectId}\u0000${renderId}\u0000${reloadToken}`;
+    tokenRef.current = token;
     let cancelled = false;
     const run = async () => {
       setSummaries(null);
@@ -139,15 +158,37 @@ export function RenderReader({
         }
         if (cancelled) return;
         setSummaries(rows);
-
-        // The first prose page comes in with the summaries, in this same
-        // pass rather than a follow-up effect: a reader that opens on a list
-        // of titles and a Load-more button is a worse first impression than
-        // one that opens on the first chapter.
         if (rows.length === 0) {
           setProseHasMore(false);
           return;
         }
+      } catch (error) {
+        if (cancelled) return;
+        // Only a failure of the SUMMARIES is fatal: without them there is no
+        // chapter list to show at all, and "no chapters" and "we could not
+        // ask" look identical unless this says which.
+        setSummaries([]);
+        setFailed(true);
+        showToastGlobal(
+          error instanceof Error ? error.message : 'Could not read this render',
+          'error'
+        );
+        return;
+      }
+
+      // The first prose page comes in with the summaries, in this same pass
+      // rather than a follow-up effect: a reader that opens on a list of
+      // titles and a Load-more button is a worse first impression than one
+      // that opens on the first chapter.
+      //
+      // Its OWN try, deliberately. Sharing the summaries' one turned a
+      // transient failure on this second request into `setSummaries([])` —
+      // throwing away a chapter list that had just been read successfully
+      // and replacing the whole reader with a fatal error. Leaving the
+      // cursor null and `proseHasMore` true instead means the existing
+      // "Load more chapters" button re-issues this exact page, which is a
+      // real retry rather than a promised one.
+      try {
         const first = await storyApi.readRenderProse(projectId, renderId, {
           limit: PROSE_PAGE,
         });
@@ -158,13 +199,10 @@ export function RenderReader({
         setProseHasMore(after !== null);
       } catch (error) {
         if (cancelled) return;
-        // A failed read leaves an explicit retry rather than an empty list:
-        // "no chapters" and "we could not ask" look identical otherwise, and
-        // only one of them means the prose is gone.
-        setSummaries([]);
-        setFailed(true);
         showToastGlobal(
-          error instanceof Error ? error.message : 'Could not read this render',
+          error instanceof Error
+            ? `Could not read the chapters: ${error.message}`
+            : 'Could not read the chapters',
           'error'
         );
       }
@@ -178,6 +216,9 @@ export function RenderReader({
   // --- prose pages ----------------------------------------------------
   const loadMoreProse = useCallback(async () => {
     if (loadingProse || !proseHasMore) return;
+    // Captured BEFORE the await — see `tokenRef`. Everything below is
+    // dropped if the reader has moved to another run or been reloaded.
+    const token = tokenRef.current;
     setLoadingProse(true);
     try {
       const res = await storyApi.readRenderProse(projectId, renderId, {
@@ -186,6 +227,7 @@ export function RenderReader({
           ? { afterSequence: proseCursor.sequence, afterSceneId: proseCursor.sceneId }
           : {}),
       });
+      if (tokenRef.current !== token) return;
       setBodies((prev) => {
         const next = new Map(prev);
         for (const unit of res.items ?? []) next.set(unit.scene_id, unit);
@@ -195,11 +237,15 @@ export function RenderReader({
       setProseCursor(after);
       setProseHasMore(after !== null);
     } catch (error) {
+      if (tokenRef.current !== token) return;
       showToastGlobal(
         error instanceof Error ? error.message : 'Could not read the prose',
         'error'
       );
     } finally {
+      // Cleared unconditionally: the flag is per-component, not per-request,
+      // so leaving it set on a superseded page would stick the button on
+      // "Loading…" for the run the user actually switched to.
       setLoadingProse(false);
     }
   }, [projectId, renderId, proseCursor, proseHasMore, loadingProse]);

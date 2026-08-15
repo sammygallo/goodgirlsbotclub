@@ -329,6 +329,18 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => {
       return false;
     }
 
+    /**
+     * The lifecycle state this run was in before we touched it.
+     *
+     * Read here, before the flip to `running` below, because a one-scene
+     * re-render has to RESTORE it. Re-rendering one chapter of a `paused`
+     * run does not finish the run — the scenes it never rendered are still
+     * unrendered — and writing `complete` at the end stranded them: `resume`
+     * then refuses the run ("already finished") and the tab stops drawing
+     * Continue, so the only way forward is a fresh run over the same range.
+     */
+    const priorStatus = render.status;
+
     // What is already banked. ONLY `complete` counts as done:
     //
     //  - a missing unit was never rendered;
@@ -475,10 +487,29 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => {
       return false;
     }
 
+    /**
+     * How many of the run's scenes are already banked.
+     *
+     * `range.length - toRender.size` is right for a resume, where `toRender`
+     * IS the complement of what is banked — but wrong for a re-render, where
+     * `toRender` is always exactly one scene no matter how much of the run
+     * exists. That arithmetic reported a 40-scene run with 3 chapters as
+     * 39 of 40 done.
+     *
+     * Counted over `range` rather than as `done.size` so a unit whose scene
+     * has dropped out of the run's span does not inflate the tally, and
+     * excluding the target matches the `targetPrior` bookkeeping above,
+     * which already backs that scene's old verdict out of the seeds.
+     */
+    const bankedDone =
+      mode.kind === 'rerender'
+        ? range.filter((r) => done.has(r.id) && r.id !== mode.sceneId).length
+        : range.length - toRender.size;
+
     set({
       render,
       progress: {
-        done: range.length - toRender.size,
+        done: bankedDone,
         total: range.length,
         truncated,
         errored,
@@ -491,7 +522,12 @@ export const useStoryRenderStore = create<StoryRenderState>((set, get) => {
       fullRange: range,
       toRender,
       seed: { truncated, errored },
+      completedSeed: bankedDone,
       scope: mode.kind === 'rerender' ? 'scene' : 'run',
+      // Captured BEFORE the flip to `running` just above. A one-scene
+      // re-render must put the run back the way it found it — see
+      // `restoreStatus` on `driveRender`.
+      restoreStatus: priorStatus,
       input,
       abort,
       stillOurs,
@@ -706,11 +742,28 @@ async function driveRender(opts: {
   fullRange: StorySceneOut[];
   toRender: Set<string>;
   seed: { truncated: number; errored: number };
-  /** What the closing toast is ABOUT. A one-scene re-render inside a
-   *  forty-scene run finishes the same way a whole run does — same status
-   *  flip, same lock release — but telling the user it "rendered 40
-   *  scenes" when it rendered one and re-billed one is a lie about spend. */
+  /** Scenes already banked before this pass. Seeded rather than derived
+   *  from `toRender`, whose size means different things in the two modes. */
+  completedSeed?: number;
+  /** What the closing toast is ABOUT, and whether the run is being FINISHED
+   *  or merely amended. A one-scene re-render inside a forty-scene run runs
+   *  through the same code — same status write, same lock release — but it
+   *  neither finished the run nor rendered forty scenes, and saying either
+   *  is a lie about what the user got for their money. */
   scope?: 'run' | 'scene';
+  /**
+   * The status a `scene`-scoped pass must put the run BACK to.
+   *
+   * A whole-run pass ends the run, so it writes `complete` (or `paused` /
+   * `error` on the way out). A one-scene re-render ends nothing: the run was
+   * `complete` and is still complete, or it was `paused` with thirty scenes
+   * outstanding and still is. Writing `complete` there marked a barely
+   * started run finished and made it permanently uncontinuable — `resume`
+   * refuses a `complete` run precisely so continuing one cannot re-bill
+   * every scene, so the user's only way forward was a new, fully re-billed
+   * run.
+   */
+  restoreStatus?: StoryRenderStatus;
   input: RenderSources;
   abort: AbortController;
   stillOurs: () => boolean;
@@ -745,7 +798,17 @@ async function driveRender(opts: {
   //
   // Counting instead of indexing also makes the final value land exactly
   // on `total`, which indexing cannot guarantee when the tail is banked.
-  let completed = fullRange.length - toRender.size;
+  let completed = opts.completedSeed ?? fullRange.length - toRender.size;
+
+  /**
+   * The status this pass writes when it is done.
+   *
+   * `complete` only when the pass genuinely finished the RUN. A scene-scoped
+   * re-render restores whatever the run was before it started — see
+   * `restoreStatus`.
+   */
+  const terminalStatus: StoryRenderStatus =
+    opts.scope === 'scene' && opts.restoreStatus ? opts.restoreStatus : 'complete';
 
   // Novel-shaped, and it is the run's own record of how it was
   // configured. A screenplay run's snapshot is screenplay-shaped, which
@@ -917,20 +980,41 @@ async function driveRender(opts: {
           signal: abort.signal,
         });
         prose = out.prose;
-        status = unitStatusFor(out.terminal);
-        if (status === 'truncated') truncated++;
-        consecutiveFailures = 0;
-        continuity = {
-          verdicts: [],
-          // Not yet checked. Distinct from "checked and clean", which is
-          // `unreadable: false` with an empty verdict list.
-          unreadable: true,
-          terminal: out.terminal,
-          finish_reason: out.finishReason,
-          drops: brief.drops,
-          caveats: brief.caveats,
-          rules_not_active: brief.rulesNotActive,
-        };
+        if (!prose) {
+          // A 200 that carried a terminal signal and NO TEXT is a failed
+          // generation, not a finished chapter — a content filter, a refusal
+          // the provider blanked, an empty completion. `renderSceneProse`
+          // does not throw on it (it returns `text.trim()`), so without this
+          // it reached the unit write as `complete`/`truncated` with empty
+          // prose, and `putRenderUnit` is a full replace: a re-render then
+          // overwrote a finished chapter with nothing, under a success
+          // toast. Classified here, before the status is used, so it flows
+          // into the same failure handling as a thrown call — including the
+          // guard that makes a re-render write nothing at all.
+          status = 'error';
+          errored++;
+          consecutiveFailures++;
+          continuity = {
+            error: `the model returned no text (${out.finishReason ?? 'no reason given'})`,
+            terminal: out.terminal,
+            finish_reason: out.finishReason,
+          };
+        } else {
+          status = unitStatusFor(out.terminal);
+          if (status === 'truncated') truncated++;
+          consecutiveFailures = 0;
+          continuity = {
+            verdicts: [],
+            // Not yet checked. Distinct from "checked and clean", which is
+            // `unreadable: false` with an empty verdict list.
+            unreadable: true,
+            terminal: out.terminal,
+            finish_reason: out.finishReason,
+            drops: brief.drops,
+            caveats: brief.caveats,
+            rules_not_active: brief.rulesNotActive,
+          };
+        }
       } catch (error) {
         if ((error as Error)?.name === 'AbortError') throw error;
         errored++;
@@ -1052,14 +1136,28 @@ async function driveRender(opts: {
     // the old code, reported a fully successful render as a failure and
     // left the project lock held until it expired.
     clearInterval(heartbeat);
-    const done = await setStatusWithRetry(projectId, render.id, 'complete', renderTs);
+    const done = await setStatusWithRetry(
+      projectId,
+      render.id,
+      terminalStatus,
+      renderTs
+    );
     renderTs = done.server_ts;
     await releaseLockQuietly(projectId, render.id, renderTs);
 
     const total = fullRange.length;
     finish({
       render: done,
-      progress: { done: total, total, truncated, errored },
+      // A whole-run pass lands exactly on `total` by definition. A
+      // scene-scoped one must NOT claim that: it amended a run that may
+      // still be mostly unrendered, and reporting 40 of 40 for a run with
+      // three chapters is the same lie the status write used to tell.
+      progress: {
+        done: opts.scope === 'scene' ? completed : total,
+        total,
+        truncated,
+        errored,
+      },
     });
     if (opts.scope === 'scene') {
       // Compared against the SEED, not against zero: the seeds carry the
@@ -1097,22 +1195,42 @@ async function driveRender(opts: {
           ? error.message
           : 'The render failed';
     clearInterval(heartbeat);
+    // Hoisted so the row we just wrote reaches state below. Without it the
+    // store held `render: null` after a Stop, and the progress card — which
+    // decides whether to render at all from that row — vanished, taking the
+    // only "Continue render" affordance with it. The run was resumable on
+    // the server the whole time; nothing in the UI could reach it.
+    let parkedRow: StoryRenderOut | null = null;
     try {
       // Paused, not aborted: the run keeps its finished units and can be
       // resumed. `aborted` is reserved for a user discarding the run.
+      //
+      // A scene-scoped pass restores instead: a re-render that failed or was
+      // stopped did not pause the RUN, and relabelling a finished book
+      // "Stopped — can be continued" is as wrong in this direction as
+      // marking a barely-started one complete was in the other.
       const row = await setStatusWithRetry(
         projectId,
         render.id,
-        aborted ? 'paused' : 'error',
+        opts.scope === 'scene' && opts.restoreStatus
+          ? opts.restoreStatus
+          : aborted
+            ? 'paused'
+            : 'error',
         renderTs
       );
       renderTs = row.server_ts;
+      parkedRow = row;
       if (!locked) await releaseLockQuietly(projectId, render.id, renderTs);
     } catch {
       // Nothing further to try; the in-memory error below is what the
       // user sees.
     }
     finish({
+      // No extra read: `setStatusWithRetry` already returned this row and
+      // `renderTs` is adopted from it, so this neither races the heartbeat
+      // nor moves the token — the two hazards `writeUnit`'s comment names.
+      ...(parkedRow ? { render: parkedRow } : {}),
       error: aborted ? null : message,
       lockedBy: locked ? (error as RenderLockedError) : null,
     });
