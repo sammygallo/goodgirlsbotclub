@@ -29,6 +29,39 @@ const COMPRESSION_GUIDANCE: Record<string, string> = {
   loose: 'Stay close to the source. Expand where the chat was terse.',
 };
 
+/**
+ * How a scene's own annotation modulates the user's setting.
+ *
+ * The two used to enter `Direction:` as unranked sibling bullets — the
+ * user's `compression_level`, and the annotate pass's reading of this
+ * scene as `compress` / `preserve` / `expand` at an absolute percentage.
+ * Nothing said which governed, so the model chose, and it chose the
+ * scene: a calibration render on 2026-08-15 produced 322 words under
+ * "Compress hard" against 275 under "Balanced". A user who asks for less
+ * prose and gets more has been overruled by a machine annotation without
+ * being told.
+ *
+ * So the setting governs and the annotation adjusts WITHIN it. The
+ * absolute ratio is deliberately not sent: it is a per-scene number with
+ * no knowledge of the density the user chose for the book, and quoting
+ * "90% of its length" next to "compress hard" is the contradiction in a
+ * different sentence. What survives is the part only the annotate pass
+ * knows — whether this scene resists trimming RELATIVE to its neighbours.
+ *
+ * **Every adjustment is phrased as an ORDERING, never as room.** The first
+ * version of this said `preserve` meant "give it room at the density
+ * above", and a verification render came back at 455 words — worse than
+ * the 322 the original defect produced. "Give it room" is an expansion
+ * licence, and with the numeric anchor gone there was nothing left
+ * pulling the other way. An adjustment may say what to cut FIRST or LAST;
+ * it may never say to write more.
+ */
+const SCENE_COMPRESSION_ADJUSTMENT: Record<string, string> = {
+  compress: 'Of the scenes in this story, cut this one first — it carries less than its neighbours.',
+  preserve: 'Of the scenes in this story, cut this one last — it carries more than its neighbours.',
+  expand: 'The source is thin here, so keep what there is rather than trimming it further.',
+};
+
 export const PROSE_SYSTEM = `You turn one scene of a roleplay chat into finished novel prose.
 
 You are given a story bible's record of the scene — not the raw chat — plus how the people in it speak and how the author writes. Write the scene as it would appear in a novel.
@@ -83,16 +116,27 @@ export function prosePrompt(brief: RenderBrief): string {
     );
   }
   if (hints.tense) direction.push(`Tense: ${hints.tense}.`);
-  direction.push(
-    COMPRESSION_GUIDANCE[hints.compressionLevel] ?? COMPRESSION_GUIDANCE.balanced
-  );
+  // ONE bullet, not two. The user's setting is the governing instruction
+  // and the scene's own reading is folded into the same sentence as an
+  // adjustment within it — see `SCENE_COMPRESSION_ADJUSTMENT`.
+  const compression = [
+    `How much to compress — this governs: ${
+      COMPRESSION_GUIDANCE[hints.compressionLevel] ?? COMPRESSION_GUIDANCE.balanced
+    }`,
+  ];
   if (scene.transformations) {
-    const t = scene.transformations;
-    direction.push(
-      `This scene was read as "${t.compression_recommendation}" at roughly ${Math.round(
-        t.compression_ratio_target * 100
-      )}% of its length.${t.pacing_notes ? ` ${t.pacing_notes}` : ''}`
-    );
+    const adjustment =
+      SCENE_COMPRESSION_ADJUSTMENT[scene.transformations.compression_recommendation];
+    if (adjustment) compression.push(adjustment);
+  }
+  direction.push(compression.join(' '));
+
+  // Pacing notes are kept, and kept SEPARATE. They say how the scene should
+  // move — where to hold a beat, what to let land — which is orthogonal to
+  // how much of it to keep, and folding them into the compression sentence
+  // is what let a pacing note read as a length instruction.
+  if (scene.transformations?.pacing_notes) {
+    direction.push(`Pacing: ${scene.transformations.pacing_notes}`);
   }
   if (scene.function) {
     direction.push(
