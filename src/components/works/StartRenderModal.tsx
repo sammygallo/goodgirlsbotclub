@@ -40,8 +40,20 @@ export function StartRenderModal({
   onClose: () => void;
   busy: boolean;
 }) {
-  const { profiles, activeProfileId } = useConnectionProfileStore();
-  const [profileId, setProfileId] = useState<string | null>(activeProfileId);
+  const { profiles } = useConnectionProfileStore();
+  // Defaults to the CURRENT connection, not `activeProfileId`.
+  //
+  // That field records the last profile *applied* from Settings, and
+  // nothing clears it when the user afterwards changes provider or model
+  // in AI Settings. Seeding the picker from it therefore ran the pass on
+  // a connection the user was not looking at — silently, on their key.
+  //
+  // Caught on 2026-08-14 driving the local app: AI Settings read Claude,
+  // the picker had pre-selected a stale `scripted-smoke-1` stand-in
+  // profile, and every run defaulted back to it. Both failure directions
+  // are bad — paying a provider you did not choose, or a scripted profile
+  // returning fake output that looks like a successful paid run.
+  const [profileId, setProfileId] = useState<string | null>(null);
   const settingsActiveModel = useSettingsStore((s) => s.activeModel);
 
   const selectedModel = profileId

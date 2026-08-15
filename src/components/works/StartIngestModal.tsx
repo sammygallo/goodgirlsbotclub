@@ -54,8 +54,12 @@ export function StartIngestModal({
   busy: boolean;
 }) {
   const copy = COPY[mode];
-  const { profiles, activeProfileId } = useConnectionProfileStore();
-  const [profileId, setProfileId] = useState<string | null>(activeProfileId);
+  const { profiles } = useConnectionProfileStore();
+  // Current connection by default — see the same note in
+  // `StartRenderModal`. `activeProfileId` is the last profile APPLIED and
+  // goes stale the moment AI Settings is edited, so seeding from it spends
+  // the user's key on a connection they are not looking at.
+  const [profileId, setProfileId] = useState<string | null>(null);
   const settingsActiveModel = useSettingsStore((s) => s.activeModel);
 
   // The model this build will actually run on: the chosen profile's, or
