@@ -18,6 +18,7 @@ import {
   type RenderEstimate,
 } from '../../utils/storyRender/estimate';
 import { booksForChat, gatherIngestInputs, replayEntriesFrom } from './ingestSources';
+import { IngestProgressCard } from './IngestProgressCard';
 import { RenderHintsEditor } from './RenderHintsEditor';
 import { RenderProgressCard } from './RenderProgressCard';
 import { RenderReader } from './RenderReader';
@@ -74,7 +75,6 @@ export function RenderTab({
 }) {
   const manifest = useStoryStore((s) => s.manifest);
   const sections = useStoryStore((s) => s.sections);
-  const loadSection = useStoryStore((s) => s.loadSection);
   const loadAllScenesFull = useStoryStore((s) => s.loadAllScenesFull);
   const loadAllFactsById = useStoryStore((s) => s.loadAllFactsById);
   const load = useStoryStore((s) => s.load);
@@ -86,6 +86,7 @@ export function RenderTab({
 
   const renderRunning = useStoryRenderStore((s) => s.isRunning);
   const renderState = useStoryRenderStore((s) => s.render);
+  const lockedBy = useStoryRenderStore((s) => s.lockedBy);
   const startRender = useStoryRenderStore((s) => s.start);
   const resumeRender = useStoryRenderStore((s) => s.resume);
   const rerenderScene = useStoryRenderStore((s) => s.rerenderScene);
@@ -139,18 +140,18 @@ export function RenderTab({
     // from Story to Render arrives with an empty manifest — which this tab
     // would render as "nothing to write out yet" on a fully built bible.
     //
-    // The checkpoint matters for the same reason: §3.6's cross-gate is
+    // `load` brings `narrative` and `rendering_hints` with it as of step 3
+    // phase 5, and it has to: both are load-bearing here (one supplies the
+    // POV/tense defaults, the other IS the hints editor's stored state), and
+    // fetching them alongside `load` rather than inside it was a race whose
+    // loser was always the lazy fetch — see the note on `load`'s own list.
+    //
+    // The checkpoint matters for a different reason: §3.6's cross-gate is
     // evaluated against it, and an absent checkpoint reads as "no build
     // running" whether or not one is.
     void load(project.id);
     void loadCheckpoint(project.id);
-    // Neither section below is in `load()`'s fetch list, and both are
-    // load-bearing here: `narrative` supplies the POV/tense defaults the
-    // hints editor shows and the assembler falls through to, and
-    // `rendering_hints` IS the editor's stored state.
-    void loadSection('narrative');
-    void loadSection('rendering_hints');
-  }, [load, loadCheckpoint, loadSection, project.id]);
+  }, [load, loadCheckpoint, project.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -451,9 +452,10 @@ export function RenderTab({
         llm: makeLlmCall({ provider, model, customUrl, characterName }),
         model,
       });
-      // The pass rewrites scene rows and may add the `narrative` section.
+      // The pass rewrites scene rows and may add the `narrative` section;
+      // `load` re-reads the manifest first, so a section this run created is
+      // in `present` by the time its fetch list is filtered.
       await load(project.id);
-      await loadSection('narrative');
       setReloadToken((n) => n + 1);
     } catch (error) {
       showToastGlobal(
@@ -509,6 +511,19 @@ export function RenderTab({
   const parked =
     liveRender?.status === 'paused' || liveRender?.status === 'error';
 
+  /**
+   * WHICH run a takeover would take over.
+   *
+   * `lockedBy.holderRenderId` first, and the fallback is second for a
+   * reason: the lock is per PROJECT and across formats, so the holder can be
+   * a different run than the one the request was about — the API client says
+   * so where the error is defined. Taking over `liveRender` instead meant
+   * "Take over" pointed at whatever the user happened to be READING, which
+   * is not necessarily the run holding the lock, and the request would 423
+   * again against the real holder.
+   */
+  const takeoverRenderId = lockedBy?.holderRenderId ?? liveRender?.id ?? null;
+
   return (
     <div className="space-y-6">
       {buildBlocks && (
@@ -560,6 +575,13 @@ export function RenderTab({
           )}
         </section>
       )}
+
+      {/* The annotate pass's own progress, Stop and token subtotal. Mounted
+          HERE because this tab is now the only place that starts one — the
+          section above unmounts the moment `ingestRunning` goes true, so
+          without this the run it just started would report nothing and could
+          not be stopped. The card self-hides when idle. */}
+      <IngestProgressCard />
 
       <RenderHintsEditor
         // Re-seed the form's drafts when the stored row advances, rather than
@@ -645,13 +667,22 @@ export function RenderTab({
 
       <RenderProgressCard
         canManage={canManage}
+        parked={parked}
+        status={liveRender?.status ?? null}
         onResume={
           parked && liveRender
             ? () => void continueRender(liveRender.id, false)
             : undefined
         }
         onTakeOver={
-          liveRender ? () => void continueRender(liveRender.id, true) : undefined
+          takeoverRenderId
+            ? () => {
+                // Follow the run that was actually taken over, so the reader
+                // is not left showing a different one's chapters.
+                setSelectedRenderId(takeoverRenderId);
+                void continueRender(takeoverRenderId, true);
+              }
+            : undefined
         }
       />
 

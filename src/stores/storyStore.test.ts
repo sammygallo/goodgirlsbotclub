@@ -177,6 +177,46 @@ describe('load', () => {
     expect(useStoryStore.getState().manifest).toBeNull();
   });
 
+  it('fetches the render path\u2019s two sections, so nothing has to race it', async () => {
+    // `load` ends with a whole-map REPLACE of `sections`, and needs three
+    // sequential round trips to get there. A `loadSection` needs one. So a
+    // lazily-fetched `rendering_hints` reliably landed FIRST and was then
+    // deleted for the rest of the visit \u2014 the Render tab read `hints: null`
+    // and rendered a paid book ignoring the user's saved POV and style, its
+    // editor showed defaults as if they were stored, and saving one field
+    // wrote every other one at its default over the real values.
+    manifest.mockResolvedValue({
+      ...emptyManifest,
+      sections: [
+        { section: 'meta', server_ts: 1, bytes: 10, updated_at: 'x' },
+        { section: 'narrative', server_ts: 1, bytes: 10, updated_at: 'x' },
+        { section: 'rendering_hints', server_ts: 1, bytes: 10, updated_at: 'x' },
+      ],
+    });
+    getSection.mockResolvedValue(metaSection(1));
+
+    await useStoryStore.getState().load('p1');
+
+    const asked = getSection.mock.calls.map((c) => c[1]);
+    expect(asked).toContain('narrative');
+    expect(asked).toContain('rendering_hints');
+    expect(useStoryStore.getState().sections.rendering_hints).toBeTruthy();
+  });
+
+  it('still asks for nothing the manifest does not list', async () => {
+    // The two additions above are filtered by `present` like every other
+    // entry, so a bible without them costs no extra request.
+    manifest.mockResolvedValue({
+      ...emptyManifest,
+      sections: [{ section: 'meta', server_ts: 1, bytes: 10, updated_at: 'x' }],
+    });
+    getSection.mockResolvedValue(metaSection(1));
+
+    await useStoryStore.getState().load('p1');
+
+    expect(getSection).toHaveBeenCalledTimes(1);
+  });
+
   it('clear() releases the loading flag an aborted load would strand', async () => {
     let release: (v: unknown) => void = () => {};
     manifest.mockImplementationOnce(() => new Promise((r) => { release = r; }));

@@ -1393,10 +1393,12 @@ export const useStoryIngestStore = create<StoryIngestState>((set, get) => ({
         lock: null,
       });
 
-      // The Story tab holds `narrative` only when something asked for it —
-      // `load`'s `wanted` list does not include it (nor `rendering_hints`).
-      // Lazy import for the same reason every other reach into storyStore
-      // is lazy: neither store may statically edge to the other.
+      // Refresh `narrative` in place: this pass can CREATE that section, and
+      // the tab is not going to re-run `load` on its own. (`load`'s `wanted`
+      // list does now include it, as of step 3 phase 5, but that only helps
+      // the next full load — this is the one that makes the beat map update
+      // without one.) Lazy import for the same reason every other reach into
+      // storyStore is lazy: neither store may statically edge to the other.
       try {
         const mod = await import('./storyStore');
         if (mod.useStoryStore.getState().projectId === projectId) {

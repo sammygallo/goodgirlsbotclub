@@ -758,6 +758,24 @@ export const useStoryStore = create<StoryState>((set, get) => {
         // Phase 10's voice meter reads this, and appendSamplePassage
         // read-spread-PUTs it — both need it in state, not a lazy GET.
         'user_voice',
+        // Step 3 phase 5. These two used to be lazy `loadSection` calls, and
+        // that was a RACE, not merely a late fetch: this function ends with a
+        // whole-map REPLACE of `sections`, and it needs three sequential
+        // round trips to get there while a `loadSection` needs one. So a
+        // lazy fetch reliably landed FIRST and was then deleted, for the
+        // whole visit, since nothing re-fetches.
+        //
+        // Silent and expensive where it mattered: the Render tab read
+        // `hints: null` and rendered a paid book ignoring the user's saved
+        // POV, tense and style anchors; its editor re-seeded from empty and
+        // showed the defaults as if they were stored; and saving one field
+        // then wrote every other field at its default over the real ones.
+        // `LockCanonFooter` had the same latent race.
+        //
+        // Both are filtered by `present` below like every other entry, so a
+        // bible without them still costs no request.
+        'narrative',
+        'rendering_hints',
       ];
       const loaded: Partial<Record<StorySectionName, StorySectionOut>> = {};
       await Promise.all(

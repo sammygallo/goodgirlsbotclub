@@ -140,9 +140,20 @@ vi.mock('../../stores/storyStore', () => ({
 }));
 
 let ingestState: Record<string, unknown>;
-vi.mock('../../stores/storyIngestStore', () => ({
-  useStoryIngestStore: selectorStore(() => ingestState),
-}));
+vi.mock('../../stores/storyIngestStore', async () => {
+  // INGEST_PASSES / PASS_LABELS are the REAL ones: `IngestProgressCard` is
+  // mounted unmocked here (the annotate run this tab starts is reported
+  // through it), and stubbing the pass vocabulary would stub away the
+  // annotate branch that exists for exactly this pass.
+  const actual = await vi.importActual<
+    typeof import('../../stores/storyIngestStore')
+  >('../../stores/storyIngestStore');
+  return {
+    INGEST_PASSES: actual.INGEST_PASSES,
+    PASS_LABELS: actual.PASS_LABELS,
+    useStoryIngestStore: selectorStore(() => ingestState),
+  };
+});
 
 let renderState: Record<string, unknown>;
 vi.mock('../../stores/storyRenderStore', async () => {
@@ -237,9 +248,9 @@ function sceneRow(id: string, sequence: number, annotated = true) {
 const SCENES = [sceneRow('s1', 0), sceneRow('s2', 1)];
 
 const storeActions = {
-  load: vi.fn(async () => {}),
-  loadSection: vi.fn(async () => {}),
-  loadAllScenesFull: vi.fn(async () => SCENES),
+  load: vi.fn<(id: string) => Promise<void>>(async () => {}),
+  loadSection: vi.fn<(name: string) => Promise<void>>(async () => {}),
+  loadAllScenesFull: vi.fn<() => Promise<typeof SCENES>>(async () => SCENES),
   loadAllFactsById: vi.fn(async () => new Map()),
 };
 
@@ -254,7 +265,7 @@ const renderActions = {
 };
 
 const runAnnotate = vi.fn<ActionCall>(async () => true);
-const loadCheckpoint = vi.fn(async () => {});
+const loadCheckpoint = vi.fn<(id: string) => Promise<void>>(async () => {});
 
 function setup(
   opts: {
@@ -264,7 +275,7 @@ function setup(
     scenes?: ReturnType<typeof sceneRow>[];
     sceneCount?: number;
     renderRunning?: boolean;
-    lockedBy?: { takeable: boolean } | null;
+    lockedBy?: { takeable: boolean; holderRenderId?: string | null } | null;
     renders?: Record<string, unknown>[];
     renderRow?: Record<string, unknown> | null;
   } = {}
@@ -306,6 +317,14 @@ function setup(
             chunk_plan: [],
           },
     isRunning: false,
+    // The shape `IngestProgressCard` reads. `completed` is never undefined
+    // in the real store, so a mock that omits it tests a state that cannot
+    // happen — and crashes on one that can.
+    completed: [],
+    currentPass: null,
+    annotateProgress: null,
+    error: null,
+    cancel: vi.fn(),
     runAnnotate,
     loadCheckpoint,
   };
@@ -519,6 +538,74 @@ describe('a lock held elsewhere', () => {
       renderId: 'r1',
       takeover: true,
     });
+  });
+});
+
+describe('review regressions', () => {
+  const PAUSED_RUN = {
+    id: 'r1',
+    status: 'paused',
+    stale_bible: false,
+    unit_count: 3,
+    complete_unit_count: 3,
+    model: 'm',
+    created_at: '2026-08-14T10:00:00Z',
+    server_ts: 3,
+  };
+
+  it('offers Continue for a run parked on a PREVIOUS visit', async () => {
+    // The progress card used to decide whether to render at all from the
+    // render store's own row, which holds a run only if THIS tab touched it —
+    // `start` never seeds it and `clear()` nulls it on unmount. So a run
+    // parked before a reload drew no card, and the only "Continue render"
+    // affordance in the app went with it, on a run the server was perfectly
+    // willing to resume.
+    setup({ renders: [PAUSED_RUN], renderRow: null });
+    await mount();
+
+    const cont = await screen.findByRole('button', { name: /continue render/i });
+    await userEvent.click(cont);
+
+    await waitFor(() => expect(renderActions.resume).toHaveBeenCalled());
+    expect(renderActions.resume.mock.calls[0][0]).toMatchObject({
+      renderId: 'r1',
+      takeover: false,
+    });
+  });
+
+  it('takes over the run that HOLDS the lock, not the one being read', async () => {
+    // The lock is per project and across formats, so the holder can be a
+    // different run than the one the request was about — the API client says
+    // so where the error is defined. Taking over whatever the user happened
+    // to be reading would 423 again against the real holder.
+    setup({
+      lockedBy: { takeable: true, holderRenderId: 'r-other' },
+      renders: [PAUSED_RUN],
+      renderRow: null,
+    });
+    await mount();
+    await userEvent.click(screen.getByRole('button', { name: /take over/i }));
+
+    await waitFor(() => expect(renderActions.resume).toHaveBeenCalled());
+    expect(renderActions.resume.mock.calls[0][0]).toMatchObject({
+      renderId: 'r-other',
+      takeover: true,
+    });
+  });
+
+  it('reports the annotate run it starts, with a way to stop it', async () => {
+    // Annotate moved here from the Story tab, but `IngestProgressCard` — which
+    // carries this pass's scene counter, token subtotal and Stop — was left
+    // mounted only there. The annotate section itself unmounts the moment the
+    // run starts, so the run reported nothing and could not be stopped.
+    setup({ checkpointStatus: 'running', currentPass: 'annotate' });
+    ingestState.isRunning = true;
+    ingestState.currentPass = 'annotate';
+    ingestState.annotateProgress = { done: 2, total: 5 };
+    await mount();
+
+    expect(screen.getByText(/annotating scenes/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^stop$/i })).toBeTruthy();
   });
 });
 
