@@ -529,6 +529,10 @@ export function RenderTab({
       );
 
       if (!result.ok) {
+        if (result.emptyRun) {
+          showToastGlobal('That render has no chapters to export yet.', 'warning');
+          return;
+        }
         setExportRefusal({ renderId: summary.id, blockers: result.blockers });
         return;
       }

@@ -100,14 +100,51 @@ describe('exportBlockers', () => {
     expect(exportBlockers(RANGE, units, TITLES).map((b) => b.sequence)).toEqual([0, 2]);
   });
 
-  it('ignores units outside the run’s own range', () => {
-    // A run owns the scenes it was created with. A scene added to the bible
+  it('ignores a COMPLETE unit outside the run’s own range', () => {
+    // A run owns the scenes it was created with; a scene added to the bible
     // afterwards is not a hole in this book.
+    //
+    // This test used to pass an `error` unit here and assert it was
+    // ignored — which pinned the defect the phase-6 review found: an
+    // out-of-range unit is still SERIALIZED, so ignoring its status let a
+    // failed chapter into the file. Range membership decides whether a
+    // chapter can be MISSING; it never decides whether a chapter's status
+    // matters. See 'blocks a bad unit whose scene has left the range'.
     const units = [
       ...COMPLETE.map((u) => ({ sceneId: u.sceneId, status: u.status })),
-      { sceneId: 's99', status: 'error' as const },
+      { sceneId: 's99', status: 'complete' as const },
     ];
     expect(exportBlockers(RANGE, units, TITLES)).toEqual([]);
+  });
+
+  it('blocks a bad unit whose scene has left the range', () => {
+    // The HIGH the adversarial review found. A scene deleted mid-run —
+    // `mergeSceneIntoPrevious` does it in one click — takes its unit out
+    // of the range while §3.8 keeps the unit row alive. Its prose still
+    // exports, so its status still has to gate, or a chapter cut
+    // mid-sentence ships inside a file that reads as finished. Worst
+    // variant: the scene is gone, so no re-render can fix it.
+    const range = [
+      { id: 's1', sequence: 0 },
+      { id: 's3', sequence: 1 },
+    ];
+    const units = [
+      { sceneId: 's1', status: 'complete' as const },
+      { sceneId: 's2', status: 'truncated' as const },
+      { sceneId: 's3', status: 'complete' as const },
+    ];
+    const blockers = exportBlockers(range, units, TITLES);
+    expect(blockers.map((b) => [b.sceneId, b.reason])).toEqual([['s2', 'truncated']]);
+  });
+
+  it('a COMPLETE unit outside the range is not a blocker', () => {
+    // That is precisely the orphaned chapter Decision 2 says to export.
+    const range = [{ id: 's1', sequence: 0 }];
+    const units = [
+      { sceneId: 's1', status: 'complete' as const },
+      { sceneId: 's2', status: 'complete' as const },
+    ];
+    expect(exportBlockers(range, units, TITLES)).toEqual([]);
   });
 
   it('falls back to a positional label when the scene has no title', () => {
@@ -203,13 +240,15 @@ describe('renderMarkdown — chapters', () => {
   });
 
   it('falls back to a positional label when nothing names the chapter', () => {
+    // Position in the RUN, so a one-chapter run is "Chapter 1" whatever
+    // the scene's bible-wide sequence happens to be.
     const md = renderMarkdown({
       title: 'Ivy',
       units: [unit({ sceneId: 's2', sequence: 1 })],
       sceneTitles: new Map(),
       hints: null,
     });
-    expect(md).toContain('## Chapter 2');
+    expect(md).toContain('## Chapter 1');
   });
 
   it('sorts by sequence regardless of input order', () => {
@@ -278,8 +317,13 @@ describe('renderMarkdown — the notice', () => {
       hints: null,
     });
     expect(md.startsWith('<!--')).toBe(true);
-    expect(md).toContain('The sealed north wing');
     expect(md).toContain('Prose for s1.');
+    // Assert the name is INSIDE the notice. Checking the whole document
+    // would pass on the chapter heading alone, whether or not the notice
+    // named anything — the mutation an earlier version of this test missed.
+    const notice = md.slice(0, md.indexOf('-->'));
+    expect(notice).toContain('The sealed north wing');
+    expect(notice).not.toContain('The ledger says otherwise');
   });
 
   it('names orphaned chapters separately and says they cannot be re-rendered', () => {
@@ -298,6 +342,75 @@ describe('renderMarkdown — the notice', () => {
     // Orphaned implies stale server-side; it must not be reported twice.
     const notice = md.slice(0, md.indexOf('-->'));
     expect(notice.match(/The sealed north wing/g)).toHaveLength(1);
+  });
+
+  it('says the completeness check was skipped, on its own', () => {
+    // Everything fresh, so the notice exists ONLY because of this flag.
+    const md = renderMarkdown({
+      title: 'Ivy',
+      units: COMPLETE,
+      sceneTitles: TITLES,
+      hints: null,
+      completenessUnverified: true,
+    });
+    expect(md.startsWith('<!--')).toBe(true);
+    expect(md).toMatch(/could not/i);
+  });
+
+  it('a scene title cannot close the comment block', () => {
+    // Titles are free text — a 200-char input in the scene editor, or
+    // whatever the ingest model wrote. A `-->` in one would end the notice
+    // early and spill it, and every chapter after it, into the document.
+    const md = renderMarkdown({
+      title: 'Ivy',
+      units: [unit({ sceneId: 's1', sequence: 0, isStale: true })],
+      sceneTitles: new Map([['s1', 'Look --> here']]),
+      hints: null,
+    });
+    // The FIRST terminator must be the one this module wrote, at the END
+    // of the notice. If the title smuggles one in, the comment closes
+    // early and everything after it — the rest of the notice, then the
+    // whole book — spills into the visible document.
+    //
+    // Asserting "the notice contains no '-->'" is NOT enough: unescaped,
+    // the slice simply ends earlier and that assertion still holds. The
+    // property that actually distinguishes them is that the notice is
+    // still WHOLE, so the pin is its closing sentence.
+    const firstEnd = md.indexOf('-->');
+    const notice = md.slice(0, firstEnd);
+    expect(notice).toContain('Re-render them');
+    expect(notice).toContain('Look');
+    // ...and nothing from the notice leaked into the body.
+    expect(md.slice(firstEnd + 3)).not.toContain('Re-render them');
+  });
+
+  it('a newline in a title cannot forge a heading', () => {
+    const md = renderMarkdown({
+      title: 'Ivy',
+      units: [unit({ sceneId: 's1', sequence: 0 })],
+      sceneTitles: new Map([['s1', 'One\n# Forged']]),
+      hints: null,
+    });
+    expect(md.match(/^# /gm)).toHaveLength(1);
+    expect(md).toContain('## One # Forged');
+  });
+
+  it('numbers chapters by position in the run, not bible sequence', () => {
+    // A run over scenes 10-12 must call its first chapter 1. The refusal
+    // dialog counts from the run's range, and two names for one chapter is
+    // worse than either name alone.
+    const md = renderMarkdown({
+      title: 'Ivy',
+      units: [
+        unit({ sceneId: 'a', sequence: 10 }),
+        unit({ sceneId: 'b', sequence: 11 }),
+      ],
+      sceneTitles: new Map(),
+      hints: null,
+    });
+    expect(md).toContain('## Chapter 1');
+    expect(md).toContain('## Chapter 2');
+    expect(md).not.toContain('Chapter 11');
   });
 
   it('keeps the notice out of the prose body', () => {

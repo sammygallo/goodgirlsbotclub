@@ -96,11 +96,13 @@ export function exportBlockers(
 ): ExportBlocker[] {
   const byScene = new Map(units.map((u) => [u.sceneId, u.status]));
   const out: ExportBlocker[] = [];
+  const seen = new Set<string>();
 
-  // Indexed off the RANGE, not off the units, so a scene with no unit row
-  // is caught. Iterating the units would report only the chapters that
-  // exist and silently accept a run that stopped a third of the way in.
+  // Pass 1, indexed off the RANGE so a scene with no unit row is caught.
+  // Iterating only the units would report the chapters that exist and
+  // silently accept a run that stopped a third of the way in.
   sceneRange.forEach((scene, i) => {
+    seen.add(scene.id);
     const status = byScene.get(scene.id);
     const reason: BlockerReason | null =
       status === undefined
@@ -114,6 +116,29 @@ export function exportBlockers(
       sequence: i,
       title: chapterLabel(i, sceneTitles.get(scene.id)),
       reason,
+    });
+  });
+
+  // Pass 2 — the units the range does NOT cover.
+  //
+  // A unit whose scene has left the bible still has its prose exported
+  // (Decision 2 keeps orphaned chapters), so its STATUS still has to gate.
+  // Without this, deleting a scene mid-run — which `mergeSceneIntoPrevious`
+  // does in one click, and which §3.8 deliberately leaves the unit row
+  // behind for — takes that unit out of the range and lets a truncated or
+  // errored chapter into the file. That is the artifact Decision 1 exists
+  // to prevent, and the worst variant of it: the scene is gone, so no
+  // re-render can fix it.
+  //
+  // A `complete` unit out here is fine. That is exactly the orphaned
+  // chapter Decision 2 says to export.
+  units.forEach((u, i) => {
+    if (seen.has(u.sceneId) || u.status === 'complete') return;
+    out.push({
+      sceneId: u.sceneId,
+      sequence: sceneRange.length + i,
+      title: chapterLabel(sceneRange.length + i, sceneTitles.get(u.sceneId)),
+      reason: u.status,
     });
   });
 
@@ -151,19 +176,29 @@ export function renderMarkdown(input: MarkdownInput): string {
   );
   if (units.length === 0) return '';
 
+  // Position WITHIN THIS RUN, not `unit.sequence`.
+  //
+  // `sequence` is the scene's bible-wide index, so a run over scenes 10-20
+  // would number its first chapter 11 while the refusal dialog — which
+  // counts from the run's own range — calls the same chapter 1. Two names
+  // for one chapter is worse than either name alone, and the reader
+  // already labels rows by position.
+  const positions = new Map(units.map((u, i) => [u.sceneId, i]));
+
   const parts: string[] = [];
 
   const notice = staleNotice(
     units,
     input.sceneTitles,
+    positions,
     input.completenessUnverified === true
   );
   if (notice) parts.push(notice);
 
-  parts.push(`# ${input.title.trim() || 'Untitled'}`);
+  parts.push(`# ${escapeInline(input.title.trim()) || 'Untitled'}`);
 
   for (const chapter of groupChapters(units, input.hints)) {
-    const title = chapterTitle(chapter, input.sceneTitles, input.hints);
+    const title = chapterTitle(chapter, input.sceneTitles, input.hints, positions);
     parts.push(`## ${title}`);
     // One blank line between scenes inside a chapter. The prose is the
     // model's own paragraphing and is emitted verbatim — reflowing it
@@ -213,22 +248,44 @@ function groupChapters(
 function chapterTitle(
   chapter: ExportUnit[],
   sceneTitles: Map<string, string>,
-  hints: RenderingHintsSection['novel'] | null
+  hints: RenderingHintsSection['novel'] | null,
+  positions: Map<string, number>
 ): string {
   const first = chapter[0];
   const explicit = (hints?.chapter_titles ?? []).find(
     (t) => t && typeof t === 'object' && t.scene_id === first.sceneId
   );
   const named = typeof explicit?.title === 'string' ? explicit.title.trim() : '';
-  if (named) return named;
-  return chapterLabel(first.sequence, sceneTitles.get(first.sceneId));
+  const raw =
+    named || chapterLabel(positions.get(first.sceneId) ?? 0, sceneTitles.get(first.sceneId));
+  return escapeInline(raw);
 }
 
 /** Shared by the serializer and the blocker list so a chapter is named the
- *  same way in the refusal as it is in the file. */
-function chapterLabel(sequence: number, sceneTitle: string | undefined): string {
+ *  same way in the refusal as it is in the file. Both callers pass a
+ *  position within the RUN — see the `positions` note in `renderMarkdown`. */
+function chapterLabel(position: number, sceneTitle: string | undefined): string {
   const title = (sceneTitle ?? '').trim();
-  return title || `Chapter ${sequence + 1}`;
+  return title || `Chapter ${position + 1}`;
+}
+
+/**
+ * Flatten free text that is about to be interpolated into a heading.
+ *
+ * Scene titles and chapter titles are user- and model-authored: the scene
+ * editor is a plain 200-char input and the walk stores whatever the model
+ * wrote. A newline in one would end the `## ` heading and let the rest of
+ * the title become body text — or, starting with `#`, a second heading.
+ */
+function escapeInline(text: string): string {
+  return text.replace(/\s*\n+\s*/g, ' ').trim();
+}
+
+/** Neutralise an HTML-comment terminator in text going INSIDE the notice
+ *  block. `--` is enough to break it in strict parsers, so both forms are
+ *  softened rather than only the exact `-->`. */
+function escapeComment(text: string): string {
+  return escapeInline(text).replace(/--+>?/g, (m) => m.replace(/-/g, '‑'));
 }
 
 /**
@@ -241,6 +298,7 @@ function chapterLabel(sequence: number, sceneTitle: string | undefined): string 
 function staleNotice(
   units: ExportUnit[],
   sceneTitles: Map<string, string>,
+  positions: Map<string, number>,
   completenessUnverified: boolean
 ): string | null {
   const stale = units.filter((u) => u.isStale && !u.isOrphaned);
@@ -249,7 +307,14 @@ function staleNotice(
     return null;
   }
 
-  const name = (u: ExportUnit) => chapterLabel(u.sequence, sceneTitles.get(u.sceneId));
+  // `escapeComment` because a scene title is free text and this block is
+  // the one place a title is interpolated INSIDE an HTML comment: a title
+  // containing `-->` would close the comment early and spill the rest of
+  // the notice — and every chapter after it — into the visible document.
+  const name = (u: ExportUnit) =>
+    escapeComment(
+      chapterLabel(positions.get(u.sceneId) ?? 0, sceneTitles.get(u.sceneId))
+    );
   const lines = ['<!--', 'Exported from Good Girls Bot Club.', ''];
 
   if (stale.length > 0) {

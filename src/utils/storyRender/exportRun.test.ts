@@ -203,6 +203,57 @@ describe('collectRunForExport', () => {
     expect(res.ok).toBe(false);
   });
 
+  it('blocks a truncated chapter whose scene was deleted mid-run', async () => {
+    // End to end for the review's HIGH: s2 merged away, so it leaves the
+    // range but keeps its unit row and its prose. Before the union pass
+    // this exported a chapter cut mid-sentence inside a finished-looking
+    // file, with no way to re-render it.
+    const scenesAfterMerge = [SCENES[0], SCENES[2]];
+    listRenderUnits.mockResolvedValue(
+      onePage([
+        summary('s1', 0),
+        summary('s2', 1, { status: 'truncated', is_orphaned: true, is_stale: true }),
+        summary('s3', 2),
+      ])
+    );
+
+    const res = await collectRunForExport(RUN, scenesAfterMerge, null, 'Ivy');
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.blockers.map((b) => [b.sceneId, b.reason])).toEqual([['s2', 'truncated']]);
+  });
+
+  it('refuses a run holding no chapters instead of downloading an empty file', async () => {
+    listRenderUnits.mockResolvedValue(onePage([]));
+    readRenderProse.mockResolvedValue(onePage([]));
+
+    const res = await collectRunForExport(RUN, [], null, 'Ivy');
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.emptyRun).toBe(true);
+  });
+
+  it('re-checks status on the rows that actually ship', async () => {
+    // The gate read summaries at t0; these bodies are t1. A unit that went
+    // bad in between must not slip through on the strength of a stale
+    // summary — the file is built from the bodies, so the bodies gate.
+    listRenderUnits.mockResolvedValue(
+      onePage([summary('s1', 0), summary('s2', 1), summary('s3', 2)])
+    );
+    readRenderProse.mockResolvedValue(
+      onePage([
+        body('s1', 0),
+        { ...body('s2', 1), status: 'error' },
+        body('s3', 2),
+      ])
+    );
+
+    const res = await collectRunForExport(RUN, SCENES, null, 'Ivy');
+    expect(res.ok).toBe(false);
+  });
+
   it('treats a body with no summary as stale rather than fresh', async () => {
     // Same direction as `unitNotes`: false-stale is cheap, false-fresh is not.
     listRenderUnits.mockResolvedValue(

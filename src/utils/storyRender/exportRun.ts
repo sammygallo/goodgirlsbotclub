@@ -40,7 +40,11 @@ const MAX_EXPORT_PAGES = 200;
 
 export type ExportResult =
   | { ok: true; markdown: string; filename: string }
-  | { ok: false; blockers: ExportBlocker[] };
+  /** `emptyRun` is the refusal with nothing to list: the run holds no
+   *  chapters at all, so there is no per-chapter fix to offer. Without it
+   *  a zero-unit run passes an empty blocker list and downloads a 0-byte
+   *  file that reads as a successful export. */
+  | { ok: false; blockers: ExportBlocker[]; emptyRun?: boolean };
 
 interface RunRef {
   projectId: string;
@@ -86,6 +90,25 @@ export async function collectRunForExport(
   if (blockers.length > 0) return { ok: false, blockers };
 
   const bodies = await pageProse(run.projectId, run.renderId);
+
+  // Nothing to write. Reachable by aborting a run before its first unit is
+  // banked — `createRender` writes the run row first — and the serializer's
+  // own contract is to return '' for no units, which would otherwise be
+  // wrapped in a Blob and downloaded as an empty book.
+  if (bodies.length === 0) return { ok: false, blockers: [], emptyRun: true };
+
+  // The gate ran against summaries read at t0; these bodies were read at
+  // t1. A re-render finishing in between would be invisible to the gate,
+  // so the statuses that actually ship are re-checked here against the
+  // rows that actually ship. Cheap, and it closes the window without a
+  // third round trip.
+  const lateBlockers = exportBlockers(
+    bodies.map((b) => ({ id: b.scene_id, sequence: b.sequence })),
+    bodies.map((b) => ({ sceneId: b.scene_id, status: b.status })),
+    sceneTitles
+  );
+  if (lateBlockers.length > 0) return { ok: false, blockers: lateBlockers };
+
   const flags = new Map(summaries.map((u) => [u.scene_id, u]));
 
   const units: ExportUnit[] = bodies.map((b) => {
