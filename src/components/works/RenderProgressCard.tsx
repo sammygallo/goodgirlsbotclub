@@ -22,10 +22,30 @@ import { Button } from '../ui';
  *    retry loop from ping-ponging the lock between two live devices.
  */
 export function RenderProgressCard({
+  parked,
+  status,
   onTakeOver,
   onResume,
   canManage,
 }: {
+  /**
+   * Whether the run the tab is showing is stopped or failed — i.e. whether
+   * there is something to continue.
+   *
+   * Passed IN rather than derived from the store's own `render` row, and
+   * that is load-bearing. The store holds a row only for a run THIS tab
+   * touched: `start` never seeds it, `clear()` nulls it on unmount, and a
+   * run parked on a previous visit is simply not there. Deriving the gate
+   * from it meant this card returned null for exactly the state it exists
+   * to serve — the run was resumable on the server the whole time and
+   * nothing in the UI could reach it. The tab resolves the run from the
+   * server list when the store has nothing, so it is the one that knows.
+   */
+  parked: boolean;
+  /** The shown run's own status, from wherever the tab resolved it. Same
+   *  reason as `parked`: the store's row is absent for a run this tab has
+   *  not touched, so the heading read "Render failed" for a stopped one. */
+  status?: string | null;
   /** Retry the same action carrying `takeover: true`. Absent when there is
    *  nothing sensible to take over into. */
   onTakeOver?: () => void;
@@ -36,7 +56,6 @@ export function RenderProgressCard({
   const { isRunning, progress, render, currentSceneId, error, lockedBy, cancel } =
     useStoryRenderStore();
 
-  const parked = render?.status === 'paused' || render?.status === 'error';
   if (!isRunning && !error && !lockedBy && !parked) return null;
 
   const done = progress?.done ?? 0;
@@ -51,7 +70,7 @@ export function RenderProgressCard({
             ? 'Writing the story'
             : lockedBy
               ? 'Rendering elsewhere'
-              : render?.status === 'paused'
+              : status === 'paused'
                 ? 'Render stopped'
                 : 'Render failed'}
         </h3>

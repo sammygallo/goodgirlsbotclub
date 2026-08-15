@@ -953,3 +953,175 @@ describe('rerenderScene', () => {
     expect(acquireRenderLock).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regressions caught by the phase-5 adversarial review
+//
+// Every one of these shipped in the first cut of the Render tab and was found
+// by review before merge. They are grouped together because they share a
+// cause: `driveRender` was written for whole-run passes and then handed a
+// one-scene pass without being told the difference.
+// ---------------------------------------------------------------------------
+
+describe('review regressions', () => {
+  const rerenderInput = (over: Record<string, unknown> = {}) =>
+    ({
+      projectId: 'p1',
+      renderId: 'r1',
+      sceneId: 's1',
+      scenes: [sceneRow('s1', 0), sceneRow('s2', 1)],
+      factRows: [],
+      characters: [],
+      worldRules: [],
+      userVoice: null,
+      hints: null,
+      narrative: null,
+      messages: [],
+      wiEntries: [],
+      llm: vi.fn(async () => ({ text: 'Prose.', terminal: 'stop', finishReason: 'stop' })),
+      ...over,
+    }) as Parameters<
+      ReturnType<typeof useStoryRenderStore.getState>['rerenderScene']
+    >[0];
+
+  const banked = (items: Record<string, unknown>[]) => {
+    listRenderUnits.mockResolvedValue({
+      items,
+      next_after_sequence: null,
+      next_after_scene_id: null,
+      has_more: false,
+    });
+  };
+
+  const lastStatus = () => setRenderStatus.mock.calls.at(-1)![2].status;
+
+  it('a re-render RESTORES the run’s status instead of marking it complete', async () => {
+    // The worst of the batch. `rerenderScene` accepts any status by design,
+    // so re-rendering one chapter of a PAUSED run wrote `complete` over it —
+    // and `resume` refuses a complete run (continuing one would re-bill every
+    // scene), so the remaining scenes became unreachable. The user's only way
+    // forward was a brand-new run over the same range.
+    getRender.mockResolvedValue({ ...RENDER, status: 'paused', server_ts: 30 });
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+
+    await useStoryRenderStore.getState().rerenderScene(rerenderInput());
+
+    expect(lastStatus()).toBe('paused');
+  });
+
+  it('a re-render of a COMPLETE run leaves it complete', async () => {
+    getRender.mockResolvedValue({ ...RENDER, status: 'complete', server_ts: 30 });
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+
+    await useStoryRenderStore.getState().rerenderScene(rerenderInput());
+
+    expect(lastStatus()).toBe('complete');
+  });
+
+  it('a FAILED re-render does not relabel a finished book “stopped”', async () => {
+    // The catch path had the same scope-blindness as the success path: it
+    // wrote `paused`/`error` unconditionally, so a transient failure while
+    // re-rendering one chapter told the user their finished novel had
+    // stopped partway.
+    getRender.mockResolvedValue({ ...RENDER, status: 'complete', server_ts: 30 });
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+    // The prose lands, the WRITE fails — the one way a scene-scoped pass
+    // reaches driveRender's catch without the user aborting.
+    putRenderUnit.mockRejectedValueOnce(new Error('network'));
+
+    await useStoryRenderStore.getState().rerenderScene(rerenderInput());
+
+    expect(lastStatus()).toBe('complete');
+  });
+
+  it('a whole run still completes', async () => {
+    // The restore must not leak into the normal path: `start` has no prior
+    // status to go back to and must always finish the run.
+    const ok = await useStoryRenderStore.getState().start(runInput());
+    expect(ok).toBe(true);
+    expect(lastStatus()).toBe('complete');
+  });
+
+  it('EMPTY prose with a terminal signal is a failure, not a finished chapter', async () => {
+    // `renderSceneProse` returns `text.trim()` and never throws on an empty
+    // completion — a content filter, a blanked refusal, a 200 with no text.
+    // That reached the unit write as `complete` with empty prose, and
+    // `putRenderUnit` is a full replace: the re-render overwrote a finished
+    // chapter with nothing, under a SUCCESS toast.
+    getRender.mockResolvedValue({ ...RENDER, status: 'complete', server_ts: 30 });
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+
+    await useStoryRenderStore.getState().rerenderScene(
+      rerenderInput({
+        llm: vi.fn(async () => ({
+          text: '   ',
+          terminal: 'stop',
+          finishReason: 'content_filter',
+        })),
+      })
+    );
+
+    expect(putRenderUnit).not.toHaveBeenCalled();
+    expect(useStoryRenderStore.getState().progress).toMatchObject({ errored: 1 });
+  });
+
+  it('empty prose on a FRESH run banks an error unit, not an empty complete one', async () => {
+    // Same classification, opposite handling: there is nothing to protect on
+    // a first pass, so the failure is recorded — but never as `complete`,
+    // which would export as a finished chapter containing nothing.
+    const llm = vi.fn(async () => ({ text: '', terminal: 'stop', finishReason: 'stop' }));
+    await useStoryRenderStore.getState().start(runInput({ llm }));
+
+    for (const call of putRenderUnit.mock.calls) {
+      expect(call[3].status).toBe('error');
+    }
+  });
+
+  it('reports progress against what is BANKED, not against the re-render set', async () => {
+    // `fullRange.length - toRender.size` is right for a resume, where
+    // `toRender` is the complement of what is banked. For a re-render it is
+    // always one scene, so a two-scene run with ONE chapter reported 1 of 2
+    // done before it started and 2 of 2 after — regardless of the fact that
+    // scene 2 has never been rendered.
+    getRender.mockResolvedValue({ ...RENDER, status: 'paused', server_ts: 30 });
+    banked([{ scene_id: 's1', sequence: 0, status: 'complete' }]);
+
+    await useStoryRenderStore.getState().rerenderScene(rerenderInput());
+
+    // s1 is the one being redone and s2 was never rendered, so exactly one
+    // chapter exists when this finishes.
+    expect(useStoryRenderStore.getState().progress).toMatchObject({
+      done: 1,
+      total: 2,
+    });
+  });
+
+  it('leaves the parked run in state so the UI can offer to continue it', async () => {
+    // The catch block fetched the parked row, used it for its token, and
+    // threw it away. The progress card decides whether to render at all from
+    // that row, so after a Stop it saw null and drew nothing — taking the
+    // only "Continue render" affordance with it, on a run the server was
+    // perfectly willing to resume.
+    setRenderStatus.mockImplementation(async (_p, _r, body) => ({
+      ...RENDER,
+      status: body.status,
+      server_ts: 40,
+    }));
+    const llm = vi.fn(async () => {
+      throw new Error('provider exploded');
+    });
+
+    // Three scenes so the run trips MAX_CONSECUTIVE_SCENE_FAILURES and
+    // genuinely parks, rather than recording three failures and reporting
+    // itself finished.
+    await useStoryRenderStore.getState().start(
+      runInput({
+        llm,
+        scenes: [sceneRow('s1', 0), sceneRow('s2', 1), sceneRow('s3', 2)],
+        sceneIdEnd: 's3',
+      })
+    );
+
+    expect(useStoryRenderStore.getState().render).toMatchObject({ status: 'error' });
+  });
+});
