@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, Eye, EyeOff, Globe, Key, LayoutGrid, Loader2, Plug, Server, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, Clapperboard, Eye, EyeOff, Film, Globe, Image as ImageIcon, Key, LayoutGrid, Loader2, Plug, Server, Trash2 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useConnectionProfileStore } from '../../stores/connectionProfileStore';
@@ -11,6 +11,8 @@ import { useAuthStore } from '../../stores/authStore';
 import { hasMinRole } from '../../utils/permissions';
 import { Button, Input } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
+import { ImageGenSettingsFields } from './ImageGenSettingsFields';
+import { ImageGenProviderNotice } from './ImageGenProviderNotice';
 
 type TestState =
   | { kind: 'idle' }
@@ -751,60 +753,93 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
           </div>
         </section>
 
-        {/* Live Portrait (Replicate) */}
-        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
-          <div className="flex items-center gap-2 mb-1">
-            <Key size={16} className="text-[var(--color-text-secondary)]" />
-            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Live Portrait</h2>
+        {/* Media Generation — image + video providers/keys, kept together so
+            it's clear these are separate from the chat model. */}
+        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card space-y-5">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Clapperboard size={16} className="text-[var(--color-text-secondary)]" />
+              <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Media Generation</h2>
+            </div>
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Providers and keys for generating images and video. These are separate from your chat
+              model — most chat models (Claude, Gemini, and the like) can’t generate images.
+            </p>
           </div>
-          <p className="text-xs text-[var(--color-text-secondary)] mb-3">
-            Replicate API key for generating per-emotion character animation clips via{' '}
-            <span className="font-mono">wan-video/wan-2.2-i2v-fast</span>.
-            Videos are generated from the character's portrait — no driving videos needed.
-          </p>
-          <ProviderApiKeyInput
-            providerName="Replicate"
-            secretKey="api_key_replicate"
-            configured={hasApiKey('api_key_replicate')}
-            isSaving={isSaving}
-            onSave={async (key) => {
-              try {
-                await settingsApi.writeSecret('api_key_replicate', key, 'Replicate');
-                await fetchSecrets();
-              } catch (e) {
-                showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
-              }
-            }}
-            onDelete={() => deleteApiKey('api_key_replicate')}
-          />
-        </section>
 
-        {/* Scene Video (self-hosted RunPod) */}
-        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
-          <div className="flex items-center gap-2 mb-1">
-            <Key size={16} className="text-[var(--color-text-secondary)]" />
-            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Scene Video</h2>
+          {/* Image Generation — portraits, avatars, in-chat images */}
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <ImageIcon size={14} className="text-[var(--color-text-secondary)]" />
+              <h3 className="text-xs font-semibold text-[var(--color-text-primary)]">Image Generation</h3>
+            </div>
+            <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+              Portraits, avatars, and in-chat images. The free backends need no setup; DALL·E reuses
+              your OpenAI key.
+            </p>
+            <ImageGenProviderNotice className="mb-3" />
+            <ImageGenSettingsFields />
           </div>
-          <p className="text-xs text-[var(--color-text-secondary)] mb-3">
-            RunPod API key for the self-hosted scene-video renderer (motion-menu
-            scenes). Only used when the instance has a scene endpoint configured;
-            without it, Generate Scene falls back to Replicate.
-          </p>
-          <ProviderApiKeyInput
-            providerName="RunPod"
-            secretKey="api_key_runpod"
-            configured={hasApiKey('api_key_runpod')}
-            isSaving={isSaving}
-            onSave={async (key) => {
-              try {
-                await settingsApi.writeSecret('api_key_runpod', key, 'RunPod');
-                await fetchSecrets();
-              } catch (e) {
-                showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
-              }
-            }}
-            onDelete={() => deleteApiKey('api_key_runpod')}
-          />
+
+          <div className="border-t border-[var(--color-border)]" />
+
+          {/* Live Portrait (Replicate) */}
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Film size={14} className="text-[var(--color-text-secondary)]" />
+              <h3 className="text-xs font-semibold text-[var(--color-text-primary)]">Live Portrait</h3>
+            </div>
+            <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+              Replicate API key for generating per-emotion character animation clips via{' '}
+              <span className="font-mono">wan-video/wan-2.2-i2v-fast</span>.
+              Videos are generated from the character's portrait — no driving videos needed.
+            </p>
+            <ProviderApiKeyInput
+              providerName="Replicate"
+              secretKey="api_key_replicate"
+              configured={hasApiKey('api_key_replicate')}
+              isSaving={isSaving}
+              onSave={async (key) => {
+                try {
+                  await settingsApi.writeSecret('api_key_replicate', key, 'Replicate');
+                  await fetchSecrets();
+                } catch (e) {
+                  showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
+                }
+              }}
+              onDelete={() => deleteApiKey('api_key_replicate')}
+            />
+          </div>
+
+          <div className="border-t border-[var(--color-border)]" />
+
+          {/* Scene Video (self-hosted RunPod) */}
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Clapperboard size={14} className="text-[var(--color-text-secondary)]" />
+              <h3 className="text-xs font-semibold text-[var(--color-text-primary)]">Scene Video</h3>
+            </div>
+            <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+              RunPod API key for the self-hosted scene-video renderer (motion-menu
+              scenes). Only used when the instance has a scene endpoint configured;
+              without it, Generate Scene falls back to Replicate.
+            </p>
+            <ProviderApiKeyInput
+              providerName="RunPod"
+              secretKey="api_key_runpod"
+              configured={hasApiKey('api_key_runpod')}
+              isSaving={isSaving}
+              onSave={async (key) => {
+                try {
+                  await settingsApi.writeSecret('api_key_runpod', key, 'RunPod');
+                  await fetchSecrets();
+                } catch (e) {
+                  showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
+                }
+              }}
+              onDelete={() => deleteApiKey('api_key_runpod')}
+            />
+          </div>
         </section>
 
         {/* Global API Keys — Owner only */}

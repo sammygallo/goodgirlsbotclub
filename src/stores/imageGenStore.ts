@@ -137,8 +137,22 @@ interface ImageGenState extends ImageGenConfig {
   gallery: GalleryEntry[];
 
   setConfig: (patch: Partial<ImageGenConfig>) => void;
-  /** Generate an image and return its data URI, or null on failure. */
-  generate: (prompt: string, negativePrompt?: string) => Promise<string | null>;
+  /**
+   * Generate an image and return its data URI, or null on failure.
+   *
+   * When `opts.freeFallback` is set and the *selected* backend is a free one
+   * (Pollinations / AI Horde), a failure of the primary silently retries once
+   * with the other free backend before surfacing an error — the flagship
+   * Pollinations anonymous endpoint is flaky, so this keeps zero-setup flows
+   * (e.g. the character-creator avatar step) from dead-ending. Deliberately
+   * scoped to free backends: if the user picked DALL-E or a local SD server we
+   * surface that backend's real error instead of silently swapping engines.
+   */
+  generate: (
+    prompt: string,
+    negativePrompt?: string,
+    opts?: { freeFallback?: boolean },
+  ) => Promise<string | null>;
   clearError: () => void;
   addToGallery: (entry: GalleryEntry) => void;
   removeFromGallery: (id: string) => void;
@@ -182,16 +196,19 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
     });
   },
 
-  generate: async (prompt, negativePrompt) => {
+  generate: async (prompt, negativePrompt, opts) => {
     const {
       backend, sdUrl, sdAuth, pollinationsModel, hordeModel, hordeApiKey,
       dalleModel, dalleQuality, width, height, steps, cfgScale,
     } = get();
     set({ isGenerating: true, error: null });
-    try {
-      let result;
-      if (backend === 'sdwebui') {
-        result = await imageGenApi.generateSdWebui({
+
+    // Dispatch a single generation on a specific backend using the current
+    // config. Extracted so the free-fallback path can re-run against the
+    // sibling free backend without duplicating the per-backend option maps.
+    const runBackend = (b: ImageGenBackend) => {
+      if (b === 'sdwebui') {
+        return imageGenApi.generateSdWebui({
           url: sdUrl,
           auth: sdAuth || undefined,
           prompt,
@@ -201,8 +218,9 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
           steps,
           cfgScale,
         });
-      } else if (backend === 'horde') {
-        result = await imageGenApi.generateHorde({
+      }
+      if (b === 'horde') {
+        return imageGenApi.generateHorde({
           prompt,
           negativePrompt: negativePrompt || undefined,
           model: hordeModel,
@@ -212,32 +230,50 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
           cfgScale,
           apiKey: hordeApiKey || undefined,
         });
-      } else if (backend === 'dalle') {
+      }
+      if (b === 'dalle') {
         const size = nearestDalleSize(width, height, dalleModel);
-        result = await imageGenApi.generateDalle({
+        return imageGenApi.generateDalle({
           prompt,
           model: dalleModel,
           size,
           quality: dalleQuality,
         });
-      } else {
-        result = await imageGenApi.generatePollinations({
-          prompt,
-          negativePrompt: negativePrompt || undefined,
-          model: pollinationsModel,
-          width,
-          height,
-        });
+      }
+      return imageGenApi.generatePollinations({
+        prompt,
+        negativePrompt: negativePrompt || undefined,
+        model: pollinationsModel,
+        width,
+        height,
+      });
+    };
+
+    // The other free backend to fall back to, or null when the selected
+    // backend isn't a free one (DALL-E / SD errors surface as-is).
+    const freeFallbackFor = (b: ImageGenBackend): ImageGenBackend | null =>
+      b === 'pollinations' ? 'horde' : b === 'horde' ? 'pollinations' : null;
+
+    try {
+      let usedBackend = backend;
+      let result;
+      try {
+        result = await runBackend(backend);
+      } catch (primaryErr) {
+        const fallback = opts?.freeFallback ? freeFallbackFor(backend) : null;
+        if (!fallback) throw primaryErr;
+        result = await runBackend(fallback);
+        usedBackend = fallback;
       }
 
       const dataUrl = `data:image/${result.format};base64,${result.base64}`;
 
-      // Auto-save to gallery
+      // Auto-save to gallery — record the backend that actually produced it.
       const entry: GalleryEntry = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         dataUrl,
         prompt,
-        backend,
+        backend: usedBackend,
         timestamp: Date.now(),
       };
       get().addToGallery(entry);
