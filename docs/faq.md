@@ -86,6 +86,42 @@ admin-only sections hidden.
 
 ---
 
+## How does image generation work? Which backends can I use?
+
+Image generation is **separate from your chat model** — chat models like
+Claude, Gemini, and most others are text-only and can't make images. It runs
+on its own engine, which you pick under **Settings → AI Settings → Media
+Generation → Image Generation**.
+
+Four backends are available:
+
+- **Pollinations** *(free, no setup — the default)* — zero-config. The keyless
+  tier uses a basic model; add a **free** token from auth.pollinations.ai (the
+  Pollinations token field) to unlock **Flux** and the other higher-quality
+  models — then pick Flux in the Model dropdown — plus higher rate limits and
+  no watermarks. The same token also powers the Pollinations chat provider, so
+  you only enter it once.
+- **AI Horde** *(free, no account)* — crowdsourced volunteer GPUs. Slower than
+  Pollinations when anonymous; register a free key at aihorde.net for priority.
+  Wide range of community models.
+- **OpenAI DALL·E** — reuses your stored OpenAI key, so there's no separate key
+  to add. If OpenAI is your chat provider, the panel offers a one-tap "use my
+  main provider" shortcut.
+- **SD WebUI** *(your own AUTOMATIC1111 server)* — point at a Stable Diffusion
+  WebUI endpoint. It must be **publicly reachable** — a `localhost` server
+  won't work, because generation runs through the cloud backend, not your
+  browser.
+
+**Where images appear:** the image button in the chat input bar, the "generate
+a portrait" step in the character creator, and the Image Gallery (Settings →
+Image Gallery), which keeps everything you generate.
+
+Only OpenAI can double as an image provider (via DALL·E). For any other chat
+provider you'll see a note that it's text-only — that's expected; just pick a
+dedicated image backend below it.
+
+---
+
 ## How do I import a character card?
 
 Sidebar → **Import** button at the bottom. Accepts PNG character cards
