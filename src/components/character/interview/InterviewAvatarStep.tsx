@@ -110,7 +110,8 @@ export function InterviewAvatarStep() {
 
   const handleCropConfirm = (file: File) => {
     setGeneratedSrc(null);
-    setAvatarFile(file);
+    // In-app generated portrait → 'generated' (clears the selfie gate).
+    setAvatarFile(file, 'generated');
     proceedToReview();
   };
 
@@ -133,7 +134,8 @@ export function InterviewAvatarStep() {
             <ImageUpload
               onImageSelect={(file) => {
                 if (file) {
-                  setAvatarFile(file);
+                  // User-uploaded image → 'uploaded' (blocked by the selfie gate).
+                  setAvatarFile(file, 'uploaded');
                   proceedToReview();
                 }
               }}

@@ -243,6 +243,12 @@ export function CharacterEdit({
         // rebuilt `extensions` from scratch, clearing both.
         fav: character.fav,
         extensions: character.data?.extensions,
+        // Re-stamp provenance ONLY when the avatar was actually replaced (an
+        // upload here). This DOWNGRADES a previously-cleared avatar to blocked —
+        // swapping a generated avatar for an uploaded photo must not keep the
+        // selfie gate open. A text-only edit leaves avatarFile null, so the
+        // backend preserves the existing provenance. See utils/avatarProvenance.
+        avatarProvenance: avatarFile ? 'uploaded' : undefined,
       },
       avatarFile || undefined
     );

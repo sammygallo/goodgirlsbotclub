@@ -33,6 +33,7 @@ import { runInterviewTurn, runFinalDraft } from '../utils/characterInterview/eng
 import { INTERVIEW_OPENING_PROMPT, CONTROL_MESSAGES, INTERVIEW_EXCHANGE_CAP } from '../utils/characterInterview/prompts';
 import { makeLlmCall } from '../utils/storyIngest/llmBridge';
 import { api, type CharacterDraft } from '../api/client';
+import type { AvatarSource } from '../utils/avatarProvenance';
 
 export type InterviewPhase = 'intro' | 'chat' | 'synthesizing' | 'avatar' | 'review' | 'saving';
 
@@ -57,6 +58,11 @@ interface CharacterInterviewStore {
   /** Last turn/synthesis error, if any — retryable via retryTurn(). */
   error: string | null;
   avatarFile: File | null;
+  /** How `avatarFile` was produced — 'generated' (in-app portrait) or
+   *  'uploaded' — recorded for the selfie safety gate and passed to
+   *  createCharacter as `avatarProvenance`. Null when there is no avatar.
+   *  See utils/avatarProvenance. */
+  avatarSource: AvatarSource | null;
   /** Quick-reply chips from the most recent assistant turn, if it offered
    *  any — cleared once a new turn starts so a stale chip never lingers
    *  under an answer it no longer applies to. */
@@ -85,7 +91,7 @@ interface CharacterInterviewStore {
   /** Re-runs whatever the last failed attempt was (a chat turn or synthesis). */
   retryTurn: () => Promise<void>;
 
-  setAvatarFile: (file: File | null) => void;
+  setAvatarFile: (file: File | null, source?: AvatarSource) => void;
   /** avatar -> review. */
   proceedToReview: () => void;
 
@@ -211,6 +217,7 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
     isGenerating: false,
     error: null,
     avatarFile: null,
+    avatarSource: null,
     latestSuggestions: [],
     resumableDraft: null,
 
@@ -317,7 +324,8 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
       await lastAttempt();
     },
 
-    setAvatarFile: (file) => set({ avatarFile: file }),
+    setAvatarFile: (file, source) =>
+      set({ avatarFile: file, avatarSource: file ? (source ?? null) : null }),
 
     proceedToReview: () => {
       if (get().phase !== 'avatar') return;
@@ -363,6 +371,7 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
         isGenerating: false,
         error: null,
         avatarFile: null,
+        avatarSource: null,
         latestSuggestions: [],
       });
     },

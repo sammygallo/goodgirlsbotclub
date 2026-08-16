@@ -328,6 +328,10 @@ function buildCardData(input: CharacterCreateData & { avatar_url?: string }): {
   if (input.talkativeness !== undefined) extensions.talkativeness = input.talkativeness;
   if (Object.keys(extensions).length > 0) data.extensions = extensions;
 
+  // NB: avatar provenance is deliberately NOT written into `data` here — it is
+  // sent as the explicit top-level `avatar_provenance_source` field by
+  // createCharacter/editCharacter, so a stamp can't round-trip through the card
+  // blob and be re-trusted on a later edit. See utils/avatarProvenance.
   return { data, tags };
 }
 
@@ -577,6 +581,11 @@ export interface CharacterCreateData {
    *  ggbc provenance). depth_prompt/talkativeness within it are still
    *  overridden by this call's own scalar fields above. */
   extensions?: Record<string, unknown>;
+  /** How this save's avatar came to be — set ONLY when a new avatar is chosen
+   *  (generation/upload/import), so the backend's selfie safety gate can derive
+   *  whether the avatar is a known fictional image. Omitted on a text-only edit,
+   *  which preserves the existing provenance. See utils/avatarProvenance. */
+  avatarProvenance?: AvatarSource;
 }
 
 export interface CharacterEditData extends CharacterCreateData {
@@ -812,6 +821,10 @@ export const api = {
       data: card,
       tags,
       fav: !!data.fav,
+      // Selfie safety gate — the origin of this avatar, sent only when one was
+      // chosen. Omitted (undefined → not serialized) otherwise. See
+      // utils/avatarProvenance.
+      avatar_provenance_source: data.avatarProvenance,
     };
     const created = await apiRequest<ServerCharacter>('/characters', {
       method: 'POST',
@@ -868,6 +881,10 @@ export const api = {
       chat: data.chat ?? null,
       tags,
       fav: !!data.fav,
+      // Selfie safety gate — present only on a save that replaced the avatar
+      // (an upload downgrades a cleared row); undefined on a text-only edit, so
+      // the backend preserves the existing provenance. See utils/avatarProvenance.
+      avatar_provenance_source: data.avatarProvenance,
     };
     await apiRequest<ServerCharacter>(
       `/characters/${encodeURIComponent(data.avatar_url)}`,
@@ -1866,6 +1883,7 @@ export const SECRET_KEYS = {
 // For the full merged list (built-in catalog + user providers), import
 // BUILTIN_CATALOG from providerCatalog directly.
 import { NATIVE_PROVIDERS as CATALOG_NATIVE_PROVIDERS } from './providerCatalog';
+import type { AvatarSource } from '../utils/avatarProvenance';
 
 export const PROVIDERS = [
   ...CATALOG_NATIVE_PROVIDERS.map((p) => ({

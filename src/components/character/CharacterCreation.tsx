@@ -190,6 +190,9 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
         depth_prompt_depth: depthPromptPrompt.trim() ? depthPromptDepth : undefined,
         depth_prompt_role: depthPromptPrompt.trim() ? depthPromptRole : undefined,
         talkativeness: talkativeness || undefined,
+        // This form only sets the avatar via upload — flag it for the selfie
+        // safety gate (blocked until attested; see utils/avatarProvenance).
+        avatarProvenance: avatarFile ? 'uploaded' : undefined,
       },
       avatarFile || undefined
     );
