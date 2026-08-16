@@ -2,16 +2,29 @@ import { useState, useRef, useEffect } from 'react';
 import { User, ChevronDown, Check, Plus, Settings, X } from 'lucide-react';
 import { usePersonaStore } from '../../stores/personaStore';
 import { PersonaManager } from './PersonaManager';
+import { PersonaInterview } from './interview/PersonaInterview';
 
 interface PersonaSelectorProps {
   className?: string;
 }
+
+// Stable seed for the escape-hatch create form. A fresh `{}` literal in JSX
+// would change identity on every PersonaSelector re-render, and PersonaForm's
+// `[persona, initialValues]` effect would then reset every field mid-edit —
+// so the reference must be constant across renders.
+const CREATE_FORM_SEED = {};
 
 export function PersonaSelector({ className = '' }: PersonaSelectorProps) {
   const { personas, activePersonaId, setActivePersona, getActivePersona } =
     usePersonaStore();
   const [isOpen, setIsOpen] = useState(false);
   const [showManager, setShowManager] = useState(false);
+  const [showInterview, setShowInterview] = useState(false);
+  // Escape-hatch: the wizard's "Use the simple form instead" opens the plain
+  // PersonaForm. Rendered as a fresh create-mode manager (conditional mount,
+  // same pattern as Header's convert-to-persona flow) so it lands directly on
+  // the blank form rather than the persona list.
+  const [showCreateForm, setShowCreateForm] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const activePersona = getActivePersona();
@@ -31,6 +44,13 @@ export function PersonaSelector({ className = '' }: PersonaSelectorProps) {
   const handleManage = () => {
     setIsOpen(false);
     setShowManager(true);
+  };
+
+  // "New Persona" defaults to the AI interview wizard; the plain form stays
+  // reachable via the wizard's "Use the simple form instead" escape hatch.
+  const handleCreate = () => {
+    setIsOpen(false);
+    setShowInterview(true);
   };
 
   const handleSelect = (id: string | null) => {
@@ -72,7 +92,7 @@ export function PersonaSelector({ className = '' }: PersonaSelectorProps) {
                   No personas yet
                 </p>
                 <button
-                  onClick={handleManage}
+                  onClick={handleCreate}
                   className="text-xs text-[var(--color-primary)] hover:underline"
                 >
                   Create your first persona
@@ -128,7 +148,7 @@ export function PersonaSelector({ className = '' }: PersonaSelectorProps) {
                 </button>
               )}
               <button
-                onClick={handleManage}
+                onClick={handleCreate}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]"
               >
                 <Plus size={14} />
@@ -146,7 +166,29 @@ export function PersonaSelector({ className = '' }: PersonaSelectorProps) {
         )}
       </div>
 
-      <PersonaManager isOpen={showManager} onClose={() => setShowManager(false)} />
+      <PersonaManager
+        isOpen={showManager}
+        onClose={() => setShowManager(false)}
+        onCreateWithWizard={() => {
+          setShowManager(false);
+          setShowInterview(true);
+        }}
+      />
+
+      <PersonaInterview
+        isOpen={showInterview}
+        onClose={() => setShowInterview(false)}
+        onUseSimpleForm={() => {
+          setShowInterview(false);
+          setShowCreateForm(true);
+        }}
+      />
+
+      {/* Escape-hatch simple form — a fresh create-mode manager so it opens
+          straight on the blank PersonaForm. */}
+      {showCreateForm && (
+        <PersonaManager isOpen initialPersona={CREATE_FORM_SEED} onClose={() => setShowCreateForm(false)} />
+      )}
     </>
   );
 }
