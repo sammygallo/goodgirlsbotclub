@@ -554,6 +554,12 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
         talkativeness: typeof talkativenessRaw === 'string' ? talkativenessRaw : undefined,
         data_overrides: dataOverrides,
         extensions: mergedExtensions,
+        // An imported card's avatar is unverifiable external art → 'imported'
+        // (blocked by the selfie gate, same as an upload). Sent ONLY as the
+        // top-level avatar_provenance_source field — intentionally NOT written
+        // into the card `data` blob (a round-tripping stamp could be re-trusted
+        // on a later edit and reopen the gate). See utils/avatarProvenance.
+        avatarProvenance: avatarFile ? 'imported' : undefined,
       },
       avatarFile || undefined
     );

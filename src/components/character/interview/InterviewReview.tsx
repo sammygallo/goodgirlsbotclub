@@ -71,6 +71,7 @@ export function InterviewReview({ extras, onExtrasChange, onClose, onCreated }: 
   const phase = useCharacterInterviewStore((s) => s.phase);
   const interview = useCharacterInterviewStore((s) => s.interview);
   const avatarFile = useCharacterInterviewStore((s) => s.avatarFile);
+  const avatarSource = useCharacterInterviewStore((s) => s.avatarSource);
   const updateDraftField = useCharacterInterviewStore((s) => s.updateDraftField);
   const updateStagedLore = useCharacterInterviewStore((s) => s.updateStagedLore);
   const setPhase = useCharacterInterviewStore((s) => s.setPhase);
@@ -213,6 +214,12 @@ export function InterviewReview({ extras, onExtrasChange, onClose, onCreated }: 
             },
           },
         },
+        // Record how the avatar was made (generated/uploaded) for the selfie
+        // safety gate. Sent ONLY as the top-level avatar_provenance_source field
+        // — intentionally NOT written into the card `data` blob (a round-tripping
+        // stamp could be re-trusted on a later edit and reopen the gate).
+        // See utils/avatarProvenance.
+        avatarProvenance: avatarSource ?? undefined,
       },
       avatarFile ?? undefined
     );
