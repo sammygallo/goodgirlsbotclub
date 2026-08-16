@@ -13,6 +13,7 @@ import { Button, Input } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import { ImageGenSettingsFields } from './ImageGenSettingsFields';
 import { ImageGenProviderNotice } from './ImageGenProviderNotice';
+import { useImageGenStore } from '../../stores/imageGenStore';
 
 type TestState =
   | { kind: 'idle' }
@@ -302,6 +303,7 @@ function ProviderModelSelect({
 
 export function AISettingsPage(_props?: { params?: Record<string, string> }) {
   const { goBack, pushPage } = useSettingsPanelStore();
+  const imageGenBackend = useImageGenStore((s) => s.backend);
   const {
     secrets, globalSecrets, globalSharingEnabled, globalSharingSupported,
     activeProvider, activeModel, customUrl,
@@ -779,6 +781,31 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
             </p>
             <ImageGenProviderNotice className="mb-3" />
             <ImageGenSettingsFields />
+
+            {imageGenBackend === 'pollinations' && (
+              <div className="mt-3">
+                <p className="text-xs text-[var(--color-text-secondary)] mb-1">
+                  <span className="font-medium text-[var(--color-text-primary)]">Pollinations token</span> — optional and free. A token from{' '}
+                  <a href="https://auth.pollinations.ai" target="_blank" rel="noopener noreferrer" className="text-[var(--color-primary)] hover:underline">auth.pollinations.ai</a>{' '}
+                  unlocks the better models (pick <span className="font-mono">flux</span> above), raises rate limits, and removes watermarks. The same token also powers the Pollinations chat provider.
+                </p>
+                <ProviderApiKeyInput
+                  providerName="Pollinations"
+                  secretKey="api_key_pollinations"
+                  configured={hasApiKey('api_key_pollinations')}
+                  isSaving={isSaving}
+                  onSave={async (key) => {
+                    try {
+                      await settingsApi.writeSecret('api_key_pollinations', key, 'Pollinations');
+                      await fetchSecrets();
+                    } catch (e) {
+                      showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
+                    }
+                  }}
+                  onDelete={() => deleteApiKey('api_key_pollinations')}
+                />
+              </div>
+            )}
           </div>
 
           <div className="border-t border-[var(--color-border)]" />
