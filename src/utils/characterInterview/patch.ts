@@ -43,6 +43,63 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+const JSON_ESCAPES: Record<string, string> = {
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+};
+
+/** Last-resort recovery for a turn response whose JSON never closes (most
+ *  often an output-cap truncation mid-`patch`) but whose `"say"` field —
+ *  written first per the output contract — is still intact or at least
+ *  partially present. Decodes the string value by hand, character by
+ *  character, rather than regex-capturing it and handing it to
+ *  `JSON.parse`: a strict re-parse throws on exactly the kind of malformed
+ *  escape (e.g. a JS-style `\'`) or unescaped control character (e.g. a
+ *  literal newline) a weaker model is prone to leaving in free-flowing
+ *  `say` prose — which is plausibly what made the original response
+ *  unparseable in the first place, and would otherwise send this recovery
+ *  straight back to the raw-JSON-dump bug it exists to avoid. An unknown
+ *  escape is kept literally rather than rejected, and truncation mid-value
+ *  (a dangling `\` or no closing quote at all) simply ends the scan and
+ *  returns whatever decoded before the cutoff. Returns null if there's no
+ *  `"say"` field or nothing usable was decoded. */
+export function lenientSay(raw: string): string | null {
+  const start = raw.match(/"say"\s*:\s*"/);
+  if (!start || start.index === undefined) return null;
+
+  let i = start.index + start[0].length;
+  let out = '';
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch === '"') break;
+    if (ch === '\\') {
+      const next = raw[i + 1];
+      if (next === undefined) break;
+      if (next === 'u') {
+        const hex = raw.slice(i + 2, i + 6);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) break;
+        out += String.fromCharCode(parseInt(hex, 16));
+        i += 6;
+        continue;
+      }
+      out += JSON_ESCAPES[next] ?? next;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+
+  const trimmed = out.trim();
+  return trimmed || null;
+}
+
 const STRING_FIELDS = [
   'name',
   'description',

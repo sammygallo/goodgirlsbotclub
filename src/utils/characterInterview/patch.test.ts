@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyPatch, normalizeLoreEntry, parseInterviewTurn } from './patch';
+import { applyPatch, lenientSay, normalizeLoreEntry, parseInterviewTurn } from './patch';
 import { emptyDraft } from './types';
 import type { FieldPatch, InterviewDraft } from './types';
 
@@ -82,6 +82,60 @@ describe('parseInterviewTurn', () => {
   it('accepts a literal boolean true for done', () => {
     const turn = parseInterviewTurn(JSON.stringify({ say: 'Hi', done: true }));
     expect(turn?.done).toBe(true);
+  });
+});
+
+describe('lenientSay', () => {
+  it('recovers `say` from JSON truncated mid-`patch` with no closing brace', () => {
+    const truncated = '{"say":"Here is what I came up with.","patch":{"description":"A vampire of indeterminate';
+    expect(lenientSay(truncated)).toBe('Here is what I came up with.');
+  });
+
+  it('unescapes quotes, backslashes, and newlines in the recovered value', () => {
+    const truncated = '{"say":"She said \\"hi\\" and left.\\nThen came back.","patch":{"desc';
+    expect(lenientSay(truncated)).toBe('She said "hi" and left.\nThen came back.');
+  });
+
+  it('returns null when there is no `say` field to recover', () => {
+    expect(lenientSay('complete garbage, no json here')).toBeNull();
+  });
+
+  it('returns null for an empty `say` value', () => {
+    expect(lenientSay('{"say":"","patch":{}')).toBeNull();
+  });
+
+  it('keeps an unescaped literal control character in the value rather than rejecting it', () => {
+    // A raw (unescaped) newline byte inside the string, not a `\n` escape —
+    // invalid JSON, but plausible weaker-model output. Strict JSON.parse on
+    // a re-wrapped capture throws on this; the hand-decoder must not.
+    const raw = '{"say":"Line one.\nLine two.","patch":{"description":"cut off';
+    expect(lenientSay(raw)).toBe('Line one.\nLine two.');
+  });
+
+  it('tolerates an invalid escape sequence by keeping the escaped character literally', () => {
+    // `\'` is a valid JS/Python escape but not valid JSON.
+    const raw = '{"say":"I wasn\\\'t sure at first.","patch":{"desc';
+    expect(lenientSay(raw)).toBe("I wasn't sure at first.");
+  });
+
+  it('decodes a complete \\u escape', () => {
+    const raw = '{"say":"Caf\\u00e9 at dusk.","patch":{}';
+    expect(lenientSay(raw)).toBe('Café at dusk.');
+  });
+
+  it('recovers the partial value when truncation lands mid-\\u escape', () => {
+    const raw = '{"say":"Before the cut: \\u00e';
+    expect(lenientSay(raw)).toBe('Before the cut:');
+  });
+
+  it('recovers the partial value when truncation lands on a dangling trailing backslash', () => {
+    const raw = '{"say":"It is a trap\\';
+    expect(lenientSay(raw)).toBe('It is a trap');
+  });
+
+  it('recovers the partial value when truncation cuts off before any closing quote', () => {
+    const raw = '{"say":"Here is what I came up wi';
+    expect(lenientSay(raw)).toBe('Here is what I came up wi');
   });
 });
 

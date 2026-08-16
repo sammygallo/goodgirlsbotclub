@@ -51,7 +51,7 @@ describe('runInterviewTurn', () => {
     ]);
     // No `kind` field should have leaked through onto any replayed message.
     for (const m of messages) expect(m).not.toHaveProperty('kind');
-    expect(opts).toEqual({ maxTokens: 1024, signal: undefined });
+    expect(opts).toEqual({ maxTokens: 2048, signal: undefined });
 
     expect(result.turn.say).toBe('What kind of character do you have in mind?');
     expect(result.nextState.draft.name).toBe('Aria');
@@ -97,6 +97,7 @@ describe('runInterviewTurn', () => {
     expect(secondMessages.slice(0, -2)).toEqual(calls[0][0]);
     expect(secondMessages.at(-2)).toEqual({ role: 'assistant', content: 'not json at all' });
     expect(secondMessages.at(-1)).toEqual({ role: 'user', content: INTERVIEW_REPAIR_INSTRUCTION });
+    expect(calls[1][1]).toEqual({ maxTokens: 2048, signal: undefined });
 
     expect(result.turn.say).toBe('What kind of character do you have in mind?');
     expect(result.nextState.draft.name).toBe('Aria');
@@ -131,6 +132,43 @@ describe('runInterviewTurn', () => {
 
     expect(result.turn.say.length).toBeGreaterThan(0);
     expect(result.turn.say).not.toBe('   ');
+  });
+
+  it('double-failure path: falls back to a static message rather than dumping raw JSON when `say` is valid but empty on both attempts', async () => {
+    const currentState = initialInterviewState();
+    // Well-formed, non-truncated JSON on both calls, but `say` itself is
+    // empty — parseInterviewTurn rejects it (patch.ts requires a non-empty
+    // say), and lenientSay can't recover a usable value either. The raw
+    // response IS JSON-shaped, so it must not be shown verbatim.
+    const emptySayJson = JSON.stringify({ say: '', patch: { name: 'Aria' }, done: false });
+    const llm = fakeLlmSequence([emptySayJson, emptySayJson]);
+
+    const result = await runInterviewTurn(currentState, 'Hi', llm);
+
+    expect(llm).toHaveBeenCalledTimes(2);
+    expect(result.turn.say).not.toContain('{');
+    expect(result.turn.say).not.toContain('"patch"');
+    expect(result.turn.say.length).toBeGreaterThan(0);
+  });
+
+  it('double-failure path: recovers just `say` from JSON truncated mid-patch instead of dumping the raw fragment', async () => {
+    const currentState = initialInterviewState();
+    // Cut off mid-`patch`, as an output-cap truncation would: no closing
+    // brace, so firstJsonObject finds nothing balanced on either attempt.
+    const truncated =
+      '{"say":"Here\'s what I came up with — let me know if the tone lands.","patch":{"description":"A vampire of indeterminate';
+    const llm = fakeLlmSequence([truncated, truncated]);
+
+    const result = await runInterviewTurn(currentState, 'You decide.', llm);
+
+    expect(llm).toHaveBeenCalledTimes(2);
+    expect(result.turn.say).toBe("Here's what I came up with — let me know if the tone lands.");
+    expect(result.turn.done).toBe(false);
+    expect(result.turn.patch).toBeUndefined();
+    expect(result.nextState.transcript.at(-1)).toEqual({
+      role: 'assistant',
+      content: "Here's what I came up with — let me know if the tone lands.",
+    });
   });
 
   it('propagates a thrown error from llm() rather than swallowing it', async () => {

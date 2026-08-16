@@ -16,7 +16,7 @@ import {
   buildFinalDraftPrompt,
   buildInterviewStateBlock,
 } from './prompts';
-import { applyPatch, normalizeLoreEntry, parseInterviewTurn } from './patch';
+import { applyPatch, lenientSay, normalizeLoreEntry, parseInterviewTurn } from './patch';
 import { mergeCoverage } from './coverage';
 import type {
   FinalDraftResult,
@@ -51,7 +51,7 @@ export async function runInterviewTurn(
     { role: 'user', content: userMessage },
   ];
 
-  const raw = await llm(messages, { maxTokens: 1024, signal: opts.signal });
+  const raw = await llm(messages, { maxTokens: 2048, signal: opts.signal });
   let turn = parseInterviewTurn(raw);
 
   if (!turn) {
@@ -60,15 +60,23 @@ export async function runInterviewTurn(
       { role: 'assistant', content: raw },
       { role: 'user', content: INTERVIEW_REPAIR_INSTRUCTION },
     ];
-    const repairedRaw = await llm(repairMessages, { maxTokens: 1024, signal: opts.signal });
+    const repairedRaw = await llm(repairMessages, { maxTokens: 2048, signal: opts.signal });
     turn = parseInterviewTurn(repairedRaw);
 
     if (!turn) {
-      // Degrade gracefully: never throw for a parse failure. Use the
-      // ORIGINAL raw response as the shown text (not the repair attempt's),
-      // trimmed, falling back to a short static line if even that's empty.
+      // Degrade gracefully: never throw for a parse failure. Try
+      // lenientSay on the ORIGINAL raw response, not the repair attempt's
+      // — the repair re-ask is prone to the same truncation/malformed-
+      // escape failure, and `raw` is what the creator's turn was actually
+      // reacting to. If raw still LOOKS like JSON (starts with `{`) but
+      // lenientSay couldn't pull a usable `say` out of it — e.g. the model
+      // wrote valid but empty `"say":""` — showing it verbatim would just
+      // be the raw-JSON-dump bug this whole path exists to avoid, so use
+      // the static fallback instead. Only genuinely non-JSON prose (raw
+      // doesn't start with `{`) is shown as-is.
       const trimmedRaw = raw.trim();
-      turn = { say: trimmedRaw || FALLBACK_SAY, done: false };
+      const say = lenientSay(raw) ?? (trimmedRaw.startsWith('{') ? '' : trimmedRaw);
+      turn = { say: say || FALLBACK_SAY, done: false };
     }
   }
 
