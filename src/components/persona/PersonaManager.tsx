@@ -8,9 +8,14 @@ interface PersonaManagerProps {
   isOpen: boolean;
   onClose: () => void;
   initialPersona?: { name?: string; description?: string } | null;
+  /** When provided, the list's "New Persona" button launches the AI wizard
+   *  (owned by the host) instead of the inline blank form. The inline form
+   *  is still reached via the wizard's "Use the simple form instead" escape
+   *  hatch and by editing an existing persona. */
+  onCreateWithWizard?: () => void;
 }
 
-export function PersonaManager({ isOpen, onClose, initialPersona }: PersonaManagerProps) {
+export function PersonaManager({ isOpen, onClose, initialPersona, onCreateWithWizard }: PersonaManagerProps) {
   const {
     personas,
     activePersonaId,
@@ -24,6 +29,10 @@ export function PersonaManager({ isOpen, onClose, initialPersona }: PersonaManag
   const [confirmDelete, setConfirmDelete] = useState<Persona | null>(null);
 
   const handleCreate = () => {
+    if (onCreateWithWizard) {
+      onCreateWithWizard();
+      return;
+    }
     setEditingPersona(null);
     setIsCreating(true);
   };
