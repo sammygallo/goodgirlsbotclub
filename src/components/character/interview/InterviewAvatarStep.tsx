@@ -1,12 +1,14 @@
 import { useState, type ReactNode } from 'react';
-import { Check, Upload, Sparkles, SkipForward, AlertTriangle } from 'lucide-react';
+import { Check, Upload, Sparkles, SkipForward, AlertTriangle, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
 import { useCharacterInterviewStore } from '../../../stores/characterInterviewStore';
 import { useImageGenStore } from '../../../stores/imageGenStore';
 import { useAuthStore } from '../../../stores/authStore';
 import { hasPermission } from '../../../utils/permissions';
 import type { InterviewDraft } from '../../../utils/characterInterview/types';
+import type { ImageGenBackend } from '../../../api/imageGenApi';
 import { Button, ImageUpload } from '../../ui';
 import { ImageCropModal } from '../../ui/ImageCropModal';
+import { ImageGenProviderNotice } from '../../settings/ImageGenProviderNotice';
 
 // ─── Option card — replicated from CharacterSetupWizard.tsx's own local
 // OptionCard (not exported there, so this is a local copy, not an import).
@@ -87,16 +89,23 @@ export function InterviewAvatarStep() {
   const genBusy = useImageGenStore((s) => s.isGenerating);
   const genError = useImageGenStore((s) => s.error);
   const clearGenError = useImageGenStore((s) => s.clearError);
+  const imageBackend = useImageGenStore((s) => s.backend);
+  const setImageConfig = useImageGenStore((s) => s.setConfig);
 
   const [choice, setChoice] = useState<Choice>(null);
   const [generatedSrc, setGeneratedSrc] = useState<string | null>(null);
+  const [showImageOptions, setShowImageOptions] = useState(false);
 
   const handleGenerateClick = async () => {
     setChoice('generate');
     clearGenError();
     const prompt = buildPortraitPrompt(interview.draft);
-    const dataUrl = await generate(prompt);
+    // freeFallback: a flaky Pollinations failure silently retries AI Horde so
+    // the zero-setup path doesn't dead-end mid-wizard.
+    const dataUrl = await generate(prompt, undefined, { freeFallback: true });
     if (dataUrl) setGeneratedSrc(dataUrl);
+    // Surface the engine switch / provider guidance right where the error is.
+    else setShowImageOptions(true);
   };
 
   const handleCropConfirm = (file: File) => {
@@ -162,6 +171,44 @@ export function InterviewAvatarStep() {
               description="Create the character without an avatar."
             />
 
+            {/* Image options — switch engine or reuse the main provider without
+                leaving the wizard. Auto-opens when a generation fails. */}
+            {canGenerate && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowImageOptions((v) => !v)}
+                  disabled={genBusy}
+                  className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+                >
+                  <Settings2 size={13} />
+                  Image options
+                  {showImageOptions ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </button>
+                {showImageOptions && (
+                  <div className="mt-2 space-y-2.5 p-3 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border)]">
+                    <ImageGenProviderNotice />
+                    <div>
+                      <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
+                        Image engine
+                      </label>
+                      <select
+                        value={imageBackend}
+                        onChange={(e) => setImageConfig({ backend: e.target.value as ImageGenBackend })}
+                        disabled={genBusy}
+                        className="w-full bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-lg px-2 py-1.5 text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/40"
+                      >
+                        <option value="pollinations">Pollinations (free, no setup)</option>
+                        <option value="horde">AI Horde (free, distributed)</option>
+                        <option value="dalle">OpenAI DALL·E (uses your OpenAI key)</option>
+                        <option value="sdwebui">SD WebUI (local)</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {choice === 'generate' && genBusy && (
               <div className="flex items-center justify-center gap-2 text-xs text-[var(--color-text-secondary)] py-2">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[var(--color-primary)]" />
@@ -172,7 +219,7 @@ export function InterviewAvatarStep() {
             {choice === 'generate' && !genBusy && genError && (
               <div className="flex items-start gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/40 rounded-lg px-3 py-2">
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                <span>{genError} — check your Image Generation settings, or use Upload/Skip instead.</span>
+                <span>{genError}. Try a different image engine in “Image options” above, or use Upload/Skip instead.</span>
               </div>
             )}
           </div>

@@ -32,6 +32,15 @@ export interface CatalogProvider {
   baseUrl?: string;
   /** Secret key used by the backend. For user providers, backed by a dedicated slot. */
   secretKey: string;
+  /**
+   * True when this provider can generate *images* through a wired code path in
+   * this app (not just chat). Today only OpenAI qualifies — its key is reused
+   * by the DALL-E image backend via `/api/openai/generate-image`. Everything
+   * else is text-only, which is what the "use my main provider" option and the
+   * image-gen warning banner key off. Gemini/Imagen could join later once a
+   * route exists; flip this flag then rather than hardcoding ids in the UI.
+   */
+  imageCapable?: boolean;
   /** Seed model list (may be refined by a /models probe). */
   defaultModels: readonly string[];
   /** Relative path appended to baseUrl for model listing. Defaults to "/models". */
@@ -57,6 +66,7 @@ export const NATIVE_PROVIDERS: readonly CatalogProvider[] = [
     category: 'frontier',
     nativeRouted: true,
     secretKey: 'api_key_openai',
+    imageCapable: true,
     defaultModels: [
       'gpt-4.1',
       'gpt-4.1-mini',
@@ -734,6 +744,16 @@ export function getCatalogProvider(id: string): CatalogProvider | undefined {
 
 export function isNativeProvider(id: string): boolean {
   return NATIVE_PROVIDERS.some((p) => p.id === id);
+}
+
+/**
+ * Whether a chat provider can also generate images through a wired route in
+ * this app. Drives the "use my main provider" affordance and the text-only
+ * warning in the image-generation settings. Unknown ids → false (safe: shows
+ * the warning rather than falsely promising image support).
+ */
+export function isImageCapableProvider(id: string): boolean {
+  return !!getCatalogProvider(id)?.imageCapable;
 }
 
 /** Build a stable secret key slot for a user provider. */
