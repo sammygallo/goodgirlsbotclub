@@ -75,6 +75,7 @@ export function InterviewReview({ extras, onExtrasChange, onClose, onCreated }: 
   const updateStagedLore = useCharacterInterviewStore((s) => s.updateStagedLore);
   const setPhase = useCharacterInterviewStore((s) => s.setPhase);
   const resetInterview = useCharacterInterviewStore((s) => s.reset);
+  const discardInterviewDraft = useCharacterInterviewStore((s) => s.discardDraft);
 
   const createCharacter = useCharacterStore((s) => s.createCharacter);
   const getAllTags = useCharacterStore((s) => s.getAllTags);
@@ -225,6 +226,7 @@ export function InterviewReview({ extras, onExtrasChange, onClose, onCreated }: 
         );
         watchForLorebookSyncFailure();
       }
+      void discardInterviewDraft();
       resetInterview();
       onExtrasChange(DEFAULT_REVIEW_EXTRAS);
       onClose();

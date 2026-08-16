@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useCharacterStore } from '../../stores/characterStore';
 import { Modal, Button, ImageUpload, ExpressionUpload } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
@@ -6,40 +6,58 @@ import { CoreCardFields } from './fields/CoreCardFields';
 import { AdvancedCardFields } from './fields/AdvancedCardFields';
 import { spritesApi } from '../../api/client';
 
+export interface ManualDraftFormData {
+  name: string;
+  description: string;
+  personality: string;
+  firstMessage: string;
+  scenario: string;
+  exampleMessages: string;
+  creatorNotes: string;
+  creator: string;
+  tags: string[];
+}
+
+export interface ManualDraftAdvanced {
+  alternateGreetings: string[];
+  characterVersion: string;
+  depthPromptPrompt: string;
+  depthPromptDepth: number;
+  depthPromptRole: 'system' | 'user' | 'assistant';
+  systemPromptOverride: string;
+  postHistoryInstructions: string;
+  talkativeness: string;
+}
+
 interface CharacterCreationProps {
   isOpen: boolean;
   onClose: () => void;
   onCreated?: (avatarUrl: string) => void;
-  initialData?: Partial<{
-    name: string;
-    description: string;
-    personality: string;
-    firstMessage: string;
-    scenario: string;
-    exampleMessages: string;
-    creatorNotes: string;
-    creator: string;
-    tags: string[];
-  }>;
+  /** Prefills the form — used both by AI-helper flows and to resume a
+   *  saved draft (a resumed avatar/expression images can't be included
+   *  here, they aren't serializable — the user re-picks them). */
+  initialData?: Partial<ManualDraftFormData & ManualDraftAdvanced>;
 }
 
+const EMPTY_FORM_DATA: ManualDraftFormData = {
+  name: '',
+  description: '',
+  personality: '',
+  firstMessage: '',
+  scenario: '',
+  exampleMessages: '',
+  creatorNotes: '',
+  creator: '',
+  tags: [],
+};
+
 export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: CharacterCreationProps) {
-  const { createCharacter, isCreating, error, clearError, getAllTags } = useCharacterStore();
+  const { createCharacter, isCreating, error, clearError, getAllTags, manualDraft, saveManualDraft, discardManualDraft } = useCharacterStore();
 
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [expressionFiles, setExpressionFiles] = useState<Map<string, File>>(new Map());
   const [isUploadingExpressions, setIsUploadingExpressions] = useState(false);
-  const [formData, setFormData] = useState<{
-    name: string;
-    description: string;
-    personality: string;
-    firstMessage: string;
-    scenario: string;
-    exampleMessages: string;
-    creatorNotes: string;
-    creator: string;
-    tags: string[];
-  }>({
+  const [formData, setFormData] = useState<ManualDraftFormData>({
     name: initialData?.name || '',
     description: initialData?.description || '',
     personality: initialData?.personality || '',
@@ -52,14 +70,78 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
   });
 
   // Phase 2: Advanced character fields
-  const [alternateGreetings, setAlternateGreetings] = useState<string[]>([]);
-  const [characterVersion, setCharacterVersion] = useState('');
-  const [depthPromptPrompt, setDepthPromptPrompt] = useState('');
-  const [depthPromptDepth, setDepthPromptDepth] = useState(4);
-  const [depthPromptRole, setDepthPromptRole] = useState<'system' | 'user' | 'assistant'>('system');
-  const [systemPromptOverride, setSystemPromptOverride] = useState('');
-  const [postHistoryInstructions, setPostHistoryInstructions] = useState('');
-  const [talkativeness, setTalkativeness] = useState('0.5');
+  const [alternateGreetings, setAlternateGreetings] = useState<string[]>(initialData?.alternateGreetings || []);
+  const [characterVersion, setCharacterVersion] = useState(initialData?.characterVersion || '');
+  const [depthPromptPrompt, setDepthPromptPrompt] = useState(initialData?.depthPromptPrompt || '');
+  const [depthPromptDepth, setDepthPromptDepth] = useState(initialData?.depthPromptDepth ?? 4);
+  const [depthPromptRole, setDepthPromptRole] = useState<'system' | 'user' | 'assistant'>(
+    initialData?.depthPromptRole || 'system'
+  );
+  const [systemPromptOverride, setSystemPromptOverride] = useState(initialData?.systemPromptOverride || '');
+  const [postHistoryInstructions, setPostHistoryInstructions] = useState(initialData?.postHistoryInstructions || '');
+  const [talkativeness, setTalkativeness] = useState(initialData?.talkativeness || '0.5');
+
+  const resetForm = () => {
+    setAvatarFile(null);
+    setExpressionFiles(new Map());
+    setFormData(EMPTY_FORM_DATA);
+    setAlternateGreetings([]);
+    setCharacterVersion('');
+    setDepthPromptPrompt('');
+    setDepthPromptDepth(4);
+    setDepthPromptRole('system');
+    setSystemPromptOverride('');
+    setPostHistoryInstructions('');
+    setTalkativeness('0.5');
+  };
+
+  const hasDraftableContent =
+    formData.name.trim() !== '' ||
+    formData.description.trim() !== '' ||
+    formData.personality.trim() !== '' ||
+    formData.firstMessage.trim() !== '' ||
+    formData.scenario.trim() !== '' ||
+    formData.exampleMessages.trim() !== '' ||
+    formData.creatorNotes.trim() !== '' ||
+    formData.creator.trim() !== '' ||
+    formData.tags.length > 0;
+
+  const buildDraftPayload = (): Record<string, unknown> => ({
+    formData,
+    advanced: {
+      alternateGreetings,
+      characterVersion,
+      depthPromptPrompt,
+      depthPromptDepth,
+      depthPromptRole,
+      systemPromptOverride,
+      postHistoryInstructions,
+      talkativeness,
+    },
+  });
+
+  // Debounced autosave — lets a user leave mid-form and resume later. Skips
+  // entirely on a still-blank form so opening the modal doesn't itself
+  // create a draft.
+  useEffect(() => {
+    if (!isOpen || !hasDraftableContent) return;
+    const timer = setTimeout(() => {
+      saveManualDraft(buildDraftPayload());
+    }, 1500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    isOpen,
+    formData,
+    alternateGreetings,
+    characterVersion,
+    depthPromptPrompt,
+    depthPromptDepth,
+    depthPromptRole,
+    systemPromptOverride,
+    postHistoryInstructions,
+    talkativeness,
+  ]);
 
   const handleChange = (field: string) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
@@ -144,28 +226,8 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
         }
       }
 
-      // Reset form
-      setAvatarFile(null);
-      setExpressionFiles(new Map());
-      setFormData({
-        name: '',
-        description: '',
-        personality: '',
-        firstMessage: '',
-        scenario: '',
-        exampleMessages: '',
-        creatorNotes: '',
-        creator: '',
-        tags: [],
-      });
-      setAlternateGreetings([]);
-      setCharacterVersion('');
-      setDepthPromptPrompt('');
-      setDepthPromptDepth(4);
-      setDepthPromptRole('system');
-      setSystemPromptOverride('');
-      setPostHistoryInstructions('');
-      setTalkativeness('0.5');
+      resetForm();
+      void discardManualDraft();
       onClose();
       onCreated?.(avatarUrl);
     }
@@ -173,7 +235,17 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
 
   const handleClose = () => {
     clearError();
+    // Flush any pending debounced save immediately so a quick close (before
+    // the 1.5s debounce fires) doesn't lose the last few keystrokes.
+    if (hasDraftableContent) {
+      void saveManualDraft(buildDraftPayload());
+    }
     onClose();
+  };
+
+  const handleDiscardDraft = () => {
+    void discardManualDraft();
+    resetForm();
   };
 
   return (
@@ -222,6 +294,15 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
         {error && (
           <div className="p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm">
             {error}
+          </div>
+        )}
+
+        {manualDraft && (
+          <div className="flex items-center justify-between text-sm text-[var(--color-text-secondary)]">
+            <span>Progress is saved automatically — you can leave and resume later.</span>
+            <Button type="button" variant="ghost" size="sm" onClick={handleDiscardDraft}>
+              Discard draft
+            </Button>
           </div>
         )}
 

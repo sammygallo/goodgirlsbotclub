@@ -585,6 +585,18 @@ export interface CharacterEditData extends CharacterCreateData {
   create_date?: string;
 }
 
+/** Save/resume for in-progress character creation — see /character-drafts.
+ *  One slot per (user, kind); `payload` is flow-specific and opaque to the
+ *  client wrapper (the manual form's field values, or the interview's
+ *  transcript/draft/coverage/staged-lore/phase). */
+export type CharacterDraftKind = 'manual' | 'interview';
+
+export interface CharacterDraft {
+  kind: CharacterDraftKind;
+  payload: Record<string, unknown>;
+  updated_at: string;
+}
+
 // Generation sampler options passed through to the backend.
 // Most fields are optional and only sent when set to non-default values.
 export interface GenerationOptions {
@@ -826,6 +838,26 @@ export const api = {
       const text = await resp.text().catch(() => '');
       throw new Error(text || `HTTP ${resp.status}`);
     }
+  },
+
+  async listCharacterDrafts(): Promise<CharacterDraft[]> {
+    return apiRequest<CharacterDraft[]>('/character-drafts');
+  },
+
+  async saveCharacterDraft(
+    kind: CharacterDraftKind,
+    payload: Record<string, unknown>
+  ): Promise<CharacterDraft> {
+    return apiRequest<CharacterDraft>(`/character-drafts/${kind}`, {
+      method: 'PUT',
+      body: JSON.stringify({ payload }),
+    });
+  },
+
+  async deleteCharacterDraft(kind: CharacterDraftKind): Promise<void> {
+    await apiRequest<Record<string, never>>(`/character-drafts/${kind}`, {
+      method: 'DELETE',
+    });
   },
 
   async editCharacter(data: CharacterEditData, avatarFile?: File): Promise<void> {

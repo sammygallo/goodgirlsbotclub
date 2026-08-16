@@ -1,13 +1,22 @@
 // Character interview wizard — conversational engine store.
 //
 // Scoped deliberately narrow: this store owns the interview conversation
-// (transcript/draft/coverage/stagedLore) and the in-progress avatar file
-// only. It does NOT own persistence — saving the finished draft as a real
-// character goes through useCharacterStore().createCharacter() directly
-// from the top-level wizard component, the same way CharacterCreation.tsx
-// already does it. `setPhase` is the seam that lets the component drive
-// 'review' <-> 'saving' around its own async save call without this store
-// needing to know character/lorebook APIs exist.
+// (transcript/draft/coverage/stagedLore) and the in-progress avatar file.
+// It does NOT own persistence of the FINISHED character — saving the
+// finished draft as a real character goes through
+// useCharacterStore().createCharacter() directly from the top-level wizard
+// component, the same way CharacterCreation.tsx already does it. `setPhase`
+// is the seam that lets the component drive 'review' <-> 'saving' around
+// its own async save call without this store needing to know character/
+// lorebook APIs exist.
+//
+// It DOES own save/resume for the IN-PROGRESS interview itself (a
+// `character_drafts` row, kind='interview') — a different concern, aimed
+// at letting someone leave mid-interview and come back. Autosaved only at
+// phase transitions that land in a safe, resumable state ('chat' after a
+// turn settles, 'avatar', 'review') — never mid 'synthesizing' (no
+// persisted intermediate result to resume into) or 'saving' (the
+// createCharacter call is already in flight).
 
 import { create } from 'zustand';
 import {
@@ -17,10 +26,13 @@ import {
   type TopicId,
   type InterviewTurnResult,
   initialInterviewState,
+  emptyDraft,
+  emptyCoverage,
 } from '../utils/characterInterview/types';
 import { runInterviewTurn, runFinalDraft } from '../utils/characterInterview/engine';
 import { INTERVIEW_OPENING_PROMPT, CONTROL_MESSAGES, INTERVIEW_EXCHANGE_CAP } from '../utils/characterInterview/prompts';
 import { makeLlmCall } from '../utils/storyIngest/llmBridge';
+import { api, type CharacterDraft } from '../api/client';
 
 export type InterviewPhase = 'intro' | 'chat' | 'synthesizing' | 'avatar' | 'review' | 'saving';
 
@@ -49,6 +61,18 @@ interface CharacterInterviewStore {
    *  any — cleared once a new turn starts so a stale chip never lingers
    *  under an answer it no longer applies to. */
   latestSuggestions: string[];
+  /** The caller's saved interview draft, if any — populated by loadDraft(). */
+  resumableDraft: CharacterDraft | null;
+
+  /** Pull the caller's saved interview draft (if any) from the backend. */
+  loadDraft: () => Promise<void>;
+  /** Rehydrate `interview`/`phase` from `resumableDraft`. No-op if there is
+   *  none. Falls back to 'chat' if the saved phase isn't one of the safe
+   *  resumable phases (defensive — shouldn't happen, autosave only ever
+   *  writes a safe phase). */
+  hydrateFromDraft: () => void;
+  /** Clear the interview draft (after a successful create, or an explicit discard). */
+  discardDraft: () => Promise<void>;
 
   /** intro -> chat; sends the opening turn. */
   start: () => Promise<void>;
@@ -82,6 +106,41 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
    *  just re-invoke whatever ran last, without a phase-by-phase switch. */
   let lastAttempt: (() => Promise<unknown>) | null = null;
 
+  /** Save-draft debounce for per-keystroke edits (updateDraftField/
+   *  updateStagedLore during 'review') — module-scoped like
+   *  activeAbortController, not a `set()`-held field, for the same reason. */
+  let draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function cancelScheduledDraftSave(): void {
+    if (draftSaveTimer) {
+      clearTimeout(draftSaveTimer);
+      draftSaveTimer = null;
+    }
+  }
+
+  /** Best-effort upsert — a failed autosave doesn't surface an error, the
+   *  next checkpoint just retries. Only called with a phase this interview
+   *  is safe to resume into (never 'intro'/'synthesizing'/'saving'). */
+  async function persistDraft(
+    state: InterviewState,
+    phase: 'chat' | 'avatar' | 'review'
+  ): Promise<void> {
+    try {
+      const draft = await api.saveCharacterDraft('interview', { ...state, phase });
+      set({ resumableDraft: draft });
+    } catch {
+      // best-effort
+    }
+  }
+
+  function scheduleDraftSave(state: InterviewState, phase: 'chat' | 'avatar' | 'review'): void {
+    cancelScheduledDraftSave();
+    draftSaveTimer = setTimeout(() => {
+      draftSaveTimer = null;
+      void persistDraft(state, phase);
+    }, 1500);
+  }
+
   /** Returns whether the turn actually landed (updated `interview`) — false
    *  on error or abort, with no state change beyond isGenerating/error.
    *  Callers that layer extra state on top of a turn (skipTopic's defensive
@@ -108,6 +167,9 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
     });
     if (shouldFinish) {
       await synthesize(result.nextState);
+    } else {
+      // Settled back into 'chat' — a safe resume checkpoint.
+      void persistDraft(result.nextState, 'chat');
     }
     return true;
   }
@@ -123,11 +185,13 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
     const signal = freshAbort();
     try {
       const result = await runFinalDraft(state, llm, signal);
+      const nextInterview = { ...state, draft: result.draft, stagedLore: result.lore };
       set({
-        interview: { ...state, draft: result.draft, stagedLore: result.lore },
+        interview: nextInterview,
         phase: 'avatar',
         isGenerating: false,
       });
+      void persistDraft(nextInterview, 'avatar');
     } catch (e) {
       if (signal.aborted) { set({ isGenerating: false }); return; }
       set({ isGenerating: false, error: e instanceof Error ? e.message : 'Could not put together the final card — try again.' });
@@ -148,6 +212,46 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
     error: null,
     avatarFile: null,
     latestSuggestions: [],
+    resumableDraft: null,
+
+    loadDraft: async () => {
+      try {
+        const drafts = await api.listCharacterDrafts();
+        set({ resumableDraft: drafts.find((d) => d.kind === 'interview') ?? null });
+      } catch {
+        // best-effort — no resume affordance if the fetch failed
+      }
+    },
+
+    hydrateFromDraft: () => {
+      const { resumableDraft } = get();
+      if (!resumableDraft) return;
+      const payload = resumableDraft.payload as Partial<InterviewState> & { phase?: string };
+      const safePhase: InterviewPhase =
+        payload.phase === 'review' || payload.phase === 'avatar' ? payload.phase : 'chat';
+      set({
+        interview: {
+          transcript: payload.transcript ?? [],
+          draft: payload.draft ?? emptyDraft(),
+          coverage: payload.coverage ?? emptyCoverage(),
+          stagedLore: payload.stagedLore ?? [],
+          exchangeCount: payload.exchangeCount ?? 0,
+        },
+        phase: safePhase,
+        error: null,
+        latestSuggestions: [],
+      });
+    },
+
+    discardDraft: async () => {
+      cancelScheduledDraftSave();
+      set({ resumableDraft: null });
+      try {
+        await api.deleteCharacterDraft('interview');
+      } catch {
+        // best-effort — a stale row left server-side just gets overwritten next save
+      }
+    },
 
     start: async () => {
       if (get().phase !== 'intro') return;
@@ -173,12 +277,12 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
         // never happened would permanently mislabel a topic nobody skipped.
         if (!landed) return;
         const { interview } = get();
-        set({
-          interview: {
-            ...interview,
-            coverage: { ...interview.coverage, [topic]: 'skipped' },
-          },
-        });
+        const next = {
+          ...interview,
+          coverage: { ...interview.coverage, [topic]: 'skipped' },
+        };
+        set({ interview: next });
+        void persistDraft(next, 'chat');
       })();
     },
 
@@ -218,16 +322,23 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
     proceedToReview: () => {
       if (get().phase !== 'avatar') return;
       set({ phase: 'review' });
+      void persistDraft(get().interview, 'review');
     },
 
     updateDraftField: (field, value) => {
-      const { interview } = get();
-      set({ interview: { ...interview, draft: { ...interview.draft, [field]: value } } });
+      const { interview, phase } = get();
+      const next = { ...interview, draft: { ...interview.draft, [field]: value } };
+      set({ interview: next });
+      // Only autosave while actually editable in review — 'saving' means a
+      // createCharacter call is already in flight for this same data.
+      if (phase === 'review') scheduleDraftSave(next, 'review');
     },
 
     updateStagedLore: (entries) => {
-      const { interview } = get();
-      set({ interview: { ...interview, stagedLore: entries } });
+      const { interview, phase } = get();
+      const next = { ...interview, stagedLore: entries };
+      set({ interview: next });
+      if (phase === 'review') scheduleDraftSave(next, 'review');
     },
 
     setPhase: (phase) => set({ phase }),
@@ -241,6 +352,11 @@ export const useCharacterInterviewStore = create<CharacterInterviewStore>((set, 
       activeAbortController?.abort();
       activeAbortController = null;
       lastAttempt = null;
+      cancelScheduledDraftSave();
+      // Deliberately leaves `resumableDraft` alone — reset() runs on every
+      // close, including "Save & close", where the whole point is that the
+      // backend row survives for next time. discardDraft() nulls it
+      // explicitly on the paths where it should actually go away.
       set({
         phase: 'intro',
         interview: initialInterviewState(),

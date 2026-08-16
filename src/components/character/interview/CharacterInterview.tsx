@@ -3,7 +3,7 @@ import { X, AlertTriangle } from 'lucide-react';
 import { useCharacterInterviewStore } from '../../../stores/characterInterviewStore';
 import { getProviderAndModel } from '../../../utils/llm/resolve';
 import { isWeakModel } from '../../../utils/storyIngest/modelStrength';
-import { Button, BottomSheet, ConfirmDialog } from '../../ui';
+import { Button, BottomSheet, Modal } from '../../ui';
 import { InterviewChat } from './InterviewChat';
 import { CardPreviewPanel } from './CardPreviewPanel';
 import { InterviewAvatarStep } from './InterviewAvatarStep';
@@ -125,6 +125,7 @@ export function CharacterInterview({ isOpen, onClose, onCreated, onUseSimpleForm
   const retryTurn = useCharacterInterviewStore((s) => s.retryTurn);
   const abort = useCharacterInterviewStore((s) => s.abort);
   const reset = useCharacterInterviewStore((s) => s.reset);
+  const discardDraft = useCharacterInterviewStore((s) => s.discardDraft);
 
   const [showCardSheet, setShowCardSheet] = useState(false);
   // Advanced-review fields with no home in the store's InterviewDraft
@@ -132,16 +133,28 @@ export function CharacterInterview({ isOpen, onClose, onCreated, onUseSimpleForm
   // InterviewReview itself, since that component unmounts whenever the
   // user steps over to InterviewAvatarStep ("Change avatar") and back.
   const [reviewExtras, setReviewExtras] = useState<ReviewExtrasState>(DEFAULT_REVIEW_EXTRAS);
-  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [showLeaveDialog, setShowLeaveDialog] = useState(false);
 
   if (!isOpen) return null;
 
-  const discardAndClose = () => {
+  const closeAfterCleanup = () => {
     abort();
     reset();
     setReviewExtras(DEFAULT_REVIEW_EXTRAS);
-    setShowDiscardConfirm(false);
+    setShowLeaveDialog(false);
     onClose();
+  };
+
+  const handleSaveAndClose = () => {
+    // The interview is autosaved at every safe checkpoint already (see
+    // characterInterviewStore's persistDraft calls) — closing just needs
+    // to tear down local/in-flight state, not push anything new.
+    closeAfterCleanup();
+  };
+
+  const handleDiscardProgress = () => {
+    void discardDraft();
+    closeAfterCleanup();
   };
 
   const handleClose = () => {
@@ -152,17 +165,17 @@ export function CharacterInterview({ isOpen, onClose, onCreated, onUseSimpleForm
     // for the duration instead of trying to race the request.
     if (phase === 'saving') return;
     if (phase === 'intro') {
-      discardAndClose();
+      // Nothing sent yet — nothing to save or discard.
+      closeAfterCleanup();
       return;
     }
     // An in-app dialog, not window.confirm() — native confirm() is
     // unreliable in exactly this spot: some mobile WebView/PWA contexts
     // suppress it entirely, silently resolving false with no dialog ever
     // shown to the user, which reads as "the close button doesn't work"
-    // rather than as a cancelled discard (confirmed live 2026-08-09 — a
-    // real user hit this). ConfirmDialog is the primitive this codebase
-    // already uses for the same "are you sure" shape elsewhere.
-    setShowDiscardConfirm(true);
+    // rather than as a cancelled action (confirmed live 2026-08-09 — a
+    // real user hit this). An in-app dialog sidesteps that.
+    setShowLeaveDialog(true);
   };
 
   const { provider, model } = getProviderAndModel();
@@ -244,15 +257,33 @@ export function CharacterInterview({ isOpen, onClose, onCreated, onUseSimpleForm
         )}
       </div>
 
-      <ConfirmDialog
-        isOpen={showDiscardConfirm}
-        onClose={() => setShowDiscardConfirm(false)}
-        onConfirm={discardAndClose}
-        title="Discard this character interview?"
-        message="Your progress will be lost."
-        confirmLabel="Discard"
-        danger
-      />
+      <Modal
+        isOpen={showLeaveDialog}
+        onClose={() => setShowLeaveDialog(false)}
+        title="Leave this character interview?"
+        size="sm"
+      >
+        <p className="text-sm text-[var(--color-text-secondary)] mb-6">
+          Your progress is saved automatically — pick up where you left off later, or discard it now.
+        </p>
+        <div className="flex flex-col gap-2">
+          <Button type="button" variant="primary" size="sm" onClick={handleSaveAndClose} className="w-full">
+            Save &amp; close
+          </Button>
+          <Button type="button" variant="danger" size="sm" onClick={handleDiscardProgress} className="w-full">
+            Discard progress
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowLeaveDialog(false)}
+            className="w-full"
+          >
+            Cancel
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

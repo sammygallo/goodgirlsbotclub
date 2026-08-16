@@ -19,13 +19,14 @@ import {
   Library,
 } from 'lucide-react';
 import { useCharacterStore } from '../../stores/characterStore';
+import { useCharacterInterviewStore } from '../../stores/characterInterviewStore';
 import { useChatStore, type GroupChatInfo } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { can, hasPermission } from '../../utils/permissions';
 import { haptic } from '../../utils/haptics';
 import { Avatar, Button, Input } from '../ui';
-import { CharacterCreation } from '../character/CharacterCreation';
+import { CharacterCreation, type ManualDraftFormData, type ManualDraftAdvanced } from '../character/CharacterCreation';
 import { CharacterInterview } from '../character/interview/CharacterInterview';
 import { CharacterImport } from '../character/CharacterImport';
 import { CharacterPreviewModal } from '../character/CharacterPreviewModal';
@@ -52,6 +53,16 @@ function firstSentence(text?: string): string {
   if (!plain) return '';
   const idx = plain.search(/[.!?]/);
   return (idx === -1 ? plain : plain.slice(0, idx + 1)).trim();
+}
+
+// Manual drafts nest the name under `formData`, interview drafts under
+// `draft` (the interview's in-progress character card) — check both.
+function draftPreviewName(payload: Record<string, unknown>): string {
+  const formData = payload.formData as { name?: string } | undefined;
+  if (formData?.name?.trim()) return formData.name.trim();
+  const draft = payload.draft as { name?: string } | undefined;
+  if (draft?.name?.trim()) return draft.name.trim();
+  return 'Untitled character';
 }
 
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
@@ -91,7 +102,24 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     setSortMode,
     getAllTags,
     getFilteredCharacters,
+    manualDraft,
+    loadManualDraft,
+    discardManualDraft,
   } = useCharacterStore();
+  const {
+    resumableDraft: interviewDraft,
+    loadDraft: loadInterviewDraft,
+    hydrateFromDraft: hydrateInterviewFromDraft,
+    discardDraft: discardInterviewDraft,
+  } = useCharacterInterviewStore();
+  const [resumeManualData, setResumeManualData] = useState<
+    Partial<ManualDraftFormData & ManualDraftAdvanced> | undefined
+  >(undefined);
+  // Bumped on every explicit "Resume draft" click so <CharacterCreation>
+  // remounts and re-seeds its internal state from the fresh initialData —
+  // it otherwise stays mounted across opens/closes so a plain Cancel
+  // doesn't lose whatever the user was mid-typing.
+  const [manualResumeKey, setManualResumeKey] = useState(0);
   const { messages, startNewGroupChat, groupChats, loadGroupChat, deleteGroupChat } = useChatStore();
   const [showGroupChats, setShowGroupChats] = useState(false);
   const canViewWorks = hasPermission(currentUser, 'project:view');
@@ -104,6 +132,28 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   useEffect(() => {
     if (canViewWorks) fetchProjects();
   }, [canViewWorks, fetchProjects]);
+
+  useEffect(() => {
+    if (!canCreateCharacters) return;
+    loadManualDraft();
+    loadInterviewDraft();
+  }, [canCreateCharacters, loadManualDraft, loadInterviewDraft]);
+
+  const handleResumeManualDraft = () => {
+    if (!manualDraft) return;
+    const payload = manualDraft.payload as {
+      formData?: Partial<ManualDraftFormData>;
+      advanced?: Partial<ManualDraftAdvanced>;
+    };
+    setResumeManualData({ ...payload.formData, ...payload.advanced });
+    setManualResumeKey((n) => n + 1);
+    setShowCreateModal(true);
+  };
+
+  const handleResumeInterviewDraft = () => {
+    hydrateInterviewFromDraft();
+    setShowInterviewModal(true);
+  };
 
   const filteredCharacters = getFilteredCharacters();
   const allTags = getAllTags();
@@ -805,23 +855,71 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   Start Group Chat ({groupChatCharacters.length}/2+)
                 </Button>
               ) : canCreateCharacters ? (
-                <div className="flex gap-2">
-                  <Button
-                    variant="secondary"
-                    className="flex-1"
-                    onClick={() => setShowImportModal(true)}
-                  >
-                    <Upload size={18} className="mr-2" />
-                    Import
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    className="flex-1"
-                    onClick={() => setShowInterviewModal(true)}
-                  >
-                    <Plus size={18} className="mr-2" />
-                    New
-                  </Button>
+                <div className="flex flex-col gap-2">
+                  {(interviewDraft || manualDraft) && (
+                    <div className="flex flex-col gap-1.5">
+                      {interviewDraft && (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
+                          <button
+                            type="button"
+                            onClick={handleResumeInterviewDraft}
+                            className="flex-1 min-w-0 text-left text-xs text-[var(--color-text-secondary)] truncate"
+                          >
+                            Resume interview:{' '}
+                            <span className="text-[var(--color-text-primary)] font-medium">
+                              {draftPreviewName(interviewDraft.payload)}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => discardInterviewDraft()}
+                            className="flex-shrink-0 text-xs text-[var(--color-text-secondary)] hover:text-red-400"
+                          >
+                            Discard
+                          </button>
+                        </div>
+                      )}
+                      {manualDraft && (
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
+                          <button
+                            type="button"
+                            onClick={handleResumeManualDraft}
+                            className="flex-1 min-w-0 text-left text-xs text-[var(--color-text-secondary)] truncate"
+                          >
+                            Resume draft:{' '}
+                            <span className="text-[var(--color-text-primary)] font-medium">
+                              {draftPreviewName(manualDraft.payload)}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => discardManualDraft()}
+                            className="flex-shrink-0 text-xs text-[var(--color-text-secondary)] hover:text-red-400"
+                          >
+                            Discard
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <Button
+                      variant="secondary"
+                      className="flex-1"
+                      onClick={() => setShowImportModal(true)}
+                    >
+                      <Upload size={18} className="mr-2" />
+                      Import
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      className="flex-1"
+                      onClick={() => setShowInterviewModal(true)}
+                    >
+                      <Plus size={18} className="mr-2" />
+                      New
+                    </Button>
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -830,11 +928,17 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       </aside>
 
       {/* Character Creation Modal — plain form, reached via the interview
-          wizard's "Use the simple form instead" escape hatch */}
+          wizard's "Use the simple form instead" escape hatch, or the
+          "Resume draft" row above when a saved manual-form draft exists. */}
       <CharacterCreation
+        key={manualResumeKey}
         isOpen={showCreateModal}
-        onClose={() => setShowCreateModal(false)}
+        onClose={() => {
+          setShowCreateModal(false);
+          setResumeManualData(undefined);
+        }}
         onCreated={handleCharacterCreated}
+        initialData={resumeManualData}
       />
 
       {/* Character Interview Wizard — default "New" flow */}

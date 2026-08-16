@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, type CharacterInfo, type CharacterCreateData, type CharacterEditData } from '../api/client';
+import { api, type CharacterInfo, type CharacterCreateData, type CharacterEditData, type CharacterDraft } from '../api/client';
 import {
   extractCharacterFromPNG,
   extractCharacterBook,
@@ -131,11 +131,22 @@ interface CharacterState {
   // The embedded book (if any) is tracked on the WI book itself via
   // `ownerCharacterAvatar` and is NOT duplicated here.
   linkedBookIdsByAvatar: Record<string, string[]>;
+  /** In-progress manual-form character creation, if any — see /character-drafts.
+   *  `null` before the first `loadManualDraft()` call resolves, and stays
+   *  `null` if there's nothing saved. */
+  manualDraft: CharacterDraft | null;
 
   // Actions
   fetchCharacters: () => Promise<void>;
   selectCharacter: (avatar: string) => Promise<void>;
   createCharacter: (data: CharacterCreateData, avatarFile?: File) => Promise<string | null>;
+  /** Pull the caller's saved manual-form draft (if any) from the backend. */
+  loadManualDraft: () => Promise<void>;
+  /** Upsert the manual-form draft. Best-effort — a failed autosave doesn't
+   *  surface an error, it just means the next debounce tick retries. */
+  saveManualDraft: (payload: Record<string, unknown>) => Promise<void>;
+  /** Clear the manual-form draft (after a successful create, or an explicit discard). */
+  discardManualDraft: () => Promise<void>;
   updateCharacter: (data: CharacterEditData, avatarFile?: File) => Promise<boolean>;
   deleteCharacter: (avatar: string) => Promise<boolean>;
   duplicateCharacter: (avatar: string) => Promise<string | null>;
@@ -241,6 +252,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   showFavoritesOnly: false,
   sortMode: 'name' as CharacterSortMode,
   linkedBookIdsByAvatar: loadLinkedBooks(),
+  manualDraft: null,
 
   fetchCharacters: async () => {
     set({ isLoading: true, error: null });
@@ -330,6 +342,33 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         error: error instanceof Error ? error.message : 'Failed to create character',
       });
       return null;
+    }
+  },
+
+  loadManualDraft: async () => {
+    try {
+      const drafts = await api.listCharacterDrafts();
+      set({ manualDraft: drafts.find((d) => d.kind === 'manual') ?? null });
+    } catch {
+      // Best-effort — no draft banner if the fetch failed, not a hard error.
+    }
+  },
+
+  saveManualDraft: async (payload: Record<string, unknown>) => {
+    try {
+      const draft = await api.saveCharacterDraft('manual', payload);
+      set({ manualDraft: draft });
+    } catch {
+      // Best-effort autosave — the next debounce tick retries.
+    }
+  },
+
+  discardManualDraft: async () => {
+    set({ manualDraft: null });
+    try {
+      await api.deleteCharacterDraft('manual');
+    } catch {
+      // Best-effort — a stale row left server-side just gets overwritten next save.
     }
   },
 
@@ -979,6 +1018,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       groupChatCharacters: [],
       favorites: new Set(),
       linkedBookIdsByAvatar: {},
+      manualDraft: null,
     });
     try { localStorage.removeItem(FAVORITES_KEY); } catch { /* ignore */ }
     try { localStorage.removeItem(LINKED_BOOKS_KEY); } catch { /* ignore */ }

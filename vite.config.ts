@@ -31,6 +31,7 @@ export default defineConfig({
       '/health': proxyTarget,
       '/api': proxyTarget,
       '/characters': proxyTarget,
+      '/character-drafts': proxyTarget,
       '/chats': proxyTarget,
       '/projects': proxyTarget,
       '/worldinfo': proxyTarget,
