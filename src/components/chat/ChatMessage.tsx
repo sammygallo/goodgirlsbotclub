@@ -16,6 +16,7 @@ import { estimateTokens, profileForProvider } from '../../utils/tokenizer';
 import { useRegexScriptStore } from '../../stores/regexScriptStore';
 import { useLovenseStore } from '../../stores/lovenseStore';
 import { stripLovenseTags } from '../../utils/lovense';
+import { stripSelfieTags } from '../../utils/selfie';
 import { applyRegexScripts, getActiveScripts } from '../../utils/regexScripts';
 import { useTranslateStore } from '../../stores/translateStore';
 import { useExtensionStore } from '../../stores/extensionStore';
@@ -140,6 +141,10 @@ export function ChatMessage({
       const otherTurn = text.match(/\n\[[^\]]+\]:\s*/);
       if (otherTurn?.index !== undefined) text = text.slice(0, otherTurn.index).trim();
       if (lovenseEnabled && hideLovenseTags) text = stripLovenseTags(text).trim();
+      // Always hide [selfie: …] tags — the tag is a generation request meant to
+      // be replaced by an image bubble, never shown as literal text. The raw tag
+      // stays in the store so the finish-edge dispatcher (selfieDispatch) sees it.
+      text = stripSelfieTags(text).trim();
     }
     const scripts = getActiveScripts(regexScripts, characterAvatar, scope).filter(s => s.displayOnly);
     return scripts.length > 0 ? applyRegexScripts(text, scripts) : text;

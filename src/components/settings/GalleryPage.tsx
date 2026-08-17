@@ -11,7 +11,6 @@ import {
 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useImageGenStore, type GalleryEntry } from '../../stores/imageGenStore';
-import type { ImageGenBackend } from '../../api/imageGenApi';
 import { ImageGenModal } from '../chat/ImageGenModal';
 
 function formatDate(ts: number): string {
@@ -27,6 +26,7 @@ function backendLabel(backend: string): string {
     case 'horde': return 'AI Horde';
     case 'sdwebui': return 'SD WebUI';
     case 'dalle': return 'DALL-E';
+    case 'selfie': return 'Selfie';
     default: return backend;
   }
 }
@@ -116,7 +116,7 @@ function Lightbox({ entry, onClose, onRemix, onCopy, copied }: LightboxProps) {
   );
 }
 
-type BackendFilter = 'all' | ImageGenBackend;
+type BackendFilter = 'all' | GalleryEntry['backend'];
 
 export function GalleryPage(_props?: { params?: Record<string, string> }) {
   const { goBack } = useSettingsPanelStore();
@@ -146,7 +146,7 @@ export function GalleryPage(_props?: { params?: Record<string, string> }) {
   // Backend filter chips only show backends actually present in the gallery —
   // no reason to offer "DALL-E" if the user has never used it.
   const presentBackends = useMemo(() => {
-    const set = new Set<ImageGenBackend>();
+    const set = new Set<GalleryEntry['backend']>();
     for (const entry of gallery) set.add(entry.backend);
     return set;
   }, [gallery]);
@@ -230,8 +230,8 @@ export function GalleryPage(_props?: { params?: Record<string, string> }) {
           </div>
           {presentBackends.size > 1 && (
             <div className="flex gap-1.5 flex-wrap">
-              {(['all', 'pollinations', 'sdwebui', 'dalle'] as const)
-                .filter((k) => k === 'all' || presentBackends.has(k as ImageGenBackend))
+              {(['all', 'pollinations', 'horde', 'sdwebui', 'dalle', 'selfie'] as const)
+                .filter((k) => k === 'all' || presentBackends.has(k as GalleryEntry['backend']))
                 .map((k) => {
                   const active = backendFilter === k;
                   return (

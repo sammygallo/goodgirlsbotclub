@@ -21,3 +21,18 @@
  */
 
 export type AvatarSource = 'generated' | 'uploaded' | 'imported';
+
+/**
+ * The backend-side provenance column values (`CharacterInfo.avatar_provenance`,
+ * read-only from the server) that CLEAR an avatar for selfie generation. Mirror
+ * of the backend's SELFIE_ALLOWED set. Anything else — 'uploaded', 'unknown',
+ * undefined, or an unrecognized value — is blocked. Note this vocabulary differs
+ * from the outbound `AvatarSource` write side (the backend maps 'imported' →
+ * 'uploaded', and 'grandfathered' is a backend-only backfill value).
+ */
+const SELFIE_CLEARED_PROVENANCE = new Set(['generated', 'fictional-declared', 'grandfathered']);
+
+/** Whether a character's server-side `avatar_provenance` clears it for selfies. */
+export function avatarProvenanceAllowsSelfies(provenance: string | null | undefined): boolean {
+  return provenance != null && SELFIE_CLEARED_PROVENANCE.has(provenance);
+}

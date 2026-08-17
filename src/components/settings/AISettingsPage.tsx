@@ -14,6 +14,7 @@ import { showToastGlobal } from '../ui/Toast';
 import { ImageGenSettingsFields } from './ImageGenSettingsFields';
 import { ImageGenProviderNotice } from './ImageGenProviderNotice';
 import { useImageGenStore } from '../../stores/imageGenStore';
+import { useSelfieStore } from '../../stores/selfieStore';
 
 type TestState =
   | { kind: 'idle' }
@@ -304,6 +305,8 @@ function ProviderModelSelect({
 export function AISettingsPage(_props?: { params?: Record<string, string> }) {
   const { goBack, pushPage } = useSettingsPanelStore();
   const imageGenBackend = useImageGenStore((s) => s.backend);
+  const selfiesEnabled = useSelfieStore((s) => s.enabled);
+  const setSelfiesEnabled = useSelfieStore((s) => s.setEnabled);
   const {
     secrets, globalSecrets, globalSharingEnabled, globalSharingSupported,
     activeProvider, activeModel, customUrl,
@@ -806,6 +809,27 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
                 />
               </div>
             )}
+
+            {/* Character selfies — in-chat [selfie: …] auto-trigger (Phase 2). */}
+            <label className="mt-4 flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selfiesEnabled}
+                onChange={(e) => setSelfiesEnabled(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-xs font-semibold text-[var(--color-text-primary)]">
+                  Let characters send selfies
+                </span>
+                <p className="text-xs text-[var(--color-text-secondary)] mt-0.5 leading-snug">
+                  When it fits the moment, a character with an AI-generated or fictional avatar can
+                  send a photo of itself inline in chat. Each selfie renders on your Replicate key
+                  (~$0.025) and needs image-generation permission. Uploaded-photo avatars are never
+                  eligible.
+                </p>
+              </span>
+            </label>
           </div>
 
           <div className="border-t border-[var(--color-border)]" />

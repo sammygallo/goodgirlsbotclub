@@ -4,6 +4,12 @@ import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, Che
 import { showToastGlobal } from '../ui/Toast';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
+import { useSelfieStore } from '../../stores/selfieStore';
+// Side-effect import: registers the in-chat [selfie: …] finish-edge dispatch
+// (its module-level useChatStore.subscribe). Imported here — a runtime component,
+// loaded after the stores initialize — so the subscription never runs during
+// chatStore's own module init. See stores/selfieDispatch.
+import '../../stores/selfieDispatch';
 import { useProjectStore } from '../../stores/projectStore';
 import { usePersonaStore } from '../../stores/personaStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -138,6 +144,8 @@ export function ChatView() {
   const storeSetVnMode = useDisplayPreferencesStore(s => s.setVnMode);
   const storeSetCostume = useDisplayPreferencesStore(s => s.setCostume);
   const storeClearCostume = useDisplayPreferencesStore(s => s.clearCostume);
+  // Transient "📸 … is taking a selfie" indicator (Phase 2 in-chat selfie).
+  const selfieGeneratingFor = useSelfieStore((s) => s.generatingFor);
   const { selectedCharacter, isGroupChatMode, groupChatCharacters, exitGroupChat, characters: allCharacters } = useCharacterStore();
   const {
     messages,
@@ -1893,6 +1901,18 @@ export function ChatView() {
               <TypingIndicator
                 speakerName={isGroupChatMode ? currentSpeakerName : null}
               />
+            )}
+
+            {/* Selfie indicator — shown while a [selfie: …] is rendering. */}
+            {selfieGeneratingFor && (
+              <div className="flex gap-3 px-4 py-3 items-center">
+                <div className="w-10 h-10 rounded-full bg-[var(--color-bg-tertiary)] flex items-center justify-center flex-shrink-0 text-lg">
+                  📸
+                </div>
+                <span className="text-sm text-[var(--color-text-secondary)] italic truncate">
+                  {selfieGeneratingFor} is taking a selfie&hellip;
+                </span>
+              </div>
             )}
 
             {/* Lorebook v2 Phase 4: Auto Memory conflict awareness pill. */}
