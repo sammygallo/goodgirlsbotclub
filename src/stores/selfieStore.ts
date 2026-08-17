@@ -60,18 +60,21 @@ export interface SelfieEligibility {
 }
 
 /**
- * Whether the CURRENT single-character chat may auto-generate selfies. All of:
- * the feature toggle is on; it's a single-character chat with a selected
- * character; that character's avatar provenance is cleared (fictional/AI, not a
- * real-person upload — the NCII gate); the user holds `generation:image`; and a
- * Replicate key is configured. Group chats are excluded in v1.
+ * Whether the CURRENT single-character chat may generate a selfie at all: a
+ * single-character chat with a selected character; that character's avatar
+ * provenance is cleared (fictional/AI, not a real-person upload — the NCII
+ * gate); the user holds `generation:image`; and a Replicate key is
+ * configured. Group chats are excluded in v1.
  *
- * Used by BOTH the teaching block (chatStore) and the dispatch (selfieDispatch)
- * so the model is never taught a tag the client won't honor, and vice-versa.
+ * Deliberately does NOT check the `enabled` auto-trigger toggle — that toggle
+ * means "let the MODEL auto-request selfies via the tag," not "allow selfies
+ * at all." A manual trigger (the "Take selfie" message action) should work
+ * regardless of whether the auto-toggle is on, so it calls this directly;
+ * {@link selfieEligibleForCurrentChat} layers the toggle on top for the
+ * auto-dispatch path.
  */
-export function selfieEligibleForCurrentChat(): SelfieEligibility {
+export function baseSelfieEligible(): SelfieEligibility {
   const blocked: SelfieEligibility = { eligible: false, characterName: null, characterAvatar: null };
-  if (!useSelfieStore.getState().enabled) return blocked;
 
   const cs = useCharacterStore.getState();
   if (cs.isGroupChatMode) return blocked;
@@ -83,6 +86,22 @@ export function selfieEligibleForCurrentChat(): SelfieEligibility {
   if (!hasReplicateKey()) return blocked;
 
   return { eligible: true, characterName: char.name, characterAvatar: char.avatar };
+}
+
+/**
+ * Whether the CURRENT single-character chat may AUTO-generate selfies from
+ * the model-emitted `[selfie: …]` tag — {@link baseSelfieEligible} plus the
+ * user's auto-trigger toggle.
+ *
+ * Used by BOTH the teaching block (chatStore) and the auto-dispatch
+ * (selfieDispatch) so the model is never taught a tag the client won't
+ * honor, and vice-versa.
+ */
+export function selfieEligibleForCurrentChat(): SelfieEligibility {
+  if (!useSelfieStore.getState().enabled) {
+    return { eligible: false, characterName: null, characterAvatar: null };
+  }
+  return baseSelfieEligible();
 }
 
 /** The system-prompt block that teaches the model the `[selfie: …]` tag. Injected

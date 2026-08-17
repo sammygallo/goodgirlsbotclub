@@ -55,6 +55,12 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
   const { createCharacter, isCreating, error, clearError, getAllTags, manualDraft, saveManualDraft, discardManualDraft } = useCharacterStore();
 
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  // Phase 3 attestation (docs/character-selfies-design.md §7/§9): unlocks the
+  // selfie gate for a freshly-uploaded avatar. Defaults OFF — never silently
+  // opt in — and resets whenever a NEW file is chosen (see the ImageUpload
+  // onImageSelect wiring below), so a stale attestation from a previous
+  // image can't carry over to a different one.
+  const [isFictionalAttested, setIsFictionalAttested] = useState(false);
   const [expressionFiles, setExpressionFiles] = useState<Map<string, File>>(new Map());
   const [isUploadingExpressions, setIsUploadingExpressions] = useState(false);
   const [formData, setFormData] = useState<ManualDraftFormData>({
@@ -83,6 +89,7 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
 
   const resetForm = () => {
     setAvatarFile(null);
+    setIsFictionalAttested(false);
     setExpressionFiles(new Map());
     setFormData(EMPTY_FORM_DATA);
     setAlternateGreetings([]);
@@ -191,8 +198,9 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
         depth_prompt_role: depthPromptPrompt.trim() ? depthPromptRole : undefined,
         talkativeness: talkativeness || undefined,
         // This form only sets the avatar via upload — flag it for the selfie
-        // safety gate (blocked until attested; see utils/avatarProvenance).
-        avatarProvenance: avatarFile ? 'uploaded' : undefined,
+        // safety gate (blocked unless the user attested it's fictional; see
+        // utils/avatarProvenance).
+        avatarProvenance: avatarFile ? (isFictionalAttested ? 'fictional-declared' : 'uploaded') : undefined,
       },
       avatarFile || undefined
     );
@@ -256,9 +264,30 @@ export function CharacterCreation({ isOpen, onClose, onCreated, initialData }: C
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Avatar Upload */}
         <ImageUpload
-          onImageSelect={setAvatarFile}
+          onImageSelect={(file) => {
+            setAvatarFile(file);
+            setIsFictionalAttested(false);
+          }}
           label="Avatar"
         />
+
+        {avatarFile && (
+          <div className="space-y-1">
+            <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isFictionalAttested}
+                onChange={(e) => setIsFictionalAttested(e.target.checked)}
+                className="accent-[var(--color-primary)]"
+              />
+              This image depicts a fictional or AI-generated character — not a real photo of a real person
+            </label>
+            <p className="text-xs text-[var(--color-text-secondary)] pl-6">
+              Unlocks selfie generation for this character. Leave unchecked for real-person photos or
+              artwork you're unsure about.
+            </p>
+          </div>
+        )}
 
         <CoreCardFields
           formData={formData}

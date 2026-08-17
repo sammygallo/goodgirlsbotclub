@@ -1,7 +1,7 @@
 import { useChatStore } from './chatStore';
 import { useCharacterStore } from './characterStore';
 import { useImageGenStore } from './imageGenStore';
-import { generateSelfie } from '../api/selfieGen';
+import { generateSelfie, type SelfieTier } from '../api/selfieGen';
 import { hasSelfieTag, parseSelfieDirective, selfieTargetUnchanged } from '../utils/selfie';
 import { selfieEligibleForCurrentChat, useSelfieStore } from './selfieStore';
 
@@ -16,8 +16,12 @@ import { selfieEligibleForCurrentChat, useSelfieStore } from './selfieStore';
  * note in ./selfieStore. The client owns the trigger; the model only requests
  * it, and every generation re-checks eligibility here (never trust the tag alone).
  *
- * v1: SFW tier only. NSFW is reachable via the endpoint but is deliberately not
- * model-triggered in chat (keeps NSFW generation on our rules, not the model's).
+ * The tag-driven auto-dispatch below always requests `sfw` — NSFW is
+ * deliberately not model-triggered in chat (keeps NSFW generation on our
+ * rules, not the model's). {@link triggerSelfie} is the shared generation
+ * path, also used directly by the manual "Take selfie" message action
+ * (ChatView.tsx), which DOES let the user pick `nsfw` (gated on
+ * `generation:video` — see ChatView's `canSelfieNsfw`).
  */
 
 function activeAiMessage(state: ReturnType<typeof useChatStore.getState>) {
@@ -30,11 +34,30 @@ function activeAiMessage(state: ReturnType<typeof useChatStore.getState>) {
   return null;
 }
 
-async function runSelfie(
-  characterName: string,
-  descriptors: string,
-  characterAvatar: string,
-): Promise<void> {
+export interface TriggerSelfieOptions {
+  characterName: string;
+  descriptors: string;
+  characterAvatar: string;
+  tier: SelfieTier;
+  /** Called on generation failure. Omit to degrade silently (the auto-dispatch's
+   *  behavior — the model's own narration already covers it, see design §8); a
+   *  manual trigger should pass this to surface a toast, since a user who
+   *  explicitly asked for a selfie needs to see it fail, not silence. */
+  onError?: (err: Error) => void;
+}
+
+/**
+ * Generate one selfie and, on success, insert it as a new image message.
+ * Shared by the tag-driven auto-dispatch (below) and the manual "Take
+ * selfie" message action.
+ */
+export async function triggerSelfie({
+  characterName,
+  descriptors,
+  characterAvatar,
+  tier,
+  onError,
+}: TriggerSelfieOptions): Promise<void> {
   const { setGeneratingFor } = useSelfieStore.getState();
   // Snapshot the origin chat at fire time. generateSelfie can take a while (a
   // cold Replicate boot; see api/selfieGen.ts), and the user can navigate away
@@ -44,7 +67,7 @@ async function runSelfie(
   const originChatFile = useChatStore.getState().currentChatFile;
   setGeneratingFor(characterName);
   try {
-    const imageUrl = await generateSelfie(characterName, descriptors, 'sfw');
+    const imageUrl = await generateSelfie(characterName, descriptors, tier);
     const character = useCharacterStore.getState().selectedCharacter;
     // Drop (don't misattribute) unless we're STILL on the exact character + chat
     // file that requested it — see selfieTargetUnchanged.
@@ -77,9 +100,13 @@ async function runSelfie(
       /* gallery is localStorage-only convenience */
     }
   } catch (err) {
-    // Graceful degrade (design §8): no dead bubble — the model's own narration
-    // ("*sends a selfie*") stands, and the stripped tag left the text clean.
-    console.warn('[selfie] generation failed; leaving the narrated reply as-is:', err);
+    if (onError) {
+      onError(err instanceof Error ? err : new Error(String(err)));
+    } else {
+      // Graceful degrade (design §8): no dead bubble — the model's own narration
+      // ("*sends a selfie*") stands, and the stripped tag left the text clean.
+      console.warn('[selfie] generation failed; leaving the narrated reply as-is:', err);
+    }
   } finally {
     setGeneratingFor(null);
   }
@@ -131,5 +158,5 @@ useChatStore.subscribe((state) => {
   if (descriptors === null) return;
 
   _firedThisStream = true; // claim before the async call so a re-entry can't double-fire
-  void runSelfie(characterName, descriptors, characterAvatar);
+  void triggerSelfie({ characterName, descriptors, characterAvatar, tier: 'sfw' });
 });

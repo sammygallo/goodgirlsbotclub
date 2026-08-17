@@ -73,6 +73,8 @@ interface ChatMessageProps {
   onCheckpoint?: () => void;
   /** Scene-video: render this message as a ~30s video via Replicate. */
   onGenerateScene?: () => void;
+  /** Manual character-selfie trigger (opens TakeSelfieModal). */
+  onTakeSelfie?: () => void;
   /** Increment this to programmatically trigger edit mode (e.g. up-arrow shortcut). */
   triggerEditNonce?: number;
 }
@@ -110,6 +112,7 @@ export function ChatMessage({
   onRegenerate,
   onCheckpoint,
   onGenerateScene,
+  onTakeSelfie,
   triggerEditNonce,
 }: ChatMessageProps) {
   const isMobile = useIsMobile();
@@ -316,6 +319,7 @@ export function ChatMessage({
               ...(onCheckpoint ? [{ key: 'checkpoint', label: 'Checkpoint', onClick: onCheckpoint }] : []),
               ...(!isUser && onRegenerate ? [{ key: 'regen', label: 'Regenerate', onClick: onRegenerate }] : []),
               ...(onGenerateScene ? [{ key: 'scene', label: 'Generate scene', onClick: onGenerateScene }] : []),
+              ...(onTakeSelfie ? [{ key: 'selfie', label: 'Take selfie', onClick: onTakeSelfie }] : []),
               ...messageActionExtras.map((e) => ({ key: `ext_${e.key}`, label: e.label, onClick: e.onClick })),
               { key: 'delete', label: 'Delete', onClick: () => onDelete?.(), danger: true },
             ].map((action) => {
@@ -345,6 +349,7 @@ export function ChatMessage({
           showRegenerate={!isUser && !!onRegenerate}
           onCheckpoint={onCheckpoint}
           onGenerateScene={onGenerateScene}
+          onTakeSelfie={onTakeSelfie}
           extras={messageActionExtras}
           anchorRight={layoutMode === 'bubbles' && isUser}
         />

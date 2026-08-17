@@ -8,6 +8,7 @@ import { spritesApi, type CharacterInfo } from '../../api/client';
 import { Modal, Button, ImageUpload, ExpressionUpload } from '../ui';
 import { showToastGlobal } from '../ui/Toast';
 import { cardToCharacterInfo, type CharacterCardV2, type CharacterExportData } from '../../utils/characterCard';
+import { avatarProvenanceAllowsSelfies } from '../../utils/avatarProvenance';
 import { CoreCardFields } from './fields/CoreCardFields';
 import { AdvancedCardFields } from './fields/AdvancedCardFields';
 import { CharacterLorebookSection } from './CharacterLorebookSection';
@@ -107,6 +108,9 @@ export function CharacterEdit({
   const embeddedEntryCount = embeddedBook?.entries.length ?? 0;
 
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  // Phase 3 attestation (docs/character-selfies-design.md §7/§9) — see the
+  // identical note in CharacterCreation.tsx. Defaults OFF; resets on a new file.
+  const [isFictionalAttested, setIsFictionalAttested] = useState(false);
   const [expressionFiles, setExpressionFiles] = useState<Map<string, File>>(new Map());
   const [isUploadingExpressions, setIsUploadingExpressions] = useState(false);
   const [formData, setFormData] = useState<{
@@ -248,7 +252,7 @@ export function CharacterEdit({
         // swapping a generated avatar for an uploaded photo must not keep the
         // selfie gate open. A text-only edit leaves avatarFile null, so the
         // backend preserves the existing provenance. See utils/avatarProvenance.
-        avatarProvenance: avatarFile ? 'uploaded' : undefined,
+        avatarProvenance: avatarFile ? (isFictionalAttested ? 'fictional-declared' : 'uploaded') : undefined,
       },
       avatarFile || undefined
     );
@@ -361,9 +365,42 @@ export function CharacterEdit({
         {/* Avatar Upload */}
         <ImageUpload
           currentImage={getAvatarUrl(character.avatar)}
-          onImageSelect={setAvatarFile}
+          onImageSelect={(file) => {
+            setAvatarFile(file);
+            setIsFictionalAttested(false);
+          }}
           label="Avatar"
         />
+
+        {/* Current gate status — reflects the SAVED provenance, not the
+            pending checkbox below, so it's always an honest read of what's
+            live right now. */}
+        {!avatarFile && (
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            {avatarProvenanceAllowsSelfies(character.avatar_provenance)
+              ? '✅ Cleared for selfies'
+              : '⚠️ Not cleared — selfies unavailable for this character'}
+          </p>
+        )}
+
+        {avatarFile && (
+          <div className="space-y-1">
+            <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isFictionalAttested}
+                onChange={(e) => setIsFictionalAttested(e.target.checked)}
+                className="accent-[var(--color-primary)]"
+              />
+              This image depicts a fictional or AI-generated character — not a real photo of a real person
+            </label>
+            <p className="text-xs text-[var(--color-text-secondary)] pl-6">
+              Unlocks selfie generation for this character. Leave unchecked for real-person photos or
+              artwork you're unsure about — swapping in an unattested avatar downgrades a previously
+              cleared character back to blocked.
+            </p>
+          </div>
+        )}
 
         {/* Import provenance — only shown for characters imported after this
             landed; a manually-created or pre-existing character has none. */}

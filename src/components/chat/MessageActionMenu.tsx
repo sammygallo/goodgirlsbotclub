@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Pencil, Copy, Trash2, RefreshCw, GitFork, Puzzle, Clapperboard } from 'lucide-react';
+import { Pencil, Copy, Trash2, RefreshCw, GitFork, Puzzle, Clapperboard, Camera } from 'lucide-react';
 
 export interface MessageActionExtra {
   key: string;
@@ -20,6 +20,8 @@ interface MessageActionMenuProps {
   onCheckpoint?: () => void;
   /** Scene-video: render the message as a ~30s video via Replicate. */
   onGenerateScene?: () => void;
+  /** Manual character-selfie trigger (opens TakeSelfieModal). */
+  onTakeSelfie?: () => void;
   /** Extension-contributed entries rendered before Delete. */
   extras?: MessageActionExtra[];
   anchorRight?: boolean;
@@ -35,6 +37,7 @@ export function MessageActionMenu({
   showRegenerate,
   onCheckpoint,
   onGenerateScene,
+  onTakeSelfie,
   extras,
   anchorRight,
 }: MessageActionMenuProps) {
@@ -75,6 +78,9 @@ export function MessageActionMenu({
       : []),
     ...(onGenerateScene
       ? [{ key: 'scene', icon: Clapperboard, label: 'Generate scene', onClick: onGenerateScene }]
+      : []),
+    ...(onTakeSelfie
+      ? [{ key: 'selfie', icon: Camera, label: 'Take selfie', onClick: onTakeSelfie }]
       : []),
     ...(extras ?? []).map((e) => ({
       key: `ext_${e.key}`,

@@ -9,8 +9,13 @@
  * The frontend's job (Phase 0): record how each avatar came to be, at the moment
  * the avatar is set, and send it to the backend as the EXPLICIT
  * `avatar_provenance_source` field on create/edit — in-app generation →
- * 'generated' (the only value that clears an avatar going forward), user upload →
- * 'uploaded', imported card → 'imported' (both blocked server-side).
+ * 'generated' (clears an avatar automatically), user upload → 'uploaded'
+ * (blocked), imported card → 'imported' (blocked, never trusts an embedded
+ * card stamp). Phase 3: a user can additionally attest a freshly-uploaded
+ * image is fictional/AI-generated (an explicit, logged checkbox at upload
+ * time — see CharacterCreation/CharacterEdit/InterviewAvatarStep), sending
+ * 'fictional-declared' instead of 'uploaded' — this is the ONLY way an
+ * upload clears the gate; the choice is never inferred or defaulted on.
  *
  * Crucially this is sent ONLY when a new avatar is chosen this save. A text-only
  * edit sends nothing, so the backend preserves the existing value; an avatar
@@ -20,7 +25,7 @@
  * silently reopen the gate (the import→edit bypass this design avoids).
  */
 
-export type AvatarSource = 'generated' | 'uploaded' | 'imported';
+export type AvatarSource = 'generated' | 'uploaded' | 'imported' | 'fictional-declared';
 
 /**
  * The backend-side provenance column values (`CharacterInfo.avatar_provenance`,

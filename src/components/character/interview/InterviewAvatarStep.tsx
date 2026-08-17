@@ -95,6 +95,12 @@ export function InterviewAvatarStep() {
   const [choice, setChoice] = useState<Choice>(null);
   const [generatedSrc, setGeneratedSrc] = useState<string | null>(null);
   const [showImageOptions, setShowImageOptions] = useState(false);
+  // Upload branch: hold the picked file locally instead of proceeding
+  // immediately, so there's a moment to offer the fictional/AI-generated
+  // attestation (docs/character-selfies-design.md §7/§9) before it's
+  // persisted. Defaults OFF; resets whenever a different file is chosen.
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [isFictionalAttested, setIsFictionalAttested] = useState(false);
 
   const handleGenerateClick = async () => {
     setChoice('generate');
@@ -119,6 +125,12 @@ export function InterviewAvatarStep() {
     proceedToReview();
   };
 
+  const handleUploadContinue = () => {
+    if (!uploadedFile) return;
+    setAvatarFile(uploadedFile, isFictionalAttested ? 'fictional-declared' : 'uploaded');
+    proceedToReview();
+  };
+
   return (
     <div className="h-full overflow-y-auto flex items-center justify-center px-6 py-10">
       <div className="max-w-md w-full space-y-4">
@@ -133,17 +145,41 @@ export function InterviewAvatarStep() {
           <div className="space-y-3">
             <ImageUpload
               onImageSelect={(file) => {
-                if (file) {
-                  // User-uploaded image → 'uploaded' (blocked by the selfie gate).
-                  setAvatarFile(file, 'uploaded');
-                  proceedToReview();
-                }
+                setUploadedFile(file);
+                setIsFictionalAttested(false);
               }}
               label="Avatar"
             />
-            <Button type="button" variant="ghost" size="sm" onClick={() => setChoice(null)}>
-              Back
-            </Button>
+
+            {uploadedFile && (
+              <div className="space-y-1">
+                <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isFictionalAttested}
+                    onChange={(e) => setIsFictionalAttested(e.target.checked)}
+                    className="accent-[var(--color-primary)]"
+                  />
+                  This image depicts a fictional or AI-generated character — not a real photo of a
+                  real person
+                </label>
+                <p className="text-xs text-[var(--color-text-secondary)] pl-6">
+                  Unlocks selfie generation for this character. Leave unchecked for real-person
+                  photos or artwork you're unsure about.
+                </p>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={() => setChoice(null)}>
+                Back
+              </Button>
+              {uploadedFile && (
+                <Button type="button" size="sm" onClick={handleUploadContinue}>
+                  Continue
+                </Button>
+              )}
+            </div>
           </div>
         ) : (
           <div className="space-y-2.5">
