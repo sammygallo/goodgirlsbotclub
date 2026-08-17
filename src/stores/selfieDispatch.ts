@@ -36,10 +36,11 @@ async function runSelfie(
   characterAvatar: string,
 ): Promise<void> {
   const { setGeneratingFor } = useSelfieStore.getState();
-  // Snapshot the origin chat at fire time. generateSelfie takes seconds, and the
-  // user can navigate away meanwhile — insertImageMessage always targets the LIVE
-  // messages/currentChatFile, so without this the selfie would land in (and
-  // persist to) whatever chat is open when it resolves.
+  // Snapshot the origin chat at fire time. generateSelfie can take a while (a
+  // cold Replicate boot; see api/selfieGen.ts), and the user can navigate away
+  // meanwhile — insertImageMessage always targets the LIVE messages/
+  // currentChatFile, so without this the selfie would land in (and persist
+  // to) whatever chat is open when it resolves.
   const originChatFile = useChatStore.getState().currentChatFile;
   setGeneratingFor(characterName);
   try {

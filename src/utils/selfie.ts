@@ -42,7 +42,8 @@ export function stripSelfieTags(text: string): string {
 
 /**
  * Whether a pending (async) selfie still targets the chat that requested it.
- * generateSelfie takes seconds and the user can navigate away meanwhile, so the
+ * generateSelfie can take a while (job/poll under the hood — a cold Replicate
+ * boot routinely takes minutes) and the user can navigate away meanwhile, so the
  * dispatcher must drop — never misattribute — the result unless BOTH the selected
  * character's avatar AND the open chat file are unchanged since fire time. A
  * same-character switch to a different chat FILE moves it too, hence both checks.

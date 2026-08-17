@@ -107,19 +107,20 @@ A new router, structurally a **trimmed scene_video** (keyframe only, no Wan-2.2,
 ```
 
 **Behavior**
-1. **Gate check** (§7): reject 403 unless this character's avatar is provenance-cleared for selfies.
-2. `api_key = resolve_credential(db, user.id, "api_key_replicate")` — 400 if missing (BYO key, same as Live Portrait).
-3. `_resolve_avatar_blob(characterName)` → PNG bytes → `_upload_avatar` → Replicate input URL.
-4. Build the Kontext instruction: identity anchor (`_keyframe_prompt` style) + `"a selfie photo, {prompt}"`. For `tier=nsfw`, route through the scene-worker undress-LoRA keyframe path already used by scene-video (same tiering, same safeguards).
-5. FLUX Kontext predict → poll (`KEYFRAME_TIMEOUT_SEC`, ~3 min ceiling; renders in seconds normally).
-6. Download result → `_store_blob("selfie/{avatar}/{jobId}.png")` → return the `/blobs/...` URL.
+1. **Pre-flight** (synchronous, in the `POST` handler): permission check, tier validation, `_resolve_avatar_blob(characterName)`, **gate check** (§7: reject 403 unless provenance-cleared), and credential presence (400 if missing — BYO key, same as Live Portrait). A job is created and `{jobId, status: "queued"}` returned only once all of these pass.
+2. **Background job** (`_run_job`, not awaited by the request): re-resolves the avatar + re-checks the gate (defense in depth), builds the Kontext instruction (identity anchor + `"a selfie photo, {prompt}"`; for `tier=nsfw`, routes through the scene-worker undress-LoRA keyframe path already used by scene-video — same tiering, same safeguards), submits to FLUX Kontext / the scene-worker, and polls to completion.
+3. On success: download result → `_store_blob("selfie/{avatar}/{uuid}.png")` → job state carries the `/blobs/...` URL. On failure: job state carries an error message. Poll via `GET /api/selfie/status/{jobId}`.
 
 **Response**
 ```jsonc
-{ "imageUrl": "/blobs/selfie/Ivy.png/ab12.png" }
+// POST /api/selfie/generate
+{ "jobId": "sf_...", "status": "queued" }
+
+// GET /api/selfie/status/{jobId}
+{ "status": "completed", "imageUrl": "/blobs/selfie/Ivy.png/ab12.png", "error": null }
 ```
 
-**Sync vs. job:** Kontext keyframes render in seconds, and nginx allows 300s on `/api`, so a **single blocking call** is fine (simpler than the Live Portrait/Scene Video job+poll pattern). If p95 latency creeps up, promote to the `{jobId}` poll pattern later — the client contract can be designed to allow both.
+**Sync vs. job — REVISED 2026-08-17 (see the postmortem note below):** originally shipped as a single blocking call on the assumption that "nginx allows 300s on `/api`." That assumption only accounted for the frontend container's *internal* nginx — the *host-level* reverse proxy in front of the whole app had no `/api` override and used nginx's 60s default, so any generation slower than a minute (a cold Replicate boot routinely is — observed ~5m06s on 2026-08-17) got a premature 504 well before the backend's own budget expired. Promoted to the `{jobId}` poll pattern (mirroring Live Portrait/Scene Video) once the in-chat trigger (Phase 2) put real traffic through this path and hit exactly that.
 
 **Cost:** ~$0.025/selfie on the user's own Replicate key.
 
@@ -130,7 +131,7 @@ A new router, structurally a **trimmed scene_video** (keyframe only, no Wan-2.2,
 - On the returned `imageUrl`, insert an **image message attributed to the character** at the point where the `[selfie:…]` tag appeared (the tag itself is stripped from the visible text, exactly as `[lovense:…]` is stripped in `lovenseStore.ts`).
 - Persist it with the message so it survives reload (blob URL is already served + durable).
 - Auto-save to the **Image Gallery** (reuse `imageGenStore` gallery), tagged with the character + prompt.
-- Loading state: a lightweight "📸 …" placeholder bubble while the ~few-second generation runs.
+- Loading state: a lightweight "📸 …" placeholder bubble while generation runs — usually seconds on a warm Replicate/RunPod instance, but the client should not assume a bound: a cold boot can take several minutes (see §5's revised note), and the bubble just stays up for however long the poll takes.
 
 ---
 
@@ -190,4 +191,4 @@ So selfie generation must be **allowed only when the avatar is known-fictional.*
 2. **Backfill:** auto-clear the current avatar set as fictional — at 18 characters / 9 users the owner knows every avatar, so the unknown-real-person risk is nil. Bounded to the current set; go-forward uploads use the attested gate. **Revisit if the platform opens to scale.**
 3. **Trigger:** model-emitted `[selfie:…]` tag only for v1. Manual "📸" affordance deferred to Phase 4.
 4. **NSFW:** shipped in v1, reusing scene-video's existing undress-LoRA safeguards on top of the provenance gate.
-5. **Endpoint shape:** blocking `/api/selfie/generate` now (Kontext renders in seconds; nginx allows 300s); contract shaped so a future `{jobId}`-poll mode is a non-breaking addition.
+5. **Endpoint shape:** ~~blocking `/api/selfie/generate` (Kontext renders in seconds; nginx allows 300s); contract shaped so a future `{jobId}`-poll mode is a non-breaking addition~~ — **superseded 2026-08-17.** Promoted to the `{jobId}`-poll pattern after real in-chat traffic hit a cold-boot Replicate call (~5m06s) that the outer host nginx's 60s default timeout cut off with a 504 before the backend's own (much longer) budget expired — the "nginx allows 300s" assumption only held for the frontend container's internal proxy, not the host-level one in front of it. See §5's revised note.
