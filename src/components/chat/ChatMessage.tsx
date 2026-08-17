@@ -9,7 +9,7 @@ import { SwipeControl } from './SwipeControl';
 import { stripEmotionTag } from '../../utils/emotions';
 import { MarkdownContent } from './MarkdownContent';
 import { useSpeechSynthesis } from '../../hooks/useSpeechSynthesis';
-import type { ChatLayoutMode, AvatarShape } from '../../hooks/displayPreferences';
+import type { ChatLayoutMode, AvatarShape, AvatarSize } from '../../hooks/displayPreferences';
 import type { TokenUsage } from '../../stores/chatStore';
 import { formatTokens } from '../../stores/usageStore';
 import { estimateTokens, profileForProvider } from '../../utils/tokenizer';
@@ -53,6 +53,7 @@ interface ChatMessageProps {
   /** Phase 7.3: display style settings. */
   layoutMode?: ChatLayoutMode;
   avatarShape?: AvatarShape;
+  avatarSize?: AvatarSize;
   fontSize?: number;
   chatMaxWidth?: number;
   /** Estimated per-turn token usage (AI messages only); renders a cost chip. */
@@ -104,6 +105,7 @@ export function ChatMessage({
   isStreaming: isStreamingMsg,
   layoutMode = 'bubbles',
   avatarShape = 'circle',
+  avatarSize = 'default',
   fontSize,
   chatMaxWidth = 80,
   onEdit,
@@ -546,7 +548,7 @@ export function ChatMessage({
           fallbackSrc={avatarFallback}
           onFallback={onAvatarError}
           alt={name}
-          size="md"
+          size={avatarSize === 'default' ? 'md' : avatarSize}
           shape={avatarShape}
           className="flex-shrink-0"
         />
@@ -605,7 +607,7 @@ export function ChatMessage({
             fallbackSrc={avatarFallback}
             onFallback={onAvatarError}
             alt={name}
-            size="sm"
+            size={avatarSize === 'default' ? 'sm' : avatarSize}
             shape={avatarShape}
             className="flex-shrink-0"
           />

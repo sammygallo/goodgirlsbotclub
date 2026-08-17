@@ -85,6 +85,7 @@ import {
 import {
   getChatLayoutMode,
   getAvatarShape,
+  getAvatarSize,
   getChatFontSize,
   getChatMaxWidth,
   getVnBgForCharacter,
@@ -193,6 +194,7 @@ export function ChatView() {
   // Phase 7.3: display preferences (read from localStorage on mount/render)
   const chatLayoutMode = getChatLayoutMode();
   const avatarShapePref = getAvatarShape();
+  const avatarSizePref = getAvatarSize();
   const chatFontSize = getChatFontSize();
   const chatMaxWidth = getChatMaxWidth();
   // Phase 6.4: VN mode — read reactively from the store (not local state) so
@@ -1874,6 +1876,7 @@ export function ChatView() {
                     isLastMessage={isLastAiMessage}
                     layoutMode={chatLayoutMode}
                     avatarShape={avatarShapePref}
+                    avatarSize={avatarSizePref}
                     fontSize={chatFontSize}
                     chatMaxWidth={chatMaxWidth}
                     swipes={message.swipes}

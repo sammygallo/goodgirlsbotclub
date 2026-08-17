@@ -12,14 +12,20 @@
 
 export type ChatLayoutMode = 'bubbles' | 'flat' | 'document';
 export type AvatarShape = 'circle' | 'square' | 'rounded-square';
+// 'default' preserves each layout's own baseline size (bubbles=md, flat=sm)
+// so shipping this setting doesn't silently resize anyone's existing chat —
+// it only takes effect once a user explicitly picks a size.
+export type AvatarSize = 'default' | 'sm' | 'md' | 'lg' | 'xl';
 
 const LAYOUT_MODE_KEY = 'stm:chat-layout-mode';
 const AVATAR_SHAPE_KEY = 'stm:avatar-shape';
+const AVATAR_SIZE_KEY = 'stm:avatar-size';
 const FONT_SIZE_KEY = 'stm:chat-font-size';
 const CHAT_WIDTH_KEY = 'stm:chat-max-width';
 
 const VALID_LAYOUTS: ChatLayoutMode[] = ['bubbles', 'flat', 'document'];
 const VALID_SHAPES: AvatarShape[] = ['circle', 'square', 'rounded-square'];
+const VALID_SIZES: AvatarSize[] = ['default', 'sm', 'md', 'lg', 'xl'];
 
 // ---- Layout Mode ----------------------------------------------------
 
@@ -47,6 +53,20 @@ export function getAvatarShape(): AvatarShape {
 
 export function setAvatarShape(shape: AvatarShape): void {
   try { localStorage.setItem(AVATAR_SHAPE_KEY, shape); } catch { /* ignore */ }
+}
+
+// ---- Avatar Size ------------------------------------------------------
+
+export function getAvatarSize(): AvatarSize {
+  try {
+    const v = localStorage.getItem(AVATAR_SIZE_KEY);
+    if (v && VALID_SIZES.includes(v as AvatarSize)) return v as AvatarSize;
+  } catch { /* ignore */ }
+  return 'default';
+}
+
+export function setAvatarSize(size: AvatarSize): void {
+  try { localStorage.setItem(AVATAR_SIZE_KEY, size); } catch { /* ignore */ }
 }
 
 // ---- Font Size (px) -------------------------------------------------
