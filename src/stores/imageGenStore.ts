@@ -8,10 +8,14 @@ import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, reco
 
 export interface GalleryEntry {
   id: string;
+  // A data: URL for image-gen results, or a served /blobs/… URL for selfies.
   dataUrl: string;
   prompt: string;
-  backend: ImageGenBackend;
+  backend: ImageGenBackend | 'selfie';
   timestamp: number;
+  // Character a selfie was generated for (selfie entries only) — for gallery
+  // attribution. Absent on ordinary image-gen entries.
+  character?: string;
 }
 
 // ---------------------------------------------------------------------------

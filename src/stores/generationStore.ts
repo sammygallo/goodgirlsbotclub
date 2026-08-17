@@ -123,6 +123,7 @@ export type PromptSectionId =
   | 'ext_before_an'
   | 'jailbreak'
   | 'emotion_instruction'
+  | 'selfie_instruction'
   | 'rag_context'
   | 'char_phi'
   | 'user_phi'
@@ -147,6 +148,7 @@ export const DEFAULT_PROMPT_ORDER: PromptSectionEntry[] = [
   { id: 'ext_before_an', enabled: true },
   { id: 'jailbreak', enabled: true },
   { id: 'emotion_instruction', enabled: true },
+  { id: 'selfie_instruction', enabled: true },
   { id: 'rag_context', enabled: true },
   { id: 'char_phi', enabled: true },
   { id: 'user_phi', enabled: true },
@@ -175,6 +177,7 @@ export const PROMPT_SECTION_LABELS: Record<PromptSectionId, string> = {
   ext_before_an: 'Extensions — Before Author Note',
   jailbreak: 'Jailbreak / Auxiliary Prompt',
   emotion_instruction: 'Emotion Tag Instruction',
+  selfie_instruction: 'Selfie Tag Instruction',
   rag_context: 'Data Bank / RAG Context',
   char_phi: 'Character Post-History Instructions',
   user_phi: 'User Post-History Instructions',
@@ -195,6 +198,7 @@ export const PROMPT_SECTION_DESCRIPTIONS: Record<PromptSectionId, string> = {
   ext_before_an: 'Extension-injected context marked "before author note".',
   jailbreak: 'User-level jailbreak / auxiliary system prompt.',
   emotion_instruction: 'Instructs the AI to prefix each reply with an [emotion:TAG] tag.',
+  selfie_instruction: 'Teaches the character to send selfies via a [selfie: …] tag. Only injected for provenance-cleared avatars when the feature is on and you can generate images.',
   rag_context: 'Semantic chunks retrieved from the Data Bank for the current message.',
   char_phi: "Character card's post-history instructions (after chat history).",
   user_phi: 'User-level post-history instructions (after chat history).',

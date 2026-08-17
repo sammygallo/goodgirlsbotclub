@@ -228,6 +228,10 @@ interface ServerCharacter {
   server_ts: number;
   create_date: string;
   last_modified: string;
+  // Avatar-provenance safety gate (backend migration 0024). Read-only; the
+  // selfie feature reads it to decide whether a character may send selfies.
+  // Values: generated | fictional-declared | grandfathered | uploaded | unknown.
+  avatar_provenance?: string;
 }
 
 function toCharacterInfo(row: ServerCharacter): CharacterInfo {
@@ -253,6 +257,7 @@ function toCharacterInfo(row: ServerCharacter): CharacterInfo {
     character_version: data.character_version as string | undefined,
     creator_notes: data.creator_notes as string | undefined,
     creator: data.creator as string | undefined,
+    avatar_provenance: row.avatar_provenance,
     data: data as CharacterInfo['data'],
   };
 }
@@ -526,6 +531,9 @@ export interface CharacterInfo {
   character_version?: string;
   creator_notes?: string;
   creator?: string;
+  // Avatar-provenance safety gate (backend). Only generated/fictional-declared/
+  // grandfathered avatars may send selfies. See utils/avatarProvenance.
+  avatar_provenance?: string;
   data?: {
     name?: string;
     description?: string;

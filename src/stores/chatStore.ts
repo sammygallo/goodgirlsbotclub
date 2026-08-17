@@ -20,6 +20,10 @@ import {
   type PromptSectionId,
 } from './generationStore';
 import { useCharacterStore } from './characterStore';
+// Selfie teaching block (Phase 2). Function-definition imports only — the
+// chatStore↔selfie dispatch cycle is broken by keeping the subscription in the
+// separate selfieDispatch module (see stores/selfieStore).
+import { selfieEligibleForCurrentChat, buildSelfieInstruction } from './selfieStore';
 import {
   useWorldInfoStore,
   scanMessagesForEntries,
@@ -1158,6 +1162,14 @@ Example: [emotion:joy] I'm so glad you asked about that!
 
 Choose the emotion that best matches how ${character.name} would feel based on the conversation context.`.trim();
 
+  // Selfie teaching block (Phase 2) — injected ONLY when this single-character
+  // chat is selfie-eligible (feature on + provenance-cleared avatar + the user
+  // can generate images + a Replicate key). Empty otherwise, so the model is
+  // never told the tag exists for a character it can't send selfies for.
+  const selfieInstruction = selfieEligibleForCurrentChat().eligible
+    ? buildSelfieInstruction(character.name)
+    : '';
+
   // Build character info block. Pure chat mode keeps identity (description,
   // personality) but drops the scene-setting fields — scenario and example
   // prose are exactly what teach the model to narrate.
@@ -1223,6 +1235,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     ext_before_an: extBeforeAn,
     jailbreak: userJailbreak,
     emotion_instruction: emotionInstruction,
+    selfie_instruction: selfieInstruction,
     rag_context: ragContext
       ? `[Relevant background information]\n${ragContext}`
       : '',
@@ -2736,15 +2749,19 @@ function normalizeMessage(msg: {
 
   // Recover image attachments. Array form wins; scalar `extra.image`
   // (SillyTavern single-image legacy) is promoted to a 1-element array.
+  // Accept both data: URLs (image-gen inserts) AND served /blobs/… URLs
+  // (character selfies) — same tolerance as the video filter below; a data:-only
+  // filter would silently drop selfies on reload.
+  const isImageRef = (x: unknown): x is string =>
+    typeof x === 'string' && (x.startsWith('data:') || x.startsWith('/') || x.startsWith('http'));
   let images: string[] | undefined;
   const rawImages = msg.extra?.images;
+  const scalarImage = msg.extra?.image;
   if (Array.isArray(rawImages)) {
-    const arr = rawImages.filter(
-      (x): x is string => typeof x === 'string' && x.startsWith('data:')
-    );
+    const arr = rawImages.filter(isImageRef);
     if (arr.length > 0) images = arr;
-  } else if (typeof msg.extra?.image === 'string' && msg.extra.image.startsWith('data:')) {
-    images = [msg.extra.image];
+  } else if (isImageRef(scalarImage)) {
+    images = [scalarImage];
   }
 
   // Recover scene videos — served blob URLs (/blobs/scene-video/...), not
