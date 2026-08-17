@@ -27,13 +27,12 @@ type TestState =
 //   - providers in BACKEND_STATUS_PROVIDERS     → POST to `/api/backends/chat-completions/status`,
 //                                                 which proxies to the provider's `/models` using
 //                                                 the user's stored API key. Skipped when no key.
-//   - everything else (Anthropic, Vertex AI,
-//     Perplexity, AI21, 01.AI, Zhipu, Block
-//     Entropy)                                  → static `defaultModels` (backend `/status` doesn't
+//   - everything else (Vertex AI, Perplexity,
+//     AI21, 01.AI, Zhipu, Block Entropy)         → static `defaultModels` (backend `/status` doesn't
 //                                                 support these yet).
 // Results are cached at module scope per provider id.
 const BACKEND_STATUS_PROVIDERS: ReadonlySet<string> = new Set([
-  'openai', 'makersuite', 'mistralai', 'groq', 'deepseek', 'cohere',
+  'claude', 'openai', 'makersuite', 'mistralai', 'groq', 'deepseek', 'cohere',
   'xai', 'moonshot', 'nanogpt', 'pollinations', 'aimlapi', 'electronhub',
 ]);
 
