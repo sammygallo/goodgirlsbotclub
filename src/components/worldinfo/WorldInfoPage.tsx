@@ -10,6 +10,7 @@ import {
   X,
   RefreshCw,
   AlertTriangle,
+  FileText,
 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -39,6 +40,7 @@ import { Button, Input, ConfirmDialog, Modal } from '../ui';
 import { WorldInfoBookEditor } from './WorldInfoBookEditor';
 import { ChatPickerModal, type ChatSelection } from './ChatPickerModal';
 import { GenerateLorebookModal } from './GenerateLorebookModal';
+import { AddDocumentModal } from './AddDocumentModal';
 import { LibraryFilterBar } from './LibraryFilterBar';
 import { LibraryBookRow } from './LibraryBookRow';
 import { ConflictResolutionSheet } from './ConflictResolutionSheet';
@@ -135,6 +137,7 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
 
   // "Generate from chat" flow: pick a chat → load its messages → review modal.
   const [isChatPickerOpen, setIsChatPickerOpen] = useState(false);
+  const [isAddDocumentOpen, setIsAddDocumentOpen] = useState(false);
   const [genLoading, setGenLoading] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [pendingGen, setPendingGen] = useState<{
@@ -631,23 +634,35 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
               <Button
                 variant="ghost"
                 size="sm"
+                title="Generate from chat"
                 onClick={() => {
                   setGenError(null);
                   setIsChatPickerOpen(true);
                 }}
-                className="text-xs"
+                className="text-xs gap-1.5"
               >
-                <Sparkles size={14} className="mr-1" />
-                Generate from chat
+                <Sparkles size={14} />
+                <span className="hidden sm:inline">Generate from chat</span>
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={handleImportClick}
-                className="text-xs"
+                title="Add document"
+                onClick={() => setIsAddDocumentOpen(true)}
+                className="text-xs gap-1.5"
               >
-                <Upload size={14} className="mr-1" />
-                Import
+                <FileText size={14} />
+                <span className="hidden sm:inline">Add document</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Import"
+                onClick={handleImportClick}
+                className="text-xs gap-1.5"
+              >
+                <Upload size={14} />
+                <span className="hidden sm:inline">Import</span>
               </Button>
             </div>
           </div>
@@ -971,6 +986,17 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
         isOpen={conflictSheetBookId !== null}
         onClose={() => setConflictSheetBookId(null)}
         scope={{ kind: 'book', bookId: conflictSheetBookId ?? '' }}
+      />
+
+      <AddDocumentModal
+        isOpen={isAddDocumentOpen}
+        onClose={() => setIsAddDocumentOpen(false)}
+        onCreated={(book) => {
+          setImportNotice(
+            `Created "${book.name}" with ${book.entries.length} entr${book.entries.length === 1 ? 'y' : 'ies'}`
+          );
+          setTimeout(() => setImportNotice(null), 4000);
+        }}
       />
 
       {genLoading && (

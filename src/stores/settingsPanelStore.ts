@@ -15,7 +15,6 @@ export type SettingsPageId =
   | 'characters'
   | 'quickreplies'
   | 'extensions'
-  | 'databank'
   | 'gallery'
   | 'themes'
   | 'usage';

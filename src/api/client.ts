@@ -1231,11 +1231,12 @@ export const api = {
 
   /**
    * GET /retrieval/messages/status — {embedded, pending, failed} counts
-   * across every chat the caller owns. Backs the Data Bank page's
-   * indexing indicator (replaces the old client-side embeddingsByChat
-   * counter, which only ever reflected the current session's in-memory
-   * cache). `failed` surfaces worker outcomes (typically a missing/
-   * invalid OpenAI key) that the old client-side path left silent.
+   * across every chat the caller owns. Backs the chat-memory section's
+   * indexing indicator (EmbeddingsKeySettings.tsx; replaces the old
+   * client-side embeddingsByChat counter, which only ever reflected the
+   * current session's in-memory cache). `failed` surfaces worker outcomes
+   * (typically a missing/invalid OpenAI key) that the old client-side
+   * path left silent.
    */
   async getMessageEmbeddingsStatus(): Promise<{ embedded: number; pending: number; failed: number }> {
     return apiRequest<{ embedded: number; pending: number; failed: number }>(

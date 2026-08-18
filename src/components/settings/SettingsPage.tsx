@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { ArrowLeft, BookOpen, ChevronRight, Database, Edit3, FileText, Gauge, Image, Languages, Loader2, MessageSquare, Mic, Palette, Plus, Replace, Shield, Sliders, Sparkles, Trash2, UserPlus, Users, Volume2, Zap } from 'lucide-react';
+import { ArrowLeft, BookOpen, ChevronRight, Edit3, FileText, Gauge, Image, Languages, Loader2, MessageSquare, Mic, Palette, Plus, Replace, Shield, Sliders, Sparkles, Trash2, UserPlus, Users, Volume2, Zap } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useOnboardingStore } from '../../stores/onboardingStore';
@@ -401,25 +401,6 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                   <p className="text-sm font-medium text-[var(--color-text-primary)]">Image Gallery</p>
                   <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
                     Browse previously generated images
-                  </p>
-                </div>
-                <ChevronRight size={20} className="text-[var(--color-text-secondary)]" />
-              </button>
-            </section>
-
-            {/* Data Bank (Phase 8.5) */}
-            <section className="bg-[var(--color-bg-secondary)] rounded-lg overflow-hidden cyberpunk-card">
-              <button
-                onClick={() => pushPage('databank')}
-                className="w-full flex items-center gap-3 p-4 hover:bg-[var(--color-bg-tertiary)] transition-colors text-left"
-              >
-                <div className="w-10 h-10 rounded-lg bg-[var(--color-primary)]/20 flex items-center justify-center">
-                  <Database size={20} className="text-[var(--color-primary)]" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-[var(--color-text-primary)]">Data Bank</p>
-                  <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-                    RAG — upload documents and inject relevant chunks into context
                   </p>
                 </div>
                 <ChevronRight size={20} className="text-[var(--color-text-secondary)]" />

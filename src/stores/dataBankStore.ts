@@ -11,15 +11,19 @@
  * client-side query/injection path.
  *
  * This store now owns two things only:
- *  1. `addDocument`/`deleteDocument` — a thin, Data-Bank-flavored front end
- *     over `worldInfoStore.ts`'s native CRUD (`createBookWithEntries`/
- *     `deleteBook`), so paste/upload stays a one-call action instead of the
- *     caller hand-assembling chunks + entries itself.
+ *  1. `addDocument` — a thin, Data-Bank-flavored front end over
+ *     `worldInfoStore.ts`'s native `createBookWithEntries`, so paste/upload
+ *     stays a one-call action instead of the caller hand-assembling
+ *     chunks + entries itself. (Deletion needs no counterpart: documents
+ *     are ordinary lorebooks, deleted in the library via `deleteBook` like
+ *     any other book.)
  *  2. A small index (`stm_data_bank_index` — a NEW server section,
  *     deliberately NOT the legacy `stm_data_bank` blob, see the module
  *     docstring on `fetchPrefs` below) of which of the user's lorebook ids
- *     came from a Data Bank upload, purely so `DataBankPage.tsx` can show a
- *     filtered "your documents" view instead of the user's whole library.
+ *     came from a Data Bank upload. (It once backed the retired
+ *     DataBankPage's filtered "your documents" view; documents now live in
+ *     the World Info library like any other lorebook, added via
+ *     AddDocumentModal.)
  *
  * The legacy `stm_data_bank` blob (old documents + client-computed
  * embedding vectors) is migrated once, automatically, via
@@ -41,8 +45,9 @@ import { useWorldInfoStore, type WorldInfoEntry } from './worldInfoStore';
 // secret (api_key_openai_embeddings, falling back to api_key_openai) is what
 // the server-side background embedding worker uses to embed newly-created
 // entries (app/workers/embeddings.py) — this store just surfaces whether
-// one is configured so DataBankPage can warn "documents won't be searchable
-// until you add a key," same message, different (now server-side) consumer.
+// one is configured so EmbeddingsKeySettings can warn "documents won't be
+// searchable until you add a key," same message, different (now
+// server-side) consumer.
 // ---------------------------------------------------------------------------
 
 /** True if the embeddings proxy will find a usable key server-side: a dedicated
@@ -98,10 +103,6 @@ interface DataBankState {
     scope: 'global' | 'character',
     characterAvatar?: string
   ) => string;
-
-  /** Deletes the underlying lorebook (via worldInfoStore.deleteBook) and
-   *  drops it from this store's index. */
-  deleteDocument: (id: string) => void;
 
   /** A3.1d — pull /sync/section/stm_data_bank_index and reconcile; also
    *  runs the one-time legacy-blob migration (see module docstring). */
@@ -246,13 +247,6 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
     return book.id;
   },
 
-  deleteDocument: (id) => {
-    useWorldInfoStore.getState().deleteBook(id);
-    const lorebookIds = get().lorebookIds.filter((bookId) => bookId !== id);
-    saveIndex(lorebookIds);
-    set({ lorebookIds });
-  },
-
   resetUser: () => {
     set({ lorebookIds: [] });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
@@ -323,7 +317,7 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
  * `imported` list (everything already migrated), so if it were the only
  * one updating the registry, the registry could end up NEVER populated
  * for that user — the books would exist and work fine for retrieval, but
- * would silently vanish from the Data Bank page forever.
+ * their Data Bank provenance would be silently lost forever.
  */
 export async function ensureDataBankImportedAndIndexed(): Promise<void> {
   const migrated = await ensureDataBankImported();

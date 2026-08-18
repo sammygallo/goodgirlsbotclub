@@ -955,7 +955,7 @@ export function WorldInfoEntryForm({
         </div>
         {!hasEmbeddingsKey && (
           <p className="text-xs italic text-[var(--color-text-secondary)]">
-            Requires an OpenAI embeddings key (Settings → Data Bank) to compare against existing lore.
+            Requires an OpenAI embeddings key (Settings → AI Settings) to compare against existing lore.
           </p>
         )}
         {dupError && <p className="text-xs text-red-400">{dupError}</p>}

@@ -11,7 +11,6 @@ import { PermissionGroupsPage } from './PermissionGroupsPage';
 import { QuickReplyPage } from './QuickReplyPage';
 import { ExtensionsPage } from './ExtensionsPage';
 import { CharacterManagementPage } from './CharacterManagementPage';
-import { DataBankPage } from './DataBankPage';
 import { GalleryPage } from './GalleryPage';
 import { ThemeEditorPage } from './ThemeEditorPage';
 import { AISettingsPage } from './AISettingsPage';
@@ -40,7 +39,6 @@ const PAGE_COMPONENTS: Record<SettingsPageId, React.ComponentType<{ params?: Rec
   characters: CharacterManagementPage,
   quickreplies: QuickReplyPage,
   extensions: ExtensionsPage,
-  databank: DataBankPage,
   gallery: GalleryPage,
   themes: ThemeEditorPage,
   usage: UsagePage,

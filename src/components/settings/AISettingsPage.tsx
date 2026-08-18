@@ -15,6 +15,7 @@ import { ImageGenSettingsFields } from './ImageGenSettingsFields';
 import { ImageGenProviderNotice } from './ImageGenProviderNotice';
 import { useImageGenStore } from '../../stores/imageGenStore';
 import { useSelfieStore } from '../../stores/selfieStore';
+import { EmbeddingsApiKeySection, ChatHistoryRagSection } from './EmbeddingsKeySettings';
 
 type TestState =
   | { kind: 'idle' }
@@ -756,6 +757,11 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
             </button>
           </div>
         </section>
+
+        {/* Embeddings — powers Lorebook semantic search server-side and the
+            chat-memory feature below. Separate from chat providers above. */}
+        <EmbeddingsApiKeySection />
+        <ChatHistoryRagSection />
 
         {/* Media Generation — image + video providers/keys, kept together so
             it's clear these are separate from the chat model. */}
