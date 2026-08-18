@@ -101,7 +101,7 @@ interface AutoMemoryState {
   extractFacts: (
     chatFile: string,
     character: CharacterInfo,
-    messages: { name: string; isUser: boolean; isSystem: boolean; content: string }[]
+    messages: { name: string; isUser: boolean; isSystem: boolean; content: string; hidden?: boolean }[]
   ) => Promise<{ added: number; conflicts: number }>;
   clearError: () => void;
   initForUser: (handle: string) => void;
@@ -367,7 +367,9 @@ export const useAutoMemoryStore = create<AutoMemoryState>()(
             .join('\n');
 
           // Use the last 30 non-system messages as the extraction window.
-          const sample = messages.filter((m) => !m.isSystem).slice(-30);
+          // #414: hidden messages are excluded — if the AI shouldn't see a
+          // message, it shouldn't be mined into permanent extracted memory.
+          const sample = messages.filter((m) => !m.isSystem && !m.hidden).slice(-30);
           if (sample.length < 4) {
             set({ isExtracting: false });
             return { added: 0, conflicts: 0 };
@@ -423,7 +425,7 @@ New canonical facts (JSON array):`;
           if (facts.length === 0) {
             // Mark this window as processed even on empty result so we
             // don't immediately retry on the next message.
-            const total = messages.filter((m) => !m.isSystem).length;
+            const total = messages.filter((m) => !m.isSystem && !m.hidden).length;
             set((s) => ({
               lastByChatFile: { ...s.lastByChatFile, [chatFile]: total },
               isExtracting: false,
@@ -517,7 +519,7 @@ New canonical facts (JSON array):`;
             added++;
           }
 
-          const total = messages.filter((m) => !m.isSystem).length;
+          const total = messages.filter((m) => !m.isSystem && !m.hidden).length;
           set((s) => ({
             lastByChatFile: { ...s.lastByChatFile, [chatFile]: total },
             isExtracting: false,

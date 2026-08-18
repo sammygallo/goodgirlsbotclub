@@ -164,6 +164,7 @@ export function ChatView() {
     editMessageAndRegenerate,
     editMessage,
     deleteMessage,
+    toggleMessageHidden,
     swipeLeft,
     swipeRight,
     regenerateMessage,
@@ -571,7 +572,7 @@ export function ChatView() {
     // messages would leak a scene the user didn't pick.
     const idx = messages.findIndex((m) => m.id === messageId);
     const transcript = (idx >= 0 ? messages.slice(0, idx + 1) : messages)
-      .filter((m) => !m.isSystem)
+      .filter((m) => !m.isSystem && !m.hidden) // #414: hidden excluded from scene generation too
       .map((m) => ({
         name: m.name,
         isUser: m.isUser,
@@ -975,7 +976,11 @@ export function ChatView() {
     const memStore = useAutoMemoryStore.getState();
     if (!currentChatFile || !selectedCharacter) return;
 
-    const nonSystemCount = messages.filter((m) => !m.isSystem).length;
+    // #414: exclude hidden to stay in lockstep with the summary/memory
+    // watermarks (summarizeStore messageCount, autoMemoryStore total), which
+    // now also exclude hidden — otherwise the trigger cadence and the summary
+    // compaction offset drift by the hidden count.
+    const nonSystemCount = messages.filter((m) => !m.isSystem && !m.hidden).length;
 
     if (sumStore.autoSummarize) {
       const existing = sumStore.getSummary(currentChatFile);
@@ -994,6 +999,7 @@ export function ChatView() {
           isUser: m.isUser,
           isSystem: m.isSystem,
           content: m.content,
+          hidden: m.hidden, // #414: so extractFacts can skip hidden messages
         }))
       );
     }
@@ -1855,6 +1861,7 @@ export function ChatView() {
                     content={processMacros(message.content, displayMacroCtx)}
                     isUser={message.isUser}
                     isSystem={message.isSystem}
+                    hidden={message.hidden}
                     avatar={messageAvatar}
                     avatarFallback={fallbackAvatar}
                     onAvatarError={
@@ -1896,6 +1903,7 @@ export function ChatView() {
                         : undefined
                     }
                     onDelete={() => deleteMessage(message.id)}
+                    onToggleHide={() => toggleMessageHidden(message.id)}
                     onRegenerate={
                       isLastAiMessage && !isGroupChatMode ? handleRegenerate : undefined
                     }

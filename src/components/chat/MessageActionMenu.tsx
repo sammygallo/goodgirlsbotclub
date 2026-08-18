@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Pencil, Copy, Trash2, RefreshCw, GitFork, Puzzle, Clapperboard, Camera } from 'lucide-react';
+import { Pencil, Copy, Trash2, RefreshCw, GitFork, Puzzle, Clapperboard, Camera, EyeOff, Eye } from 'lucide-react';
 
 export interface MessageActionExtra {
   key: string;
@@ -14,6 +14,10 @@ interface MessageActionMenuProps {
   onEdit: () => void;
   onCopy: () => void;
   onDelete: () => void;
+  /** #414: toggle hidden-from-AI state. */
+  onToggleHide?: () => void;
+  /** #414: current hidden state (drives the label + icon flip). */
+  hidden?: boolean;
   onRegenerate?: () => void;
   showRegenerate?: boolean;
   /** Phase 8.6: create a checkpoint at this message. */
@@ -33,6 +37,8 @@ export function MessageActionMenu({
   onEdit,
   onCopy,
   onDelete,
+  onToggleHide,
+  hidden,
   onRegenerate,
   showRegenerate,
   onCheckpoint,
@@ -89,6 +95,14 @@ export function MessageActionMenu({
       onClick: e.onClick,
       tooltip: e.tooltip,
     })),
+    ...(onToggleHide
+      ? [{
+          key: 'hide',
+          icon: hidden ? Eye : EyeOff,
+          label: hidden ? 'Unhide from AI' : 'Hide from AI',
+          onClick: onToggleHide,
+        }]
+      : []),
     { key: 'delete', icon: Trash2, label: 'Delete', onClick: onDelete, danger: true },
   ];
 

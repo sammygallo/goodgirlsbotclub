@@ -124,6 +124,13 @@ export interface ChatMessage {
    *  Persisted into the JSONL record's `extra.videos` field. Never sent to
    *  the LLM. */
   videos?: string[];
+  /** #414: user-toggled "hide from AI". When true the message STAYS visible
+   *  in the chat UI (dimmed, with a badge) but is EXCLUDED from everything the
+   *  model sees — prompt/history, world-info scan, {{last*}} macros, chat RAG,
+   *  summaries, and memory extraction. Distinct from isSystem, which removes
+   *  the bubble from the UI entirely. Persisted as `extra.hidden`; absent on
+   *  pre-#414 chats = not hidden. */
+  hidden?: boolean;
 }
 
 interface ChatFile {
@@ -561,6 +568,8 @@ interface ChatState {
   stopGeneration: () => void;
   editMessage: (messageId: string, newContent: string) => void;
   deleteMessage: (messageId: string) => void;
+  /** #414: toggle a message's hidden-from-AI flag (stays visible in the UI). */
+  toggleMessageHidden: (messageId: string) => void;
   swipeLeft: (messageId: string) => void;
   swipeRight: (messageId: string, character: CharacterInfo, availableEmotions?: string[]) => Promise<void>;
   regenerateMessage: (character: CharacterInfo, availableEmotions?: string[]) => Promise<void>;
@@ -852,7 +861,12 @@ async function resolveRagContext(
   messages: ChatMessage[],
   chatFile?: string
 ): Promise<string | null> {
-  const lastUser = [...messages].reverse().find((m) => m.isUser && !m.isSystem);
+  // #414: hidden messages must not feed chat-history RAG — neither as the
+  // retrieval query nor as embedded/retrievable chunks. (Caveat: an embedding
+  // created before a message was hidden may linger in the RAG store until it's
+  // invalidated; this stops new embeddings and query use, not stale ones.)
+  const visibleMessages = messages.filter((m) => !m.hidden);
+  const lastUser = [...visibleMessages].reverse().find((m) => m.isUser && !m.isSystem);
   if (!lastUser?.content.trim()) return null;
 
   // Kick off chat-history embedding for any messages that don't have one
@@ -860,7 +874,7 @@ async function resolveRagContext(
   if (chatFile) {
     void useChatHistoryRagStore.getState().ensureEmbedded(
       chatFile,
-      messages.map((m) => ({
+      visibleMessages.map((m) => ({
         content: m.content,
         isUser: m.isUser,
         isSystem: m.isSystem,
@@ -932,6 +946,13 @@ function buildConversationContext(
 } {
   const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
 
+  // #414: hidden messages stay in the UI but must never reach the model.
+  // Strip them once here and use `visibleMessages` for every model-facing read
+  // below — macros, world-info scan, extension hooks, and the history pool —
+  // so a hidden turn can't leak via a lorebook trigger or a {{last*}} macro,
+  // not just via the literal prompt turns.
+  const visibleMessages = messages.filter((m) => !m.hidden);
+
   // Get active persona for this character/chat
   const persona = usePersonaStore
     .getState()
@@ -957,7 +978,7 @@ function buildConversationContext(
     character,
     personaName,
     personaDescription,
-    messages,
+    visibleMessages,
     activeModel,
     variables
   );
@@ -1014,7 +1035,7 @@ function buildConversationContext(
   const matchedEntries = serverMatchedEntries ?? scanMessagesForEntries(
     effectiveBooks,
     effectiveActiveIds,
-    messages,
+    visibleMessages,
     {
       scanDepth: wiState.scanDepth,
       maxRecursionSteps: wiState.maxRecursionSteps,
@@ -1089,7 +1110,7 @@ function buildConversationContext(
 
   // Phase 7.1: Extension context contributions
   const extContributions = extensionRegistry.runContextHooks({
-    messages: messages.map((m) => ({
+    messages: visibleMessages.map((m) => ({
       name: m.name,
       isUser: m.isUser,
       isSystem: m.isSystem,
@@ -1272,11 +1293,16 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   });
 
   // Decide how many messages to consider for history.
+  // #414: build the pool from visibleMessages (hidden already stripped) so a
+  // hidden message never reaches the prompt AND never consumes a fixed-window
+  // slot (filtered before the slice). The summary-offset math below keys off
+  // this same non-hidden pool, and summarizeStore's messageCount is filtered
+  // to match — keep both in lockstep or the compaction offset drifts.
   const ctxConfig = genState.context;
-  const allNonSystemMessages = messages.filter((m) => !m.isSystem);
+  const allNonSystemMessages = visibleMessages.filter((m) => !m.isSystem);
   let historyPool = ctxConfig.tokenAware
     ? allNonSystemMessages
-    : messages.slice(-ctxConfig.messageCount).filter((m) => !m.isSystem);
+    : visibleMessages.slice(-ctxConfig.messageCount).filter((m) => !m.isSystem);
   // When tokenAware is false, historyPool above is pre-windowed to the last
   // ctxConfig.messageCount raw messages — a different index frame than
   // sumForChat.messageCount below, which is always counted from the true
@@ -1684,6 +1710,10 @@ export function buildGroupConversationContext(
 ): { role: 'user' | 'assistant' | 'system'; content: string }[] {
   const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
 
+  // #414: hidden messages are excluded from the group prompt too — used for the
+  // macro context and world-info scan below (recentMessages filters separately).
+  const visibleMessages = messages.filter((m) => !m.hidden);
+
   const groupChatState = useChatStore.getState();
   const groupChatFile = groupChatState.currentChatFile;
   const persona = usePersonaStore
@@ -1705,7 +1735,7 @@ export function buildGroupConversationContext(
     currentCharacter,
     personaName,
     personaDescription,
-    messages,
+    visibleMessages,
     activeModel,
     variables
   );
@@ -1757,7 +1787,7 @@ export function buildGroupConversationContext(
   const matchedEntries = scanMessagesForEntries(
     effectiveBooks,
     effectiveActiveIds,
-    messages,
+    visibleMessages,
     {
       scanDepth: wiState.scanDepth,
       maxRecursionSteps: wiState.maxRecursionSteps,
@@ -1966,7 +1996,9 @@ CONTENT RULES:
     wiAtDepthByDepth[d].push(m);
   }
 
-  const recentMessages = messages.slice(-30).filter((m) => !m.isSystem);
+  // #414: exclude hidden messages from the group prompt too. Filter before the
+  // slice so a hidden message doesn't consume one of the last-30 slots.
+  const recentMessages = messages.filter((m) => !m.hidden).slice(-30).filter((m) => !m.isSystem);
   for (let i = 0; i < recentMessages.length; i++) {
     const msg = recentMessages[i];
     const depthFromEnd = recentMessages.length - i;
@@ -2335,6 +2367,10 @@ function buildChatPayload(
         ...(msg.videos && msg.videos.length > 0 ? { videos: msg.videos } : {}),
         // Per-turn token usage (estimated). Opaque to the backend.
         ...(msg.usage ? { usage: msg.usage } : {}),
+        // #414: hide-from-AI flag. Conditional emit so non-hidden messages
+        // (and every pre-#414 chat) keep a byte-identical payload — the
+        // unload beacon requires a deterministic body.
+        ...(msg.hidden ? { hidden: true } : {}),
       },
     })),
   ];
@@ -2804,6 +2840,9 @@ function normalizeMessage(msg: {
     name: msg.name,
     isUser: msg.is_user,
     isSystem: msg.is_system,
+    // #414: read the hide-from-AI flag back. `=== true` is the backward-compat
+    // guard — absent on every pre-#414 chat, which reads as not-hidden.
+    hidden: msg.extra?.hidden === true,
     content,
     timestamp: msg.send_date,
     swipes: msg.swipes && msg.swipes.length > 0 ? msg.swipes : [msg.mes],
@@ -3547,6 +3586,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
     // Intentional shrink — persist with allow_truncate so the backend's
     // regression guard doesn't reject it as a stale save.
+    void persistTruncatingEdit();
+  },
+
+  // ---- #414: Toggle Message Hidden (hide from AI, keep visible) ----
+  toggleMessageHidden: (messageId: string) => {
+    set((state) => ({
+      messages: state.messages.map((msg) =>
+        msg.id === messageId ? { ...msg, hidden: !msg.hidden } : msg,
+      ),
+    }));
+    // Not a truncation (array length is unchanged), but persistTruncatingEdit
+    // is the right helper: allow_truncate is a harmless superset permission on
+    // a non-shrinking save, and it resolves the solo/group character context
+    // for us — same as deleteMessage.
     void persistTruncatingEdit();
   },
 

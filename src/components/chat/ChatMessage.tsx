@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { MoreHorizontal, Check, X, Volume2, Square, Globe } from 'lucide-react';
+import { MoreHorizontal, Check, X, Volume2, Square, Globe, EyeOff } from 'lucide-react';
 import { Avatar } from '../ui';
 import { BottomSheet } from '../ui/BottomSheet';
 import { MessageActionMenu } from './MessageActionMenu';
@@ -29,6 +29,8 @@ interface ChatMessageProps {
   content: string;
   isUser: boolean;
   isSystem?: boolean;
+  /** #414: message is hidden from the AI — rendered dimmed + badged, still visible. */
+  hidden?: boolean;
   avatar?: string;
   /** Fallback avatar URL when the primary (expression) avatar fails to load. */
   avatarFallback?: string;
@@ -68,6 +70,8 @@ interface ChatMessageProps {
   onEdit?: (newContent: string) => void;
   onEditAndRegenerate?: (newContent: string) => void;
   onDelete?: () => void;
+  /** #414: flip this message's hidden-from-AI state. */
+  onToggleHide?: () => void;
   onRegenerate?: () => void;
   /** Phase 8.6: create a checkpoint at this message. */
   onCheckpoint?: () => void;
@@ -86,6 +90,7 @@ export function ChatMessage({
   content,
   isUser,
   isSystem,
+  hidden,
   avatar,
   avatarFallback,
   onAvatarError,
@@ -109,6 +114,7 @@ export function ChatMessage({
   onEdit,
   onEditAndRegenerate,
   onDelete,
+  onToggleHide,
   onRegenerate,
   onCheckpoint,
   onGenerateScene,
@@ -299,6 +305,17 @@ export function ChatMessage({
       </span>
     ) : null;
 
+  // #414: badge shown on a hidden message. Lives in the header row (outside the
+  // dimmed content) so it stays fully legible while the message body is faded.
+  const hiddenBadge = hidden ? (
+    <span
+      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-[var(--color-text-secondary)]"
+      title="Hidden from the AI — this message is not sent in the prompt or summaries"
+    >
+      <EyeOff size={11} /> Hidden from AI
+    </span>
+  ) : null;
+
   const actionButtons = !isEditing && (onEdit || onDelete) ? (
     <div className="relative flex flex-col gap-0.5">
       <button
@@ -321,6 +338,7 @@ export function ChatMessage({
               ...(onGenerateScene ? [{ key: 'scene', label: 'Generate scene', onClick: onGenerateScene }] : []),
               ...(onTakeSelfie ? [{ key: 'selfie', label: 'Take selfie', onClick: onTakeSelfie }] : []),
               ...messageActionExtras.map((e) => ({ key: `ext_${e.key}`, label: e.label, onClick: e.onClick })),
+              ...(onToggleHide ? [{ key: 'hide', label: hidden ? 'Unhide from AI' : 'Hide from AI', onClick: () => onToggleHide?.() }] : []),
               { key: 'delete', label: 'Delete', onClick: () => onDelete?.(), danger: true },
             ].map((action) => {
               const isDanger = 'danger' in action && action.danger;
@@ -345,6 +363,8 @@ export function ChatMessage({
           onEdit={handleStartEdit}
           onCopy={handleCopy}
           onDelete={() => onDelete?.()}
+          onToggleHide={onToggleHide ? () => onToggleHide() : undefined}
+          hidden={hidden}
           onRegenerate={onRegenerate}
           showRegenerate={!isUser && !!onRegenerate}
           onCheckpoint={onCheckpoint}
@@ -559,6 +579,7 @@ export function ChatMessage({
             <span className="text-xs font-medium text-[var(--color-text-secondary)]">{name}</span>
             {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
             {usageChip}
+            {hiddenBadge}
           </div>
 
           <div className={`flex items-start gap-2 relative ${isEditing ? 'w-full' : ''}`}>
@@ -570,6 +591,7 @@ export function ChatMessage({
                   ? 'bg-[var(--color-primary)] text-white rounded-br-md cyberpunk-user-bubble'
                   : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] rounded-bl-md'}
                 ${isEditing ? 'w-full' : ''}
+                ${hidden ? 'opacity-50' : ''}
                 ${!isEditing && onEdit ? 'cursor-text select-text' : ''}
               `}
               onDoubleClick={!isEditing && onEdit ? handleStartEdit : undefined}
@@ -616,12 +638,13 @@ export function ChatMessage({
           </span>
           {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
           {usageChip}
+          {hiddenBadge}
           <div className="ml-auto">{actionButtons}</div>
         </div>
 
         {/* Content area */}
         <div
-          className="text-[var(--color-text-primary)]"
+          className={`text-[var(--color-text-primary)] ${hidden ? 'opacity-50' : ''}`}
           onDoubleClick={!isEditing && onEdit ? handleStartEdit : undefined}
         >
           {imageGrid}
@@ -654,9 +677,10 @@ export function ChatMessage({
           </span>
           {timeStr && <span className="text-xs text-zinc-500 ml-2">{timeStr}</span>}
           {usageChip}
+          {hidden && <span className="ml-2 inline-flex">{hiddenBadge}</span>}
 
-          {imageGrid && <div className="mt-1">{imageGrid}</div>}
-          {videoBlock && <div className="mt-1">{videoBlock}</div>}
+          {imageGrid && <div className={`mt-1 ${hidden ? 'opacity-50' : ''}`}>{imageGrid}</div>}
+          {videoBlock && <div className={`mt-1 ${hidden ? 'opacity-50' : ''}`}>{videoBlock}</div>}
 
           {isEditing ? (
             <div className="mt-1 p-2 rounded-lg bg-[var(--color-bg-tertiary)]">
@@ -664,7 +688,7 @@ export function ChatMessage({
             </div>
           ) : messageContent ? (
             <div
-              className="mt-0.5"
+              className={`mt-0.5 ${hidden ? 'opacity-50' : ''}`}
               onDoubleClick={!isEditing && onEdit ? handleStartEdit : undefined}
             >
               {messageContent}
