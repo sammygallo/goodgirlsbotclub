@@ -919,6 +919,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                       startGroupChat();
                       startNewGroupChat(groupChatCharacters);
                       setIsGroupSelectMode(false);
+                      // Drop out of the browse list so the group-chat portrait
+                      // view engages. startGroupChat() nulls selectedCharacter,
+                      // so the selectedCharacter-keyed effect never runs to
+                      // clear this — matching handleGroupChatSelect (line 232).
+                      setShowCharacterList(false);
                       onClose();
                     }
                   }}
