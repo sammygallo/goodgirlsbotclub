@@ -1,6 +1,9 @@
-# Runs the vitest suite on every PR and on pushes to main. Lint is NOT run
-# here — the tree has pre-existing eslint errors; wire `npm run lint` in once
-# those are cleaned up.
+# Runs the production build (tsc -b + vite build) AND the vitest suite on every
+# PR and on pushes to main. The build step mirrors the Dockerfile's `npm run
+# build` exactly, so a type or bundle error fails the PR instead of silently
+# passing here and breaking main's image build afterwards (`tsc -b` used to live
+# only in the Dockerfile). Lint is NOT run here — the tree has pre-existing
+# eslint errors; wire `npm run lint` in once those are cleaned up.
 
 name: CI
 
@@ -27,6 +30,12 @@ jobs:
       # on macOS; reinstall for linux, same as the Dockerfile build stage.
       - name: Install dependencies
         run: npm ci
+
+      # Mirrors the Dockerfile build stage (RUN npm run build). Catches the
+      # type errors that would otherwise only surface when the image is built
+      # on push-to-main, where there is no PR-level signal.
+      - name: Build (typecheck + bundle)
+        run: npm run build
 
       - name: Run tests
         run: npm test

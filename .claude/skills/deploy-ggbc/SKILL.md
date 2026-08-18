@@ -390,7 +390,7 @@ Why each command:
 - `npm ci` — clean install from lockfile; tolerant of native rebuilds (`better-sqlite3`).
 - `npm run migrate` — applies any new SQL migrations; idempotent (`IF NOT EXISTS`).
 - `pm2 start ... --update-env` — re-registers all apps declared in `ecosystem.config.cjs`. Safe to run when apps are already online; pm2 restarts them with new env + new code. Also picks up newly-added apps (e.g. the nightly `ggbc-intake-recluster` cron).
-- `pm2 save` — persists the process list so `pm2 resurrect` restores it after a reboot.
+- `pm2 save` — writes the current process list to `~/.pm2/dump.pm2`. **This alone does NOT survive a reboot** — it only refreshes the dump that `pm2 resurrect` reads. Resurrection on boot requires the one-time `pm2 startup systemd` (installs the `pm2-root` systemd unit that runs `pm2 resurrect` at boot). That unit **is now installed** on the droplet (done 2026-08-18), so no per-deploy action is needed; `pm2 save` here just keeps the dump current. If the droplet is ever rebuilt from scratch, re-run `pm2 startup systemd && pm2 save` once, or the bot will not come back after a reboot.
 
 ### 5. Verify
 
