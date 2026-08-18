@@ -48,7 +48,8 @@ interface ChatOptionsMenuProps {
   lorebook: ChatPanelState & { count: number; conflictCount?: number };
 
   onStartNewChat: () => void;
-  onManageChatFiles: () => void;
+  /** Undefined in group chat — chat-file management has no group equivalent yet. */
+  onManageChatFiles?: () => void;
   onChatStyle?: () => void;
   /** True when this chat has its own style (linked preset or template). */
   chatStyleActive?: boolean;
@@ -140,7 +141,8 @@ function MenuBody({
     attention?: boolean;
   }>;
   onStartNewChat: () => void;
-  onManageChatFiles: () => void;
+  /** Undefined in group chat — chat-file management has no group equivalent yet. */
+  onManageChatFiles?: () => void;
   onChatStyle?: () => void;
   chatStyleActive?: boolean;
   onSaveCheckpoint?: () => void;
@@ -195,7 +197,9 @@ function MenuBody({
 
       <div className="py-1">
         <ActionRow icon={MessageSquare} label="Start new chat" onClick={wrap(onStartNewChat)} />
-        <ActionRow icon={FolderOpen} label="Manage chat files" onClick={wrap(onManageChatFiles)} />
+        {onManageChatFiles && (
+          <ActionRow icon={FolderOpen} label="Manage chat files" onClick={wrap(onManageChatFiles)} />
+        )}
         {onChatStyle && (
           <ActionRow
             icon={Palette}
