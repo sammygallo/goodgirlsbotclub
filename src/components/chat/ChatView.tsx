@@ -2152,7 +2152,11 @@ export function ChatView() {
           summary={{
             isOpen: summaryOpen,
             hasContent: summaryHasContent,
-            enabled: summarizeEnabled,
+            // SummaryPanel only renders for a single selectedCharacter (null in
+            // group mode), so gate the pill out of group chat — otherwise it's a
+            // dead control that highlights but opens nothing. Same treatment the
+            // menu already gives onGenerateLorebook/onRegenerate/etc.
+            enabled: summarizeEnabled && !isGroupChatMode,
             onToggle: () => setSummaryOpen((v) => !v),
           }}
           branches={{
