@@ -25,11 +25,14 @@ import { getSettingsBlob, patchServerKey, markSectionDirty, recordServerTs, shou
 import {
   type ChatLayoutMode,
   type AvatarShape,
+  type AvatarSize,
   type EnterToSendMode,
   getChatLayoutMode,
   setChatLayoutMode as lsSetLayoutMode,
   getAvatarShape,
   setAvatarShape as lsSetAvatarShape,
+  getAvatarSize,
+  setAvatarSize as lsSetAvatarSize,
   getChatFontSize,
   setChatFontSize as lsSetFontSize,
   getChatMaxWidth,
@@ -51,6 +54,7 @@ import {
 interface DisplayPrefsState {
   chatLayoutMode: ChatLayoutMode;
   avatarShape: AvatarShape;
+  avatarSize: AvatarSize;
   chatFontSize: number;
   chatMaxWidth: number;
   vnMode: boolean;
@@ -63,6 +67,7 @@ interface DisplayPrefsState {
   fetchPrefs: () => Promise<void>;
   setChatLayoutMode: (mode: ChatLayoutMode) => void;
   setAvatarShape: (shape: AvatarShape) => void;
+  setAvatarSize: (size: AvatarSize) => void;
   setChatFontSize: (px: number) => void;
   setChatMaxWidth: (pct: number) => void;
   setVnMode: (on: boolean) => void;
@@ -117,6 +122,7 @@ async function patchServer(patch: Record<string, unknown>): Promise<void> {
 export const useDisplayPreferencesStore = create<DisplayPrefsState>((set, get) => ({
   chatLayoutMode: getChatLayoutMode(),
   avatarShape: getAvatarShape(),
+  avatarSize: getAvatarSize(),
   chatFontSize: getChatFontSize(),
   chatMaxWidth: getChatMaxWidth(),
   vnMode: getVnMode(),
@@ -136,6 +142,7 @@ export const useDisplayPreferencesStore = create<DisplayPrefsState>((set, get) =
         patchServer({
           chatLayoutMode: s.chatLayoutMode,
           avatarShape: s.avatarShape,
+          avatarSize: s.avatarSize,
           chatFontSize: s.chatFontSize,
           chatMaxWidth: s.chatMaxWidth,
           vnMode: s.vnMode,
@@ -151,6 +158,7 @@ export const useDisplayPreferencesStore = create<DisplayPrefsState>((set, get) =
       // Server is current or newer — apply server values and write back to localStorage.
       const chatLayoutMode = (display.chatLayoutMode as ChatLayoutMode) ?? get().chatLayoutMode;
       const avatarShape = (display.avatarShape as AvatarShape) ?? get().avatarShape;
+      const avatarSize = (display.avatarSize as AvatarSize) ?? get().avatarSize;
       const chatFontSize = typeof display.chatFontSize === 'number' ? display.chatFontSize : get().chatFontSize;
       const chatMaxWidth = typeof display.chatMaxWidth === 'number' ? display.chatMaxWidth : get().chatMaxWidth;
       const vnMode = typeof display.vnMode === 'boolean' ? display.vnMode : get().vnMode;
@@ -162,6 +170,7 @@ export const useDisplayPreferencesStore = create<DisplayPrefsState>((set, get) =
 
       lsSetLayoutMode(chatLayoutMode);
       lsSetAvatarShape(avatarShape);
+      lsSetAvatarSize(avatarSize);
       lsSetFontSize(chatFontSize);
       lsSetMaxWidth(chatMaxWidth);
       lsSetVnMode(vnMode);
@@ -181,7 +190,7 @@ export const useDisplayPreferencesStore = create<DisplayPrefsState>((set, get) =
       // Advance LOCAL_TS_KEY so a future fetchPrefs doesn't re-upload stale local state.
       try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
 
-      set({ chatLayoutMode, avatarShape, chatFontSize, chatMaxWidth, vnMode, standardizeMessageFormatting, enterToSendMode, costumes });
+      set({ chatLayoutMode, avatarShape, avatarSize, chatFontSize, chatMaxWidth, vnMode, standardizeMessageFormatting, enterToSendMode, costumes });
     } catch { /* non-fatal — localStorage values remain active */ }
   },
 
@@ -197,6 +206,13 @@ export const useDisplayPreferencesStore = create<DisplayPrefsState>((set, get) =
     set({ avatarShape: shape });
     markLocalDirty();
     patchServer({ avatarShape: shape }).catch(() => {});
+  },
+
+  setAvatarSize: (size) => {
+    lsSetAvatarSize(size);
+    set({ avatarSize: size });
+    markLocalDirty();
+    patchServer({ avatarSize: size }).catch(() => {});
   },
 
   setChatFontSize: (px) => {

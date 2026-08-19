@@ -51,6 +51,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
   // Display preferences (server-synced)
   const layoutMode = useDisplayPreferencesStore(s => s.chatLayoutMode);
   const avatarShapePref = useDisplayPreferencesStore(s => s.avatarShape);
+  const avatarSizePref = useDisplayPreferencesStore(s => s.avatarSize);
   const fontSizePref = useDisplayPreferencesStore(s => s.chatFontSize);
   const chatWidthPref = useDisplayPreferencesStore(s => s.chatMaxWidth);
   const vnModeOn = useDisplayPreferencesStore(s => s.vnMode);
@@ -58,6 +59,7 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
   const enterToSendMode = useDisplayPreferencesStore(s => s.enterToSendMode);
   const storeSetLayoutMode = useDisplayPreferencesStore(s => s.setChatLayoutMode);
   const storeSetAvatarShape = useDisplayPreferencesStore(s => s.setAvatarShape);
+  const storeSetAvatarSize = useDisplayPreferencesStore(s => s.setAvatarSize);
   const storeSetFontSize = useDisplayPreferencesStore(s => s.setChatFontSize);
   const storeSetChatWidth = useDisplayPreferencesStore(s => s.setChatMaxWidth);
   const storeSetVnMode = useDisplayPreferencesStore(s => s.setVnMode);
@@ -599,6 +601,37 @@ export function SettingsPage(_props?: { params?: Record<string, string> }) {
                     <span className={`w-4 h-4 ${opt.cls} ${
                       avatarShapePref === opt.value ? 'bg-white/80' : 'bg-[var(--color-text-secondary)]'
                     }`} />
+                    <span className="text-xs font-medium">{opt.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Avatar Size */}
+              <label className="block text-xs text-[var(--color-text-secondary)] mb-1.5">
+                Avatar Size
+              </label>
+              <div className="grid grid-cols-5 gap-2 mb-4">
+                {([
+                  { value: 'default' as const, label: 'Default', dim: '' },
+                  { value: 'sm' as const, label: 'S', dim: 'w-3 h-3' },
+                  { value: 'md' as const, label: 'M', dim: 'w-4 h-4' },
+                  { value: 'lg' as const, label: 'L', dim: 'w-5 h-5' },
+                  { value: 'xl' as const, label: 'XL', dim: 'w-6 h-6' },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => storeSetAvatarSize(opt.value)}
+                    className={`flex flex-col items-center justify-center gap-1 p-2.5 rounded-lg transition-all ${
+                      avatarSizePref === opt.value
+                        ? 'bg-[var(--color-primary)] text-white'
+                        : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:bg-zinc-700'
+                    }`}
+                  >
+                    {opt.dim && (
+                      <span className={`rounded-full ${opt.dim} ${
+                        avatarSizePref === opt.value ? 'bg-white/80' : 'bg-[var(--color-text-secondary)]'
+                      }`} />
+                    )}
                     <span className="text-xs font-medium">{opt.label}</span>
                   </button>
                 ))}

@@ -193,6 +193,11 @@ export function ChatView() {
   // Phase 7.3: display preferences (read from localStorage on mount/render)
   const chatLayoutMode = getChatLayoutMode();
   const avatarShapePref = getAvatarShape();
+  // Read avatarSize reactively (not the bare localStorage getter) so picking a
+  // size in the Settings overlay applies immediately — ChatView stays mounted
+  // underneath Settings and would otherwise not re-render. Same reasoning as
+  // isVnMode below (Phase 6.4).
+  const avatarSizePref = useDisplayPreferencesStore(s => s.avatarSize);
   const chatFontSize = getChatFontSize();
   const chatMaxWidth = getChatMaxWidth();
   // Phase 6.4: VN mode — read reactively from the store (not local state) so
@@ -1874,6 +1879,7 @@ export function ChatView() {
                     isLastMessage={isLastAiMessage}
                     layoutMode={chatLayoutMode}
                     avatarShape={avatarShapePref}
+                    avatarSize={avatarSizePref}
                     fontSize={chatFontSize}
                     chatMaxWidth={chatMaxWidth}
                     swipes={message.swipes}
