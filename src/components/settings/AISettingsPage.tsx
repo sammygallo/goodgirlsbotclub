@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, Clapperboard, Eye, EyeOff, Film, Globe, Image as ImageIcon, Key, LayoutGrid, Loader2, Plug, Server, Trash2 } from 'lucide-react';
+import { ArrowLeft, Camera, Check, ChevronDown, Clapperboard, Eye, EyeOff, Film, Globe, Image as ImageIcon, Key, LayoutGrid, Loader2, Plug, Server, Trash2 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useConnectionProfileStore } from '../../stores/connectionProfileStore';
@@ -829,6 +829,37 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
                 </p>
               </span>
             </label>
+          </div>
+
+          <div className="border-t border-[var(--color-border)]" />
+
+          {/* Selfie Scene mode (fal.ai) — docs/character-selfies-scene-mode.md Phase A */}
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Camera size={14} className="text-[var(--color-text-secondary)]" />
+              <h3 className="text-xs font-semibold text-[var(--color-text-primary)]">Selfie Scene Mode</h3>
+            </div>
+            <p className="text-xs text-[var(--color-text-secondary)] mb-3">
+              fal.ai API key for Scene-mode selfies — the character composed into brand-new
+              settings and poses (~$0.15/image via <span className="font-mono">nano-banana-pro</span>)
+              instead of the Close-up edit of their portrait. Unlocks the Scene toggle in the
+              "Take a selfie" dialog; Close-up selfies keep using your Replicate key.
+            </p>
+            <ProviderApiKeyInput
+              providerName="fal.ai"
+              secretKey="api_key_fal"
+              configured={hasApiKey('api_key_fal')}
+              isSaving={isSaving}
+              onSave={async (key) => {
+                try {
+                  await settingsApi.writeSecret('api_key_fal', key, 'fal.ai');
+                  await fetchSecrets();
+                } catch (e) {
+                  showToastGlobal(e instanceof Error ? e.message : 'Failed to save key', 'error');
+                }
+              }}
+              onDelete={() => deleteApiKey('api_key_fal')}
+            />
           </div>
 
           <div className="border-t border-[var(--color-border)]" />

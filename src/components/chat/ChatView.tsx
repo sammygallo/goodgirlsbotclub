@@ -4,14 +4,14 @@ import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, Che
 import { showToastGlobal } from '../ui/Toast';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
-import { useSelfieStore, baseSelfieEligible } from '../../stores/selfieStore';
+import { useSelfieStore, manualSelfieEligible, hasFalKey, hasReplicateKey } from '../../stores/selfieStore';
 // Side-effect import: registers the in-chat [selfie: …] finish-edge dispatch
 // (its module-level useChatStore.subscribe). Imported here — a runtime component,
 // loaded after the stores initialize — so the subscription never runs during
 // chatStore's own module init. See stores/selfieDispatch.
 import { triggerSelfie } from '../../stores/selfieDispatch';
 import { TakeSelfieModal } from './TakeSelfieModal';
-import type { SelfieTier } from '../../api/selfieGen';
+import type { SelfieMode, SelfieTier } from '../../api/selfieGen';
 import { useProjectStore } from '../../stores/projectStore';
 import { usePersonaStore } from '../../stores/personaStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -545,18 +545,24 @@ export function ChatView() {
   // Phase 2.5). canSelfieNsfw mirrors canGenerateScene's shape exactly — the
   // nsfw tier reuses the same self-hosted RunPod endpoint scene-video keeps
   // owner-only, so it inherits that containment. No client-side RunPod-key
-  // pre-check (no precedent for that either — see TakeSelfieModal's docstring);
-  // a missing key just surfaces as a normal error via the toast below.
+  // pre-check (a missing key just surfaces as a normal error via the toast
+  // below). canSelfieScene/canSelfieCloseup, by contrast, ARE key pre-checks —
+  // deliberately (scene-mode doc §6): each mode is unusable without its key,
+  // so the modal disables that mode with teaching copy instead of a dead-end
+  // error. The message action itself needs EITHER key (manualSelfieEligible).
   const canSelfieNsfw = hasPermission(currentUser, 'generation:video');
+  const canSelfieScene = hasFalKey();
+  const canSelfieCloseup = hasReplicateKey();
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const handleTakeSelfie = () => setSelfieModalOpen(true);
-  const handleSelfieGenerate = (descriptors: string, tier: SelfieTier) => {
+  const handleSelfieGenerate = (descriptors: string, tier: SelfieTier, mode: SelfieMode) => {
     if (!selectedCharacter) return;
     void triggerSelfie({
       characterName: selectedCharacter.name,
       descriptors,
       characterAvatar: selectedCharacter.avatar,
       tier,
+      mode,
       // Unlike the silent auto-dispatch path, a user who explicitly clicked
       // "Take selfie" needs to see a failure, not silence.
       onError: (err) => showToastGlobal(err.message, 'error'),
@@ -1929,7 +1935,7 @@ export function ChatView() {
                         : undefined
                     }
                     onTakeSelfie={
-                      isAiMessage && baseSelfieEligible().eligible ? handleTakeSelfie : undefined
+                      isAiMessage && manualSelfieEligible().eligible ? handleTakeSelfie : undefined
                     }
                     triggerEditNonce={message.id === lastUserMessageId ? editLastNonce : undefined}
                   />
@@ -2251,6 +2257,8 @@ export function ChatView() {
           onClose={() => setSelfieModalOpen(false)}
           characterName={selectedCharacter.name}
           canNsfw={canSelfieNsfw}
+          canScene={canSelfieScene}
+          canCloseup={canSelfieCloseup}
           onGenerate={handleSelfieGenerate}
         />
       )}
