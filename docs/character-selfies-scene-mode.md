@@ -1,6 +1,6 @@
 # Character Selfies — "Scene" mode (breaking out of the avatar's frame)
 
-**Status:** Proposal · **Drafted:** 2026-08-18 · **Repos:** goodgirlsbotclub (frontend) + ggbc-backend · **Builds on:** [`character-selfies-design.md`](character-selfies-design.md) (Phases 0–2.5, all shipped)
+**Status:** Proposal (decisions locked 2026-08-18) · **Drafted:** 2026-08-18 · **Repos:** goodgirlsbotclub (frontend) + ggbc-backend · **Builds on:** [`character-selfies-design.md`](character-selfies-design.md) (Phases 0–2.5, all shipped)
 
 The selfie feature works: a character sends an identity-consistent photo of themselves inline in chat (SFW via Replicate FLUX Kontext; NSFW via the self-hosted Kontext + undress-LoRA keyframe). But every selfie is **the avatar, lightly edited** — same pose, same framing, same setting. Ask for "a full-body mirror selfie in her penthouse overlooking Manhattan" and you get a close crop of the avatar in the avatar's own setting, because our generator is an image **editor**, not a **photographer**. This doc specifies a second selfie mode — **"Scene"** — that puts the character in genuinely new places and poses while keeping their identity and art style.
 
@@ -90,7 +90,7 @@ Identity held (same face, bob, bangs, eyes, earrings), **art style held** (paint
 ### Recommended pick
 
 - **Default Scene engine:** a reference-conditioned editor via a **hosted BYO-key** endpoint — **fal.ai `nano-banana-pro/edit`** (Gemini image, prototype-proven) or **Qwen-Image-Edit-2509** (open-weight, also multi-image, anime-friendly, cheaper/self-hostable). Keep it swappable behind our backend like the existing image-gen backends.
-- **Premium Scene engine (later):** opt-in **per-character LoRA** for favorite characters / power users.
+- **Premium Scene engine (in scope now):** opt-in **per-character LoRA** for favorite characters / power users — committed scope, built in parallel with the hosted Scene mode (see §8, decision 3).
 - **Kontext-multi:** revisit if we add a "use a reference photo for the pose/setting" affordance — it's a one-pass win *when the user supplies a scene reference*, but not for pure text-driven scenes.
 
 ---
@@ -144,24 +144,26 @@ SFW Scene = one fast hosted call. NSFW Scene = one fast hosted call + the existi
 
 ---
 
-## 8. Open decisions
+## 8. Decisions (locked 2026-08-18)
 
-1. **Scene backend:** hosted **fal `nano-banana-pro/edit`** (proven, SFW-only by policy — fine, Stage 2 does nudity) vs **Qwen-Image-Edit** (open-weight, cheaper, self-hostable, also multi-image). Recommend starting hosted (nano-banana) for speed-to-ship, keep it swappable.
-2. **Auto-trigger scope:** keep the model's `[selfie:…]` tag Close-up-only (recommended), or let it request Scene? Scene costs more and needs a fal key — leaning Close-up-only for auto, Scene manual-only.
-3. **Premium LoRA:** in scope now, or a later tier once Scene mode proves out? Recommend later.
-4. **Reference fidelity for our real avatars:** validate nano-banana/Qwen on a handful of *actual* GGBC character cards (some more illustrated, some more semi-real) before committing — the prototype used a stand-in.
+1. **Scene backend — hosted fal `nano-banana-pro/edit`, BYO key.** Prototype-proven and fastest to ship; the user supplies their own key (`api_key_fal`), consistent with the platform's BYO-key direction. SFW-only-by-policy is fine — Stage 2 does the nudity. Kept **swappable** behind the backend, so **Qwen-Image-Edit** (open-weight, self-hostable) stays a drop-in alternative if we later choose to bundle Scene into the flat sub instead of BYO.
+2. **Auto-trigger stays Close-up + SFW only.** The model's automatic `[selfie:…]` tag never spends on Scene — Scene is a deliberate **manual** choice (like the tier picker). No surprise fal spend, no auto-trigger key requirement.
+3. **Premium per-character LoRA is in scope *now* — built alongside Scene, not deferred.** The LoRA path (async train step + LoRA storage + synthetic-view bootstrap) is committed and developed **in parallel** with the Scene phases, rather than gated behind a "once Scene proves out" prove-out. It still ships as its own premium tier; only the *timing* changes — the infra work starts now.
+4. **Gate Phase A on a real-avatar validation pass.** Before committing the hosted backend, validate nano-banana on a handful of *actual* GGBC character cards (some more illustrated, some more semi-real) — the prototype used a stand-in. This is a Phase-A prerequisite, not a fork.
 
 ---
 
 ## 9. Phasing
 
-- **Phase A — SFW Scene mode.** `mode` field + hosted reference-editor backend (BYO fal key) + the `TakeSelfieModal` toggle. Cheapest, no new infra, immediately useful ("Ivy anywhere"). Validate on real avatars first (decision 4).
+User-facing rollout stays sequential (SFW Scene → NSFW Scene → LoRA tier), but per decision 3 the LoRA infra is **committed and built in parallel** starting now — it is *not* gated behind Scene proving out.
+
+- **Phase A — SFW Scene mode.** `mode` field + hosted reference-editor backend (BYO fal key) + the `TakeSelfieModal` toggle. Cheapest, no new infra, immediately useful ("Ivy anywhere"). **Gated on the real-avatar validation pass (decision 4).**
 - **Phase B — NSFW Scene mode.** Chain Stage-1 → the existing Kontext undress for `mode:scene, tier:nsfw`. No scene-worker change.
-- **Phase C — Premium per-character LoRA.** Opt-in "train your character" + LoRA storage + the synthetic-view bootstrap; unlocks max fidelity + freedom for favorites.
+- **Phase C — Premium per-character LoRA (in scope now, built in parallel).** Opt-in "train your character" + LoRA storage + the synthetic-view bootstrap; unlocks max fidelity + freedom for favorites. Development runs alongside Phases A/B; it lights up as its own premium tier when ready.
 - **Phase D (maybe) — Kontext-multi "reference photo" affordance.** Let the user supply a scene/pose reference image for a one-pass reframe.
 
 ---
 
 ## 10. TL;DR
 
-Kontext is a photo *editor* — it can't leave the avatar's frame, and that's structural, not a prompt problem. Add a **Scene** mode: a reference-conditioned **generator** (nano-banana / Qwen-Image-Edit) puts the character in any scene/pose while holding identity + art style (proven), and for NSFW we chain the *existing* Kontext undress behind it (surgical, reliable). Fidelity is capped by the Stage-1 model, so the model choice is everything — and for illustrated characters, whole-image reference editors beat every face-encoder approach. Ship SFW Scene first (BYO fal key, no new infra), then NSFW Scene, then premium LoRA.
+Kontext is a photo *editor* — it can't leave the avatar's frame, and that's structural, not a prompt problem. Add a **Scene** mode: a reference-conditioned **generator** (nano-banana / Qwen-Image-Edit) puts the character in any scene/pose while holding identity + art style (proven), and for NSFW we chain the *existing* Kontext undress behind it (surgical, reliable). Fidelity is capped by the Stage-1 model, so the model choice is everything — and for illustrated characters, whole-image reference editors beat every face-encoder approach. Ship SFW Scene first (BYO fal key, no new infra), then NSFW Scene, with premium per-character LoRA now committed scope and built in parallel.
