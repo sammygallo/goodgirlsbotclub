@@ -110,7 +110,7 @@ interface SummarizeState {
   initForUser: (handle: string) => void;
   resetUser: () => void;
   generateSummary: (
-    chatMessages: { name: string; isUser: boolean; isSystem: boolean; content: string }[],
+    chatMessages: { name: string; isUser: boolean; isSystem: boolean; content: string; hidden?: boolean }[],
     chatFile: string,
     characterName: string
   ) => Promise<void>;
@@ -284,9 +284,11 @@ export const useSummarizeStore = create<SummarizeState>()(
         try {
           const { activeProvider, activeModel } = useSettingsStore.getState();
 
-          // Use the last 40 non-system messages for the transcript
+          // Use the last 40 non-system messages for the transcript.
+          // #414: hidden messages are excluded from summaries too — the whole
+          // point of hide is that the AI ignores them.
           const sample = chatMessages
-            .filter((m) => !m.isSystem)
+            .filter((m) => !m.isSystem && !m.hidden)
             .slice(-40);
 
           if (sample.length === 0) {
@@ -328,7 +330,11 @@ export const useSummarizeStore = create<SummarizeState>()(
           text = text.trim();
 
           if (text) {
-            const messageCount = chatMessages.filter((m) => !m.isSystem).length;
+            // #414: count non-hidden the same way the solo builder's history
+            // pool does, or the compaction slice offset drifts by the hidden
+            // count. Must stay in lockstep with chatStore's allNonSystemMessages
+            // and ChatView's auto-summarize counter.
+            const messageCount = chatMessages.filter((m) => !m.isSystem && !m.hidden).length;
             const summaries = {
               ...get().summaries,
               [chatFile]: { text, generatedAt: Date.now(), messageCount },
