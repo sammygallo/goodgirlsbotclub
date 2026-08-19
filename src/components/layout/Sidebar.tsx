@@ -88,6 +88,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     startGroupChat,
     exitGroupChat,
     isCharacterInGroup,
+    isGroupChatMode,
     setGroupChatCharacters,
     favorites,
     toggleFavorite,
@@ -275,6 +276,21 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   // Determine what to show: character portrait or character list
   const showPortrait = selectedCharacter && !showCharacterList;
 
+  // Active group chat has no single `selectedCharacter`, so it fell through
+  // to the full character-list view. Show the most recent speaker's portrait
+  // instead so it's clear at a glance who's currently active (#408).
+  const lastGroupSpeaker = useMemo(() => {
+    if (!isGroupChatMode) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.isUser || m.isSystem || !m.characterAvatar) continue;
+      const member = groupChatCharacters.find((c) => c.avatar === m.characterAvatar);
+      return { avatar: m.characterAvatar, name: member?.name ?? m.name };
+    }
+    return groupChatCharacters[0] ? { avatar: groupChatCharacters[0].avatar, name: groupChatCharacters[0].name } : null;
+  }, [isGroupChatMode, messages, groupChatCharacters]);
+  const showGroupPortrait = isGroupChatMode && !showCharacterList && !!lastGroupSpeaker;
+
   return (
     <>
       {/* Overlay (Mobile) */}
@@ -416,12 +432,69 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               </Button>
             </div>
           </>
+        ) : showGroupPortrait && lastGroupSpeaker ? (
+          /* Group Chat Portrait View — shows whoever spoke most recently (#408) */
+          <>
+            <div className="h-14 flex items-center justify-between px-4 border-b border-[var(--color-border)] safe-top">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowCharacterList(true)}
+                className="p-2 -ml-2"
+                aria-label="View group members"
+              >
+                <Users size={20} />
+              </Button>
+              <h2 className="font-semibold text-[var(--color-text-primary)] truncate flex-1 text-center px-2">
+                Group Chat
+              </h2>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onClose}
+                className="lg:hidden p-2 -mr-2"
+                aria-label="Close sidebar"
+              >
+                <X size={20} />
+              </Button>
+            </div>
+
+            <div className="flex-1 flex flex-col items-center justify-center p-4 overflow-hidden">
+              <div className="relative w-full max-w-[240px] aspect-[2/3] rounded-xl overflow-hidden shadow-lg border border-[var(--color-border)]">
+                <img
+                  key={lastGroupSpeaker.avatar}
+                  src={getFullImageUrl(lastGroupSpeaker.avatar, null)}
+                  alt={lastGroupSpeaker.name}
+                  className="w-full h-full object-cover transition-opacity duration-300"
+                />
+              </div>
+              <div className="mt-3 text-center w-full px-2">
+                <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">
+                  {lastGroupSpeaker.name}
+                </h3>
+                <span className="inline-block mt-1 text-xs px-2 py-0.5 rounded-full bg-[var(--color-primary)]/20 text-[var(--color-primary)]">
+                  Last to speak
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 pb-4 border-t border-[var(--color-border)] input-safe-bottom">
+              <Button
+                variant="secondary"
+                className="w-full"
+                onClick={() => setShowCharacterList(true)}
+              >
+                <Users size={18} className="mr-2" />
+                View Members
+              </Button>
+            </div>
+          </>
         ) : (
           /* Character List View */
           <>
             {/* Sidebar Header */}
             <div className="h-14 flex items-center justify-between px-4 border-b border-[var(--color-border)] safe-top">
-              {selectedCharacter && !isGroupSelectMode ? (
+              {(selectedCharacter || isGroupChatMode) && !isGroupSelectMode ? (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -846,6 +919,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                       startGroupChat();
                       startNewGroupChat(groupChatCharacters);
                       setIsGroupSelectMode(false);
+                      // Drop out of the browse list so the group-chat portrait
+                      // view engages. startGroupChat() nulls selectedCharacter,
+                      // so the selectedCharacter-keyed effect never runs to
+                      // clear this — matching handleGroupChatSelect (line 232).
+                      setShowCharacterList(false);
                       onClose();
                     }
                   }}
