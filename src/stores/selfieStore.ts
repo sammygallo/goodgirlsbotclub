@@ -45,12 +45,28 @@ export const useSelfieStore = create<SelfieState>()(
 );
 
 /** Whether the user has a Replicate key (personal, or shared global when
- *  enabled) — the SFW selfie backend. Without it every selfie would 400. */
-function hasReplicateKey(): boolean {
+ *  enabled) — the Close-up selfie backend. Exported so ChatView can compute
+ *  the modal's `canCloseup` (mirror image of `canScene`/hasFalKey). */
+export function hasReplicateKey(): boolean {
   const { secrets, globalSecrets, globalSharingEnabled } = useSettingsStore.getState();
   const set = (bag: Record<string, unknown>, k: string) =>
     Array.isArray(bag[k]) && (bag[k] as unknown[]).length > 0;
   return set(secrets, 'api_key_replicate') || (globalSharingEnabled && set(globalSecrets, 'api_key_replicate'));
+}
+
+/** Whether the user has a fal.ai key (personal, or shared global when enabled)
+ *  — the Scene-mode selfie backend (docs/character-selfies-scene-mode.md,
+ *  Phase A). Same shape as {@link hasReplicateKey}. Gates the Scene toggle in
+ *  TakeSelfieModal (via ChatView's `canSelfieScene`) and counts toward
+ *  {@link manualSelfieEligible}'s either-key check, but deliberately does NOT
+ *  join {@link baseSelfieEligible} — the auto-trigger is Close-up-only, so a
+ *  fal key must never make the tag eligible, and a missing fal key must never
+ *  block Close-up. */
+export function hasFalKey(): boolean {
+  const { secrets, globalSecrets, globalSharingEnabled } = useSettingsStore.getState();
+  const set = (bag: Record<string, unknown>, k: string) =>
+    Array.isArray(bag[k]) && (bag[k] as unknown[]).length > 0;
+  return set(secrets, 'api_key_fal') || (globalSharingEnabled && set(globalSecrets, 'api_key_fal'));
 }
 
 export interface SelfieEligibility {
@@ -59,33 +75,52 @@ export interface SelfieEligibility {
   characterAvatar: string | null;
 }
 
-/**
- * Whether the CURRENT single-character chat may generate a selfie at all: a
- * single-character chat with a selected character; that character's avatar
- * provenance is cleared (fictional/AI, not a real-person upload — the NCII
- * gate); the user holds `generation:image`; and a Replicate key is
- * configured. Group chats are excluded in v1.
- *
- * Deliberately does NOT check the `enabled` auto-trigger toggle — that toggle
- * means "let the MODEL auto-request selfies via the tag," not "allow selfies
- * at all." A manual trigger (the "Take selfie" message action) should work
- * regardless of whether the auto-toggle is on, so it calls this directly;
- * {@link selfieEligibleForCurrentChat} layers the toggle on top for the
- * auto-dispatch path.
- */
-export function baseSelfieEligible(): SelfieEligibility {
-  const blocked: SelfieEligibility = { eligible: false, characterName: null, characterAvatar: null };
+const BLOCKED: SelfieEligibility = { eligible: false, characterName: null, characterAvatar: null };
 
+/** The key-agnostic eligibility core shared by every entry point: a
+ *  single-character chat with a selected character, cleared avatar provenance
+ *  (fictional/AI, not a real-person upload — the NCII gate), and the
+ *  `generation:image` permission. Group chats are excluded in v1. */
+function selfieEligibleCore(): SelfieEligibility {
   const cs = useCharacterStore.getState();
-  if (cs.isGroupChatMode) return blocked;
+  if (cs.isGroupChatMode) return BLOCKED;
   const char = cs.selectedCharacter;
-  if (!char) return blocked;
-  if (!avatarProvenanceAllowsSelfies(char.avatar_provenance)) return blocked;
+  if (!char) return BLOCKED;
+  if (!avatarProvenanceAllowsSelfies(char.avatar_provenance)) return BLOCKED;
 
-  if (!hasPermission(useAuthStore.getState().currentUser, 'generation:image')) return blocked;
-  if (!hasReplicateKey()) return blocked;
+  if (!hasPermission(useAuthStore.getState().currentUser, 'generation:image')) return BLOCKED;
 
   return { eligible: true, characterName: char.name, characterAvatar: char.avatar };
+}
+
+/**
+ * Eligibility for the AUTO path (the model-emitted `[selfie: …]` tag): the
+ * core checks plus a Replicate key — the auto-trigger is Close-up-only by
+ * decision 2 of the scene-mode doc, and Close-up renders on Replicate, so a
+ * fal key alone must NOT make the tag eligible (it could only fail).
+ *
+ * Deliberately does NOT check the `enabled` auto-trigger toggle —
+ * {@link selfieEligibleForCurrentChat} layers that on top.
+ */
+export function baseSelfieEligible(): SelfieEligibility {
+  const core = selfieEligibleCore();
+  if (!core.eligible || !hasReplicateKey()) return BLOCKED;
+  return core;
+}
+
+/**
+ * Eligibility for the MANUAL path (the "Take selfie" message action): the
+ * core checks plus EITHER selfie backend key — a fal-only user can take Scene
+ * selfies and a Replicate-only user can take Close-ups, so requiring
+ * specifically Replicate here would make Scene unreachable for fal-only
+ * users while the backend happily serves them (2026-08-19 review). The modal
+ * receives `canCloseup`/`canScene` and disables the mode whose key is
+ * missing, with teaching copy.
+ */
+export function manualSelfieEligible(): SelfieEligibility {
+  const core = selfieEligibleCore();
+  if (!core.eligible || !(hasReplicateKey() || hasFalKey())) return BLOCKED;
+  return core;
 }
 
 /**

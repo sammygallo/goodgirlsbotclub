@@ -25,9 +25,16 @@ import { getCsrfToken } from './client';
  * generated/fictional-declared/grandfathered avatars) and on permissions
  * (`generation:image`; the nsfw tier additionally needs `generation:video`).
  * The in-chat auto-trigger only ever requests `sfw` (see stores/selfieStore).
+ *
+ * Scene mode (docs/character-selfies-scene-mode.md, Phase A): `mode: 'scene'`
+ * routes to the fal.ai reference-conditioned generator (BYO `api_key_fal`) —
+ * brand-new setting/pose, identity + art style held — instead of the Kontext
+ * edit-in-place. Phase A is SFW-only (the backend 400s `scene`+`nsfw`), and
+ * the auto-trigger never requests it (decision 2: Scene is manual-only).
  */
 
 export type SelfieTier = 'sfw' | 'nsfw';
+export type SelfieMode = 'closeup' | 'scene';
 
 interface SelfieJobStatus {
   status: 'queued' | 'running' | 'completed' | 'error';
@@ -48,10 +55,22 @@ const POLL_INTERVAL_MS = 3000;
 // sceneVideoGen.ts's POLL_TIMEOUT_MS (45min) pads its own worst case.
 const POLL_TIMEOUT_MS = 25 * 60 * 1000;
 
+/** Extract a HUMAN-READABLE message from an error body. FastAPI's own
+ *  HTTPExceptions put a string in `detail`, but Pydantic validation failures
+ *  (e.g. a >400-char prompt) 422 with an ARRAY of error objects there — and
+ *  `new Error(array)` renders as "[object Object]" in the toast. Only trust
+ *  string fields; otherwise fall back to the caller's generic message. */
+function errorMessage(err: Record<string, unknown>, fallback: string): string {
+  if (typeof err.detail === 'string') return err.detail;
+  if (typeof err.error === 'string') return err.error;
+  return fallback;
+}
+
 async function startSelfieGenerate(
   characterName: string,
   descriptors: string,
   tier: SelfieTier,
+  mode: SelfieMode,
 ): Promise<string> {
   const token = await getCsrfToken();
   const res = await fetch('/api/selfie/generate', {
@@ -61,13 +80,11 @@ async function startSelfieGenerate(
       'X-CSRF-Token': token,
     },
     credentials: 'include',
-    body: JSON.stringify({ characterName, prompt: descriptors, tier }),
+    body: JSON.stringify({ characterName, prompt: descriptors, tier, mode }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(
-      err.detail || err.error || `Selfie generation kickoff failed (HTTP ${res.status})`,
-    );
+    throw new Error(errorMessage(err, `Selfie generation kickoff failed (HTTP ${res.status})`));
   }
   const data = await res.json();
   if (!data.jobId) throw new Error('No jobId returned from /api/selfie/generate');
@@ -80,7 +97,7 @@ async function pollSelfieJob(jobId: string): Promise<SelfieJobStatus> {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || err.error || `Status poll failed (HTTP ${res.status})`);
+    throw new Error(errorMessage(err, `Status poll failed (HTTP ${res.status})`));
   }
   return res.json();
 }
@@ -96,8 +113,9 @@ export async function generateSelfie(
   characterName: string,
   descriptors: string,
   tier: SelfieTier = 'sfw',
+  mode: SelfieMode = 'closeup',
 ): Promise<string> {
-  const jobId = await startSelfieGenerate(characterName, descriptors, tier);
+  const jobId = await startSelfieGenerate(characterName, descriptors, tier, mode);
   const startedAt = Date.now();
   while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));

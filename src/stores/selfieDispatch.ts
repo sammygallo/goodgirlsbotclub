@@ -1,7 +1,7 @@
 import { useChatStore } from './chatStore';
 import { useCharacterStore } from './characterStore';
 import { useImageGenStore } from './imageGenStore';
-import { generateSelfie, type SelfieTier } from '../api/selfieGen';
+import { generateSelfie, type SelfieMode, type SelfieTier } from '../api/selfieGen';
 import { hasSelfieTag, parseSelfieDirective, selfieTargetUnchanged } from '../utils/selfie';
 import { selfieEligibleForCurrentChat, useSelfieStore } from './selfieStore';
 
@@ -39,6 +39,10 @@ export interface TriggerSelfieOptions {
   descriptors: string;
   characterAvatar: string;
   tier: SelfieTier;
+  /** 'closeup' (default — the Kontext edit-in-place) | 'scene' (the fal.ai
+   *  reference-conditioned generator; manual-only per the scene-mode doc's
+   *  decision 2 — the auto-dispatch below never sets this). */
+  mode?: SelfieMode;
   /** Called on generation failure. Omit to degrade silently (the auto-dispatch's
    *  behavior — the model's own narration already covers it, see design §8); a
    *  manual trigger should pass this to surface a toast, since a user who
@@ -56,6 +60,7 @@ export async function triggerSelfie({
   descriptors,
   characterAvatar,
   tier,
+  mode = 'closeup',
   onError,
 }: TriggerSelfieOptions): Promise<void> {
   const { setGeneratingFor } = useSelfieStore.getState();
@@ -67,7 +72,7 @@ export async function triggerSelfie({
   const originChatFile = useChatStore.getState().currentChatFile;
   setGeneratingFor(characterName);
   try {
-    const imageUrl = await generateSelfie(characterName, descriptors, tier);
+    const imageUrl = await generateSelfie(characterName, descriptors, tier, mode);
     const character = useCharacterStore.getState().selectedCharacter;
     // Drop (don't misattribute) unless we're STILL on the exact character + chat
     // file that requested it — see selfieTargetUnchanged.
@@ -158,5 +163,8 @@ useChatStore.subscribe((state) => {
   if (descriptors === null) return;
 
   _firedThisStream = true; // claim before the async call so a re-entry can't double-fire
-  void triggerSelfie({ characterName, descriptors, characterAvatar, tier: 'sfw' });
+  // tier + mode are HARDCODED here: the model-triggered path is Close-up + SFW
+  // only (scene-mode doc, decision 2 — no surprise fal spend, no key
+  // assumption). Scene is a deliberate manual choice in TakeSelfieModal.
+  void triggerSelfie({ characterName, descriptors, characterAvatar, tier: 'sfw', mode: 'closeup' });
 });
