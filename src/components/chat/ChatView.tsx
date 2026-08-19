@@ -40,6 +40,7 @@ import { BranchPanel } from './BranchPanel';
 import { useBranchStore } from '../../stores/branchStore';
 import { TypingIndicator } from './TypingIndicator';
 import { ImageGenModal } from './ImageGenModal';
+import { PromptCharacterModal } from './PromptCharacterModal';
 import { QuickReplyBar } from './QuickReplyBar';
 import { useExtensionStore } from '../../stores/extensionStore';
 import { useExpressionsStore } from '../../stores/expressionsStore';
@@ -157,6 +158,8 @@ export function ChatView() {
     sendMessage,
     sendGroupMessage,
     startNewChat,
+    startNewGroupChat,
+    forceGroupMemberTalk,
     fetchChatFiles,
     loadChat,
     chatFiles,
@@ -269,6 +272,8 @@ export function ChatView() {
   const [isDragOver, setIsDragOver] = useState(false);
   // Phase 7.1: image generation modal
   const [isImageGenOpen, setIsImageGenOpen] = useState(false);
+  // #412: force a specific group member to respond next
+  const [isPromptCharacterOpen, setIsPromptCharacterOpen] = useState(false);
   // Scene-video: progress (0..1) of the in-flight generation job, or null
   // when idle. One job at a time — generation takes minutes, not seconds.
   const [sceneGenProgress, setSceneGenProgress] = useState<number | null>(null);
@@ -2065,7 +2070,7 @@ export function ChatView() {
         droppedImagesNonce={droppedImagesNonce}
         onEditLast={lastUserMessageId && !isSending ? () => setEditLastNonce((n) => n + 1) : undefined}
         onImageGen={imageGenEnabled && !isGroupChatMode && selectedCharacter ? () => setIsImageGenOpen(true) : undefined}
-        onOpenChatMenu={selectedCharacter ? (anchor) => { setChatMenuAnchor(anchor); setIsChatMenuOpen((v) => !v); } : undefined}
+        onOpenChatMenu={(selectedCharacter || isGroupChatMode) ? (anchor) => { setChatMenuAnchor(anchor); setIsChatMenuOpen((v) => !v); } : undefined}
       />
 
       {/* Phase 7.1: Image generation modal */}
@@ -2140,7 +2145,7 @@ export function ChatView() {
         </div>
       )}
       {/* Chat Options Menu */}
-      {selectedCharacter && (
+      {(selectedCharacter || isGroupChatMode) && (
         <ChatOptionsMenu
           isOpen={isChatMenuOpen}
           onClose={() => setIsChatMenuOpen(false)}
@@ -2153,7 +2158,11 @@ export function ChatView() {
           summary={{
             isOpen: summaryOpen,
             hasContent: summaryHasContent,
-            enabled: summarizeEnabled,
+            // SummaryPanel only renders for a single selectedCharacter (null in
+            // group mode), so gate the pill out of group chat — otherwise it's a
+            // dead control that highlights but opens nothing. Same treatment the
+            // menu already gives onGenerateLorebook/onRegenerate/etc.
+            enabled: summarizeEnabled && !isGroupChatMode,
             onToggle: () => setSummaryOpen((v) => !v),
           }}
           branches={{
@@ -2169,21 +2178,33 @@ export function ChatView() {
             conflictCount: chatConflictCount,
             onToggle: () => setChatLorebookOpen((v) => !v),
           }}
-          onStartNewChat={() => startNewChat(selectedCharacter)}
-          onManageChatFiles={() => setIsHistoryPanelOpen(true)}
+          onStartNewChat={() => (isGroupChatMode ? startNewGroupChat(groupChatCharacters) : startNewChat(selectedCharacter!))}
+          onManageChatFiles={!isGroupChatMode ? () => setIsHistoryPanelOpen(true) : undefined}
           onChatStyle={currentChatFile ? () => setChatStyleOpen(true) : undefined}
           chatStyleActive={!!(chatLinkedPresetId || chatLinkedTemplateId)}
           onSaveCheckpoint={currentChatFile && lastAiMessageId ? () => handleCheckpoint(lastAiMessageId) : undefined}
-          onDeleteMessages={() => startNewChat(selectedCharacter)}
+          onDeleteMessages={() => (isGroupChatMode ? startNewGroupChat(groupChatCharacters) : startNewChat(selectedCharacter!))}
           onConvertToGroup={!isGroupChatMode && selectedCharacter ? () => { setConvertGroupSelected([]); setIsConvertToGroupOpen(true); } : undefined}
-          onGenerateLorebook={nonSystemMessageCount >= 6 ? () => setIsGenLorebookOpen(true) : undefined}
+          onGenerateLorebook={nonSystemMessageCount >= 6 && !isGroupChatMode ? () => setIsGenLorebookOpen(true) : undefined}
           onRegenerate={hasAiMessage && !isGroupChatMode ? handleRegenerate : undefined}
           onContinue={hasAiMessage && !isGroupChatMode ? handleContinue : undefined}
           onImpersonate={!isGroupChatMode ? handleImpersonate : undefined}
+          onPromptCharacter={isGroupChatMode && groupChatCharacters.length > 0 ? () => setIsPromptCharacterOpen(true) : undefined}
           onSetBackground={() => bgInputRef.current?.click()}
           onClearBackground={handleClearBg}
           hasBackground={!!vnBg}
           isGroupChat={isGroupChatMode}
+        />
+      )}
+
+      {/* #412: force a specific group member to respond next */}
+      {isGroupChatMode && (
+        <PromptCharacterModal
+          isOpen={isPromptCharacterOpen}
+          onClose={() => setIsPromptCharacterOpen(false)}
+          characters={groupChatCharacters}
+          disabled={isSending}
+          onSelect={(character) => forceGroupMemberTalk(character, groupChatCharacters)}
         />
       )}
 

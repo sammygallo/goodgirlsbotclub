@@ -15,7 +15,7 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 import {
   BookOpen, FileText, GitFork, Library, MessageSquare, FolderOpen,
   Trash2, Flag, Users, RefreshCw, ArrowRight, User, Image, ImageOff, BookPlus,
-  Palette,
+  Palette, MessageCircle,
 } from 'lucide-react';
 import { BottomSheet } from '../ui/BottomSheet';
 
@@ -48,7 +48,8 @@ interface ChatOptionsMenuProps {
   lorebook: ChatPanelState & { count: number; conflictCount?: number };
 
   onStartNewChat: () => void;
-  onManageChatFiles: () => void;
+  /** Undefined in group chat — chat-file management has no group equivalent yet. */
+  onManageChatFiles?: () => void;
   onChatStyle?: () => void;
   /** True when this chat has its own style (linked preset or template). */
   chatStyleActive?: boolean;
@@ -59,6 +60,8 @@ interface ChatOptionsMenuProps {
   onRegenerate?: () => void;
   onContinue?: () => void;
   onImpersonate?: () => void;
+  /** Group chat only — opens a picker to force a specific member to respond next. */
+  onPromptCharacter?: () => void;
   onSetBackground?: () => void;
   onClearBackground?: () => void;
   hasBackground?: boolean;
@@ -123,6 +126,7 @@ function MenuBody({
   onRegenerate,
   onContinue,
   onImpersonate,
+  onPromptCharacter,
   onSetBackground,
   onClearBackground,
   hasBackground,
@@ -140,7 +144,8 @@ function MenuBody({
     attention?: boolean;
   }>;
   onStartNewChat: () => void;
-  onManageChatFiles: () => void;
+  /** Undefined in group chat — chat-file management has no group equivalent yet. */
+  onManageChatFiles?: () => void;
   onChatStyle?: () => void;
   chatStyleActive?: boolean;
   onSaveCheckpoint?: () => void;
@@ -150,12 +155,13 @@ function MenuBody({
   onRegenerate?: () => void;
   onContinue?: () => void;
   onImpersonate?: () => void;
+  onPromptCharacter?: () => void;
   onSetBackground?: () => void;
   onClearBackground?: () => void;
   hasBackground?: boolean;
   isGroupChat: boolean;
 }) {
-  const hasAiActions = !!(onRegenerate || onContinue || onImpersonate);
+  const hasAiActions = !!(onRegenerate || onContinue || onImpersonate || onPromptCharacter);
 
   return (
     <>
@@ -195,7 +201,9 @@ function MenuBody({
 
       <div className="py-1">
         <ActionRow icon={MessageSquare} label="Start new chat" onClick={wrap(onStartNewChat)} />
-        <ActionRow icon={FolderOpen} label="Manage chat files" onClick={wrap(onManageChatFiles)} />
+        {onManageChatFiles && (
+          <ActionRow icon={FolderOpen} label="Manage chat files" onClick={wrap(onManageChatFiles)} />
+        )}
         {onChatStyle && (
           <ActionRow
             icon={Palette}
@@ -235,6 +243,7 @@ function MenuBody({
             {onRegenerate && <ActionRow icon={RefreshCw} label="Generate alternative" onClick={wrap(onRegenerate)} />}
             {onContinue && <ActionRow icon={ArrowRight} label="Continue" onClick={wrap(onContinue)} />}
             {onImpersonate && <ActionRow icon={User} label="Impersonate" onClick={wrap(onImpersonate)} />}
+            {onPromptCharacter && <ActionRow icon={MessageCircle} label="Prompt a character..." onClick={wrap(onPromptCharacter)} />}
           </div>
         </>
       )}
@@ -332,6 +341,7 @@ export function ChatOptionsMenu({
   onRegenerate,
   onContinue,
   onImpersonate,
+  onPromptCharacter,
   onSetBackground,
   onClearBackground,
   hasBackground,
@@ -393,6 +403,7 @@ export function ChatOptionsMenu({
       onRegenerate={onRegenerate}
       onContinue={onContinue}
       onImpersonate={onImpersonate}
+      onPromptCharacter={onPromptCharacter}
       onSetBackground={onSetBackground}
       onClearBackground={onClearBackground}
       hasBackground={hasBackground}
