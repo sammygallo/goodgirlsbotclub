@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { LoginPage } from './components/auth/LoginPage';
 import { RegisterPage } from './components/auth/RegisterPage';
+import { ForgotPasswordPage } from './components/auth/ForgotPasswordPage';
 import { ProfilePage } from './components/auth/ProfilePage';
 import { RequireRole } from './components/auth/RequireRole';
 import { MainLayout } from './components/layout/MainLayout';
@@ -34,6 +35,7 @@ function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/profile" element={<RequireRole minRole="end_user"><ProfilePage /></RequireRole>} />
         <Route path="/invite/:token" element={<InviteAcceptPage />} />
         <Route path="/" element={<MainLayout />}>

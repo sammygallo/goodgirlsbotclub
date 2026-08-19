@@ -101,6 +101,12 @@ export function LoginPage() {
               <LogIn size={20} className="mr-2" />
               Sign In
             </Button>
+
+            <p className="text-center">
+              <Link to="/forgot-password" className="text-sm text-[var(--color-primary)] hover:underline">
+                Forgot password?
+              </Link>
+            </p>
           </form>
         </div>
 
