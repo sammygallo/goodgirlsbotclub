@@ -1,6 +1,6 @@
 # Character Selfies — LoRA tier ("Studio" mode: train your character)
 
-**Status:** Proposal · **Drafted:** 2026-08-19 · **Repos:** goodgirlsbotclub (frontend) + ggbc-backend · **Builds on:** [`character-selfies-scene-mode.md`](character-selfies-scene-mode.md) (Phase A shipped 2026-08-19; this is its Phase C, committed scope per decision 3)
+**Status:** Proposal (decisions locked 2026-08-19) · **Drafted:** 2026-08-19 · **Repos:** goodgirlsbotclub (frontend) + ggbc-backend · **Builds on:** [`character-selfies-scene-mode.md`](character-selfies-scene-mode.md) (Phase A shipped 2026-08-19; this is its Phase C, committed scope per decision 3)
 
 Scene mode ships, and its decision-4 validation measured the exact cost it warned about: **signature-detail drift**. Across 4 real avatars (1 pass / 3 marginal / 0 fail), identity stayed *recognizable* but the details that make a character *theirs* slipped — Ivy's silver irises turned red, Dominic lost his hair-over-one-eye cut, Mina's pearl hood-trim vanished. A reference-conditioned generator holds a character; it doesn't *memorize* one. The only path that both locks the exact drawn look **and** composes truly novel scenes is a **per-character LoRA** — a small fine-tune that teaches the base model this specific character. This doc specifies that tier.
 
@@ -89,13 +89,13 @@ A LoRA is a **persistent identity distillation** — the worst-case NCII artifac
 
 ---
 
-## 7. Open decisions
+## 7. Decisions (locked 2026-08-19)
 
-1. **Trainer/inference stack:** fal end-to-end (recommended — one key, drop-in Phase-A queue client, flat pricing) vs Replicate (10× cheaper inference, more orchestration + second account) vs both-swappable now. Recommend **fal v1, swappable interface** so Replicate can join later — the same shape as Scene's decision 1.
-2. **Weights residence:** fal CDN + no-expiry lifecycle header + checksum pinned in DB (recommended) vs download-and-rehost ~90 MB/character in user_blobs (droplet-heavy; keep as fallback if the lifecycle header proves unreliable — see uncertainty below).
-3. **Bootstrap recipe:** mixed 4-Kontext + 8-nano-banana (recommended, ~$1.30, balances fidelity + variety) vs nano-banana-only (~$1.80, max variety) vs Kontext-only ($0.30, overfit risk on near-identical framings).
-4. **Training gate tier:** `generation:lora_train` owner-only first (recommended — `generation:video` precedent, real per-action spend) vs contributor-and-up at launch.
-5. **Mode name:** "Studio" (recommended) / "Trained" / "Max fidelity" — pure copy, but it's user-facing everywhere.
+1. **Trainer/inference stack — fal end-to-end, behind a swappable interface.** One key (`api_key_fal`, already collected for Scene), the drop-in Phase-A queue client, flat $2 training, `fal-ai/flux-lora` inference. Replicate (10× cheaper inference past ~60 images/character, at the cost of destination-model orchestration + a second billed account) joins later as the swappable second backend — the same shape as Scene's decision 1.
+2. **Weights residence — fal CDN with the no-expiry lifecycle header, checksum pinned in DB.** `X-Fal-Object-Lifecycle-Preference: {"expiration_duration_seconds": null}` on the training submit; `lora_url` + `lora_checksum` persisted in `lora_trainings`. Download-and-rehost (~90 MB/character in user_blobs) stays the documented fallback if C1's live train shows the header isn't honored on training endpoints.
+3. **Bootstrap recipe — mixed: ~4 Kontext light edits + ~8 nano-banana Scene views (~$1.30).** Kontext supplies pixel-faithful expression/lighting variation; the Phase-A Scene path supplies the pose/angle/setting variety Kontext structurally can't. Kontext-only rejected (overfit risk on near-identical framings); nano-banana-only rejected (pays ~$0.50 more for variety the mix already achieves).
+4. **Training gate — `generation:lora_train`, owner-only first.** The `generation:video` precedent: real per-action spend starts contained; widen deliberately later. Serving an already-trained LoRA needs only `generation:image`.
+5. **Mode name — "Studio".** Close-up / Scene / Studio in the selfie modal and everywhere user-facing.
 
 **Fixed constraints (not decisions):** LoRA × NSFW blocked pending Phase B's output-side gate; auto-trigger stays Close-up-only; provenance gate binds at enqueue + pickup + serve; training state is DB-backed, never in-memory.
 
