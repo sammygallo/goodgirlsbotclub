@@ -15,6 +15,10 @@ import { CharacterLorebookSection } from './CharacterLorebookSection';
 import { useWorldInfoStore } from '../../stores/worldInfoStore';
 import { GuideDrawer } from '../guides/GuideDrawer';
 import { LivePortraitSetup } from './LivePortraitSetup';
+import { TrainLoraModal } from './TrainLoraModal';
+import { useLoraStatus } from '../../hooks/useLoraStatus';
+import { LORA_INFLIGHT_STATUSES } from '../../api/loraTraining';
+import { hasFalKey, hasReplicateKey } from '../../stores/selfieStore';
 import { CharacterSetupWizard } from './CharacterSetupWizard';
 import { TransferOwnershipModal } from './TransferOwnershipModal';
 import { useLivePortraitStore } from '../../stores/livePortraitStore';
@@ -80,6 +84,13 @@ export function CharacterEdit({
   const canTransferOwnership = visibility === 'global' && isCharacterOwner;
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showLivePortraitSetup, setShowLivePortraitSetup] = useState(false);
+  const [showTrainLora, setShowTrainLora] = useState(false);
+  // Studio-tier training (Phase C1): gated on the owner-only spend
+  // permission; provenance + key readiness are surfaced inside the section.
+  const canTrainLora = hasPermission(currentUser, 'generation:lora_train');
+  const loraProvenanceOk = avatarProvenanceAllowsSelfies(character.avatar_provenance);
+  const hasLoraKeys = hasFalKey() && hasReplicateKey();
+  const loraStatus = useLoraStatus(canTrainLora ? character.avatar : null, character.name);
   const [showWizard, setShowWizard] = useState(false);
   const [guideSection, setGuideSection] = useState<string | undefined>(undefined);
   const [showGuide, setShowGuide] = useState(false);
@@ -702,6 +713,61 @@ export function CharacterEdit({
           </Button>
         </div>
 
+        {/* Studio training (Phase C1) — per-character LoRA. Section renders
+            only for holders of the owner-only spend permission; provenance
+            and key readiness are taught inline rather than hiding the row. */}
+        {canTrainLora && (
+          <div className="border border-[var(--color-border)] rounded-lg p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-[var(--color-text-primary)] flex-1">
+                Studio training
+              </p>
+              {loraStatus?.status === 'succeeded' ? (
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-emerald-500/15 text-emerald-400">
+                  trained
+                </span>
+              ) : loraStatus && LORA_INFLIGHT_STATUSES.includes(loraStatus.status) ? (
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-violet-500/15 text-violet-400">
+                  training…
+                </span>
+              ) : loraStatus?.status === 'failed' ? (
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-red-500/15 text-red-400">
+                  failed
+                </span>
+              ) : (
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)]">
+                  not trained
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Teach the image model this exact character (a one-time ~$3.30 training on
+              your own keys). Unlocks the signature-perfect Studio selfie mode at
+              ~$0.04 per image.
+            </p>
+            {!loraProvenanceOk ? (
+              <p className="text-xs text-[var(--color-text-secondary)]">
+                Unavailable: this character's avatar isn't a known fictional/AI-generated
+                image, so identity training is blocked.
+              </p>
+            ) : !hasLoraKeys ? (
+              <p className="text-xs text-[var(--color-text-secondary)]">
+                Add both a fal.ai key and a Replicate key under Settings → AI → Media
+                Generation to enable training.
+              </p>
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowTrainLora(true)}
+              >
+                {loraStatus?.status === 'succeeded' ? 'Manage training' : 'Train character'}
+              </Button>
+            )}
+          </div>
+        )}
+
         {/* Phase 4.3: Character lorebooks */}
         <div ref={lorebookSectionRef} className="scroll-mt-16 space-y-2">
           <div className="flex items-center justify-end -mb-2">
@@ -787,6 +853,13 @@ export function CharacterEdit({
         imageUrl={`/blobs/character/${encodeURIComponent(character.avatar)}`}
         isOpen={showLivePortraitSetup}
         onClose={() => setShowLivePortraitSetup(false)}
+      />
+      <TrainLoraModal
+        avatar={character.avatar}
+        characterName={character.name}
+        imageUrl={`/blobs/character/${encodeURIComponent(character.avatar)}`}
+        isOpen={showTrainLora}
+        onClose={() => setShowTrainLora(false)}
       />
       <CharacterSetupWizard
         isOpen={showWizard}
