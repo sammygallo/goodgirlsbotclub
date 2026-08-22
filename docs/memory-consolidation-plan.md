@@ -1,6 +1,6 @@
 # Memory Consolidation & Message Embeddings Plan
 
-**Status:** Draft v2 (adversarially reviewed against code, 2026-08-21). **Phase 0 done** (ggbc-backend@1d3af97, 2026-08-21). Phases 1–3 not started.
+**Status:** Draft v2 (adversarially reviewed against code, 2026-08-21). **Phase 0 done** (ggbc-backend@1d3af97, 2026-08-21). **Phase 1 done** (ggbc-backend@795f185, 2026-08-21) — migration + worker branch only, deliberately dark. Phases 2–3 not started.
 **Supersedes:** `pgvector-migration-plan.md` Phase 4 ("Actual vector storage") and `docs/v2/ROADMAP.md`'s `message_embeddings` item. When work starts, mark both with a pointer here. Carry the pgvector plan's sizing numbers, **not** the ROADMAP's — the ROADMAP's "<200 bytes stored in pgvector" claim is wrong (a `vector(1536)` row is ~6 KB: 4 bytes × 1536 dims), and its ivfflat prescription conflicts with the standing measure-first rule.
 **Prereq reading:** `lorebook-migration-pickup.md` (validation item 2), the 2026-08-20 token-bloat audit (artifact "The 12K-Token Exchange").
 
@@ -43,7 +43,9 @@ The client scrupulously filters `!m.hidden` before every model-facing read (`cha
 
 ---
 
-## Phase 1 — `message_embeddings` table + worker (genuinely dark)
+## Phase 1 — `message_embeddings` table + worker (genuinely dark) — done
+
+**Done — ggbc-backend@795f185 (2026-08-21).** Migration 0026 + the worker's `'chat'` branch (`app/routers/_messages.py`, `_process_chat_job`, `_embed_page` poison-pill bisection, `_claim_batch` transient-retry backoff) shipped in one commit; 9 new tests, full backend suite (726 tests) green, ruff clean, migration verified upgrade+downgrade+upgrade against the real test Postgres. `/retrieval/context`'s Phase 0.3 hidden-message filtering was refactored to import the new shared helper instead of duplicating it, per this section's original note. Not yet deployed to production — no enqueue hook exists yet (see below), so there's nothing live to migrate around, but the standing "fresh backup before deploying this migration" rule still applies whenever this ships.
 
 Phase 1 deploys the migration and the worker branch **only**. The `save_chat` enqueue hook ships with Phase 2 — this is deliberate: `stm_rag_settings.enabled = true` rows already exist in production (the live client-side RAG feature syncs the flag), so a Phase-1 hook would immediately start embedding those users' chats on their keys, silently, with no toast, while the client-side `ensureEmbedded` still runs every session — double spend on the same key. With the hook held back, nothing enqueues `'chat'` jobs and the deploy is truly dark.
 
