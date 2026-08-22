@@ -489,6 +489,12 @@ export interface RetrievalContextEntryDTO {
   id: string;
   lorebook_id: string;
   server_ts: number;
+  /** Phase 3.2 of the memory-consolidation plan: set only by
+   *  POST/PUT /lorebooks/{id}/entries(/{entryId}) when that specific write
+   *  pushed the book's pinned (critical ∪ constant) set over the World Info
+   *  token budget — null/absent everywhere else, including every entry in
+   *  a POST /retrieval/context response. */
+  pinnedBudgetWarning?: { pinnedTokens: number; budgetTokens: number } | null;
   [key: string]: unknown; // keys, content, comment, enabled, position, depth,
   // order, keysSecondary, selective, selectiveLogic, scanDepth, probability,
   // useProbability, group, groupOverride, groupWeight, preventRecursion,

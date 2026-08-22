@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { showToastGlobal } from '../components/ui/Toast';
 import { estimateTokens, type TokenizerProfile } from '../utils/tokenizer';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection } from '../utils/serverSettings';
 import {
@@ -2379,6 +2380,27 @@ async function putEntryWithRetry(
   throw new Error('unreachable: putEntryWithRetry exhausted its retry loop');
 }
 
+// Phase 3.2 of the memory-consolidation plan: session-guarded, same shape
+// as chatStore.ts's wiPinnedWarnedChats for the scan-time WI budget toast —
+// warn once per book per session, not on every single edit to a book
+// that's already over budget. Only checked at the two INTERACTIVE
+// single-entry write sites (createEntry/updateEntry below) — never at the
+// bulk book-import sites or the delete-triggered sibling relatedIds patch,
+// where a toast would fire on an action the user didn't consciously take
+// (or, for bulk import, fire many times in a row) rather than on an edit
+// they just made.
+const pinnedBudgetWarnedBooks = new Set<string>();
+
+function maybeWarnPinnedBudget(bookId: string, dto: LorebookEntryDTO) {
+  const warning = dto.pinnedBudgetWarning;
+  if (!warning || pinnedBudgetWarnedBooks.has(bookId)) return;
+  pinnedBudgetWarnedBooks.add(bookId);
+  showToastGlobal(
+    `Constant + critical lore in this book (~${warning.pinnedTokens} tokens) exceeds the World Info budget (${warning.budgetTokens}). Raise the budget or demote entries.`,
+    'warning'
+  );
+}
+
 export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
   // -------------------------------------------------------------------------
   // Local-state mutation helpers shared by every native-synced mutator's
@@ -2911,7 +2933,10 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
       set({ books: next });
       api
         .createLorebookEntry(bookId, entryToWirePayload(entry))
-        .then((dto) => applyServerEntryMeta(bookId, entry.id, dto))
+        .then((dto) => {
+          applyServerEntryMeta(bookId, entry.id, dto);
+          maybeWarnPinnedBudget(bookId, dto);
+        })
         .catch((err) => {
           console.warn('[worldInfoStore] failed to create entry on server', err);
           removeEntryLocally(bookId, entry.id);
@@ -2958,7 +2983,10 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
       set({ books: next });
       if (!prevEntry || !nextEntry) return; // entry not found locally — nothing to sync
       putEntryWithRetry(bookId, entryId, nextEntry, data, prevEntry.serverTs)
-        .then((dto) => applyServerEntryMeta(bookId, entryId, dto))
+        .then((dto) => {
+          applyServerEntryMeta(bookId, entryId, dto);
+          maybeWarnPinnedBudget(bookId, dto);
+        })
         .catch((err) => {
           console.warn('[worldInfoStore] failed to update entry on server', err);
           restoreEntryLocally(bookId, entryId, prevEntry as WorldInfoEntry);

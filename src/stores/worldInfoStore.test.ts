@@ -12,6 +12,12 @@ vi.mock('../utils/serverSettings', () => ({
   shouldReuploadSection: vi.fn(() => false),
 }));
 
+// Phase 3.2 of the memory-consolidation plan: the pinned-budget toast.
+const showToastGlobal = vi.fn();
+vi.mock('../components/ui/Toast', () => ({
+  showToastGlobal: (...args: unknown[]) => showToastGlobal(...args),
+}));
+
 // worldInfoStore's mutators now fire native /lorebooks network calls in the
 // background (Phase 3a) — mock the whole CRUD surface so tests never depend
 // on a real fetch() (which would reject on Node's inability to resolve a
@@ -160,6 +166,7 @@ afterEach(() => {
 let mockServerTs = 0;
 beforeEach(() => {
   mockServerTs = 0;
+  showToastGlobal.mockReset();
   listSharedWorldInfoBooks.mockReset();
   listSharedWorldInfoBooks.mockResolvedValue([]);
   importLorebooksFromBlob.mockReset();
@@ -973,5 +980,130 @@ describe('resetUser — sharing state', () => {
     expect(state.sharedOwnerNameByHandle).toEqual({});
     expect(state.sharedBooksStatus).toBe('idle');
     expect(state.sharedBooksError).toBeNull();
+  });
+});
+
+describe('Phase 3.2 — pinned-budget warning toast', () => {
+  beforeEach(() => {
+    useWorldInfoStore.getState().resetUser();
+  });
+
+  it('shows a warning toast when createEntry\'s server response carries pinnedBudgetWarning', async () => {
+    createLorebookEntry.mockImplementation(async (bookId: string, payload: Record<string, unknown>) => ({
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...payload,
+      lorebook_id: bookId,
+      server_ts: ++mockServerTs,
+      pinnedBudgetWarning: { pinnedTokens: 1200, budgetTokens: 1024 },
+    }));
+
+    const store = useWorldInfoStore.getState();
+    const book = store.createBook('Book');
+    store.createEntry(book.id, { comment: 'entry', critical: true });
+
+    await createLorebookEntry.mock.results[0].value;
+    await Promise.resolve();
+
+    expect(showToastGlobal).toHaveBeenCalledTimes(1);
+    const [message, variant] = showToastGlobal.mock.calls[0];
+    expect(message).toContain('1200');
+    expect(message).toContain('1024');
+    expect(variant).toBe('warning');
+  });
+
+  it('shows a warning toast when updateEntry\'s server response carries pinnedBudgetWarning', async () => {
+    const store = useWorldInfoStore.getState();
+    const book = store.createBook('Book');
+    const entry = store.createEntry(book.id, { comment: 'entry' })!;
+    await Promise.resolve();
+
+    updateLorebookEntry.mockImplementation(
+      async (bookId: string, entryId: string, payload: Record<string, unknown>) => ({
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        ...payload,
+        id: entryId,
+        lorebook_id: bookId,
+        server_ts: ++mockServerTs,
+        pinnedBudgetWarning: { pinnedTokens: 50, budgetTokens: 10 },
+      })
+    );
+    store.updateEntry(book.id, entry.id, { critical: true });
+
+    await updateLorebookEntry.mock.results[0].value;
+    await Promise.resolve();
+
+    expect(showToastGlobal).toHaveBeenCalledTimes(1);
+    expect(showToastGlobal.mock.calls[0][1]).toBe('warning');
+  });
+
+  it('does not toast when no pinnedBudgetWarning is present', async () => {
+    const store = useWorldInfoStore.getState();
+    const book = store.createBook('Book');
+    store.createEntry(book.id, { comment: 'entry' });
+
+    await createLorebookEntry.mock.results[0].value;
+    await Promise.resolve();
+
+    expect(showToastGlobal).not.toHaveBeenCalled();
+  });
+
+  it('only warns once per book per session, not on every subsequent write', async () => {
+    createLorebookEntry.mockImplementation(async (bookId: string, payload: Record<string, unknown>) => ({
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...payload,
+      lorebook_id: bookId,
+      server_ts: ++mockServerTs,
+      pinnedBudgetWarning: { pinnedTokens: 1200, budgetTokens: 1024 },
+    }));
+
+    const store = useWorldInfoStore.getState();
+    const book = store.createBook('Book');
+    store.createEntry(book.id, { comment: 'first', critical: true });
+    await createLorebookEntry.mock.results[0].value;
+    await Promise.resolve();
+    expect(showToastGlobal).toHaveBeenCalledTimes(1);
+
+    store.createEntry(book.id, { comment: 'second', critical: true });
+    await createLorebookEntry.mock.results[1].value;
+    await Promise.resolve();
+    expect(showToastGlobal).toHaveBeenCalledTimes(1); // still just the one
+  });
+
+  it('does not toast on bulk book-import sync (only the two interactive single-entry paths do)', async () => {
+    createLorebook.mockImplementation(async (payload: Record<string, unknown>) => ({
+      ownerHandle: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...payload,
+      server_ts: ++mockServerTs,
+    }));
+    createLorebookEntry.mockImplementation(async (bookId: string, payload: Record<string, unknown>) => ({
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...payload,
+      lorebook_id: bookId,
+      server_ts: ++mockServerTs,
+      pinnedBudgetWarning: { pinnedTokens: 1200, budgetTokens: 1024 },
+    }));
+
+    const store = useWorldInfoStore.getState();
+    // createBookWithEntries drives syncNewBookWithEntries — the bulk path,
+    // shared with import/duplicate/copy flows — not the interactive one.
+    store.createBookWithEntries('Bulk Book', [
+      { content: 'one', critical: true },
+      { content: 'two', critical: true },
+    ]);
+
+    // Let every in-flight mocked call (book create + both entry creates)
+    // settle, plus the store's own .then() chains.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(showToastGlobal).not.toHaveBeenCalled();
   });
 });
