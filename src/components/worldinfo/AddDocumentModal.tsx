@@ -172,7 +172,7 @@ export function AddDocumentModal({ isOpen, onClose, onCreated }: AddDocumentModa
 
         {!hasEmbeddingsKey && (
           <p className="text-xs text-amber-400">
-            No OpenAI embeddings key set (Settings → AI Settings) — this document's chunks won't
+            No embeddings key set (Settings → AI Settings) — this document's chunks won't
             become semantically searchable until one is saved.
           </p>
         )}

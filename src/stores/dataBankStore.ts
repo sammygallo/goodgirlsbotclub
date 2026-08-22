@@ -41,20 +41,43 @@ import { useSettingsStore } from './settingsStore';
 import { useWorldInfoStore, type WorldInfoEntry } from './worldInfoStore';
 
 // ---------------------------------------------------------------------------
-// Embeddings-key gate — unchanged by the native-Lorebook cutover. The SAME
-// secret (api_key_openai_embeddings, falling back to api_key_openai) is what
-// the server-side background embedding worker uses to embed newly-created
-// entries (app/workers/embeddings.py) — this store just surfaces whether
-// one is configured so EmbeddingsKeySettings can warn "documents won't be
-// searchable until you add a key," same message, different (now
-// server-side) consumer.
+// Embeddings-key gate. The backend resolves a fallback chain server-side —
+// OpenAI (dedicated embeddings secret, falling back to the general chat
+// key), then Google, then Cohere, whichever the user has (see
+// app/providers/embeddings_dispatch.py) — so this gate must check every
+// secret in that chain, not just OpenAI's, or a user with only a Gemini or
+// Cohere key would see an incorrect "not configured" warning throughout the
+// UI even though embeddings actually work for them.
 // ---------------------------------------------------------------------------
 
-/** True if the embeddings proxy will find a usable key server-side: a dedicated
- *  embeddings secret or the chat OpenAI key it falls back to — set either as the
- *  user's personal secret or (when sharing is on) an owner-managed global one.
- *  Mirrors the personal-OR-global check the provider keys use in MyKeysPage. */
+/** True if the embeddings pipeline will find a usable key server-side for ANY
+ *  provider in the fallback chain (OpenAI, Google, Cohere) — set either as
+ *  the user's personal secret or (when sharing is on) an owner-managed
+ *  global one. Mirrors the personal-OR-global check the provider keys use
+ *  in MyKeysPage/AISettingsPage. */
 export function embeddingsConfigured(
+  secrets: SecretsResponse,
+  globalSecrets?: SecretsResponse,
+  globalSharingEnabled?: boolean,
+): boolean {
+  const nonEmpty = (store: SecretsResponse | undefined, k: string) =>
+    !!store && Array.isArray(store[k]) && (store[k] as unknown[]).length > 0;
+  const has = (k: string) =>
+    nonEmpty(secrets, k) || (!!globalSharingEnabled && nonEmpty(globalSecrets, k));
+  return (
+    has(SECRET_KEYS.OPENAI_EMBEDDINGS) ||
+    has(SECRET_KEYS.OPENAI) ||
+    has(SECRET_KEYS.GOOGLE) ||
+    has(SECRET_KEYS.COHERE)
+  );
+}
+
+/** Narrow variant of {@link embeddingsConfigured}: true only when one of the
+ *  two OPENAI secrets is set. The dedicated key CARD needs this — its input
+ *  field stores an OpenAI key specifically, so its "•••• configured" state
+ *  must not light up for a Google/Cohere-only user whose embeddings work
+ *  through the fallback chain but whose OpenAI field is genuinely empty. */
+export function openaiEmbeddingsKeyConfigured(
   secrets: SecretsResponse,
   globalSecrets?: SecretsResponse,
   globalSharingEnabled?: boolean,

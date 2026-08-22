@@ -1245,6 +1245,21 @@ export const api = {
     );
   },
 
+  /**
+   * POST /embeddings/retry-mine — re-enqueues an embedding job for every
+   * caller-owned lorebook entry with no embedding (or one produced by a
+   * different model than the caller's currently-resolved provider). The
+   * self-service half of "I just added a key, now embed my existing
+   * lore" — the write-time hooks only fire on content changes, so rows
+   * that failed while keyless stay unsearchable without this. Idempotent
+   * server-side; safe to call repeatedly.
+   */
+  async retryMyEmbeddings(): Promise<{ queued: number }> {
+    return apiRequest<{ queued: number }>('/embeddings/retry-mine', {
+      method: 'POST',
+    });
+  },
+
   // -----------------------------------------------------------------
   // One-time migration helpers (session-scoped guards live in
   // serverRetrieval.ts, not here — this file only wraps the wire calls).

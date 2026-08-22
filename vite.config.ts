@@ -37,6 +37,7 @@ export default defineConfig({
       '/worldinfo': proxyTarget,
       '/lorebooks': proxyTarget,
       '/retrieval': proxyTarget,
+      '/embeddings': proxyTarget,
       '/scripts': {
         ...proxyTarget,
         // Specific upstream-compat shim modules served from public/ must NOT
