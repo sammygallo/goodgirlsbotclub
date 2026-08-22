@@ -1965,6 +1965,18 @@ async function fetchNativeBooks(): Promise<WorldInfoBook[]> {
 const _legacyBookIdMap = new Map<string, string>();
 const _legacyEntryIdMap = new Map<string, string>();
 
+/** Shape of the `stm_wi_legacy_id_map` sync section (Phase 3.3 step (a),
+ *  ggbc-backend's `_persist_legacy_id_map`) — a backend-authored-only,
+ *  read-only-from-here record of every legacy id that
+ *  `import_lorebooks_from_blob` has ever replaced with a freshly-minted
+ *  UUID. `oldId -> newId`, both directions plain strings; loosely typed
+ *  since it rides in through the same untyped `getSettingsBlob()` blob
+ *  every other section does. */
+interface LegacyIdMapSection {
+  books: Record<string, unknown>;
+  entries: Record<string, unknown>;
+}
+
 /**
  * Translate a book id that predates this cutover (minted by the old
  * `generateId('wibook')` scheme, still sitting in some other store's
@@ -2131,15 +2143,21 @@ function entrySignature(e: WorldInfoEntry): string {
  * reference at the wrong book's content.
  *
  * Entries within a matched book pair are matched by content signature
- * (see entrySignature) — there is no server-recorded old-id -> new-id
- * trail for entries that went through import-from-blob before this
- * cutover shipped (the migration endpoint mints/preserves ids without
- * reporting a mapping back), so this is a best-effort heuristic, not a
- * guarantee: a book containing two entries with byte-identical
+ * (see entrySignature) — for anything import-from-blob migrated BEFORE
+ * Phase 3.3 step (a) shipped, there is no server-recorded old-id ->
+ * new-id trail (the migration endpoint used to mint/preserve ids without
+ * reporting a mapping back), so this remains a best-effort heuristic for
+ * that cohort: a book containing two entries with byte-identical
  * comment/content/keys leaves one of the pair unmapped (never mismapped)
- * rather than resolving the ambiguity by guessing.
+ * rather than resolving the ambiguity by guessing. For anything migrated
+ * AFTER step (a) shipped, `serverMap` (below) supplies an EXACT trail
+ * instead and takes precedence over whatever this heuristic guesses.
  */
-function buildLegacyIdRemap(oldBooks: WorldInfoBook[], newBooks: WorldInfoBook[]): void {
+function buildLegacyIdRemap(
+  oldBooks: WorldInfoBook[],
+  newBooks: WorldInfoBook[],
+  serverMap?: LegacyIdMapSection | null
+): void {
   _legacyBookIdMap.clear();
   _legacyEntryIdMap.clear();
   const newByScopeKey = new Map<string, WorldInfoBook>();
@@ -2212,6 +2230,39 @@ function buildLegacyIdRemap(oldBooks: WorldInfoBook[], newBooks: WorldInfoBook[]
       if (!next) continue;
       usedNewIds.add(next.id);
       if (next.id !== oe.id) _legacyEntryIdMap.set(oe.id, next.id);
+    }
+  }
+
+  // Phase 3.3 step (b) of the memory-consolidation plan: an EXACT,
+  // server-recorded id trail (import_lorebooks_from_blob persists every
+  // legacy id it actually reminted — ggbc-backend's
+  // _persist_legacy_id_map) takes precedence over the heuristic
+  // content-signature matching above, wherever it names something that
+  // still genuinely exists. Applied AFTER the heuristic (Map.set
+  // overwrites), deliberately: the heuristic is a best-effort fallback
+  // for ids the server map doesn't (yet) cover — books/entries migrated
+  // before this feature shipped — not the other way around; a
+  // server-confirmed pair must never be clobbered by a guess.
+  if (serverMap) {
+    const newBookIds = new Set(newBooks.map((b) => b.id));
+    for (const [oldId, newId] of Object.entries(serverMap.books)) {
+      if (typeof newId === 'string' && newBookIds.has(newId)) {
+        _legacyBookIdMap.set(oldId, newId);
+      }
+    }
+    // Flat existence check, matching _legacyEntryIdMap's own flat shape —
+    // the per-BOOK association is re-validated anyway at actual use time
+    // (resolveLegacyEntryId scopes the lookup to the caller's already-
+    // resolved book), so this is a "does this id exist anywhere at all"
+    // sanity check, not the authoritative one.
+    const allNewEntryIds = new Set<string>();
+    for (const nb of newBooks) {
+      for (const e of nb.entries) allNewEntryIds.add(e.id);
+    }
+    for (const [oldId, newId] of Object.entries(serverMap.entries)) {
+      if (typeof newId === 'string' && allNewEntryIds.has(newId)) {
+        _legacyEntryIdMap.set(oldId, newId);
+      }
     }
   }
 }
@@ -3396,6 +3447,10 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
     fetchPrefs: async () => {
       const oldBooksSnapshot = get().books;
       let legacyBlobBooksForRemap: WorldInfoBook[] = [];
+      // Phase 3.3 step (b) of the memory-consolidation plan — carried out
+      // of this try block (same reason legacyBlobBooksForRemap is) so the
+      // native-fetch leg below can pass it into buildLegacyIdRemap.
+      let serverLegacyIdMap: LegacyIdMapSection | null = null;
 
       try {
         const settings = await getSettingsBlob();
@@ -3405,6 +3460,22 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
         const serverTs = Number(stored?._ts || 0);
         if (Array.isArray(stored?.books)) {
           legacyBlobBooksForRemap = normalizeStoredBooks(stored.books as WorldInfoBook[]);
+        }
+
+        const legacyMapRaw = settings['stm_wi_legacy_id_map'] as
+          | { books?: unknown; entries?: unknown }
+          | undefined;
+        if (legacyMapRaw && typeof legacyMapRaw === 'object') {
+          const books = legacyMapRaw.books;
+          const entries = legacyMapRaw.entries;
+          serverLegacyIdMap = {
+            books: books && typeof books === 'object' && !Array.isArray(books)
+              ? (books as Record<string, unknown>)
+              : {},
+            entries: entries && typeof entries === 'object' && !Array.isArray(entries)
+              ? (entries as Record<string, unknown>)
+              : {},
+          };
         }
 
         if (!stored) {
@@ -3477,7 +3548,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
         // has one, wins on id collision — it's the cross-device source of
         // truth for a fresh browser whose localStorage cache is empty.
         for (const b of legacyBlobBooksForRemap) oldBooksById.set(b.id, b);
-        buildLegacyIdRemap(Array.from(oldBooksById.values()), nativeBooks);
+        buildLegacyIdRemap(Array.from(oldBooksById.values()), nativeBooks, serverLegacyIdMap);
         saveBooks(nativeBooks);
         set({ books: nativeBooks });
         _nativeBooksFetchSucceeded = true;
