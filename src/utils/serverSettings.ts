@@ -110,12 +110,17 @@ async function maybeImportFromST(): Promise<void> {
   try { localStorage.setItem(ST_IMPORT_SENTINEL, '1'); } catch { /* ignore */ }
 }
 
-/**
- * Read every section the current user has stored on the server.
- * Shape matches the old ST-blob format ({ [section]: { ...data, _ts } })
- * so existing stores keep working unchanged.
- */
-export async function getSettingsBlob(): Promise<Record<string, unknown>> {
+// Phase 3.3 of the memory-consolidation plan: ~20 stores each independently
+// call getSettingsBlob() on the login burst (every fetchPrefs), which
+// without this would mean ~20 separate GET /sync/sections round trips for
+// data that's identical across all of them. A short-lived shared promise —
+// NOT a persistent cache — turns a burst of concurrent calls into one
+// request: whoever calls first starts the fetch, everyone who calls while
+// it's still in flight gets the SAME promise, and it's cleared the moment
+// the fetch settles (success or failure) so the next call starts fresh.
+let inFlightSettingsBlob: Promise<Record<string, unknown>> | null = null;
+
+async function fetchSettingsBlob(): Promise<Record<string, unknown>> {
   await maybeImportFromST();
   let sections: Record<string, SectionResponse>;
   try {
@@ -133,6 +138,19 @@ export async function getSettingsBlob(): Promise<Record<string, unknown>> {
     }
   }
   return blob;
+}
+
+/**
+ * Read every section the current user has stored on the server.
+ * Shape matches the old ST-blob format ({ [section]: { ...data, _ts } })
+ * so existing stores keep working unchanged.
+ */
+export async function getSettingsBlob(): Promise<Record<string, unknown>> {
+  if (inFlightSettingsBlob) return inFlightSettingsBlob;
+  inFlightSettingsBlob = fetchSettingsBlob().finally(() => {
+    inFlightSettingsBlob = null;
+  });
+  return inFlightSettingsBlob;
 }
 
 export function makeLocalTsKey(serverKey: string): string {
