@@ -11,15 +11,19 @@
  * client-side query/injection path.
  *
  * This store now owns two things only:
- *  1. `addDocument`/`deleteDocument` — a thin, Data-Bank-flavored front end
- *     over `worldInfoStore.ts`'s native CRUD (`createBookWithEntries`/
- *     `deleteBook`), so paste/upload stays a one-call action instead of the
- *     caller hand-assembling chunks + entries itself.
+ *  1. `addDocument` — a thin, Data-Bank-flavored front end over
+ *     `worldInfoStore.ts`'s native `createBookWithEntries`, so paste/upload
+ *     stays a one-call action instead of the caller hand-assembling
+ *     chunks + entries itself. (Deletion needs no counterpart: documents
+ *     are ordinary lorebooks, deleted in the library via `deleteBook` like
+ *     any other book.)
  *  2. A small index (`stm_data_bank_index` — a NEW server section,
  *     deliberately NOT the legacy `stm_data_bank` blob, see the module
  *     docstring on `fetchPrefs` below) of which of the user's lorebook ids
- *     came from a Data Bank upload, purely so `DataBankPage.tsx` can show a
- *     filtered "your documents" view instead of the user's whole library.
+ *     came from a Data Bank upload. (It once backed the retired
+ *     DataBankPage's filtered "your documents" view; documents now live in
+ *     the World Info library like any other lorebook, added via
+ *     AddDocumentModal.)
  *
  * The legacy `stm_data_bank` blob (old documents + client-computed
  * embedding vectors) is migrated once, automatically, via
@@ -37,19 +41,43 @@ import { useSettingsStore } from './settingsStore';
 import { useWorldInfoStore, type WorldInfoEntry } from './worldInfoStore';
 
 // ---------------------------------------------------------------------------
-// Embeddings-key gate — unchanged by the native-Lorebook cutover. The SAME
-// secret (api_key_openai_embeddings, falling back to api_key_openai) is what
-// the server-side background embedding worker uses to embed newly-created
-// entries (app/workers/embeddings.py) — this store just surfaces whether
-// one is configured so DataBankPage can warn "documents won't be searchable
-// until you add a key," same message, different (now server-side) consumer.
+// Embeddings-key gate. The backend resolves a fallback chain server-side —
+// OpenAI (dedicated embeddings secret, falling back to the general chat
+// key), then Google, then Cohere, whichever the user has (see
+// app/providers/embeddings_dispatch.py) — so this gate must check every
+// secret in that chain, not just OpenAI's, or a user with only a Gemini or
+// Cohere key would see an incorrect "not configured" warning throughout the
+// UI even though embeddings actually work for them.
 // ---------------------------------------------------------------------------
 
-/** True if the embeddings proxy will find a usable key server-side: a dedicated
- *  embeddings secret or the chat OpenAI key it falls back to — set either as the
- *  user's personal secret or (when sharing is on) an owner-managed global one.
- *  Mirrors the personal-OR-global check the provider keys use in MyKeysPage. */
+/** True if the embeddings pipeline will find a usable key server-side for ANY
+ *  provider in the fallback chain (OpenAI, Google, Cohere) — set either as
+ *  the user's personal secret or (when sharing is on) an owner-managed
+ *  global one. Mirrors the personal-OR-global check the provider keys use
+ *  in MyKeysPage/AISettingsPage. */
 export function embeddingsConfigured(
+  secrets: SecretsResponse,
+  globalSecrets?: SecretsResponse,
+  globalSharingEnabled?: boolean,
+): boolean {
+  const nonEmpty = (store: SecretsResponse | undefined, k: string) =>
+    !!store && Array.isArray(store[k]) && (store[k] as unknown[]).length > 0;
+  const has = (k: string) =>
+    nonEmpty(secrets, k) || (!!globalSharingEnabled && nonEmpty(globalSecrets, k));
+  return (
+    has(SECRET_KEYS.OPENAI_EMBEDDINGS) ||
+    has(SECRET_KEYS.OPENAI) ||
+    has(SECRET_KEYS.GOOGLE) ||
+    has(SECRET_KEYS.COHERE)
+  );
+}
+
+/** Narrow variant of {@link embeddingsConfigured}: true only when one of the
+ *  two OPENAI secrets is set. The dedicated key CARD needs this — its input
+ *  field stores an OpenAI key specifically, so its "•••• configured" state
+ *  must not light up for a Google/Cohere-only user whose embeddings work
+ *  through the fallback chain but whose OpenAI field is genuinely empty. */
+export function openaiEmbeddingsKeyConfigured(
   secrets: SecretsResponse,
   globalSecrets?: SecretsResponse,
   globalSharingEnabled?: boolean,
@@ -98,10 +126,6 @@ interface DataBankState {
     scope: 'global' | 'character',
     characterAvatar?: string
   ) => string;
-
-  /** Deletes the underlying lorebook (via worldInfoStore.deleteBook) and
-   *  drops it from this store's index. */
-  deleteDocument: (id: string) => void;
 
   /** A3.1d — pull /sync/section/stm_data_bank_index and reconcile; also
    *  runs the one-time legacy-blob migration (see module docstring). */
@@ -246,13 +270,6 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
     return book.id;
   },
 
-  deleteDocument: (id) => {
-    useWorldInfoStore.getState().deleteBook(id);
-    const lorebookIds = get().lorebookIds.filter((bookId) => bookId !== id);
-    saveIndex(lorebookIds);
-    set({ lorebookIds });
-  },
-
   resetUser: () => {
     set({ lorebookIds: [] });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
@@ -323,7 +340,7 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
  * `imported` list (everything already migrated), so if it were the only
  * one updating the registry, the registry could end up NEVER populated
  * for that user — the books would exist and work fine for retrieval, but
- * would silently vanish from the Data Bank page forever.
+ * their Data Bank provenance would be silently lost forever.
  */
 export async function ensureDataBankImportedAndIndexed(): Promise<void> {
   const migrated = await ensureDataBankImported();

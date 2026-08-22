@@ -317,7 +317,8 @@ export function WorldInfoEntryForm({
 
   // Duplicate-entry nudge — advisory only, same on-demand shape as Check
   // health above (a button, not per-keystroke): POST /lorebooks/search
-  // makes a real, non-free OpenAI embeddings call server-side per request
+  // makes a real, non-free embeddings call server-side per request (on
+  // whichever provider the caller's keys resolve to)
   // (see searchLorebooks's own docstring in src/api/client.ts), so this
   // must never fire automatically while the author is still typing.
   // Requires an embeddings key (same one Data Bank/chat-memory-recall use)
@@ -934,7 +935,7 @@ export function WorldInfoEntryForm({
       </div>
 
       {/* Similar entries — advisory only, never blocks saving. Run on demand:
-          unlike Entry check above, this costs a real OpenAI embeddings call,
+          unlike Entry check above, this costs a real embeddings call,
           so it's never triggered automatically. */}
       <div className="space-y-2 pt-3 border-t border-[var(--color-border)]">
         <div className="flex items-center justify-between gap-2">
@@ -953,7 +954,7 @@ export function WorldInfoEntryForm({
         </div>
         {!hasEmbeddingsKey && (
           <p className="text-xs italic text-[var(--color-text-secondary)]">
-            Requires an OpenAI embeddings key (Settings → Data Bank) to compare against existing lore.
+            Requires an embeddings key (Settings → AI Settings — OpenAI, Google, or Cohere) to compare against existing lore.
           </p>
         )}
         {dupError && <p className="text-xs text-red-400">{dupError}</p>}

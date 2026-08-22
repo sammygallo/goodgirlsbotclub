@@ -4,7 +4,6 @@ export { InvitationManager } from './InvitationManager';
 export { UserManagementPage } from './UserManagementPage';
 export { QuickReplyPage } from './QuickReplyPage';
 export { ExtensionsPage } from './ExtensionsPage';
-export { DataBankPage } from './DataBankPage';
 export { GalleryPage } from './GalleryPage';
 export { PromptTemplatesPage } from './PromptTemplatesPage';
 export { ThemeEditorPage } from './ThemeEditorPage';

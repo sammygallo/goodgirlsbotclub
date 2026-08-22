@@ -83,7 +83,7 @@ async function triggerBackfillIfNeeded(): Promise<void> {
     const { queued } = await api.ensureMessageEmbeddings();
     if (queued > 0) {
       showToastGlobal(
-        `Indexing your past chats for recall — ${queued} chat${queued === 1 ? '' : 's'} queued on your OpenAI key. Recall improves as indexing completes.`,
+        `Indexing your past chats for recall — ${queued} chat${queued === 1 ? '' : 's'} queued on your embeddings key. Recall improves as indexing completes.`,
         'info'
       );
     }

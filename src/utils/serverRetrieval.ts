@@ -232,7 +232,7 @@ async function ensureContentImported(signal: AbortSignal): Promise<boolean> {
  * Calling the endpoint straight from here (bypassing that shared function,
  * as an earlier version of this code did) would let this trigger "win" the
  * one-shot import on a slow/early login without ever recording it, leaving
- * the Data Bank page permanently unable to show the migrated documents —
+ * the Data Bank registry (lorebookIds) permanently unpopulated —
  * see that function's own docstring for the full failure mode. No local
  * guard/in-flight-dedup needed here anymore: the shared function's own
  * guard already makes a second call in the same session an instant no-op.

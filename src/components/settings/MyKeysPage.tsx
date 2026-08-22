@@ -4,6 +4,7 @@ import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { PROVIDERS, type SecretState } from '../../api/client';
 import { Button, Input } from '../ui';
+import { EmbeddingsApiKeySection, ChatHistoryRagSection } from './EmbeddingsKeySettings';
 import {
   getThemeMode,
   setThemeMode,
@@ -230,6 +231,9 @@ export function MyKeysPage(_props?: { params?: Record<string, string> }) {
             })}
           </div>
         </section>
+
+        <EmbeddingsApiKeySection />
+        <ChatHistoryRagSection />
 
         {/* Appearance */}
         <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-4 cyberpunk-card">
