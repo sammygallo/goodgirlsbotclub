@@ -349,7 +349,6 @@ export function ChatLorePanel({ isOpen, onClose, chatFile, characterAvatars }: C
 
     for (const book of orderedBooks) {
       for (const entry of book.entries) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { id: oldId, createdAt: _createdAt, updatedAt: _updatedAt, revisions: _revisions, ...rest } = entry;
         const created = wi.createEntry(newBook.id, rest);
         if (!created) continue;

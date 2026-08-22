@@ -401,7 +401,6 @@ export function WorldInfoEntryForm({
     // forever), even though nothing else about it changed.
     if (!constant && !draftEntry.semanticOnly && parsedKeys.length === 0) return;
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...data } = draftEntry;
 
     if (onSave) {
@@ -432,7 +431,6 @@ export function WorldInfoEntryForm({
   const handleRestore = (rev: EntryRevision) => {
     if (!entry) return;
     if (onSave) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...data } = draftEntry;
       onSave({ ...data, content: rev.prevContent });
     } else {

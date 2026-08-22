@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, useRef, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, useRef, type ReactNode } from 'react';
 
 type ToastVariant = 'info' | 'warning' | 'error' | 'success';
 
@@ -52,8 +52,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     }, AUTO_DISMISS_MS);
   }, []);
 
-  // Register the global handle
-  globalShowToast = showToast;
+  // Register the global handle. In an effect, not during render: callers are
+  // non-React code that only runs post-mount anyway.
+  useEffect(() => {
+    globalShowToast = showToast;
+  }, [showToast]);
 
   return (
     <ToastContext.Provider value={{ showToast }}>

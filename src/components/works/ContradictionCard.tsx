@@ -370,7 +370,9 @@ export function ContradictionCard({
   // Held in a ref so an unmemoized prop from the parent can't retrigger
   // the evidence effect on every render — the fetch is once per visit.
   const loadChatMessagesRef = useRef(loadChatMessages);
-  loadChatMessagesRef.current = loadChatMessages;
+  useEffect(() => {
+    loadChatMessagesRef.current = loadChatMessages;
+  });
 
   const { id: entryId, sources, resolution } = contradiction;
   const status = resolution.status;

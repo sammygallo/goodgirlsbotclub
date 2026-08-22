@@ -418,7 +418,7 @@ export const SHIM_CODE: string = /* javascript */ `
     // Expose els as numeric indices so the jq object is array-like — required
     // for Array.prototype.slice / spread / for-of to iterate it. Without this,
     // _toHtml(jqObj) returns empty for jq-wrapped HTML, which breaks
-    // pattern: \$(htmlString) → target.append(\$wrapper).
+    // pattern: $(htmlString) → target.append($wrapper).
     for (var _i = 0; _i < els.length; _i++) jq[_i] = els[_i];
     jq.toArray = function () { return Array.prototype.slice.call(els); };
 

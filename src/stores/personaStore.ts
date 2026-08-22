@@ -101,7 +101,6 @@ function markLocalDirty(): void {
 type PersonaForServer = Omit<Persona, 'avatarDataUrl'>;
 
 function stripAvatar(p: Persona): PersonaForServer {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { avatarDataUrl: _, ...rest } = p;
   return rest;
 }

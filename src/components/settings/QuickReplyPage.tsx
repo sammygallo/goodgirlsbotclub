@@ -99,8 +99,10 @@ export function QuickReplyPage(_props?: { params?: Record<string, string> }) {
   };
 
   // ── Entry form (shared for add + edit) ───────────────────────
+  // A plain element, not a nested component: a component closure recreated
+  // each render would remount (and drop focus) on every keystroke.
 
-  const EntryForm = () => (
+  const entryForm = (
     <div className="bg-[var(--color-bg-tertiary)] rounded-lg p-3 space-y-2">
       <Input
         value={entryLabelDraft}
@@ -158,7 +160,7 @@ export function QuickReplyPage(_props?: { params?: Record<string, string> }) {
         </header>
 
         <div className="max-w-2xl mx-auto p-4 space-y-3">
-          {isAddingEntry && <EntryForm />}
+          {isAddingEntry && entryForm}
 
           {currentSet.entries.length === 0 && !isAddingEntry && (
             <div className="text-center py-12 text-[var(--color-text-secondary)]">
@@ -174,7 +176,7 @@ export function QuickReplyPage(_props?: { params?: Record<string, string> }) {
               <div key={entry.id} className="bg-[var(--color-bg-secondary)] rounded-lg overflow-hidden">
                 {isEditing ? (
                   <div className="p-3">
-                    <EntryForm />
+                    {entryForm}
                   </div>
                 ) : (
                   <div className="flex items-start gap-2 p-3">

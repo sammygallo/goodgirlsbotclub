@@ -476,7 +476,6 @@ export function CharacterImport({ isOpen, onClose, onImported }: CharacterImport
     // `dataOverrides` would silently resurrect greetings the user just
     // deleted (buildCardData spreads data_overrides first; a skipped
     // explicit assignment leaves whatever the spread put there in place).
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { extensions: importedExtensions, alternate_greetings: _dropped, ...dataOverrides } =
       importedData?.data || {};
 
