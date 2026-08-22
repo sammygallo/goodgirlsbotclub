@@ -42,7 +42,8 @@ The app has three memory mechanisms — they can run together:
 2. **Chat-History RAG** — embeds your past chat messages and pulls the most
    semantically relevant past turns into context at generation time. Better
    recall than keyword-based World Info. Opt-in. One embedding call per new
-   message. Settings → Data Bank.
+   message. Settings → AI Settings (the Chat memory toggle, next to the
+   embeddings key).
 
 3. **Summarize** — periodic rolling summary of older chat, injected as a
    system message. More about compression than recall. Settings → Extensions
