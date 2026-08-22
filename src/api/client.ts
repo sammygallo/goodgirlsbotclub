@@ -503,6 +503,26 @@ export interface RetrievalContextDTO {
   activatedEntryIds: string[];
 }
 
+/** One chunk from POST /retrieval/messages (Phase 2 of the
+ *  memory-consolidation plan — server-side chat-history RAG). `text` is
+ *  read live from the chat row server-side, never from storage, so it's
+ *  always current even if the underlying embedding is stale. */
+export interface MessageChunkDTO {
+  ggbcId: string;
+  text: string;
+  isUser: boolean;
+  score: number;
+}
+
+/** Response for POST /retrieval/messages. `chunks` is empty (not an
+ *  error) whenever RAG isn't usable for this call; `reason`, when
+ *  present, distinguishes why (today only `"no_key"`) — additive/optional
+ *  so it's safe to ignore. */
+export interface RetrievalMessagesDTO {
+  chunks: MessageChunkDTO[];
+  reason?: string;
+}
+
 export interface CharacterInfo {
   name: string;
   avatar: string; // filename like "CharacterName.png"
@@ -1160,6 +1180,62 @@ export const api = {
       body: JSON.stringify({ characterAvatar, fileName, turnNo, activatedEntryIds }),
       signal,
     });
+  },
+
+  /**
+   * POST /retrieval/messages — Phase 2 chat-history message recall (see
+   * ggbc-backend's app/routers/retrieval.py). Pure read from the caller's
+   * point of view. `boundaryId` is the ggbc_id (ChatMessage.id) of the
+   * oldest message in the caller's kept raw tail — see
+   * src/utils/ragBoundary.ts's computeRagBoundary for how it's derived.
+   */
+  async getRetrievalMessages(
+    characterAvatar: string,
+    fileName: string,
+    query: string,
+    k: number,
+    boundaryId: string | null,
+    signal?: AbortSignal,
+  ): Promise<RetrievalMessagesDTO> {
+    return apiRequest<RetrievalMessagesDTO>('/retrieval/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        characterAvatar,
+        fileName,
+        query,
+        k,
+        ...(boundaryId !== null ? { boundaryId } : {}),
+      }),
+      signal,
+    });
+  },
+
+  /**
+   * POST /retrieval/messages/ensure — enable-time backfill trigger:
+   * enqueues a 'chat' embedding job for every chat the caller owns.
+   * Meant to be called once per session (session-guarded by the caller,
+   * see chatHistoryRagStore.ts), not on every generation turn.
+   */
+  async ensureMessageEmbeddings(signal?: AbortSignal): Promise<{ queued: number }> {
+    return apiRequest<{ queued: number }>('/retrieval/messages/ensure', {
+      method: 'POST',
+      signal,
+    });
+  },
+
+  /**
+   * GET /retrieval/messages/status — {embedded, pending, failed} counts
+   * across every chat the caller owns. Backs the Data Bank page's
+   * indexing indicator (replaces the old client-side embeddingsByChat
+   * counter, which only ever reflected the current session's in-memory
+   * cache). `failed` surfaces worker outcomes (typically a missing/
+   * invalid OpenAI key) that the old client-side path left silent.
+   */
+  async getMessageEmbeddingsStatus(): Promise<{ embedded: number; pending: number; failed: number }> {
+    return apiRequest<{ embedded: number; pending: number; failed: number }>(
+      '/retrieval/messages/status',
+      { method: 'GET' }
+    );
   },
 
   // -----------------------------------------------------------------

@@ -11,7 +11,7 @@
  * (keyword+semantic+FTS) activation engine.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Database,
@@ -24,6 +24,7 @@ import {
   Trash2,
   User,
 } from 'lucide-react';
+import { api } from '../../api/client';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useDataBankStore, embeddingsConfigured } from '../../stores/dataBankStore';
 import { useWorldInfoStore, type WorldInfoBook } from '../../stores/worldInfoStore';
@@ -433,18 +434,28 @@ export function DataBankPage(_props?: { params?: Record<string, string> }) {
 function ChatHistoryRagSection() {
   const enabled = useChatHistoryRagStore((s) => s.enabled);
   const setEnabled = useChatHistoryRagStore((s) => s.setEnabled);
-  const embeddingsByChat = useChatHistoryRagStore((s) => s.embeddingsByChat);
   const hasKey = embeddingsConfigured(
     useSettingsStore((s) => s.secrets),
     useSettingsStore((s) => s.globalSecrets),
     useSettingsStore((s) => s.globalSharingEnabled),
   );
 
-  const totalChats = Object.keys(embeddingsByChat).length;
-  const totalEmbeddings = Object.values(embeddingsByChat).reduce(
-    (sum, arr) => sum + arr.length,
-    0
-  );
+  // Phase 2 of the memory-consolidation plan: embedding is server-side now
+  // (a POST /chats/save side effect), so this counter comes from
+  // GET /retrieval/messages/status instead of the old in-memory
+  // embeddingsByChat cache, which only ever reflected the current
+  // session's own work and reset to zero on every reload.
+  const [status, setStatus] = useState<{ embedded: number; pending: number; failed: number } | null>(null);
+  useEffect(() => {
+    // Nothing renders `status` while disabled (see the JSX below), so
+    // there's no need to reset it here — just skip the fetch.
+    if (!enabled) return;
+    let cancelled = false;
+    api.getMessageEmbeddingsStatus()
+      .then((s) => { if (!cancelled) setStatus(s); })
+      .catch(() => { /* non-fatal — the counter just stays hidden */ });
+    return () => { cancelled = true; };
+  }, [enabled]);
 
   return (
     <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-3">
@@ -478,9 +489,16 @@ function ChatHistoryRagSection() {
           No OpenAI embeddings key set — chat memory is inactive until you save one above.
         </p>
       )}
-      {enabled && hasKey && totalEmbeddings > 0 && (
+      {enabled && hasKey && status && status.embedded > 0 && (
         <p className="text-xs text-[var(--color-text-secondary)]">
-          {totalEmbeddings} message{totalEmbeddings === 1 ? '' : 's'} embedded across {totalChats} chat{totalChats === 1 ? '' : 's'}.
+          {status.embedded} message{status.embedded === 1 ? '' : 's'} indexed
+          {status.pending > 0 ? `, ${status.pending} more indexing` : ''}.
+        </p>
+      )}
+      {enabled && hasKey && status && status.failed > 0 && (
+        <p className="text-xs text-amber-400">
+          {status.failed} chat{status.failed === 1 ? '' : 's'} failed to index — check that your
+          OpenAI key above is valid, then re-save the chat to retry.
         </p>
       )}
     </section>

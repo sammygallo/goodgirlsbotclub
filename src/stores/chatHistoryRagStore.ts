@@ -1,94 +1,50 @@
 /**
- * Chat-history RAG — embeddings over the user's own past chat turns.
+ * Chat-history RAG settings — the opt-in switch for server-side
+ * chat-history recall (Phase 2 of the memory-consolidation plan;
+ * docs/memory-consolidation-plan.md).
  *
- * Companion to dataBankStore: same embeddings API + cosine search, but the
- * source is the live chat instead of user-uploaded docs. The point is to
- * recall specific past moments by semantic relevance instead of paying to
- * keep them in raw history every turn.
- *
- * Lifecycle:
- *   - The chat generation path calls `ensureEmbedded(chatFile, messages)`
- *     before building context. Any messages that don't yet have an embedding
- *     are embedded one-by-one and persisted.
- *   - At query time, `queryTopK(chatFile, query, k)` returns the top-K most
- *     relevant past messages by cosine similarity.
- *   - `clearChat(chatFile)` wipes a chat's stored embeddings (e.g. after a
- *     "Start new chat" reset).
- *
- * Cost: each new message costs one OpenAI embedding call. Opt-in only.
- * Storage: ~6 KB per message vector. 1 000 messages ≈ 6 MB localStorage.
+ * This store used to also own the embedding/query machinery itself
+ * (client-side `ensureEmbedded`/`queryTopK` over an in-memory
+ * `embeddingsByChat` cache, each new message costing a direct OpenAI call
+ * from the browser). That's gone: embedding now happens server-side, as a
+ * side effect of `POST /chats/save` (gated on `enabled` below), and
+ * recall is a single `POST /retrieval/messages` call — see
+ * `resolveRagContext` in chatStore.ts and `src/utils/ragBoundary.ts`. This
+ * store keeps exactly what's still genuinely client-side: the `enabled`
+ * flag itself (synced, same as before) and the one-time enable-time
+ * backfill trigger for chats that predate this cutover.
  */
 
 import { create } from 'zustand';
-import { hasEmbeddingsKey } from './dataBankStore';
-import { cosineSimilarity, getEmbedding } from '../utils/embeddings';
+import { showToastGlobal } from '../components/ui/Toast';
+import { api } from '../api/client';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface ChatMessageEmbedding {
-  /** Stable id — `${chatFile}#${index}` so re-embedding the same slot is idempotent. */
-  id: string;
-  /** Original message text (the slice we embedded). */
-  text: string;
-  /** Speaker label, kept for the retrieval-context preamble. */
-  speaker: 'user' | 'assistant';
-  embedding: number[];
-}
-
 interface ChatHistoryRagState {
-  /** Master switch — when off, no embedding calls and no retrieval. */
+  /** Master switch — when off, no embedding jobs get enqueued server-side
+   *  and /retrieval/messages always returns no chunks. */
   enabled: boolean;
-  /** Per-message embeddings keyed by chat file name. */
-  embeddingsByChat: Record<string, ChatMessageEmbedding[]>;
-  /** Whether an embedding pass is currently running for a given chat. */
-  embeddingChats: Set<string>;
 
   setEnabled: (on: boolean) => void;
-  /** Fetch from server after login and apply. No-op if no server data yet. */
+  /** Fetch from server after login and apply. No-op if no server data yet.
+   *  Also the "session start" hook for the enable-time backfill trigger —
+   *  see triggerBackfillIfNeeded below. */
   fetchPrefs: () => Promise<void>;
   /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
   resetUser: () => void;
-
-  /**
-   * Make sure every non-system message in `messages` has an embedding stored
-   * for `chatFile`. New messages are embedded sequentially using the Data
-   * Bank's OpenAI key. If no key is set, this is a no-op.
-   */
-  ensureEmbedded: (
-    chatFile: string,
-    messages: { content: string; isUser: boolean; isSystem: boolean }[]
-  ) => Promise<void>;
-
-  /**
-   * Return the top-K past messages most relevant to `query`. Results carry
-   * the speaker label so callers can render a useful preamble.
-   */
-  queryTopK: (
-    chatFile: string,
-    query: string,
-    k?: number
-  ) => Promise<Array<{ text: string; speaker: 'user' | 'assistant'; score: number }>>;
-
-  clearChat: (chatFile: string) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = 'stm:chat-history-rag';
 const ENABLED_KEY = 'stm:chat-history-rag-enabled';
 
-// The per-message embeddings (raw transcript text + ~6 KB vectors each) are NOT
-// persisted: at ~6 MB per 1000 messages they were the single biggest localStorage
-// consumer and risked silently blowing the ~5 MB quota. They live in memory for
-// the session and are recomputed on demand by ensureEmbedded() next session.
-// Only the lightweight `enabled` flag is persisted (and synced). Purge any heavy
-// cache left by older builds.
-try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+// The heavy per-message embeddings/vectors cache this key used to hold is
+// gone (see module docstring) — nothing left to purge here going forward,
+// but old builds may still have it, so keep clearing it defensively.
+const STALE_STORAGE_KEY = 'stm:chat-history-rag';
+try { localStorage.removeItem(STALE_STORAGE_KEY); } catch { /* ignore */ }
 
 function loadEnabled(): boolean {
   try {
@@ -109,14 +65,32 @@ function saveEnabled(on: boolean) {
 const SERVER_KEY = 'stm_rag_settings';
 const LOCAL_TS_KEY = makeLocalTsKey(SERVER_KEY);
 
-// Cap how many short trailing messages we skip embedding — those are likely
-// already in the raw history window. Anything older needs embeddings to be
-// retrievable after compaction.
-const TAIL_SKIP = 4;
+// ---------------------------------------------------------------------------
+// Enable-time backfill — state-checked (fires whenever `enabled` is true at
+// session start), not transition-only (setEnabled(true) alone would miss
+// every user whose flag was already on before this cutover). Session-guarded
+// via a module-level flag, same shape as chatStore.ts's `wiPinnedWarnedChats`
+// Set for the WI budget toast — this one has no per-chat key since it's a
+// once-per-session action, not a once-per-chat one.
+// ---------------------------------------------------------------------------
 
-// Don't bother embedding messages shorter than this — too little signal for
-// cosine similarity to do anything useful, and they're cheap to keep raw.
-const MIN_CHARS = 40;
+let backfillTriggeredThisSession = false;
+
+async function triggerBackfillIfNeeded(): Promise<void> {
+  if (backfillTriggeredThisSession) return;
+  backfillTriggeredThisSession = true;
+  try {
+    const { queued } = await api.ensureMessageEmbeddings();
+    if (queued > 0) {
+      showToastGlobal(
+        `Indexing your past chats for recall — ${queued} chat${queued === 1 ? '' : 's'} queued on your OpenAI key. Recall improves as indexing completes.`,
+        'info'
+      );
+    }
+  } catch {
+    /* best-effort — a failed backfill trigger is never user-facing */
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Store
@@ -124,21 +98,21 @@ const MIN_CHARS = 40;
 
 export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => ({
   enabled: loadEnabled(),
-  embeddingsByChat: {}, // in-memory only; recomputed per session (see note above)
-  embeddingChats: new Set(),
 
   setEnabled: (on) => {
     saveEnabled(on);
     set({ enabled: on });
     try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
     patchServerKey(SERVER_KEY, { enabled: on }, LOCAL_TS_KEY).catch(() => {});
+    if (on) void triggerBackfillIfNeeded();
   },
 
   resetUser: () => {
-    set({ enabled: false, embeddingsByChat: {}, embeddingChats: new Set() });
-    try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+    set({ enabled: false });
+    try { localStorage.removeItem(STALE_STORAGE_KEY); } catch { /* ignore */ }
     try { localStorage.removeItem(ENABLED_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
+    backfillTriggeredThisSession = false;
   },
 
   fetchPrefs: async () => {
@@ -150,95 +124,16 @@ export const useChatHistoryRagStore = create<ChatHistoryRagState>((set, get) => 
         patchServerKey(SERVER_KEY, { enabled: get().enabled }, LOCAL_TS_KEY).catch(() => {});
         return;
       }
-      if (!stored) return;
-      const enabled = typeof stored.enabled === 'boolean' ? stored.enabled : get().enabled;
-      saveEnabled(enabled);
-      try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
-      set({ enabled });
-    } catch { /* non-fatal */ }
-  },
-
-  ensureEmbedded: async (chatFile, messages) => {
-    const state = get();
-    if (!state.enabled) return;
-    if (state.embeddingChats.has(chatFile)) return; // already embedding this chat
-
-    if (!hasEmbeddingsKey()) return;
-
-    const existing = state.embeddingsByChat[chatFile] ?? [];
-    const existingIds = new Set(existing.map((e) => e.id));
-
-    // Build the candidate list: every non-system message, capped to leave
-    // the live tail alone (no need to embed what's already in raw history).
-    const nonSystem = messages.filter((m) => !m.isSystem);
-    const sliceEnd = Math.max(0, nonSystem.length - TAIL_SKIP);
-    const toCheck = nonSystem.slice(0, sliceEnd);
-
-    const todo: { id: string; text: string; speaker: 'user' | 'assistant' }[] = [];
-    for (let i = 0; i < toCheck.length; i++) {
-      const msg = toCheck[i];
-      const text = msg.content.trim();
-      if (text.length < MIN_CHARS) continue;
-      const id = `${chatFile}#${i}`;
-      if (existingIds.has(id)) continue;
-      todo.push({ id, text, speaker: msg.isUser ? 'user' : 'assistant' });
-    }
-    if (todo.length === 0) return;
-
-    set((s) => ({ embeddingChats: new Set([...s.embeddingChats, chatFile]) }));
-    try {
-      const fresh: ChatMessageEmbedding[] = [];
-      for (const item of todo) {
-        try {
-          const embedding = await getEmbedding(item.text);
-          fresh.push({ ...item, embedding });
-        } catch {
-          // Skip individual failures — partial coverage is still useful.
-        }
+      if (stored) {
+        const enabled = typeof stored.enabled === 'boolean' ? stored.enabled : get().enabled;
+        saveEnabled(enabled);
+        try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
+        set({ enabled });
       }
-      if (fresh.length > 0) {
-        const next = {
-          ...get().embeddingsByChat,
-          [chatFile]: [...existing, ...fresh],
-        };
-        set({ embeddingsByChat: next }); // in-memory only — not persisted
-      }
-    } finally {
-      set((s) => {
-        const remaining = new Set(s.embeddingChats);
-        remaining.delete(chatFile);
-        return { embeddingChats: remaining };
-      });
-    }
-  },
-
-  queryTopK: async (chatFile, query, k = 3) => {
-    const state = get();
-    if (!state.enabled) return [];
-    if (!hasEmbeddingsKey()) return [];
-
-    const stored = state.embeddingsByChat[chatFile] ?? [];
-    if (stored.length === 0) return [];
-
-    try {
-      const queryEmbedding = await getEmbedding(query);
-      return stored
-        .map((m) => ({
-          text: m.text,
-          speaker: m.speaker,
-          score: cosineSimilarity(queryEmbedding, m.embedding),
-        }))
-        .filter((m) => m.score > 0.3)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, k);
     } catch {
-      return [];
+      /* non-fatal */
+    } finally {
+      if (get().enabled) void triggerBackfillIfNeeded();
     }
-  },
-
-  clearChat: (chatFile) => {
-    const next = { ...get().embeddingsByChat };
-    delete next[chatFile];
-    set({ embeddingsByChat: next });
   },
 }));

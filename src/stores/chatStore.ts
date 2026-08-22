@@ -65,6 +65,7 @@ import { useRegexScriptStore } from './regexScriptStore';
 import { applyRegexScripts, getActiveScripts } from '../utils/regexScripts';
 import { useSummarizeStore } from './summarizeStore';
 import { useChatHistoryRagStore } from './chatHistoryRagStore';
+import { computeRagBoundary } from '../utils/ragBoundary';
 import { extensionRegistry } from '../extensions/registry';
 import type { ContextContribution } from '../extensions/types';
 import { useAuthStore } from './authStore';
@@ -841,58 +842,101 @@ function buildMacroContext(
   };
 }
 
+// Single abort budget for the /retrieval/messages call below — same value
+// as src/utils/serverRetrieval.ts's RETRIEVAL_TIMEOUT_MS (module-private
+// there, so not reused directly; this helper must also cover the group
+// path, which serverRetrieval.ts explicitly must never be imported by).
+const RAG_MESSAGES_TIMEOUT_MS = 6000;
+
+function ragAbortAfter(ms: number): { signal: AbortSignal; cancel: () => void } {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ms);
+  return { signal: controller.signal, cancel: () => clearTimeout(timeoutId) };
+}
+
 /**
- * Phase 8.5 — RAG helper.
- * Extracts the last user message from `messages` and queries chat-history
- * embeddings for `chatFile` (older turns indexed semantically — recalls
- * specific past moments without keeping them in raw history).
+ * Phase 2 of the memory-consolidation plan — RAG helper.
+ * Extracts the last user message from `messages` and queries the
+ * server-side message-recall endpoint for `chatFile` (older turns indexed
+ * semantically — recalls specific past moments without keeping them in
+ * raw history).
  *
  * Data Bank documents used to be a second source queried here; they're now
  * native Lorebooks and flow through the same server-side
  * `/retrieval/context` activation path as any other lorebook entry instead
  * (see dataBankStore.ts's module docstring) — this helper only covers the
- * source that's genuinely still client-side.
+ * source that's genuinely still client-side... well, "client-side" is now
+ * a misnomer: embedding happens server-side (a POST /chats/save side
+ * effect, gated on chatHistoryRagStore's `enabled`), and this call is a
+ * single POST /retrieval/messages — a never-throws wrapper mirroring
+ * src/utils/serverRetrieval.ts's `tryServerRetrieval`, just for messages
+ * instead of lore, and covering the group path that module explicitly
+ * must not touch.
  *
- * Gated on the user's settings and an OpenAI embeddings key. Each chunk is
- * prefixed with provenance so the model can cite. Also lazily ensures any
- * new turns have been embedded before querying.
+ * `boundaryId` — the id of the oldest message in the raw tail this turn's
+ * prompt will actually keep — comes from computeRagBoundary
+ * (src/utils/ragBoundary.ts), which reproduces buildConversationContext's
+ * post-trim kept set. See that module's docstring for why the naive
+ * pre-trim frame would silently break recall for exactly the long-chat
+ * users this feature serves.
  */
-async function resolveRagContext(
+export async function resolveRagContext(
   messages: ChatMessage[],
   chatFile?: string
 ): Promise<string | null> {
   // #414: hidden messages must not feed chat-history RAG — neither as the
-  // retrieval query nor as embedded/retrievable chunks. (Caveat: an embedding
-  // created before a message was hidden may linger in the RAG store until it's
-  // invalidated; this stops new embeddings and query use, not stale ones.)
+  // retrieval query nor (server-side) as embedded/retrievable chunks.
   const visibleMessages = messages.filter((m) => !m.hidden);
   const lastUser = [...visibleMessages].reverse().find((m) => m.isUser && !m.isSystem);
   if (!lastUser?.content.trim()) return null;
+  if (!chatFile) return null;
+  if (!useChatHistoryRagStore.getState().enabled) return null;
 
-  // Kick off chat-history embedding for any messages that don't have one
-  // yet. Don't block generation on it — the next turn will benefit.
-  if (chatFile) {
-    void useChatHistoryRagStore.getState().ensureEmbedded(
+  // Group identity: the save/load identity is groupCharacters[0].avatar /
+  // characterAvatars[0] (chatStore.ts's buildChatPayload/loadGroupChat),
+  // NOT the current speaker — threading the speaker's avatar here would
+  // 404 for every non-first speaker and this never-throws wrapper would
+  // silently turn that into empty recall. Solo chats fall back to the
+  // currently selected character.
+  const groupChat = useChatStore.getState().getGroupChatByFile(chatFile);
+  const characterAvatar =
+    groupChat?.characterAvatars[0] ?? useCharacterStore.getState().selectedCharacter?.avatar ?? '';
+  if (!characterAvatar) return null;
+
+  const ctxConfig = useGenerationStore.getState().context;
+  const sumState = useSummarizeStore.getState();
+  const boundaryId = computeRagBoundary(
+    messages,
+    ctxConfig,
+    { summary: sumState.getSummary(chatFile), compactWhenSummarized: sumState.compactWhenSummarized },
+    groupChat !== null
+  );
+
+  const { signal, cancel } = ragAbortAfter(RAG_MESSAGES_TIMEOUT_MS);
+  try {
+    const dto = await api.getRetrievalMessages(
+      characterAvatar,
       chatFile,
-      visibleMessages.map((m) => ({
-        content: m.content,
-        isUser: m.isUser,
-        isSystem: m.isSystem,
-      }))
+      lastUser.content,
+      3,
+      boundaryId,
+      signal
     );
-  }
+    if (!dto || !Array.isArray(dto.chunks)) return null;
 
-  const historyChunks = chatFile
-    ? await useChatHistoryRagStore.getState().queryTopK(chatFile, lastUser.content)
-    : ([] as Array<{ text: string; speaker: 'user' | 'assistant'; score: number }>);
-
-  const parts: string[] = [];
-  for (const m of historyChunks) {
-    const who = m.speaker === 'user' ? 'User' : 'Character';
-    parts.push(`[Earlier in chat — ${who}]\n${m.text}`);
+    const parts: string[] = [];
+    for (const chunk of dto.chunks) {
+      const who = chunk.isUser ? 'User' : 'Character';
+      parts.push(`[Earlier in chat — ${who}]\n${chunk.text}`);
+    }
+    if (parts.length === 0) return null;
+    return parts.join('\n\n---\n\n');
+  } catch (err) {
+    console.warn('[resolveRagContext] failed — recall skipped this turn', err);
+    return null;
+  } finally {
+    cancel();
   }
-  if (parts.length === 0) return null;
-  return parts.join('\n\n---\n\n');
 }
 
 // In/out parameter for the world-info scan inside buildConversationContext
