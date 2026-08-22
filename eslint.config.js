@@ -19,5 +19,33 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // A leading underscore marks a binding as intentionally unused:
+      // placeholder props (`_props`), rest-destructuring discards
+      // (`const { [k]: _removed, ...rest }`), ignored tuple slots.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+        },
+      ],
+      // Modals and panels here reset their local state in a "when opened"
+      // effect (~46 sites, e.g. GenerateLorebookModal, AISettingsPage's key
+      // cards). eslint-plugin-react-hooks 7.1 promoted this rule into
+      // `recommended`; migrating every site to keyed remounts / derived state
+      // is its own project, so the convention stays and the rule is off.
+      'react-hooks/set-state-in-effect': 'off',
+      // This build does not run the React Compiler, so there is no compiled
+      // output whose memoization could diverge from the manual one.
+      'react-hooks/preserve-manual-memoization': 'off',
+      // Files mixing a component with its hook or helpers (Toast +
+      // useToast + showToastGlobal, contexts, extension builtins) are an
+      // established pattern here. The cost is coarser HMR invalidation,
+      // not correctness — keep it advisory.
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+    },
   },
 ])

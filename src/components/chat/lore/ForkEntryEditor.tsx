@@ -274,7 +274,6 @@ export function ForkEntryEditor({ chatFile, bookId, entryId, onClose }: ForkEntr
 
   const handleRebase = () => {
     if (!overlay) return;
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { content: _droppedContent, ...rest } = overlay.patch;
     if (Object.keys(rest).length === 0) {
       // Content was the only thing overridden — nothing left to keep.

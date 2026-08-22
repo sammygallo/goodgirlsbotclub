@@ -18,9 +18,7 @@ registerCommand({
   usage: '/echo [severity=info|warning|error|success] message',
   handler(args, rawArgs, ctx) {
     const severity = getNamedArg(args, 'severity');
-    const variant = (['info', 'warning', 'error', 'success'] as const).includes(severity as any)
-      ? severity as 'info' | 'warning' | 'error' | 'success'
-      : 'info';
+    const variant = (['info', 'warning', 'error', 'success'] as const).find(v => v === severity) ?? 'info';
     const message = args.filter(a => a.key !== 'severity' && !a.key).map(a => a.value).join(' ') || rawArgs;
     ctx.showToast(message, variant);
     return message;

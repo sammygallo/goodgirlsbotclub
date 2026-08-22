@@ -282,8 +282,11 @@ export function ExtensionFrame({
     );
   }
 
-  // Keep ref in sync each render
-  pushContextRef.current = pushContext;
+  // Keep ref in sync each render (in an effect: subscribers only fire
+  // post-render, so they never observe a stale frame)
+  useEffect(() => {
+    pushContextRef.current = pushContext;
+  });
 
   // ── RPC handler ──────────────────────────────────────────────────────────
   function handleRpc(msg: { id: string; method: string; args: unknown[] }) {

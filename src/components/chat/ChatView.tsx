@@ -518,14 +518,19 @@ export function ChatView() {
   );
   const displayMacroCtx = useMemo<MacroContext>(() => {
     const userName = displayPersona?.name || 'User';
+    // V2 cards nest the spec fields under `data`; the store type only carries
+    // the flattened shape, so reach for the nested one explicitly.
+    const v2 = (selectedCharacter as {
+      data?: { description?: string; personality?: string; scenario?: string };
+    } | null)?.data;
     return {
       charName: selectedCharacter?.name || '',
       userName,
       personaName: userName,
       personaDescription: displayPersona?.description || '',
-      characterDescription: selectedCharacter?.description || (selectedCharacter as any)?.data?.description || '',
-      characterPersonality: selectedCharacter?.personality || (selectedCharacter as any)?.data?.personality || '',
-      characterScenario: selectedCharacter?.scenario || (selectedCharacter as any)?.data?.scenario || '',
+      characterDescription: selectedCharacter?.description || v2?.description || '',
+      characterPersonality: selectedCharacter?.personality || v2?.personality || '',
+      characterScenario: selectedCharacter?.scenario || v2?.scenario || '',
       model: activeModel,
     };
   }, [selectedCharacter, displayPersona, activeModel]);
