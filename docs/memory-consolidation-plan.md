@@ -1,6 +1,6 @@
 # Memory Consolidation & Message Embeddings Plan
 
-**Status:** Draft v2 (adversarially reviewed against code, 2026-08-21). **Phase 0 done** (ggbc-backend@1d3af97, 2026-08-21). **Phase 1 done** (ggbc-backend@795f185, 2026-08-21) — migration + worker branch only, deliberately dark. Phases 2–3 not started.
+**Status:** Draft v2 (adversarially reviewed against code, 2026-08-21). **Phase 0 done** (ggbc-backend@1d3af97, 2026-08-21). **Phase 1 done** (ggbc-backend@795f185, 2026-08-21) — migration + worker branch only, deliberately dark. **Phase 2 done** (ggbc-backend@8bcfac8 + goodgirlsbotclub@37da7edc, 2026-08-22) — enqueue hook, retrieval endpoint, and client cutover shipped together; server-side embedding is now live end-to-end (once deployed — see rollout note below). Phase 3 not started.
 **Supersedes:** `pgvector-migration-plan.md` Phase 4 ("Actual vector storage") and `docs/v2/ROADMAP.md`'s `message_embeddings` item. When work starts, mark both with a pointer here. Carry the pgvector plan's sizing numbers, **not** the ROADMAP's — the ROADMAP's "<200 bytes stored in pgvector" claim is wrong (a `vector(1536)` row is ~6 KB: 4 bytes × 1536 dims), and its ivfflat prescription conflicts with the standing measure-first rule.
 **Prereq reading:** `lorebook-migration-pickup.md` (validation item 2), the 2026-08-20 token-bloat audit (artifact "The 12K-Token Exchange").
 
@@ -96,15 +96,17 @@ Processing a `'chat'` job:
 
 ---
 
-## Phase 2 — Retrieval endpoint + client cutover + enqueue hook (one release)
+## Phase 2 — Retrieval endpoint + client cutover + enqueue hook (one release) — done
 
-### Enqueue hook — server-side in `save_chat`, gated on RAG opt-in
+**Done — ggbc-backend@8bcfac8 + goodgirlsbotclub@37da7edc (2026-08-22).** Backend: the `save_chat` enqueue hook, `POST /retrieval/messages` (+ `/ensure`, `+ GET /status`), 12 new tests, full backend suite (738 tests) green. Frontend: `computeRagBoundary` (`src/utils/ragBoundary.ts`), `resolveRagContext` rewritten to a never-throws `/retrieval/messages` call, `chatHistoryRagStore.ts`'s client-side embedding machinery removed, the Data Bank counter now reads live server status (plus a `failed`-jobs warning the old path left silent), 18 new/changed tests, full frontend suite (1417 tests) green, tsc/eslint clean. Not yet deployed to production — see the rollout note at the bottom of this doc.
+
+### Enqueue hook — server-side in `save_chat`, gated on RAG opt-in — done
 
 `POST /chats/save` is the **single** write path for `chats.messages` (whole-array replace; the unload beacon and 409-retry paths all land here), so the hook lives there and needs no client cooperation: after a successful save, if the user has RAG enabled, `enqueue_embedding_job('chat', chat.id)` — the partial unique index makes repeat enqueues free, and the worker's diff decides what (if anything) to embed.
 
 **Gate on `stm_rag_settings.enabled`** (one `UserDocument` SELECT; absent row = disabled, matching the client default of `false`). RAG is opt-in and embedding spends the *user's* key — never embed for users who didn't opt in. A client-side enqueue call is explicitly rejected: it would miss the unload-beacon save and could enqueue for a save the server 409-rejects. Shipping the hook in the same release as the client cutover closes the double-embedding window: the client-side `ensureEmbedded` path is deleted by the same deploy that turns server-side embedding on.
 
-### `POST /retrieval/messages`
+### `POST /retrieval/messages` — done
 
 Request: `{ characterAvatar, fileName, query, k?: number = 3, boundaryId?: string }`
 Response: `{ chunks: [{ ggbcId, text, isUser, score }] }` — **text is read live from the chat row**, never from storage.
@@ -121,7 +123,7 @@ Server behavior, in order:
 8. **Similarity floor is a deliberate new constant, not a copied `0.3`.** The client store floors at cosine *similarity* > 0.3 (loose); the lorebook leg floors at cosine *distance* ≤ 0.3 = similarity ≥ 0.7 (strict). These collide in name and mean opposite things. Start at **similarity ≥ 0.5**, named constant, comment explaining both neighbors. Expect recall to feel different from the old client store either way; tune from there.
 9. Semantic-only for now — no FTS leg (query is one user message; FTS over live JSONB prose costs a per-query tsvector scan for marginal gain). Noted as a future option.
 
-### Client cutover — boundary computation is the hard part; get the frame right
+### Client cutover — boundary computation is the hard part; get the frame right — done
 
 **The naive frame is a feature-killing bug** (caught in review): computing the boundary from the pre-trim "visible→non-system→compaction" frame returns the chat's *oldest* message in the app's **default configuration** (`tokenAware: true`, `autoSummarize: false` — where compaction never applies and the pre-trim pool is the whole history), which excludes everything and makes `/retrieval/messages` return zero chunks, permanently, for exactly the long-chat users the feature serves. The only thing bounding raw history in that config is `trimHistoryToBudget`, which runs *later*, inside `buildConversationContext`.
 
@@ -131,15 +133,19 @@ So: extract an **exported, testable helper** `computeRagBoundary(messages, ctxCo
 - **Group:** the group builder uses a different frame — `messages.filter(!hidden).slice(-30).filter(!isSystem)`, no token-aware trim, no compaction (`chatStore.ts:2001`) — so the helper must branch: boundary = oldest non-system message inside the last-30-visible window.
 - A cleaner long-term shape is to thread the actual kept-history boundary out of `buildConversationContext` itself; the helper is the pragmatic v1 since `resolveRagContext` runs before the builder at every call site.
 
+**Implementation notes (found during the build, not caught in review):** `trimHistoryToBudget` has no `systemCost` parameter — "`systemCost = 0`" above means calling it with an empty `systemPrompts` array (systemCost is derived by summing that array), not passing a numeric arg. Known accepted gap: `buildConversationContext`'s solo branch also has a `pureChatMode` path that shifts the summary-compaction offset by `pureChatRemoved` (leading non-user messages dropped before the first user turn); `computeRagBoundary` doesn't replicate it — the direction analysis says this skews further into the "over-exclusion, safe" side, not the unsafe one, so it's punted rather than fixed. Revisit only if `pureChatMode` chats show materially worse recall than plain ones.
+
 `resolveRagContext` (`chatStore.ts:860-896`) becomes: compute `boundaryId` via the helper, then one `POST /retrieval/messages` in a **never-throws wrapper** (mirror `tryServerRetrieval`: resolve `[]` on any failure, single 6s abort budget). Formatting (`[Earlier in chat — User/Character]`) stays client-side. All six call sites — send, swipe, continue, impersonate, edit-regenerate, **and the group path** — go through it unchanged.
 
 **Group identity:** `resolveRagContext` receives only `(messages, chatFile)` and at the group call site the in-scope `character` is the current *speaker* — but the save/load identity is `groupCharacters[0].avatar` (`chatStore.ts:2378-2380, 3426`). The wrapper must resolve `characterAvatar` itself: `getGroupChatByFile(chatFile)?.characterAvatars[0] ?? selectedCharacter.avatar`. Threading the speaker's avatar 404s for every non-first speaker and the never-throws wrapper would silently turn that into empty recall — add a test asserting the group request carries `characterAvatars[0]`.
 
-### Enable-time backfill + notification — state-checked, not transition-only
+### Enable-time backfill + notification — state-checked, not transition-only — done
 
 Users whose `enabled` flag is *already true* at cutover never call `setEnabled` again (`fetchPrefs` just applies the synced value), so hooking backfill only to `setEnabled(true)` would leave the most invested users with empty recall for old chats. Trigger from a **state check**: on session start (or first `resolveRagContext` call) when `enabled` is true, fire a session-guarded `POST /retrieval/messages/ensure` (enqueues `'chat'` jobs for the user's chats) plus the `showToastGlobal` info toast — same module-level-Set guard pattern as the WI budget toast: *"Indexing your past messages for recall — N messages, roughly $0.02 on your OpenAI key. Recall improves as indexing completes."* (2,875 messages ≈ 860K tokens ≈ $0.017 at text-embedding-3-small pricing — the entire instance costs pennies; the toast is about transparency, not sticker shock.) No-key users get the existing amber inline copy on the Data Bank page; additionally surface worker `failed/no-key` state there rather than leaving it deliberately silent.
 
-### Cleanup — strictly within the cutover release, not before
+**Implementation note:** `/retrieval/messages/ensure` returns a chat count (`queued`), not a message count — walking every message across every queued chat just to size the toast wasn't worth the extra query. The shipped toast copy says "N chats queued" and drops the dollar figure rather than fabricate a per-call cost estimate from a count it doesn't have. `failed` state surfaces on the Data Bank page via a new `failed` field on `GET /retrieval/messages/status` (distinct chats, not job rows — a chat can accumulate multiple failed rows across retries).
+
+### Cleanup — strictly within the cutover release, not before — done
 
 `ensureEmbedded` and `queryTopK` have **live callers today** (`resolveRagContext`, every generation turn), and `embeddingsByChat` backs the Data Bank page counter (`DataBankPage.tsx:436`); only `clearChat` is genuinely caller-less. They become deletable **by the same commit** that rewrites `resolveRagContext` and replaces the counter — not in a preparatory cleanup PR, which would break live RAG. Replace the "N messages embedded" counter with a tiny `GET /retrieval/messages/status` (`{embedded, pending}`) or drop it; keep `enabled` + `fetchPrefs`/`resetUser`; delete `getEmbedding`/`cosineSimilarity` from `utils/embeddings.ts` after re-verifying `chatHistoryRagStore` was the last caller.
 
@@ -182,6 +188,8 @@ Nothing consumes `Character.embedding` (sole `.embedding` reader in the app is t
 ---
 
 ## Rollout & testing
+
+**Status as of 2026-08-22: Phases 0-2 are code-complete (both repos, all tests green) but NOT deployed to production.** Take a fresh DB backup immediately before running the Phase 1 migration in production, per decision 3 and migration 0026's own docstring — nothing below has happened yet on the live droplet.
 
 **Order:** Phase 0 → migration + worker branch (genuinely dark — the enqueue hook is *not* in this release) → Phase 2 as one release: `save_chat` hook + `/retrieval/messages` + client cutover (the same deploy that starts server-side embedding deletes client-side embedding, so no double-spend window) → Phase 3 items individually, any order. Every API change is additive; backend-first deploys are safe (the frontend has no runtime response validator — new fields pass through; new endpoints are unused until the client ships).
 
