@@ -17,11 +17,12 @@
  *   summarization fails, the raw message text is prefilled with no beats.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Clapperboard, Loader2, PersonStanding, Sparkles } from 'lucide-react';
+import { AlertCircle, Clapperboard, Loader2, PersonStanding, Sparkles } from 'lucide-react';
 import { Modal, Button, TextArea } from '../ui';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { summarizeScene } from '../../utils/sceneFromTranscript';
 import { fetchSceneDrivers, type SceneDriver } from '../../api/sceneVideoGen';
+import { avatarProvenanceAllowsSelfies } from '../../utils/avatarProvenance';
 import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
 
 interface GenerateSceneModalProps {
@@ -31,12 +32,16 @@ interface GenerateSceneModalProps {
   messages: TranscriptMsg[];
   characterName: string;
   characterDescription?: string;
+  /** Server-side `avatar_provenance` — the scene keyframe is built from the
+   *  avatar, so the backend applies the same content-bound provenance gate as
+   *  selfies (403 on /api/scene-video/generate). */
+  avatarProvenance: string | undefined;
   /** The chosen message's processed text — used when summarization fails. */
   fallbackPrompt: string;
   onGenerate: (prompt: string, beats: string[], driverId?: string) => void;
 }
 
-type Phase = 'preparing' | 'summarizing' | 'review' | 'motion';
+type Phase = 'preparing' | 'summarizing' | 'review' | 'motion' | 'blocked';
 
 export function GenerateSceneModal({
   isOpen,
@@ -44,6 +49,7 @@ export function GenerateSceneModal({
   messages,
   characterName,
   characterDescription,
+  avatarProvenance,
   fallbackPrompt,
   onGenerate,
 }: GenerateSceneModalProps) {
@@ -91,6 +97,13 @@ export function GenerateSceneModal({
   // On open: ask the backend for the motion menu first. Non-empty → the
   // self-hosted animate path (no LLM call, pick a motion); empty → the
   // Replicate beats flow with the transcript summarizer.
+  //
+  // Provenance pre-gate: if the row-level avatar_provenance doesn't clear the
+  // avatar, /api/scene-video/generate would 403, so short-circuit before the
+  // paid summarizer LLM call. Advisory only — a row can read as cleared while
+  // generation still 403s (the backend re-hashes the live avatar bytes and
+  // fails closed); ChatView's toast keeps rendering the server's detail text
+  // as the fallback for that case.
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
@@ -99,6 +112,10 @@ export function GenerateSceneModal({
     setBeats([]);
     setDriverId(null);
     setNotice(null);
+    if (!avatarProvenanceAllowsSelfies(avatarProvenance)) {
+      setPhase('blocked');
+      return;
+    }
     void (async () => {
       const menu = await fetchSceneDrivers();
       if (cancelled) return;
@@ -137,6 +154,25 @@ export function GenerateSceneModal({
         <div className="flex items-center gap-3 py-4 text-[var(--color-text-primary)]">
           <Loader2 size={20} className="animate-spin text-[var(--color-primary)]" />
           <span className="text-sm">Checking the render pipeline…</span>
+        </div>
+      )}
+
+      {phase === 'blocked' && (
+        <div className="space-y-4">
+          <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+            <AlertCircle size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-400">
+              Not cleared — {characterName}'s avatar isn't a known fictional/AI-generated
+              image, so building a scene from it is blocked (the same avatar gate as
+              selfies). To clear it, choose a new avatar in the character's Edit dialog and
+              check the fictional/AI-generated attestation.
+            </p>
+          </div>
+          <div className="flex justify-end pt-2">
+            <Button variant="ghost" onClick={handleClose}>
+              Close
+            </Button>
+          </div>
         </div>
       )}
 

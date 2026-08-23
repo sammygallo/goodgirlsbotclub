@@ -852,6 +852,7 @@ export function CharacterEdit({
         avatar={character.avatar}
         characterName={character.name}
         imageUrl={`/blobs/character/${encodeURIComponent(character.avatar)}`}
+        avatarProvenance={character.avatar_provenance}
         isOpen={showLivePortraitSetup}
         onClose={() => setShowLivePortraitSetup(false)}
       />

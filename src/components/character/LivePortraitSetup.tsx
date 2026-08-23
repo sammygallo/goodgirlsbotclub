@@ -5,6 +5,7 @@ import { Button } from '../ui/Button';
 import { showToastGlobal } from '../ui/Toast';
 import { useLivePortraitStore } from '../../stores/livePortraitStore';
 import { LivePortraitVideo } from '../chat/LivePortraitVideo';
+import { avatarProvenanceAllowsSelfies } from '../../utils/avatarProvenance';
 import {
   fetchSupportedEmotions,
   generateClips,
@@ -27,6 +28,9 @@ interface LivePortraitSetupProps {
   characterName: string;
   /** Character's main avatar URL — shown as a preview before generation. */
   imageUrl: string;
+  /** Server-side `avatar_provenance` — Live Portrait animates the avatar, so
+   *  the backend applies the same content-bound provenance gate as selfies. */
+  avatarProvenance: string | undefined;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -35,6 +39,7 @@ export function LivePortraitSetup({
   avatar,
   characterName,
   imageUrl,
+  avatarProvenance,
   isOpen,
   onClose,
 }: LivePortraitSetupProps) {
@@ -97,6 +102,13 @@ export function LivePortraitSetup({
 
   const hasClips = !!existingClips && Object.keys(existingClips).length > 0;
 
+  // Pre-gate on the row-level provenance the backend also enforces (its 403 on
+  // /api/live-portrait/generate). The gate here is advisory only: a row can
+  // read as cleared while generation still 403s (the backend re-hashes the
+  // live avatar bytes and fails closed), so the genError panel below must keep
+  // rendering the server's detail text as the fallback.
+  const provenanceBlocked = !avatarProvenanceAllowsSelfies(avatarProvenance);
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Live Portrait setup" size="lg">
       <div className="space-y-3">
@@ -105,6 +117,18 @@ export function LivePortraitSetup({
           played in chat — idle when the AI isn't talking, and a per-emotion clip when it is.
           Costs about $0.10–0.20 per character on the API; afterwards it's free per reply.
         </p>
+
+        {provenanceBlocked && (
+          <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+            <AlertCircle size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-400">
+              Not cleared — this character's avatar isn't a known fictional/AI-generated
+              image, so animating it is blocked (the same avatar gate as selfies). To clear
+              it, choose a new avatar in the Edit dialog and check the fictional/AI-generated
+              attestation.
+            </p>
+          </div>
+        )}
 
         {emotionsError && (
           <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
@@ -223,7 +247,7 @@ export function LivePortraitSetup({
             variant="primary"
             size="sm"
             onClick={handleGenerate}
-            disabled={isGenerating || emotions.length === 0}
+            disabled={isGenerating || emotions.length === 0 || provenanceBlocked}
           >
             {isGenerating ? (
               <>
