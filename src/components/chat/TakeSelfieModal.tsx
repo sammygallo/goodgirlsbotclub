@@ -49,6 +49,10 @@ interface TakeSelfieModalProps {
   // Server-computed: the character has servable trained weights for their
   // CURRENT avatar (CharacterInfo.lora_status === 'succeeded').
   studioTrained: boolean;
+  // The caller holds generation:lora_train — i.e. the CharacterEdit → Studio
+  // training UI is actually available to them. Owner-only today, so the
+  // untrained-Studio upsell must not point a non-owner at a hidden section.
+  canTrainStudio: boolean;
   onGenerate: (descriptors: string, tier: SelfieTier, mode: SelfieMode) => void;
 }
 
@@ -60,6 +64,7 @@ export function TakeSelfieModal({
   canScene,
   canCloseup,
   studioTrained,
+  canTrainStudio,
   onGenerate,
 }: TakeSelfieModalProps) {
   const [descriptors, setDescriptors] = useState('');
@@ -153,11 +158,18 @@ export function TakeSelfieModal({
               Settings → AI → Media Generation to unlock them.
             </p>
           )}
-          {canScene && !studioTrained && (
+          {canScene && !studioTrained && canTrainStudio && (
             <p className="text-xs text-[var(--color-text-secondary)] mt-1.5">
               Studio serves a model trained on {characterName} for maximum
               fidelity in any scene — train them under Character → Edit →
               Studio to unlock it.
+            </p>
+          )}
+          {canScene && !studioTrained && !canTrainStudio && (
+            <p className="text-xs text-[var(--color-text-secondary)] mt-1.5">
+              Studio serves a model trained on {characterName} for maximum
+              fidelity in any scene. It isn't trained yet, and Studio training
+              isn't enabled for your account.
             </p>
           )}
         </div>

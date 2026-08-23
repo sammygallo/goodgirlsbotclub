@@ -569,6 +569,10 @@ export function ChatView() {
   );
   const selfieStudioTrained =
     selectedCharacter?.lora_status === 'succeeded' || liveLoraStatus === 'succeeded';
+  // Whether the Studio TRAINING UI (CharacterEdit → Studio) is available to
+  // this user — so the untrained-Studio upsell doesn't point a non-owner at
+  // a section they can't see. Mirrors CharacterEdit's own gate.
+  const canTrainStudio = hasPermission(currentUser, 'generation:lora_train');
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const handleTakeSelfie = () => setSelfieModalOpen(true);
   const handleSelfieGenerate = (descriptors: string, tier: SelfieTier, mode: SelfieMode) => {
@@ -2276,6 +2280,7 @@ export function ChatView() {
           canScene={canSelfieScene}
           canCloseup={canSelfieCloseup}
           studioTrained={selfieStudioTrained}
+          canTrainStudio={canTrainStudio}
           onGenerate={handleSelfieGenerate}
         />
       )}
