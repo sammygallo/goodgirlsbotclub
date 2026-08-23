@@ -23,6 +23,14 @@
  * It is deliberately NOT written into the card `data` blob — a stamp that
  * round-trips through every save could be re-trusted on a later innocent edit and
  * silently reopen the gate (the import→edit bypass this design avoids).
+ *
+ * Phase 3 content binding (2026-08-23): the provenance signal travels with a
+ * paired `avatar_sha256` — the hash of the exact bytes about to be uploaded
+ * (client.ts `sha256HexOfFile`, sent by createCharacter/editCharacter whenever
+ * an avatarFile is present). The backend pins it on cleared rows and every
+ * generation path re-hashes the live avatar blob against the pin, so swapping
+ * the bytes AFTER clearing (a raw /blobs PUT that never touches provenance)
+ * fails closed instead of riding the still-cleared row.
  */
 
 export type AvatarSource = 'generated' | 'uploaded' | 'imported' | 'fictional-declared';
