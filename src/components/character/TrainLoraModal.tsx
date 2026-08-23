@@ -132,8 +132,8 @@ export function TrainLoraModal({
           <div className="flex items-center gap-2 text-xs text-emerald-400">
             <CheckCircle2 size={14} />
             <span>
-              Trained. The Studio selfie mode that uses it arrives with the next
-              update — retraining now would replace this result.
+              Trained. Pick the Studio mode in the "Take a selfie" dialog to use
+              it — retraining now would replace this result.
             </span>
           </div>
         )}

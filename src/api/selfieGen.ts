@@ -31,10 +31,18 @@ import { getCsrfToken } from './client';
  * brand-new setting/pose, identity + art style held — instead of the Kontext
  * edit-in-place. Phase A is SFW-only (the backend 400s `scene`+`nsfw`), and
  * the auto-trigger never requests it (decision 2: Scene is manual-only).
+ *
+ * Studio mode (docs/character-selfies-lora-tier.md, Phase C2): `mode: 'lora'`
+ * serves the character's TRAINED per-character LoRA via fal.ai flux-lora
+ * (same `api_key_fal`, ~$0.04/image) — full scene freedom like Scene, but the
+ * identity is memorized in the weights. Requires a succeeded training
+ * (`CharacterInfo.lora_status === 'succeeded'`); the backend's serve gate
+ * additionally re-checks the avatar bytes' hash and provenance. SFW-only like
+ * Scene (the backend 400s `lora`+`nsfw`), manual-only like Scene.
  */
 
 export type SelfieTier = 'sfw' | 'nsfw';
-export type SelfieMode = 'closeup' | 'scene';
+export type SelfieMode = 'closeup' | 'scene' | 'lora';
 
 interface SelfieJobStatus {
   status: 'queued' | 'running' | 'completed' | 'error';

@@ -232,6 +232,12 @@ interface ServerCharacter {
   // selfie feature reads it to decide whether a character may send selfies.
   // Values: generated | fictional-declared | grandfathered | uploaded | unknown.
   avatar_provenance?: string;
+  // Studio-LoRA state (Phase C2), computed server-side from lora_trainings.
+  // 'succeeded' = servable weights exist for the CURRENT avatar (the selfie
+  // modal's Studio gate); other values are the latest matching row's
+  // in-flight/failed status; null/absent = never trained for this avatar.
+  lora_status?: string | null;
+  lora_trained_at?: string | null;
 }
 
 function toCharacterInfo(row: ServerCharacter): CharacterInfo {
@@ -258,6 +264,8 @@ function toCharacterInfo(row: ServerCharacter): CharacterInfo {
     creator_notes: data.creator_notes as string | undefined,
     creator: data.creator as string | undefined,
     avatar_provenance: row.avatar_provenance,
+    lora_status: row.lora_status,
+    lora_trained_at: row.lora_trained_at,
     data: data as CharacterInfo['data'],
   };
 }
@@ -560,6 +568,11 @@ export interface CharacterInfo {
   // Avatar-provenance safety gate (backend). Only generated/fictional-declared/
   // grandfathered avatars may send selfies. See utils/avatarProvenance.
   avatar_provenance?: string;
+  // Studio-LoRA state (Phase C2), computed server-side. 'succeeded' means a
+  // trained model exists for the character's CURRENT avatar — the selfie
+  // modal's Studio mode gates on exactly this value.
+  lora_status?: string | null;
+  lora_trained_at?: string | null;
   data?: {
     name?: string;
     description?: string;
