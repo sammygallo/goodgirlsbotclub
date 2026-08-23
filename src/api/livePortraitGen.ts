@@ -22,6 +22,17 @@ interface JobStatus {
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes total — leaves headroom over backend's per-clip timeout
 
+/** Extract a HUMAN-READABLE message from an error body. FastAPI's own
+ *  HTTPExceptions put a string in `detail`, but Pydantic validation failures
+ *  422 with an ARRAY of error objects there — and `new Error(array)` renders
+ *  as "[object Object]" in the toast. Only trust string fields; otherwise
+ *  fall back to the caller's generic message. */
+function errorMessage(err: Record<string, unknown>, fallback: string): string {
+  if (typeof err.detail === 'string') return err.detail;
+  if (typeof err.error === 'string') return err.error;
+  return fallback;
+}
+
 /**
  * Fetch existing clip URLs for a character (any clips already generated
  * server-side). Lets clients auto-populate their local store on character
@@ -83,7 +94,7 @@ export async function startGenerate(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Generation kickoff failed (HTTP ${res.status})`);
+    throw new Error(errorMessage(err, `Generation kickoff failed (HTTP ${res.status})`));
   }
   const data = await res.json();
   if (!data.jobId) throw new Error('No jobId returned from /api/live-portrait/generate');
@@ -97,7 +108,7 @@ export async function pollJob(jobId: string): Promise<JobStatus> {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Status poll failed (HTTP ${res.status})`);
+    throw new Error(errorMessage(err, `Status poll failed (HTTP ${res.status})`));
   }
   return res.json();
 }
