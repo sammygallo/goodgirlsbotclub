@@ -232,6 +232,12 @@ interface ServerCharacter {
   // selfie feature reads it to decide whether a character may send selfies.
   // Values: generated | fictional-declared | grandfathered | uploaded | unknown.
   avatar_provenance?: string;
+  // Studio-LoRA state (Phase C2), computed server-side from lora_trainings.
+  // 'succeeded' = servable weights exist for the CURRENT avatar (the selfie
+  // modal's Studio gate); other values are the latest matching row's
+  // in-flight/failed status; null/absent = never trained for this avatar.
+  lora_status?: string | null;
+  lora_trained_at?: string | null;
 }
 
 function toCharacterInfo(row: ServerCharacter): CharacterInfo {
@@ -258,6 +264,8 @@ function toCharacterInfo(row: ServerCharacter): CharacterInfo {
     creator_notes: data.creator_notes as string | undefined,
     creator: data.creator as string | undefined,
     avatar_provenance: row.avatar_provenance,
+    lora_status: row.lora_status,
+    lora_trained_at: row.lora_trained_at,
     data: data as CharacterInfo['data'],
   };
 }
@@ -354,6 +362,41 @@ async function putAvatarBlob(avatar: string, file: File): Promise<void> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error(text || `Failed to upload avatar (HTTP ${resp.status})`);
+  }
+}
+
+/**
+ * sha256 (lowercase hex) of an avatar file's bytes — the Phase 3 content
+ * binding for the selfie safety gate. Sent as `avatar_sha256` alongside
+ * `avatar_provenance_source` so the backend pins the provenance clearance to
+ * the EXACT bytes `putAvatarBlob` is about to upload; generation re-hashes the
+ * live blob against that pin, so a raw byte-swap after clearing fails closed.
+ *
+ * Returns undefined when hashing isn't possible (crypto.subtle needs a secure
+ * context; prod is HTTPS) or errors — the save must still succeed; the backend
+ * treats a missing hash as "not cleared" (selfies blocked until re-saved), the
+ * fail-closed direction. See utils/avatarProvenance.
+ */
+async function sha256HexOfFile(file: File): Promise<string | undefined> {
+  try {
+    if (!globalThis.crypto?.subtle) {
+      // Insecure context (plain-http LAN dev, not prod HTTPS). The save will
+      // succeed but the avatar won't be selfie-cleared — warn so a dev
+      // debugging "selfies blocked on a fresh avatar" can find the cause.
+      console.warn(
+        '[avatarProvenance] crypto.subtle unavailable (insecure context) — ' +
+          'avatar_sha256 omitted; this avatar will not be selfie-cleared until ' +
+          're-saved from a secure context.',
+      );
+      return undefined;
+    }
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  } catch (err) {
+    console.warn('[avatarProvenance] avatar hashing failed — avatar_sha256 omitted:', err);
+    return undefined;
   }
 }
 
@@ -560,6 +603,11 @@ export interface CharacterInfo {
   // Avatar-provenance safety gate (backend). Only generated/fictional-declared/
   // grandfathered avatars may send selfies. See utils/avatarProvenance.
   avatar_provenance?: string;
+  // Studio-LoRA state (Phase C2), computed server-side. 'succeeded' means a
+  // trained model exists for the character's CURRENT avatar — the selfie
+  // modal's Studio mode gates on exactly this value.
+  lora_status?: string | null;
+  lora_trained_at?: string | null;
   data?: {
     name?: string;
     description?: string;
@@ -859,6 +907,9 @@ export const api = {
       // chosen. Omitted (undefined → not serialized) otherwise. See
       // utils/avatarProvenance.
       avatar_provenance_source: data.avatarProvenance,
+      // Phase 3 content binding: the hash of the exact bytes putAvatarBlob
+      // uploads below, so the clearance pins to CONTENT (see sha256HexOfFile).
+      avatar_sha256: avatarFile ? await sha256HexOfFile(avatarFile) : undefined,
     };
     const created = await apiRequest<ServerCharacter>('/characters', {
       method: 'POST',
@@ -919,6 +970,8 @@ export const api = {
       // (an upload downgrades a cleared row); undefined on a text-only edit, so
       // the backend preserves the existing provenance. See utils/avatarProvenance.
       avatar_provenance_source: data.avatarProvenance,
+      // Phase 3 content binding — see the matching note in createCharacter.
+      avatar_sha256: avatarFile ? await sha256HexOfFile(avatarFile) : undefined,
     };
     await apiRequest<ServerCharacter>(
       `/characters/${encodeURIComponent(data.avatar_url)}`,

@@ -1,7 +1,17 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { X, Check, ZoomIn, ZoomOut } from 'lucide-react';
 
-const CROP_SIZE = 300;
+// Crop viewport matches the 2:3 portrait aspect ratio the app displays
+// avatars at (see Sidebar.tsx's `aspect-[2/3]`) so what the user frames
+// here is exactly what gets saved — no square-to-portrait stretch at apply time.
+const CROP_W = 300;
+const CROP_H = 450;
+const OUTPUT_W = 400;
+const OUTPUT_H = 600;
+
+function minScaleFor(w: number, h: number) {
+  return Math.max(CROP_W / w, CROP_H / h);
+}
 
 interface Props {
   imageSrc: string;
@@ -20,20 +30,22 @@ export function ImageCropModal({ imageSrc, onConfirm, onClose }: Props) {
     const img = new Image();
     img.onload = () => {
       setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
-      const initScale = Math.max(CROP_SIZE / img.naturalWidth, CROP_SIZE / img.naturalHeight);
-      setScale(initScale);
+      setScale(minScaleFor(img.naturalWidth, img.naturalHeight));
       setOffset({ x: 0, y: 0 });
       imgEl.current = img;
     };
     img.src = imageSrc;
   }, [imageSrc]);
 
+  const minScale = minScaleFor(imgNatural.w, imgNatural.h);
+  const maxScale = minScale * 5;
+
   const clampOffset = useCallback((ox: number, oy: number, s: number) => {
     const displayW = imgNatural.w * s;
     const displayH = imgNatural.h * s;
     return {
-      x: Math.min(0, Math.max(-(displayW - CROP_SIZE), ox)),
-      y: Math.min(0, Math.max(-(displayH - CROP_SIZE), oy)),
+      x: Math.min(0, Math.max(-(displayW - CROP_W), ox)),
+      y: Math.min(0, Math.max(-(displayH - CROP_H), oy)),
     };
   }, [imgNatural]);
 
@@ -53,21 +65,22 @@ export function ImageCropModal({ imageSrc, onConfirm, onClose }: Props) {
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault();
-    const newScale = Math.max(0.3, Math.min(5, scale - e.deltaY * 0.001));
+    const newScale = Math.max(minScale, Math.min(maxScale, scale - e.deltaY * 0.001));
     setScale(newScale);
     setOffset(prev => clampOffset(prev.x, prev.y, newScale));
   };
 
   const handleConfirm = () => {
     const canvas = document.createElement('canvas');
-    canvas.width = CROP_SIZE;
-    canvas.height = CROP_SIZE;
+    canvas.width = OUTPUT_W;
+    canvas.height = OUTPUT_H;
     const ctx = canvas.getContext('2d');
     if (ctx && imgEl.current) {
       const srcX = -offset.x / scale;
       const srcY = -offset.y / scale;
-      const srcSize = CROP_SIZE / scale;
-      ctx.drawImage(imgEl.current, srcX, srcY, srcSize, srcSize, 0, 0, CROP_SIZE, CROP_SIZE);
+      const srcW = CROP_W / scale;
+      const srcH = CROP_H / scale;
+      ctx.drawImage(imgEl.current, srcX, srcY, srcW, srcH, 0, 0, OUTPUT_W, OUTPUT_H);
     }
     canvas.toBlob((blob) => {
       if (blob) onConfirm(new File([blob], 'avatar.png', { type: 'image/png' }));
@@ -76,7 +89,7 @@ export function ImageCropModal({ imageSrc, onConfirm, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="bg-[var(--color-bg-secondary)] rounded-2xl p-4 flex flex-col gap-4 w-full max-w-[360px]">
+      <div className="bg-[var(--color-bg-secondary)] rounded-2xl p-4 flex flex-col gap-4 w-full max-w-[360px] max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Crop portrait</h3>
           <button type="button" onClick={onClose} className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]">
@@ -87,7 +100,7 @@ export function ImageCropModal({ imageSrc, onConfirm, onClose }: Props) {
         {/* Crop viewport */}
         <div
           className="relative overflow-hidden rounded-lg bg-black cursor-grab active:cursor-grabbing touch-none mx-auto"
-          style={{ width: CROP_SIZE, height: CROP_SIZE }}
+          style={{ width: CROP_W, height: CROP_H }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -104,6 +117,7 @@ export function ImageCropModal({ imageSrc, onConfirm, onClose }: Props) {
               top: offset.y,
               width: imgNatural.w * scale,
               height: imgNatural.h * scale,
+              maxWidth: 'none',
               userSelect: 'none',
               pointerEvents: 'none',
             }}
@@ -116,8 +130,8 @@ export function ImageCropModal({ imageSrc, onConfirm, onClose }: Props) {
           <ZoomOut size={14} className="text-[var(--color-text-secondary)] flex-shrink-0" />
           <input
             type="range"
-            min="0.3"
-            max="3"
+            min={minScale}
+            max={maxScale}
             step="0.01"
             value={scale}
             onChange={(e) => {

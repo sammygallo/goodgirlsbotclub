@@ -839,17 +839,20 @@ export function AISettingsPage(_props?: { params?: Record<string, string> }) {
 
           <div className="border-t border-[var(--color-border)]" />
 
-          {/* Selfie Scene mode (fal.ai) — docs/character-selfies-scene-mode.md Phase A */}
+          {/* Selfie Scene + Studio modes (fal.ai) — scene-mode doc Phase A + lora-tier doc C2 */}
           <div>
             <div className="flex items-center gap-2 mb-1">
               <Camera size={14} className="text-[var(--color-text-secondary)]" />
-              <h3 className="text-xs font-semibold text-[var(--color-text-primary)]">Selfie Scene Mode</h3>
+              <h3 className="text-xs font-semibold text-[var(--color-text-primary)]">Selfie Scene &amp; Studio Modes</h3>
             </div>
             <p className="text-xs text-[var(--color-text-secondary)] mb-3">
-              fal.ai API key for Scene-mode selfies — the character composed into brand-new
-              settings and poses (~$0.15/image via <span className="font-mono">nano-banana-pro</span>)
-              instead of the Close-up edit of their portrait. Unlocks the Scene toggle in the
-              "Take a selfie" dialog; Close-up selfies keep using your Replicate key.
+              fal.ai API key for Scene and Studio selfies — the character composed into
+              brand-new settings and poses instead of the Close-up edit of their portrait.
+              Scene works from the portrait alone (~$0.15/image via{' '}
+              <span className="font-mono">nano-banana-pro</span>); Studio serves a model you
+              train on the character for maximum fidelity (~$0.04/image, one-time training
+              from Character → Edit). Unlocks both toggles in the "Take a selfie" dialog;
+              Close-up selfies keep using your Replicate key.
             </p>
             <ProviderApiKeyInput
               providerName="fal.ai"

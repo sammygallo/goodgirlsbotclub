@@ -5,6 +5,7 @@ import { showToastGlobal } from '../ui/Toast';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useSelfieStore, manualSelfieEligible, hasFalKey, hasReplicateKey } from '../../stores/selfieStore';
+import { useLoraStore } from '../../hooks/useLoraStatus';
 // Side-effect import: registers the in-chat [selfie: …] finish-edge dispatch
 // (its module-level useChatStore.subscribe). Imported here — a runtime component,
 // loaded after the stores initialize — so the subscription never runs during
@@ -558,6 +559,20 @@ export function ChatView() {
   const canSelfieNsfw = hasPermission(currentUser, 'generation:video');
   const canSelfieScene = hasFalKey();
   const canSelfieCloseup = hasReplicateKey();
+  // Studio (mode 'lora', Phase C2): a trained model exists for the current
+  // avatar. Two sources, either wins: the server-computed lora_status on the
+  // character row (survives reloads; refreshed with the character list), OR
+  // the live in-memory useLoraStore entry — so a training that finishes in
+  // CharacterEdit unlocks Studio here without waiting for a list refresh.
+  const liveLoraStatus = useLoraStore(
+    (s) => (selectedCharacter ? s.statusByAvatar[selectedCharacter.avatar]?.status : undefined)
+  );
+  const selfieStudioTrained =
+    selectedCharacter?.lora_status === 'succeeded' || liveLoraStatus === 'succeeded';
+  // Whether the Studio TRAINING UI (CharacterEdit → Studio) is available to
+  // this user — so the untrained-Studio upsell doesn't point a non-owner at
+  // a section they can't see. Mirrors CharacterEdit's own gate.
+  const canTrainStudio = hasPermission(currentUser, 'generation:lora_train');
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const handleTakeSelfie = () => setSelfieModalOpen(true);
   const handleSelfieGenerate = (descriptors: string, tier: SelfieTier, mode: SelfieMode) => {
@@ -2264,6 +2279,8 @@ export function ChatView() {
           canNsfw={canSelfieNsfw}
           canScene={canSelfieScene}
           canCloseup={canSelfieCloseup}
+          studioTrained={selfieStudioTrained}
+          canTrainStudio={canTrainStudio}
           onGenerate={handleSelfieGenerate}
         />
       )}

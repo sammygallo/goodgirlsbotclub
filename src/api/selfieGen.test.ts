@@ -67,6 +67,23 @@ describe('generateSelfie request contract', () => {
     });
   });
 
+  it('sends mode "lora" for a Studio selfie (Phase C2 wire shape)', async () => {
+    queueHappyPath();
+    const url = await runToCompletion(
+      generateSelfie('Ivy', 'walking through a night market', 'sfw', 'lora'),
+    );
+    expect(url).toBe('/blobs/selfie/x/1.png');
+
+    const [kickoffUrl, kickoffInit] = fetchMock.mock.calls[0];
+    expect(kickoffUrl).toBe('/api/selfie/generate');
+    expect(JSON.parse((kickoffInit as RequestInit).body as string)).toEqual({
+      characterName: 'Ivy',
+      prompt: 'walking through a night market',
+      tier: 'sfw',
+      mode: 'lora',
+    });
+  });
+
   it('defaults to tier "sfw" and mode "closeup" when omitted (auto-trigger shape)', async () => {
     queueHappyPath();
     await runToCompletion(generateSelfie('Ivy', 'playful smirk'));

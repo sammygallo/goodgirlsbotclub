@@ -5,28 +5,34 @@
  * its async-summarization complexity: a selfie needs only descriptors, a mode,
  * and (for owners) a tier choice — no transcript, no LLM call, no multi-phase flow.
  *
- * Two modes (scene-mode doc §2 — the fidelity ↔ freedom tradeoff):
+ * Three modes (scene-mode doc §2 + lora-tier doc §1 — fidelity ↔ freedom ↔
+ * memorization):
  *   • Close-up (default) — the Kontext edit-in-place: pixel-perfect avatar
  *     fidelity, the avatar's own framing/setting. Descriptors are optional hints.
  *   • Scene — the fal.ai reference-conditioned generator: brand-new
  *     setting/pose/framing, identity + art style held. The prompt IS the
  *     request, so it's required.
+ *   • Studio — FLUX + the character's TRAINED LoRA (Phase C2): Scene's full
+ *     freedom with the identity memorized in the weights. Requires a trained
+ *     model (`studioTrained` — the server-computed `lora_status`) on top of
+ *     the fal key Scene already needs; the prompt is required like Scene's.
  *
- * Each mode is gated on its own key (`canCloseup` = Replicate, `canScene` =
- * fal — ChatView computes both): the missing mode renders disabled with
- * teaching copy, so it's discoverable rather than silently absent, and the
- * default mode on open is whichever is available (a fal-only user lands on
- * Scene). The caller only opens the modal when at least one key exists
- * (manualSelfieEligible).
+ * Close-up/Scene are gated on their keys (`canCloseup` = Replicate,
+ * `canScene` = fal — ChatView computes both); Studio additionally needs
+ * `studioTrained`. A blocked mode renders disabled with teaching copy, so
+ * it's discoverable rather than silently absent — Studio's untrained state
+ * doubles as the upsell ("train them in Character → Edit"). The default mode
+ * on open is whichever base mode is available (a fal-only user lands on
+ * Scene; Studio is never the silent default — it's the premium pick).
  *
  * The `sfw`/`nsfw` tier choice only renders when `canNsfw` is true (the
  * caller gates this on `hasPermission(currentUser, 'generation:video')`,
  * mirroring scene-video's own owner-only containment) — without it the tier
  * is implicitly `sfw` with no choice shown, matching how the in-chat
- * auto-trigger already behaves. Scene mode forces `sfw`: NSFW Scene is
- * Phase B (the backend 400s it), so selecting Scene resets the tier and
- * disables the nsfw button rather than letting the user build a request the
- * server will reject.
+ * auto-trigger already behaves. Scene and Studio force `sfw`: NSFW for both
+ * waits on Phase B's output-side gate (the backend 400s them), so selecting
+ * either resets the tier and disables the nsfw button rather than letting
+ * the user build a request the server will reject.
  */
 import { useEffect, useState } from 'react';
 import { Camera } from 'lucide-react';
@@ -40,6 +46,13 @@ interface TakeSelfieModalProps {
   canNsfw: boolean;
   canScene: boolean;
   canCloseup: boolean;
+  // Server-computed: the character has servable trained weights for their
+  // CURRENT avatar (CharacterInfo.lora_status === 'succeeded').
+  studioTrained: boolean;
+  // The caller holds generation:lora_train — i.e. the CharacterEdit → Studio
+  // training UI is actually available to them. Owner-only today, so the
+  // untrained-Studio upsell must not point a non-owner at a hidden section.
+  canTrainStudio: boolean;
   onGenerate: (descriptors: string, tier: SelfieTier, mode: SelfieMode) => void;
 }
 
@@ -50,6 +63,8 @@ export function TakeSelfieModal({
   canNsfw,
   canScene,
   canCloseup,
+  studioTrained,
+  canTrainStudio,
   onGenerate,
 }: TakeSelfieModalProps) {
   const [descriptors, setDescriptors] = useState('');
@@ -70,19 +85,22 @@ export function TakeSelfieModal({
     }
   }, [isOpen, canCloseup]);
 
+  // Studio = Scene's fal key + a trained model for the current avatar.
+  const canStudio = canScene && studioTrained;
+
   const selectMode = (m: SelfieMode) => {
     setMode(m);
-    // NSFW Scene is Phase B — the backend rejects it, so never let the
-    // combination be assembled client-side.
-    if (m === 'scene') setTier('sfw');
+    // NSFW Scene/Studio is Phase B — the backend rejects both, so never let
+    // the combination be assembled client-side.
+    if (m !== 'closeup') setTier('sfw');
   };
 
-  // In Scene mode the prompt IS the request (the backend 400s an empty one);
-  // Close-up keeps descriptors optional.
-  const sceneNeedsPrompt = mode === 'scene' && descriptors.trim().length === 0;
+  // In Scene/Studio mode the prompt IS the request (the backend 400s an
+  // empty one); Close-up keeps descriptors optional.
+  const needsPrompt = mode !== 'closeup' && descriptors.trim().length === 0;
 
   const handleGenerate = () => {
-    if (sceneNeedsPrompt) return;
+    if (needsPrompt) return;
     onGenerate(descriptors.trim(), tier, mode);
     onClose();
   };
@@ -99,9 +117,15 @@ export function TakeSelfieModal({
               [
                 { m: 'closeup' as const, label: 'Close-up' },
                 { m: 'scene' as const, label: 'Scene' },
+                { m: 'lora' as const, label: 'Studio' },
               ]
             ).map(({ m, label }) => {
-              const disabled = m === 'scene' ? !canScene : !canCloseup;
+              const disabledByMode: Record<SelfieMode, boolean> = {
+                closeup: !canCloseup,
+                scene: !canScene,
+                lora: !canStudio,
+              };
+              const disabled = disabledByMode[m];
               return (
                 <button
                   key={m}
@@ -123,8 +147,9 @@ export function TakeSelfieModal({
           </div>
           {!canScene && (
             <p className="text-xs text-[var(--color-text-secondary)] mt-1.5">
-              Scene mode puts {characterName} in brand-new settings and poses — add a
-              fal.ai key under Settings → AI → Media Generation to unlock it.
+              Scene and Studio modes put {characterName} in brand-new settings and
+              poses — add a fal.ai key under Settings → AI → Media Generation to
+              unlock them.
             </p>
           )}
           {!canCloseup && (
@@ -133,14 +158,28 @@ export function TakeSelfieModal({
               Settings → AI → Media Generation to unlock them.
             </p>
           )}
+          {canScene && !studioTrained && canTrainStudio && (
+            <p className="text-xs text-[var(--color-text-secondary)] mt-1.5">
+              Studio serves a model trained on {characterName} for maximum
+              fidelity in any scene — train them under Character → Edit →
+              Studio to unlock it.
+            </p>
+          )}
+          {canScene && !studioTrained && !canTrainStudio && (
+            <p className="text-xs text-[var(--color-text-secondary)] mt-1.5">
+              Studio serves a model trained on {characterName} for maximum
+              fidelity in any scene. It isn't trained yet, and Studio training
+              isn't enabled for your account.
+            </p>
+          )}
         </div>
 
         <TextArea
-          label={mode === 'scene' ? 'Scene / pose' : 'Descriptors (optional)'}
+          label={mode !== 'closeup' ? 'Scene / pose' : 'Descriptors (optional)'}
           value={descriptors}
           onChange={(e) => setDescriptors(e.target.value)}
           placeholder={
-            mode === 'scene'
+            mode !== 'closeup'
               ? 'full-body mirror selfie in her penthouse overlooking Manhattan at dusk'
               : 'mirror selfie, black dress, playful smirk'
           }
@@ -158,7 +197,7 @@ export function TakeSelfieModal({
             </div>
             <div className="flex gap-2">
               {(['sfw', 'nsfw'] as const).map((t) => {
-                const disabled = t === 'nsfw' && mode === 'scene';
+                const disabled = t === 'nsfw' && mode !== 'closeup';
                 return (
                   <button
                     key={t}
@@ -178,16 +217,23 @@ export function TakeSelfieModal({
                 );
               })}
             </div>
-            {mode === 'scene' && (
+            {mode !== 'closeup' && (
               <p className="text-xs text-[var(--color-text-secondary)] mt-1.5">
-                NSFW Scene selfies aren't available yet — coming in a later phase.
+                NSFW {mode === 'scene' ? 'Scene' : 'Studio'} selfies aren't available
+                yet — coming in a later phase.
               </p>
             )}
           </div>
         )}
 
         <div className="p-3 rounded-lg bg-[var(--color-bg-tertiary)] text-xs text-[var(--color-text-secondary)] leading-relaxed">
-          {mode === 'scene' ? (
+          {mode === 'lora' ? (
+            <>
+              Generates {characterName} from their trained Studio model — any
+              setting, pose, and framing, with their exact look memorized in the
+              weights — via fal.ai (~$0.04/image). Usually renders in seconds.
+            </>
+          ) : mode === 'scene' ? (
             <>
               Composes a brand-new image of {characterName} — new setting, pose, and
               framing, identity and art style preserved — from their portrait via
@@ -207,7 +253,7 @@ export function TakeSelfieModal({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={handleGenerate} disabled={sceneNeedsPrompt}>
+          <Button onClick={handleGenerate} disabled={needsPrompt}>
             <Camera size={16} className="mr-2" />
             Generate
           </Button>
