@@ -1938,8 +1938,18 @@ async function ensureBlobImported(): Promise<void> {
  * A single book's entry-fetch failing doesn't drop the whole book: it
  * falls back to the list-level metadata with zero entries, so the book at
  * least stays visible/selectable rather than vanishing outright.
+ *
+ * That fallback also sets `_entriesFetchDegraded` for the session: a book
+ * whose entries silently read as [] makes every entry-liveness judgement
+ * downstream unreliable — buildLegacyIdRemap would see a map pair
+ * targeting that book's entries as dead, which R2's per-id drop rule
+ * would otherwise read as "successor deliberately deleted" and authorize
+ * a permanent drop of a live reference (see droppableLegacyEntryId).
  */
+let _entriesFetchDegraded = false;
+
 async function fetchNativeBooks(): Promise<WorldInfoBook[]> {
+  _entriesFetchDegraded = false;
   const rows = await api.listLorebooks();
   return Promise.all(
     rows.map(async (row) => {
@@ -1947,6 +1957,7 @@ async function fetchNativeBooks(): Promise<WorldInfoBook[]> {
         return normalizeNativeBook(await api.getLorebook(String(row.id)));
       } catch (err) {
         console.warn('[worldInfoStore] failed to fetch entries for lorebook', row.id, err);
+        _entriesFetchDegraded = true;
         return normalizeNativeBook({ ...row, entries: [] } as LorebookWithEntriesDTO);
       }
     })
@@ -1964,6 +1975,63 @@ async function fetchNativeBooks(): Promise<WorldInfoBook[]> {
 
 const _legacyBookIdMap = new Map<string, string>();
 const _legacyEntryIdMap = new Map<string, string>();
+
+// R2 of the legacy-id strip scoping (docs/legacy-id-strip-scoping.md): the
+// RAW key sets of the server-recorded map, captured alongside the filtered
+// maps above. The filtered maps deliberately drop pairs whose target no
+// longer exists (see buildLegacyIdRemap's liveness checks), which erases
+// exactly the signal the per-id drop rule below needs — "the server named
+// this id and its successor is verifiably gone" is the ONE case where
+// dropping a legacy-pattern reference is a fact rather than a guess.
+// Session-scoped like every other module-level flag here: cleared in
+// clearLegacyIdRemap (and therefore resetUser), or a same-tab account
+// switch would let account A's map keys authorize drops against account B.
+const _serverMapBookKeys = new Set<string>();
+const _serverMapEntryKeys = new Set<string>();
+
+// The strict legacy id shapes minted by the pre-cutover generateId
+// (`${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+// removed in the 2026-08-07 cutover): a 13-digit ms timestamp then a short
+// base36 tail. Anchored so the still-live wibook_chatlocal__<chatFile> and
+// wi_local_<ts>_<rand> families (non-digit segment right after the prefix)
+// never match — those are synthetic runtime ids, not migration targets.
+const LEGACY_BOOK_ID_RE = /^wibook_\d{13}_[0-9a-z]{1,6}$/;
+const LEGACY_ENTRY_ID_RE = /^wi_\d{13}_[0-9a-z]{1,6}$/;
+
+/** R2's per-id drop rule, book form. Only meaningful at a resolver's drop
+ *  branch (the id is already known to be unresolved): a legacy-pattern id
+ *  may be dropped only when the server map named it — and since a raw-named
+ *  pair whose target is alive would have resolved via `_legacyBookIdMap`
+ *  before reaching the drop branch, "raw-named here" means the recorded
+ *  successor was deliberately deleted (the `!has` conjunct restates that
+ *  for safety should a future caller sit outside the drop branch).
+ *  Everything else (blob-present-but-unpaired after a failed import,
+ *  cross-user references the caller's own map can never adjudicate,
+ *  post-strip stragglers) is kept dangling: dangling ids are inert on
+ *  every lore-injection read path (they only ever act as filters over
+ *  real books; count-style badges may over-count, a cosmetic trade) —
+ *  while a wrong drop is persisted and permanent. */
+function droppableLegacyBookId(id: string): boolean {
+  return _serverMapBookKeys.has(id) && !_legacyBookIdMap.has(id);
+}
+
+/** R2's per-id drop rule, entry form. The extra `_legacyEntryIdMap` guard
+ *  exists because the map's entries are target-verified against a FLAT
+ *  cross-book id set (see buildLegacyIdRemap) while resolveLegacyEntryId
+ *  re-scopes its lookup to the caller's book — a raw-named pair whose
+ *  target is alive in a DIFFERENT book reaches the drop branch too, and
+ *  must be kept dangling rather than dropped under a dead-target rationale.
+ *  `_entriesFetchDegraded` guards the other spoof: a book whose entries
+ *  silently fell back to [] this session makes "target not found" mean
+ *  "target unknown", not "target deleted" — no entry drop may be
+ *  authorized off a degraded view. */
+function droppableLegacyEntryId(entryId: string): boolean {
+  return (
+    !_entriesFetchDegraded &&
+    _serverMapEntryKeys.has(entryId) &&
+    !_legacyEntryIdMap.has(entryId)
+  );
+}
 
 /** Shape of the `stm_wi_legacy_id_map` sync section (Phase 3.3 step (a),
  *  ggbc-backend's `_persist_legacy_id_map`) — a backend-authored-only,
@@ -2056,10 +2124,16 @@ export function canConfidentlyDropUnresolvedLegacyIds(): boolean {
  *  - a confident remap exists (buildLegacyIdRemap matched it) -> the new id.
  *  - no remap, but the id is confirmed present in books ∪ sharedBooks as-is
  *    -> the same id, unchanged.
- *  - no remap, not currently found anywhere -> null (the caller should drop
- *    the reference) IF canConfidentlyDropUnresolvedLegacyIds() is true;
- *    otherwise the id is returned unchanged (ambiguous, not confidently
- *    gone — never dropped on an unreliable read).
+ *  - no remap, not currently found anywhere: for a NATIVE-format id -> null
+ *    (drop) IF canConfidentlyDropUnresolvedLegacyIds() is true, exactly as
+ *    before. For a strict LEGACY-pattern id (R2 of the legacy-id strip
+ *    scoping), that session-health gate is necessary but no longer
+ *    sufficient: it is dropped only when the server-recorded map named it
+ *    and its recorded successor is verifiably gone (droppableLegacyBookId);
+ *    otherwise it is kept dangling — an import failure, a cross-user
+ *    reference, or a stripped blob must never read as "confidently gone".
+ *  - on an unreliable read (either fetch failed), everything unresolved is
+ *    returned unchanged — never dropped.
  * Must only be called after legacyIdRemapReady() has resolved.
  */
 export function resolveLegacyBookId(id: string): string | null {
@@ -2069,16 +2143,22 @@ export function resolveLegacyBookId(id: string): string | null {
   if (state.books.some((b) => b.id === id) || state.sharedBooks.some((b) => b.id === id)) {
     return id;
   }
-  return canConfidentlyDropUnresolvedLegacyIds() ? null : id;
+  if (!canConfidentlyDropUnresolvedLegacyIds()) return id;
+  if (LEGACY_BOOK_ID_RE.test(id)) {
+    return droppableLegacyBookId(id) ? null : id;
+  }
+  return null;
 }
 
 /**
  * Same idea as resolveLegacyBookId, for an entry id scoped to a book id the
  * caller has ALREADY resolved via resolveLegacyBookId (pass the RESOLVED id,
- * not the original). If that book itself can't be found at all — only
- * possible on an unreliable read, since a book resolveLegacyBookId returned
- * non-null for is otherwise guaranteed present — the entry id is kept
- * unchanged rather than dropped, for the same reason.
+ * not the original). The book-not-found path is reachable two ways: an
+ * unreliable read (either fetch failed), or — since R2 — a reliable read
+ * whose resolvedBookId is itself a kept-dangling legacy id (cross-user
+ * references, import-failed sessions). Either way that exit applies the
+ * SAME per-id drop rule as the in-book exits (_dropOrKeepEntryId), never
+ * an unconditional keep or drop.
  *
  * Deliberately NOT used for entry-overlay base ids (see
  * chatLoreConfigStore.ts's remapLegacyIds): an overlay whose base entry
@@ -2092,12 +2172,24 @@ export function resolveLegacyEntryId(resolvedBookId: string, entryId: string): s
   const book =
     state.books.find((b) => b.id === resolvedBookId) ??
     state.sharedBooks.find((b) => b.id === resolvedBookId);
-  if (!book) return canConfidentlyDropUnresolvedLegacyIds() ? null : entryId;
+  if (!book) return _dropOrKeepEntryId(entryId);
 
   const mapped = remapLegacyEntryId(entryId);
   if (mapped && book.entries.some((e) => e.id === mapped)) return mapped;
   if (book.entries.some((e) => e.id === entryId)) return entryId;
-  return canConfidentlyDropUnresolvedLegacyIds() ? null : entryId;
+  return _dropOrKeepEntryId(entryId);
+}
+
+/** Shared drop branch for resolveLegacyEntryId's two unresolved exits —
+ *  same R2 rule as resolveLegacyBookId's: native-format ids keep the old
+ *  confident-drop behavior; legacy-pattern ids are dropped only on a
+ *  server-verified dead successor (droppableLegacyEntryId), else kept. */
+function _dropOrKeepEntryId(entryId: string): string | null {
+  if (!canConfidentlyDropUnresolvedLegacyIds()) return entryId;
+  if (LEGACY_ENTRY_ID_RE.test(entryId)) {
+    return droppableLegacyEntryId(entryId) ? null : entryId;
+  }
+  return null;
 }
 
 /**
@@ -2160,6 +2252,8 @@ function buildLegacyIdRemap(
 ): void {
   _legacyBookIdMap.clear();
   _legacyEntryIdMap.clear();
+  _serverMapBookKeys.clear();
+  _serverMapEntryKeys.clear();
   const newByScopeKey = new Map<string, WorldInfoBook>();
   for (const nb of newBooks) {
     newByScopeKey.set(`${nb.ownerCharacterAvatar ?? ''}::${nb.name}`, nb);
@@ -2246,6 +2340,11 @@ function buildLegacyIdRemap(
   if (serverMap) {
     const newBookIds = new Set(newBooks.map((b) => b.id));
     for (const [oldId, newId] of Object.entries(serverMap.books)) {
+      // Raw key captured UNCONDITIONALLY — including pairs the liveness
+      // check below discards. A raw-named id that ends up with no filtered
+      // pair is exactly the "recorded successor was deliberately deleted"
+      // signal R2's per-id drop rule (droppableLegacyBookId) keys on.
+      _serverMapBookKeys.add(oldId);
       if (typeof newId === 'string' && newBookIds.has(newId)) {
         _legacyBookIdMap.set(oldId, newId);
       }
@@ -2260,6 +2359,7 @@ function buildLegacyIdRemap(
       for (const e of nb.entries) allNewEntryIds.add(e.id);
     }
     for (const [oldId, newId] of Object.entries(serverMap.entries)) {
+      _serverMapEntryKeys.add(oldId); // raw key, unconditional — see books arm
       if (typeof newId === 'string' && allNewEntryIds.has(newId)) {
         _legacyEntryIdMap.set(oldId, newId);
       }
@@ -2270,6 +2370,8 @@ function buildLegacyIdRemap(
 function clearLegacyIdRemap(): void {
   _legacyBookIdMap.clear();
   _legacyEntryIdMap.clear();
+  _serverMapBookKeys.clear();
+  _serverMapEntryKeys.clear();
 }
 
 /**
@@ -3405,6 +3507,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
       // wrongly skipped/stale) from the previous account.
       _blobImportAttempted = false;
       _nativeBooksFetchSucceeded = false;
+      _entriesFetchDegraded = false;
       clearLegacyIdRemap();
       resetLegacyIdRemapReadyGate();
       set({

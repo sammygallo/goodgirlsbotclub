@@ -681,8 +681,13 @@ export const useChatLoreConfigStore = create<ChatLoreConfigState>((set, get) => 
     for (const [chatFile, cfg] of Object.entries(cur)) {
       let changed = false;
 
-      // 1. linkedBookIds — book ids only. A confidently-unresolvable id is
-      // dropped: there's no salvage value in keeping a dangling book link.
+      // 1. linkedBookIds — book ids only. `null` from resolveLegacyBookId
+      // means the drop is a verified fact: a native id confidently gone, or
+      // a legacy-pattern id whose server-recorded successor was deliberately
+      // deleted (R2 of docs/legacy-id-strip-scoping.md). Unadjudicable
+      // legacy ids come back UNCHANGED and are kept dangling — harmless to
+      // lore behavior (every lore-injection read path filters id lists
+      // against real books; count-style badges may over-count, cosmetic).
       const seenLinked = new Set<string>();
       const nextLinkedBookIds: string[] = [];
       for (const id of cfg.linkedBookIds) {
