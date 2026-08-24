@@ -181,19 +181,29 @@ CI runs `ruff check . && pytest`. Same check locally:
 
 ```bash
 cd /Users/sammy/Documents/GitHub/ggbc-backend
-# Spin up an ephemeral postgres on :5433 (avoids colliding with the dev stack on :5432)
+# Spin up an ephemeral postgres on :5433 (avoids colliding with the dev stack
+# on :5432). MUST be the pgvector image, NOT stock postgres:16-alpine —
+# conftest.py runs `alembic upgrade head`, and migration 0017 does
+# `CREATE EXTENSION vector` (ggbc-backend#51), so a stock image fails the
+# ENTIRE suite with wall-to-wall sqlalchemy DBAPIErrors. Incurred 2026-08-23:
+# 904 errors, one full 3-minute run wasted.
 docker run --rm -d --name ggbc-test-pg \
   -e POSTGRES_USER=ggbc -e POSTGRES_PASSWORD=ggbc -e POSTGRES_DB=ggbc \
-  -p 127.0.0.1:5433:5432 postgres:16-alpine && sleep 3
+  -p 127.0.0.1:5433:5432 ghcr.io/sammygallo/ggbc-postgres:16-pgvector-v0.8.0 && sleep 3
 
+# ALLOW_SELF_REGISTRATION/COOKIE_SECURE mirror what the tests assume (many
+# register users via /auth/register over plain-HTTP test clients).
 docker run --rm -v "$PWD:/app" -w /app --network host \
   -e DATABASE_URL=postgresql+asyncpg://ggbc:ggbc@127.0.0.1:5433/ggbc \
+  -e ALLOW_SELF_REGISTRATION=true -e COOKIE_SECURE=false \
   python:3.12-slim sh -c "pip install -q -e '.[dev]' && ruff check . && pytest"
 
 docker stop ggbc-test-pg
 ```
 
 Faster alternative if you already have a local stack running: point at the dev postgres on :5432 instead. Either way, green pytest + green ruff locally → green CI.
+
+If you truncate pytest's output, remember the exit code lives with pytest, not the pipe: `sh -c "... && pytest -q 2>&1 | tail -15"` reports the TAIL's exit 0 even on a failing suite — same trap as the `gh run watch` pipe warning in step 3. Use `set -o pipefail` inside the `sh -c`, or don't pipe.
 
 ### 2. Merge — preferred path: `gh pr merge`
 
