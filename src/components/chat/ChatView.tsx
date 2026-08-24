@@ -560,15 +560,17 @@ export function ChatView() {
   const canSelfieScene = hasFalKey();
   const canSelfieCloseup = hasReplicateKey();
   // Studio (mode 'lora', Phase C2): a trained model exists for the current
-  // avatar. Two sources, either wins: the server-computed lora_status on the
-  // character row (survives reloads; refreshed with the character list), OR
-  // the live in-memory useLoraStore entry — so a training that finishes in
-  // CharacterEdit unlocks Studio here without waiting for a list refresh.
+  // avatar. Two sources: the live in-memory useLoraStore entry WINS when
+  // present (it is fresher in both directions — a training that finishes in
+  // CharacterEdit unlocks Studio here without a list refresh, and a Phase C3
+  // delete locks it immediately instead of the stale character-row value
+  // keeping it enabled); the server-computed lora_status on the character
+  // row is the reload-survival fallback.
   const liveLoraStatus = useLoraStore(
     (s) => (selectedCharacter ? s.statusByAvatar[selectedCharacter.avatar]?.status : undefined)
   );
   const selfieStudioTrained =
-    selectedCharacter?.lora_status === 'succeeded' || liveLoraStatus === 'succeeded';
+    (liveLoraStatus ?? selectedCharacter?.lora_status) === 'succeeded';
   // Whether the Studio TRAINING UI (CharacterEdit → Studio) is available to
   // this user — so the untrained-Studio upsell doesn't point a non-owner at
   // a section they can't see. Mirrors CharacterEdit's own gate.

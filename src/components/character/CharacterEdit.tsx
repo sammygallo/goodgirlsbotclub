@@ -741,9 +741,10 @@ export function CharacterEdit({
               )}
             </div>
             <p className="text-xs text-[var(--color-text-secondary)]">
-              Teach the image model this exact character (a one-time ~$3.30 training on
-              your own keys). Unlocks the signature-perfect Studio selfie mode at
-              ~$0.04 per image.
+              Teach the image model this exact character (a one-time training on your
+              own keys — ~$3.30 at the standard 1000 steps; the dialog offers
+              cheaper/harder presets). Unlocks the signature-perfect Studio selfie
+              mode at ~$0.04 per image.
             </p>
             {!loraProvenanceOk ? (
               <p className="text-xs text-[var(--color-text-secondary)]">
