@@ -1,0 +1,92 @@
+export const meta = {
+  name: 'story-review',
+  description: 'Trigger-tier adversarial review: independent lenses over branch diffs, skeptic-verified findings',
+  whenToUse: 'REVIEW stage of /run-story for L/XL stories or trigger-list hits; design mode for red-teaming design docs',
+  phases: [
+    { title: 'Lens review', detail: 'independent perspectives over the diff' },
+    { title: 'Skeptic verify', detail: 'each finding attacked by skeptics; majority-refute kills' },
+  ],
+}
+
+// args: {
+//   story: 'E1-S1',
+//   mode: 'diff' | 'design',
+//   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<branch>' }]   (diff mode)
+//   docPath: '/abs/path/to/design.md'                                                            (design mode)
+//   context: 'PM-written brief excerpt: what this change is, safety invariants, known constraints'
+//   lenses: optional [{ key, focus }] override
+// }
+const DEFAULT_DIFF_LENSES = [
+  { key: 'correctness', focus: 'regressions and logic defects: concrete inputs/state that produce wrong output, crashes, or broken existing behavior' },
+  { key: 'bypass', focus: 'security and gate bypasses: what a raw API client (not the honest UI) can do; whether gates bind to content vs mutable references; fail-closed on every path' },
+  { key: 'contract', focus: 'cross-repo/contract coherence: frontend expectations vs backend behavior, error-shape parsing, deploy-order windows where old FE meets new BE (and vice versa)' },
+  { key: 'tests', focus: 'test adequacy: which claimed behaviors have no test that would go red if the behavior broke; kill tests that do not actually kill' },
+]
+const DEFAULT_DESIGN_LENSES = [
+  { key: 'bypass', focus: 'how an adversary defeats this design as specified — unstated assumptions, scope holes, reference-vs-content confusions' },
+  { key: 'simpler', focus: 'a materially simpler design meeting the same requirements, or proof none exists' },
+  { key: 'ops', focus: 'operational failure: rollout, rollback, partial-deploy windows, cost blowups, provider failure modes' },
+]
+
+const FINDINGS_SCHEMA = {
+  type: 'object', required: ['findings'],
+  properties: { findings: { type: 'array', items: {
+    type: 'object', required: ['title', 'claim', 'severity', 'failure_scenario'],
+    properties: {
+      repo: { type: 'string' }, file: { type: 'string' }, line: { type: 'number' },
+      title: { type: 'string' }, claim: { type: 'string' },
+      severity: { enum: ['critical', 'major', 'minor'] },
+      failure_scenario: { type: 'string' }, suggested_kill_test: { type: 'string' },
+    } } } },
+}
+const VERDICT_SCHEMA = {
+  type: 'object', required: ['refuted', 'reason'],
+  properties: { refuted: { type: 'boolean' }, reason: { type: 'string' } },
+}
+
+const mode = args.mode || 'diff'
+const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAULT_DIFF_LENSES)
+const subject = mode === 'design'
+  ? `Design doc under review: ${args.docPath}. Read it fully, plus any code it references.`
+  : `Diff targets (read each with: git -C <path> diff <base>...<branch>, plus surrounding files for context):\n` +
+    args.targets.map(t => `- ${t.repo}: path=${t.path} base=${t.base} branch=${t.branch}`).join('\n')
+
+// Lens stance mirrors .claude/agents/adversarial-reviewer.md — kept inline so this
+// script runs even in sessions where custom agent types are not loaded.
+const stance = `You are an adversarial review lens on the GGBC agent team. Find defects that are REAL — for every finding construct the concrete failure scenario (inputs/state → wrong output/crash/bypass); no scenario, no finding. Check whether a co-located gate already masks a candidate before reporting it. Never patch anything. Zero findings is a legitimate result.`
+
+phase('Lens review')
+const lensResults = await parallel(lenses.map(l => () =>
+  agent(
+    `${stance}\n\nYour lens: ${l.key} — ${l.focus}\n\nStory: ${args.story}\nPM context: ${args.context}\n\n${subject}\n\nReturn your findings.`,
+    { label: `lens:${l.key}`, phase: 'Lens review', schema: FINDINGS_SCHEMA, model: 'opus', effort: 'high' } // lenses: broad hunting, opus+high
+  )))
+// Barrier is deliberate: dedup needs every lens's findings at once.
+const all = lensResults.filter(Boolean).flatMap((r, i) => r.findings.map(f => ({ ...f, lens: lenses[i].key })))
+const seen = new Set()
+const deduped = all.filter(f => {
+  const k = `${f.repo || ''}|${f.file || ''}|${(f.title || '').toLowerCase().slice(0, 60)}`
+  if (seen.has(k)) return false
+  seen.add(k); return true
+})
+log(`${all.length} raw findings → ${deduped.length} after dedup`)
+
+phase('Skeptic verify')
+const judged = await parallel(deduped.map(f => () =>
+  parallel([1, 2].map(n => () =>
+    agent(
+      `${stance}\n\nYou are a SKEPTIC. Try to REFUTE this finding from story ${args.story}. Default to refuted=true unless the failure scenario demonstrably holds against the actual code/doc.\n\nFinding: ${JSON.stringify(f)}\n\n${subject}\n\nVerify against the source, then verdict.`,
+      { label: `skeptic${n}:${f.title.slice(0, 30)}`, phase: 'Skeptic verify', schema: VERDICT_SCHEMA, effort: 'high' } // skeptics inherit the strongest model — never economize on verifiers
+    )))
+    .then(vs => {
+      const votes = vs.filter(Boolean)
+      const refutes = votes.filter(v => v.refuted).length
+      const status = refutes === votes.length && votes.length > 0 ? 'refuted' : refutes === 0 ? 'confirmed' : 'plausible'
+      return { ...f, status, skeptic_reasons: votes.map(v => v.reason) }
+    })))
+const results = judged.filter(Boolean)
+const confirmed = results.filter(f => f.status === 'confirmed')
+const plausible = results.filter(f => f.status === 'plausible')
+const refuted = results.filter(f => f.status === 'refuted')
+log(`confirmed ${confirmed.length} · plausible ${plausible.length} · refuted ${refuted.length}`)
+return { story: args.story, mode, confirmed, plausible, refuted, lensCount: lenses.length }
