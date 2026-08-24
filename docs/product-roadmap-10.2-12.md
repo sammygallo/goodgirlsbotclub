@@ -1,7 +1,7 @@
 # GGBC Roadmap — Phases 10.2–12+
 
 **Prepared:** 2026-08-24 · **Role:** Product Manager synthesis of `HANDOFF_FABLE_GGBC_PRODUCT_PLAN.md` + 7 initiative docs
-**Status:** Draft for Sammy's review → on approval, Epics/Stories move to the Kanban board and agent teams begin execution
+**Status:** ✅ **Approved by Sammy 2026-08-24** · in-repo at `docs/product-roadmap-10.2-12.md` (merged via PR #443) · Epics/Stories are live for agent-team execution
 **Scope:** 6 feature initiatives + Character Architecture v2, sequenced around real in-flight work (verified against GitHub + the droplet-adjacent memory trail today, not against the handoff's snapshot)
 
 ---
@@ -496,7 +496,7 @@ Structured data → system-prompt generation with adversarial anti-drift pattern
 | Story | Item | Kanban | Tier | Size |
 |---|---|---|---|---|
 | E9-S1 | Phase 5.3 swap-vs-join card handling (finishes old Phase 5) | Ready for Dev | Sonnet impl + Haiku tests — small, isolated | S–M |
-| E9-S2 | Bookkeeping: mark 10.1 + 6.1 done in docs/memory; commit this roadmap to `docs/` | Ready for Dev | Haiku — mechanical | S |
+| E9-S2 | Bookkeeping: mark 10.1 + 6.1 done in docs/memory; commit this roadmap to `docs/` — **done 2026-08-24** (memory index fixed; roadmap merged via PR #443) | Deployed | Haiku — mechanical | S |
 | E9-S3 | Additional cloud providers (old "10.2": DeepSeek, Cohere, …) | Backlog | Haiku/Sonnet per provider — pattern exists | S each |
 | E9-S4 | Text-completion API support (old "10.3") | Backlog | Sonnet | M |
 | E9-S5 | Selfies C3: LoRA management + Replicate alt backend | Backlog | Sonnet — both providers already researched | M |
@@ -523,7 +523,7 @@ Columns: **Backlog → Design → Ready for Dev → In Progress → In Review �
 |---|---|
 | **In Review** | E1-S1 (code complete on local branches — needs push, PR, adversarial review) |
 | **Design** | E8-S1 (Arch v2 research) · E6-S1 (UI workshop) · E3-S1 (cascade semantics) · E1-S2 (Phase B output gate) |
-| **Ready for Dev** | E2-S1 (RAG/Lorebook audit) · E9-S1 (swap-vs-join) · E9-S2 (bookkeeping) |
+| **Ready for Dev** | E2-S1 (RAG/Lorebook audit) · E9-S1 (swap-vs-join) |
 | **Backlog — gated** | E2-S2←E2-S1 · E2-S3/S4←E2-S2 · E3-S2/S3←E3-S1 · E3-S4←E3-S3 · E4-S1←E3-S1 · E4-S2←E3-S3 · E5-S1←E2-S2 · E5-S2←E5-S1 · E6-S2/S3/S4←E6-S1 · E7-S1 (scheduled 11.1) · E7-S2←E3-S3+E8-gate · E8-S2←E8-S1 · E8-S3→S6←GO gate · E1-S3←E1-S2 · E1-S4←E1-S1 |
 | **Backlog — unscheduled (12+)** | E3-S5 · E4-S3 · E5-S3 · E7-S3 · E8-P4 · E9-S3/S4/S5 |
 | **Deployed (pre-roadmap, for the record)** | Phase 10.1 local models (#58, Apr) · Phase 6.1 themes (May) · Selfies 0–2.5 + Scene A + Studio C1/C2 + Phase 3 provenance (Aug 23) |
@@ -547,7 +547,8 @@ Columns: **Backlog → Design → Ready for Dev → In Progress → In Review �
 
 ## 9 · Immediate next actions (this week)
 
-1. **Sammy:** review this roadmap — especially the §1 corrections, the Arch v2 gate criteria owner (E8-S1 task 2), and the 11.1 load.
-2. **On approval:** E1-S1 kicks off (push branches → PRs → adversarial review → merge → deploy). Single highest-value/lowest-cost item on the board.
-3. **In parallel:** E2-S1 audit (read-only, no review bottleneck) and E8-S1 research begin; E6-S1 workshop gets scheduled as a Fable design session.
-4. **Bookkeeping (E9-S2):** commit this file to `docs/`, update `MEMORY.md` phase statuses so the next handoff starts from ground truth.
+~~Roadmap review + bookkeeping~~ — **done 2026-08-24**: approved by Sammy, committed as `docs/product-roadmap-10.2-12.md` (PR #443), `MEMORY.md` phase statuses corrected.
+
+1. **E1-S1 kicks off:** push both gate branches → PRs → adversarial review → merge → deploy. Single highest-value/lowest-cost item on the board.
+2. **In parallel:** E2-S1 audit (read-only, no review bottleneck) and E8-S1 research begin; E6-S1 workshop gets scheduled as a Fable design session.
+3. **Also merged in Deployed:** E9-S2 (bookkeeping) — future handoffs start from ground truth.
