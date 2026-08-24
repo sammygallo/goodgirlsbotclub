@@ -2264,6 +2264,7 @@ export function ChatView() {
           messages={sceneModal?.transcript ?? []}
           characterName={selectedCharacter.name}
           characterDescription={displayMacroCtx.characterDescription}
+          avatarProvenance={selectedCharacter.avatar_provenance}
           fallbackPrompt={sceneModal?.fallbackPrompt ?? ''}
           onGenerate={(p, b, d) => {
             setSceneModal(null);
