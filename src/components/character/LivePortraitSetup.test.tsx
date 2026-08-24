@@ -10,10 +10,10 @@
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { LivePortraitSetup } from './LivePortraitSetup';
-import { fetchSupportedEmotions } from '../../api/livePortraitGen';
+import { fetchSupportedEmotions, generateClips } from '../../api/livePortraitGen';
 
 vi.mock('../../api/livePortraitGen', () => ({
   fetchSupportedEmotions: vi.fn(),
@@ -70,4 +70,19 @@ describe('LivePortraitSetup — avatar-provenance pre-gate', () => {
       expect(screen.queryByText(/Not cleared/)).toBeNull();
     }
   );
+
+  it('renders the exact server-403 detail when a cleared-looking row still gets rejected', async () => {
+    // The pre-gate is advisory only (see the component's own comment): a row
+    // can read as cleared client-side while the backend re-hashes the live
+    // avatar bytes and 403s anyway (the byte-swap-after-clearing case). The
+    // genError panel must keep surfacing that server detail text verbatim
+    // rather than a generic message swallowing it.
+    vi.mocked(generateClips).mockRejectedValue(
+      new Error('Avatar is not cleared for generation'),
+    );
+    renderModal({ avatarProvenance: 'generated' });
+    await waitFor(() => expect(generateButton().disabled).toBe(false));
+    fireEvent.click(generateButton());
+    expect(await screen.findByText('Avatar is not cleared for generation')).toBeTruthy();
+  });
 });

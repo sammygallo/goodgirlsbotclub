@@ -33,6 +33,19 @@ const POLL_INTERVAL_MS = 5000;
 // job absorbs a full cold start + render (backend's own budget is 40 min).
 const POLL_TIMEOUT_MS = 45 * 60 * 1000;
 
+/** Extract a HUMAN-READABLE message from an error body. FastAPI's own
+ *  HTTPExceptions put a string in `detail`, but Pydantic validation failures
+ *  422 with an ARRAY of error objects there — and `new Error(array)` renders
+ *  as "[object Object]" in the toast. Only trust string fields; otherwise
+ *  fall back to the caller's generic message. Same per-module helper shape as
+ *  livePortraitGen.ts / selfieGen.ts / loraTraining.ts (2026-08-24 hardening —
+ *  this module had never been guarded, unlike its siblings). */
+function errorMessage(err: Record<string, unknown>, fallback: string): string {
+  if (typeof err.detail === 'string') return err.detail;
+  if (typeof err.error === 'string') return err.error;
+  return fallback;
+}
+
 /**
  * The motion menu for the Generate Scene modal. Empty on the Replicate
  * path (backend env unset) — callers fall back to the beats flow. Errors
@@ -76,7 +89,7 @@ export async function startSceneGenerate(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || err.error || `Scene generation kickoff failed (HTTP ${res.status})`);
+    throw new Error(errorMessage(err, `Scene generation kickoff failed (HTTP ${res.status})`));
   }
   const data = await res.json();
   if (!data.jobId) throw new Error('No jobId returned from /api/scene-video/generate');
@@ -90,7 +103,7 @@ export async function pollSceneJob(jobId: string): Promise<SceneJobStatus> {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || err.error || `Status poll failed (HTTP ${res.status})`);
+    throw new Error(errorMessage(err, `Status poll failed (HTTP ${res.status})`));
   }
   return res.json();
 }
