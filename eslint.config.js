@@ -6,7 +6,11 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // Nested Claude Code worktree checkouts under .claude/worktrees/ are full,
+  // independent clones (often at other commits) that live physically inside
+  // this tree. `eslint .` would otherwise recurse into them and lint stale
+  // code that isn't part of this checkout.
+  globalIgnores(['dist', '.claude/worktrees/**']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
