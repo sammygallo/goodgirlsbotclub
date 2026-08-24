@@ -196,8 +196,8 @@ Close the remaining avatar-provenance holes so every media-generation path (self
 - NSFW Scene (Phase B) ships only with the output-side gate live — or ships not at all. "Blocked" is an acceptable end state; a bypass is not.
 - Permission-widening decision (E1-S4) is made with a written brief, not by default.
 
-#### E1-S1 · Ship the LP/scene-video provenance gate — **Kanban: In Review** · Size S–M
-Code is complete on local branches (backend `claude/vigilant-wilson-a8d2d5` @ `8e94a97`; frontend `claude/upbeat-shamir-8919c9` @ `ad774ba5`, 1465 vitest green).
+#### E1-S1 · Ship the LP/scene-video provenance gate — **✅ DEPLOYED 2026-08-24 (Pilot 1)** · Size S–M (actual: over band, ~1.3M — trigger-tier review dominates)
+Outcome: intake ground-truthing found the backend half already merged+deployed by another session (#76/#77 — the local `claude/vigilant-wilson-a8d2d5` was superseded and would have regressed main; deleted). Frontend leg rebased past the #437 overlap, trigger-tier reviewed (4 confirmed coverage findings fixed + mutation-verified; correctness/bypass lenses clean), QA'd, shipped as #446.
 
 | # | Task | Tier — reasoning |
 |---|---|---|
@@ -521,11 +521,12 @@ Columns: **Backlog → Design → Ready for Dev → In Progress → In Review �
 
 | Column | Cards |
 |---|---|
-| **In Review** | E1-S1 (code complete on local branches — needs push, PR, adversarial review) |
+| **In Review** | — |
 | **Design** | E8-S1 (Arch v2 research) · E6-S1 (UI workshop) · E3-S1 (cascade semantics) · E1-S2 (Phase B output gate) |
 | **Ready for Dev** | E2-S1 (RAG/Lorebook audit) · E9-S1 (swap-vs-join) |
 | **Backlog — gated** | E2-S2←E2-S1 · E2-S3/S4←E2-S2 · E3-S2/S3←E3-S1 · E3-S4←E3-S3 · E4-S1←E3-S1 · E4-S2←E3-S3 · E5-S1←E2-S2 · E5-S2←E5-S1 · E6-S2/S3/S4←E6-S1 · E7-S1 (scheduled 11.1) · E7-S2←E3-S3+E8-gate · E8-S2←E8-S1 · E8-S3→S6←GO gate · E1-S3←E1-S2 · E1-S4←E1-S1 |
 | **Backlog — unscheduled (12+)** | E3-S5 · E4-S3 · E5-S3 · E7-S3 · E8-P4 · E9-S3/S4/S5 |
+| **Deployed** | **E1-S1** LP/scene-video provenance gate (2026-08-24: backend superseded-by-main #76/#77, frontend #446; run via the agent-team pipeline, Pilot 1) · **E9-S5** Selfies C3 management (shipped externally: backend #78 + frontend C3, 2026-08-24; residual: Replicate-alt-backend piece unverified) |
 | **Deployed (pre-roadmap, for the record)** | Phase 10.1 local models (#58, Apr) · Phase 6.1 themes (May) · Selfies 0–2.5 + Scene A + Studio C1/C2 + Phase 3 provenance (Aug 23) |
 
 ---
