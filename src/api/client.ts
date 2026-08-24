@@ -2,6 +2,10 @@
 // generation go to /api/* which ggbc-backend transparently proxies to
 // SillyTavern with a per-user ST session it manages internally.
 
+// `import type` is load-bearing: loraTraining.ts imports getCsrfToken from
+// this module, so a VALUE import here would be a runtime cycle.
+import type { LoraTrainingStatus } from './loraTraining';
+
 let csrfToken: string | null = null;
 
 export async function getCsrfToken(): Promise<string> {
@@ -236,7 +240,9 @@ interface ServerCharacter {
   // 'succeeded' = servable weights exist for the CURRENT avatar (the selfie
   // modal's Studio gate); other values are the latest matching row's
   // in-flight/failed status; null/absent = never trained for this avatar.
-  lora_status?: string | null;
+  // ('none' itself is never sent on the row — that's the status endpoint's
+  // vocabulary; the row uses null.)
+  lora_status?: LoraTrainingStatus | null;
   lora_trained_at?: string | null;
 }
 
@@ -606,7 +612,7 @@ export interface CharacterInfo {
   // Studio-LoRA state (Phase C2), computed server-side. 'succeeded' means a
   // trained model exists for the character's CURRENT avatar — the selfie
   // modal's Studio mode gates on exactly this value.
-  lora_status?: string | null;
+  lora_status?: LoraTrainingStatus | null;
   lora_trained_at?: string | null;
   data?: {
     name?: string;

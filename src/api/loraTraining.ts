@@ -50,8 +50,13 @@ function errorMessage(err: Record<string, unknown>, fallback: string): string {
 
 /** Kick off a training for `characterName`. Resolves on accepted (the worker
  *  takes it from there); throws with the backend's message otherwise —
- *  including the 409 "already in progress" case. */
-export async function startLoraTraining(characterName: string): Promise<void> {
+ *  including the 409 "already in progress" case. `steps` (Phase C3, backend
+ *  bounds 250–2000) tunes the trainer's step count; omitted → the server
+ *  default 1000. fal prices the run linearly in steps (~$2 at 1000). */
+export async function startLoraTraining(
+  characterName: string,
+  steps?: number,
+): Promise<void> {
   const token = await getCsrfToken();
   const res = await fetch('/api/selfie/lora/train', {
     method: 'POST',
@@ -60,12 +65,51 @@ export async function startLoraTraining(characterName: string): Promise<void> {
       'X-CSRF-Token': token,
     },
     credentials: 'include',
-    body: JSON.stringify({ characterName }),
+    body: JSON.stringify(
+      steps === undefined ? { characterName } : { characterName, steps },
+    ),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(errorMessage(err, `Training kickoff failed (HTTP ${res.status})`));
   }
+}
+
+/** What the backend's delete actually did (Phase C3). The provider-side
+ *  half is best-effort by construction: fal's payload-deletion API wants an
+ *  admin-scoped key (most BYO keys aren't), and the durable weights/zip are
+ *  plain uploads fal has no delete API for — `unresolvedRequestIds` lists
+ *  what wasn't confirmed removed; those files remain in the user's own fal
+ *  dashboard. */
+export interface LoraDeleteResult {
+  deletedRows: number;
+  blobsDeleted: number;
+  providerPayloadsDeleted: number;
+  providerPayloadsUnauthorized: number;
+  providerPayloadsFailed: number;
+  unresolvedRequestIds: string[];
+}
+
+/** Delete `characterName`'s Studio training: every training row, the local
+ *  bootstrap cache, and (best-effort) the fal-side request payloads.
+ *  Generated selfies are kept. 409 while a training is in flight. */
+export async function deleteLoraTraining(
+  characterName: string,
+): Promise<LoraDeleteResult> {
+  const token = await getCsrfToken();
+  const res = await fetch(
+    `/api/selfie/lora/${encodeURIComponent(characterName)}`,
+    {
+      method: 'DELETE',
+      headers: { 'X-CSRF-Token': token },
+      credentials: 'include',
+    },
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(errorMessage(err, `Delete failed (HTTP ${res.status})`));
+  }
+  return res.json();
 }
 
 /** Fetch the character-keyed training status. `status: "none"` means the
