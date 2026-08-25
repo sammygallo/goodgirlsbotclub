@@ -67,6 +67,9 @@ const { usePersonaStore } = await import('./personaStore');
 const { isChatEligibleForServerRetrieval } = await import('../utils/serverRetrieval');
 
 import type { WorldInfoBook } from './worldInfoStore';
+// Pure module — no store imports of its own, so a static import here cannot
+// disturb the mock ordering the dynamic imports above exist for.
+import { detectDocumentBookOrphans } from '../utils/documentBookOrphans';
 
 const AVATAR = 'seraphina.png';
 const OTHER_AVATAR = 'marcus.png';
@@ -386,5 +389,179 @@ describe('document identity vs. the card lorebook', () => {
     expect(upserted.id).not.toBe(docId);
     expect(bookById(docId)!.entries.length).toBe(2);
     expect(bookById(docId)!.name).toBe('Ivy Dossier');
+  });
+});
+
+// E4-S0 — a delete has to take the registry record with it. `lorebookIds` is
+// persisted AND synced, so a record left behind outlives the book on every
+// device the account touches: the registry only grows, and every leftover
+// reads as an orphaned document to detectDocumentBookOrphans — which would
+// turn the orphan report into a list of things the user deleted on purpose,
+// i.e. a report nobody reads.
+describe('deleting a book prunes the document registry', () => {
+  const DOC_STORAGE_KEY = 'stm:data-bank-index';
+
+  function addGlobalDocument(name: string): string {
+    return useDataBankStore.getState().addDocument(name, 'some text', 'global');
+  }
+
+  function registry(): string[] {
+    return useDataBankStore.getState().lorebookIds;
+  }
+
+  /** The persisted half — what a page load on this device would restore. */
+  function persistedIndex(): { lorebookIds: string[]; deactivatedDocumentIds: string[] } {
+    return JSON.parse(memoryStorage.getItem(DOC_STORAGE_KEY) ?? '{}');
+  }
+
+  /** Let the fire-and-forget DELETE (and its rejection handler) settle. */
+  async function flush(): Promise<void> {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+
+  it('drops the deleted document and leaves the others registered', () => {
+    const kept = addGlobalDocument('Field Notes');
+    const doomed = addGlobalDocument('Old Draft');
+    expect(registry()).toEqual([kept, doomed]);
+
+    useWorldInfoStore.getState().deleteBook(doomed);
+
+    expect(registry()).toEqual([kept]);
+  });
+
+  it('writes the prune through to the persisted index', () => {
+    // Pins the prune to saveIndex + the snapshot helper rather than a bare
+    // setState: state-only would leave the cache (and the synced section it
+    // shares a write with) still holding the deleted id, so the record would
+    // come back on the next page load — and the opt-out slice, written in
+    // the same snapshot, must survive the trip untouched.
+    const kept = addGlobalDocument('Field Notes');
+    const doomed = addGlobalDocument('Old Draft');
+    useWorldInfoStore.getState().toggleBookActive(kept);
+    expect(persistedIndex().deactivatedDocumentIds).toEqual([kept]);
+
+    useWorldInfoStore.getState().deleteBook(doomed);
+
+    expect(persistedIndex().lorebookIds).toEqual([kept]);
+    expect(persistedIndex().deactivatedDocumentIds).toEqual([kept]);
+  });
+
+  it("forgets the deleted document's own opt-out", () => {
+    // An opt-out is an answer to "should the repair activate this?", and
+    // there is nothing left to activate — keeping it is the same unbounded
+    // leak one field over.
+    const doc = addGlobalDocument('Noisy Doc');
+    useWorldInfoStore.getState().toggleBookActive(doc);
+    expect(useDataBankStore.getState().deactivatedDocumentIds).toEqual([doc]);
+
+    useWorldInfoStore.getState().deleteBook(doc);
+
+    expect(useDataBankStore.getState().deactivatedDocumentIds).toEqual([]);
+  });
+
+  it('prunes every document a character deletion takes at once', () => {
+    const dossier = useDataBankStore
+      .getState()
+      .addDocument('Ivy Dossier', 'chunk one', 'character', AVATAR);
+    const notes = useDataBankStore
+      .getState()
+      .addDocument('Ivy Notes', 'chunk two', 'character', AVATAR);
+    const global = addGlobalDocument('Field Notes');
+    const otherChar = useDataBankStore
+      .getState()
+      .addDocument('Marcus Dossier', 'chunk three', 'character', OTHER_AVATAR);
+    expect(registry()).toEqual([dossier, notes, global, otherChar]);
+
+    useWorldInfoStore.getState().deleteCharacterBooks(AVATAR);
+
+    // Both of the deleted character's documents, and only those.
+    expect(registry()).toEqual([global, otherChar]);
+  });
+
+  it('leaves an ordinary lorebook delete alone', () => {
+    const doc = addGlobalDocument('Field Notes');
+    const plain = useWorldInfoStore.getState().createBook('Hand-written Book');
+
+    useWorldInfoStore.getState().deleteBook(plain.id);
+
+    expect(registry()).toEqual([doc]);
+  });
+
+  it('puts the record back when the server delete fails', async () => {
+    // deleteBook is optimistic-local-then-confirm-server and rolls the local
+    // removal back on an error, so the registry has to roll back with it —
+    // otherwise a failed delete leaves the book alive and its document
+    // identity gone, which is the state that lets a character-scoped
+    // document be overwritten by the card's embedded lorebook.
+    const doc = addGlobalDocument('Field Notes');
+    useWorldInfoStore.getState().toggleBookActive(doc);
+    deleteLorebook.mockRejectedValueOnce(new Error('offline'));
+
+    useWorldInfoStore.getState().deleteBook(doc);
+    expect(registry()).toEqual([]);
+    await flush();
+
+    expect(useWorldInfoStore.getState().books.map((b) => b.id)).toContain(doc);
+    expect(registry()).toEqual([doc]);
+    expect(useDataBankStore.getState().deactivatedDocumentIds).toEqual([doc]);
+    expect(persistedIndex().lorebookIds).toEqual([doc]);
+    expect(useWorldInfoStore.getState().error).toBeTruthy();
+  });
+
+  it('keeps a document added while the failed delete was in flight', async () => {
+    // The undo is id-scoped against current state, not a saved copy of the
+    // whole array — same rule worldInfoStore's own rollback follows, and for
+    // the same reason: a wholesale restore would erase this one.
+    const doomed = addGlobalDocument('Old Draft');
+    deleteLorebook.mockRejectedValueOnce(new Error('offline'));
+    useWorldInfoStore.getState().deleteBook(doomed);
+
+    const added = addGlobalDocument('Added Mid-flight');
+    await flush();
+
+    expect(registry()).toContain(added);
+    expect(registry()).toContain(doomed);
+    expect(registry()).toHaveLength(2);
+  });
+
+  it('no longer reports a deleted document as an orphan', () => {
+    // The whole point of the prune. Without it every document the user has
+    // ever deleted shows up in the AC4 report as an unresolved registration,
+    // forever, on every device — so the report's ordinary content becomes
+    // things the user meant to delete, and the one real finding in it is
+    // indistinguishable from the noise.
+    const doc = addGlobalDocument('Old Draft');
+    useWorldInfoStore.getState().deleteBook(doc);
+
+    const orphans = detectDocumentBookOrphans({
+      documentIds: registry(),
+      books: useWorldInfoStore.getState().books,
+      characterAvatars: [AVATAR],
+      // Both fetches settled: the report is at its most talkative here, so
+      // silence is the detector's verdict rather than a readiness gate's.
+      booksSettled: true,
+      charactersSettled: true,
+    });
+
+    expect(orphans).toEqual([]);
+  });
+
+  it('still reports a genuinely unresolved registration', () => {
+    // The other half of the pair above: the prune must quiet the deletions
+    // WITHOUT quieting the sense itself. A document registered on another
+    // device that this account's fetch has not seen is still reported.
+    const doc = addGlobalDocument('Field Notes');
+    useWorldInfoStore.getState().deleteBook(doc);
+    useDataBankStore.setState({ lorebookIds: [...registry(), 'doc-elsewhere'] });
+
+    const orphans = detectDocumentBookOrphans({
+      documentIds: registry(),
+      books: useWorldInfoStore.getState().books,
+      characterAvatars: [AVATAR],
+      booksSettled: true,
+      charactersSettled: true,
+    });
+
+    expect(orphans.map((o) => o.bookId)).toEqual(['doc-elsewhere']);
   });
 });

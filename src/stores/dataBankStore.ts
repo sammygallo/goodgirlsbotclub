@@ -43,6 +43,7 @@ import {
   setDocumentBookIds,
   onUserBookActivation,
   onBooksChanged,
+  onBooksDeleted,
 } from './documentBookRegistry';
 
 // ---------------------------------------------------------------------------
@@ -549,6 +550,61 @@ onUserBookActivation((bookId, active) => {
   }
   saveIndex(indexSnapshot({ deactivatedDocumentIds: next }));
   useDataBankStore.setState({ deactivatedDocumentIds: next });
+});
+
+/**
+ * Prune deleted books out of the document registry.
+ *
+ * `lorebookIds` is persisted and synced, so without this a delete leaves a
+ * record that outlives the book on every device — the registry only grows,
+ * and every leftover reads as an orphaned document to
+ * detectDocumentBookOrphans, which would make its report cry wolf on
+ * ordinary use of the delete button.
+ *
+ * `deactivatedDocumentIds` goes with it: an opt-out only means anything as
+ * an answer to "should the repair activate this?", and there is nothing left
+ * to activate. Both fields are written in ONE snapshot through saveIndex, so
+ * the pair can't half-persist.
+ *
+ * The undo is id-scoped against whatever state holds when it runs, not a
+ * saved copy of the whole arrays — same rule as worldInfoStore's own
+ * rollback, so a document added while the DELETE was in flight isn't
+ * clobbered by a delete that failed.
+ */
+onBooksDeleted((bookIds) => {
+  const doomed = new Set(bookIds);
+  const { lorebookIds, deactivatedDocumentIds } = useDataBankStore.getState();
+  const prunedIds = lorebookIds.filter((id) => doomed.has(id));
+  const prunedOptOuts = deactivatedDocumentIds.filter((id) => doomed.has(id));
+  // Most deletes are of ordinary lorebooks, which are in neither list.
+  if (prunedIds.length === 0 && prunedOptOuts.length === 0) return () => {};
+
+  const pruned: IndexSnapshot = {
+    lorebookIds: lorebookIds.filter((id) => !doomed.has(id)),
+    deactivatedDocumentIds: deactivatedDocumentIds.filter(
+      (id) => !doomed.has(id)
+    ),
+  };
+  saveIndex(indexSnapshot(pruned));
+  useDataBankStore.setState(pruned);
+
+  return () => {
+    const current = useDataBankStore.getState();
+    const restored: IndexSnapshot = {
+      lorebookIds: [
+        ...current.lorebookIds,
+        ...prunedIds.filter((id) => !current.lorebookIds.includes(id)),
+      ],
+      deactivatedDocumentIds: [
+        ...current.deactivatedDocumentIds,
+        ...prunedOptOuts.filter(
+          (id) => !current.deactivatedDocumentIds.includes(id)
+        ),
+      ],
+    };
+    saveIndex(indexSnapshot(restored));
+    useDataBankStore.setState(restored);
+  };
 });
 
 /** Retry the repair whenever worldInfoStore's book list changes. This is

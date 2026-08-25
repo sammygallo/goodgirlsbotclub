@@ -17,6 +17,7 @@ import {
   isRegisteredDocumentBook,
   notifyUserBookActivation,
   notifyBooksChanged,
+  notifyBooksDeleted,
 } from './documentBookRegistry';
 import type {
   CharacterBookV2,
@@ -3167,6 +3168,16 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
         chatLinkedBookIds: chatNext,
       });
 
+      // The Data Bank registry rides WITH the local removal, not with the
+      // post-confirm prune below, because it is the same kind of thing as
+      // activeBookIds membership: a flag about a book id we are holding, not
+      // data that has to be reconstructed. That is exactly what the two
+      // stores below are not — their overlays and conflict records can't be
+      // rebuilt once dropped, which is why they wait for the DELETE. This one
+      // undoes exactly, so it can go now and keep the window in which a
+      // deleted document reads as an orphaned registration down to zero.
+      const undoRegistryPrune = notifyBooksDeleted([bookId]);
+
       // The cross-store prune below (chatLoreConfigStore/loreConflictStore)
       // strips real data — per-chat overlays and pending Auto Memory
       // conflict records — that DOES still reference this book id, and
@@ -3190,6 +3201,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
         },
         (err) => {
           console.warn('[worldInfoStore] failed to delete lorebook on server', err);
+          undoRegistryPrune();
           set((s) => {
             const books = s.books.some((b) => b.id === bookId) ? s.books : [...s.books, prevBook];
             const activeBookIds =
@@ -3665,6 +3677,13 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
       saveBooks(next);
       saveActiveBooks(activeNext);
       set({ books: next, activeBookIds: activeNext });
+      // Every book at once, and no undo captured: this path's local removal
+      // is final by design (its DELETEs are fire-and-forget, warn-only, with
+      // no rollback), so a registry record kept back "in case one failed"
+      // would point at a book this session has already dropped — the very
+      // leftover the prune exists to prevent. A character's documents and
+      // its embedded card lorebook go the same way.
+      notifyBooksDeleted(owned.map((b) => b.id));
       for (const book of owned) {
         api.deleteLorebook(book.id).catch((err) => {
           console.warn('[worldInfoStore] failed to delete character lorebook on server', err);

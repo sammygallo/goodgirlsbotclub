@@ -96,9 +96,47 @@ export function notifyBooksChanged(): void {
   }
 }
 
+/**
+ * Called with the books a delete has just removed; returns an undo for
+ * whatever the listener pruned.
+ *
+ * The undo is what lets worldInfoStore's optimistic delete treat the Data
+ * Bank registry like the rest of its local removal: prune now, put it back
+ * if the server DELETE comes back an error.
+ */
+type BooksDeletedListener = (bookIds: string[]) => () => void;
+let _booksDeletedListener: BooksDeletedListener | null = null;
+
+const NO_UNDO = () => {};
+
+/**
+ * Register for "these books are gone from the library" — dataBankStore, to
+ * prune them out of the document registry.
+ *
+ * Without it the registry only ever grows: `lorebookIds` is persisted and
+ * synced, so a record left behind by a delete outlives the book on every
+ * device the account touches, and every one of those records reads as an
+ * orphaned document to anything that checks (see documentBookOrphans.ts).
+ */
+export function onBooksDeleted(listener: BooksDeletedListener | null): void {
+  _booksDeletedListener = listener;
+}
+
+/** Returns the listener's undo, or a no-op when there is no listener, it
+ *  pruned nothing, or it threw. Never throws at the delete site. */
+export function notifyBooksDeleted(bookIds: string[]): () => void {
+  try {
+    return _booksDeletedListener?.(bookIds) ?? NO_UNDO;
+  } catch (err) {
+    console.warn('[documentBookRegistry] books-deleted listener threw', err);
+    return NO_UNDO;
+  }
+}
+
 /** Test seam: drop every registration and mirrored id. */
 export function resetDocumentBookRegistry(): void {
   _documentBookIds.clear();
   _userActivationListener = null;
   _booksChangedListener = null;
+  _booksDeletedListener = null;
 }
