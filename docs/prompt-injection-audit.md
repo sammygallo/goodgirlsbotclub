@@ -113,15 +113,15 @@ Its docstring's stated long-term fix — thread the real kept-history boundary o
 
 ## 7 · Findings
 
-| # | Severity | Summary |
-|---|---|---|
-| F1 | **High** | Data Bank content silently never activates on local-scan turns |
-| F2 | Medium | Group assembly runs no macro substitution; one un-guarded empty-content case |
-| F3 | Medium | WI timer/budget ordering + sticky escapes group competition (client engine only) |
-| F4 | Medium | Token-budget blind spots: Stage C, image attachments, `overBudget` semantics |
-| F5 | Medium | Group feature-parity debt (no history trim, no extension hooks, no persona) |
-| F6 | Low | Recall's `no_key` reason never surfaced to the user |
-| F7 | Low | 14 stale docs/comments, incl. two user-visible labels |
+| # | Severity | Summary | Issue |
+|---|---|---|---|
+| F1 | **High** | Data Bank content silently never activates on local-scan turns | [#450](https://github.com/sammygallo/goodgirlsbotclub/issues/450) |
+| F2 | Medium | Group assembly runs no macro substitution; one un-guarded empty-content case | [#451](https://github.com/sammygallo/goodgirlsbotclub/issues/451) |
+| F3 | Medium | WI timer/budget ordering + sticky escapes group competition (client engine only) | [#452](https://github.com/sammygallo/goodgirlsbotclub/issues/452) |
+| F4 | Medium | Token-budget blind spots: Stage C, image attachments, `overBudget` semantics | [#453](https://github.com/sammygallo/goodgirlsbotclub/issues/453) |
+| F5 | Medium | Group feature-parity debt (no history trim, no extension hooks, no persona) | [#454](https://github.com/sammygallo/goodgirlsbotclub/issues/454) |
+| F6 | Low | Recall's `no_key` reason never surfaced to the user | [#455](https://github.com/sammygallo/goodgirlsbotclub/issues/455) |
+| F7 | Low | 14 stale docs/comments, incl. two user-visible labels | [#456](https://github.com/sammygallo/goodgirlsbotclub/issues/456) |
 
 **F1 — Data Bank content never activates on local-scan turns.** In group chats (which never call server retrieval) and on any solo turn that falls back to the local scan (§1 eligibility — most commonly a character-linked lorebook), Data Bank chunks cannot fire. Two distinct mechanisms: for **globally-scoped** documents the keyless entry simply scores zero (`worldInfoStore.ts:1142`); for **character-scoped** documents the book is never even a candidate — `addDocument` creates a *second* book owned by that avatar, but `getCharacterBook` resolves `books.find(b => b.ownerCharacterAvatar === avatar)`, first match only (`:3385-3389`), and the new book appears in neither `activeBookIds` nor `linkedBookIdsByAvatar`. Feature death by migration drift.
 
