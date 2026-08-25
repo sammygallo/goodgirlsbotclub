@@ -359,8 +359,19 @@ export async function runColdStart(
       .filter((entry) => entry.enabled !== false && entry.content.trim())
       .map((entry) => ({ book, entry }))
   );
+  // Then: machine-chunked Data Bank prose goes LAST. Activating document
+  // books (E4-S0) put them in this ingest's book set for the first time, and
+  // a single uploaded reference text can be hundreds of chunks — enough to
+  // spend the whole byte budget before the character's own twenty authored
+  // entries are reached, writing reference prose into the bible as canon
+  // while the actual lore lands in `rulesDropped`. Ranking, not exclusion:
+  // the chunks are still the user's lore and still get whatever budget is
+  // left, they just cannot outbid something a human wrote.
   candidates.sort(
-    (a, b) => Number(b.entry.constant) - Number(a.entry.constant)
+    (a, b) =>
+      Number(b.entry.constant) - Number(a.entry.constant) ||
+      Number(a.entry.semanticOnly === true) -
+        Number(b.entry.semanticOnly === true)
   );
 
   let ruleBytes = 0;

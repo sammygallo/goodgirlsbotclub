@@ -61,6 +61,7 @@ export function gatherColdStartSources(
         critical: e.critical,
         category: e.category,
         enabled: e.enabled,
+        semanticOnly: e.semanticOnly,
       })),
     })),
   };
