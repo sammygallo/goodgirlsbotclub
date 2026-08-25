@@ -81,12 +81,23 @@ const judged = await parallel(deduped.map(f => () =>
     .then(vs => {
       const votes = vs.filter(Boolean)
       const refutes = votes.filter(v => v.refuted).length
-      const status = refutes === votes.length && votes.length > 0 ? 'refuted' : refutes === 0 ? 'confirmed' : 'plausible'
-      return { ...f, status, skeptic_reasons: votes.map(v => v.reason) }
+      // Zero surviving votes means NO verification happened (skeptics died —
+      // model limit, terminal API error). That must never read as 'confirmed':
+      // a silent verifier failure is false confidence, the exact thing this
+      // workflow exists to prevent. Surface it as its own status. (E2-S1 retro:
+      // a Fable-limit outage killed 42 skeptics and 21 unverified findings were
+      // reported as confirmed.)
+      const status = votes.length === 0 ? 'unverified'
+        : refutes === votes.length ? 'refuted'
+        : refutes === 0 ? 'confirmed'
+        : 'plausible'
+      return { ...f, status, skepticVotes: votes.length, skeptic_reasons: votes.map(v => v.reason) }
     })))
 const results = judged.filter(Boolean)
 const confirmed = results.filter(f => f.status === 'confirmed')
 const plausible = results.filter(f => f.status === 'plausible')
 const refuted = results.filter(f => f.status === 'refuted')
-log(`confirmed ${confirmed.length} · plausible ${plausible.length} · refuted ${refuted.length}`)
-return { story: args.story, mode, confirmed, plausible, refuted, lensCount: lenses.length }
+const unverified = results.filter(f => f.status === 'unverified')
+log(`confirmed ${confirmed.length} · plausible ${plausible.length} · refuted ${refuted.length} · unverified ${unverified.length}`)
+if (unverified.length) log(`WARNING: ${unverified.length} finding(s) got no surviving skeptic vote — UNVERIFIED, do not treat as confirmed`)
+return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length }
