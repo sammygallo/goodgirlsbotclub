@@ -79,6 +79,13 @@ import type {
   WorldInfoScanReport,
 } from './worldInfoStore';
 
+// Imported as raw text, not as a JSON module, for two reasons: the app
+// project does not enable resolveJsonModule (and widening it for one test
+// would be the wrong trade), and the shared fixture's whole point is that
+// both repos hold the same BYTES — see tools/e4s0LockstepFixture.test.ts,
+// which hashes the same file and is what actually pins them.
+import lockstepVectorsRaw from './__fixtures__/e4s0_lockstep_vectors.json?raw';
+
 let idCounter = 0;
 function mkEntry(over: Partial<WorldInfoEntry> = {}): WorldInfoEntry {
   idCounter += 1;
@@ -580,11 +587,11 @@ describe('scanMessagesForEntries — sticky carry-overs and inclusion groups', (
 // "the server gave me different lore than the local scan did on the very
 // next turn".
 //
-// Scope is deliberate. relatedIds is a documented backend scope cut, and the
-// two engines' sticky EMISSION order (which decides token-budget eviction
-// among equal-order entries) is a known open divergence — neither belongs in
-// a lockstep table until it is one rule rather than two. Admission and timer
-// registration are the decisions both engines genuinely share.
+// Scope is deliberate: relatedIds is a documented backend scope cut, so this
+// table stays on admission and timer registration. Sticky EMISSION order (and
+// with it token-budget eviction among equal-order entries) used to be a second
+// exclusion — an open divergence between the engines — and is now settled; it
+// is pinned by the shared fixture suite below, which also covers eviction.
 // ---------------------------------------------------------------------------
 interface VectorEntry {
   comment: string;
@@ -770,6 +777,114 @@ describe('cross-engine decision vectors', () => {
       );
       expect([...activated].map(nameOf).sort()).toEqual(
         [...vector.registered].sort()
+      );
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// E4-S0 shared lockstep fixture.
+//
+// The table above is this repo's own; the one below is a file both repos
+// commit BYTE-IDENTICALLY (ggbc-backend holds it at tests/
+// e4s0_lockstep_vectors.json). Same ten cases, same expectations, run here
+// against scanMessagesForEntries and there against run_activation_engine.
+// It carries what the local table deliberately left out: eviction, and the
+// equal-order sticky ordering that decides it.
+//
+// Its `_readme.semantics` block is the spec for this harness: `entries` is in
+// CANONICAL CANDIDATE ORDER and is seeded into the book in that array order,
+// every expectation is compared as a SET, and relatedIds stays empty so the
+// run needs maxRecursionSteps: 0.
+//
+// The seeding order is honoured because the fixture specifies it and because
+// the backend genuinely needs it (its candidate order is SQL, so the rows have
+// to be seeded to produce it). On THIS side it is no longer load-bearing, and
+// that is the point: with sticky emission moved onto the shared comparator,
+// reversing the seed order leaves all ten vectors green (mutation-verified).
+// Candidate order no longer reaches the result at all, which is precisely why
+// the two engines can now agree without sharing one.
+//
+// Do not edit the fixture here alone. tools/e4s0LockstepFixture.test.ts
+// asserts its sha256 against the same constant the backend suite asserts, so
+// a one-sided edit turns this repo red rather than silently un-pairing the
+// two engines.
+// ---------------------------------------------------------------------------
+interface LockstepVectorEntry {
+  id: string;
+  comment: string;
+  order: number;
+  group: string;
+  groupOverride: boolean;
+  sticky: number;
+  cooldown: number;
+  keys: string[];
+  relatedIds: string[];
+  constant: boolean;
+  critical: boolean;
+  content: string;
+}
+
+interface LockstepVector {
+  id: string;
+  name: string;
+  pins: string;
+  turn: number;
+  budgetTokens: number;
+  message: string;
+  entries: LockstepVectorEntry[];
+  timers: Record<string, number>;
+  expect: { injected: string[]; activated: string[]; evicted: string[] };
+}
+
+const LOCKSTEP_VECTORS: LockstepVector[] = (
+  JSON.parse(lockstepVectorsRaw) as { vectors: LockstepVector[] }
+).vectors;
+
+/** Every expectation in the fixture is a SET; ids sort lexicographically. */
+const asSet = (ids: string[]) => [...ids].sort();
+
+describe('E4-S0 shared lockstep vectors', () => {
+  for (const vector of LOCKSTEP_VECTORS) {
+    it(`${vector.id} — ${vector.name}`, () => {
+      // Seeded in the fixture's array order, with the fixture's own ids —
+      // the ids matter here, since every expectation is expressed in them.
+      const entries = vector.entries.map((spec) =>
+        mkEntry({
+          id: spec.id,
+          comment: spec.comment,
+          order: spec.order,
+          group: spec.group,
+          groupOverride: spec.groupOverride,
+          sticky: spec.sticky,
+          cooldown: spec.cooldown,
+          keys: spec.keys,
+          relatedIds: spec.relatedIds,
+          constant: spec.constant,
+          critical: spec.critical,
+          content: spec.content,
+        })
+      );
+
+      const activated = new Set<string>();
+      const report = emptyReport();
+      const result = scan(
+        mkBook(entries),
+        msgs(vector.message),
+        opts({
+          currentTurn: vector.turn,
+          wiTimers: { ...vector.timers },
+          tokenBudget: vector.budgetTokens,
+          maxRecursionSteps: 0,
+        }),
+        activated,
+        report
+      );
+
+      expect(asSet(resultIds(result))).toEqual(asSet(vector.expect.injected));
+      expect(asSet([...activated])).toEqual(asSet(vector.expect.activated));
+      expect(asSet(report.dropped.map((m) => m.entry.id))).toEqual(
+        asSet(vector.expect.evicted)
       );
     });
   }
