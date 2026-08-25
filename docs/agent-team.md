@@ -103,7 +103,7 @@ Invoked by the PM only after Sammy merges and says deploy. Deploy-order constrai
 ```
 
 **Definition of Ready** (gate into BUILD): AC testable as written · dependencies verified against ground truth, not the board · design doc approved where the roadmap requires one · brief compiled · tier map printed.
-**Definition of Done** (gate out of CLOSE): every AC verified with evidence · all review findings resolved or accepted-with-reason · deployed and prod-verified (or explicitly parked pre-deploy by Sammy) · Kanban + memory updated · token actuals reported.
+**Definition of Done** (gate out of CLOSE): every AC verified with evidence · all review findings resolved or accepted-with-reason · deployed and prod-verified (or explicitly parked pre-deploy by Sammy) · Kanban + memory updated · **plan absorption done if the story produced ground truth** (a knowledge deliverable — audit, research, design validation — means the roadmap's premises must be re-checked against it before the story closes, not left for the next reader to trip over) · token actuals reported as build / verification / plan absorption.
 
 **Design-story variant** (E1-S2, E3-S1, E6-S1, E8-S1/S3): steps 3–5 become *draft doc → red-team workflow → revise*; the deliverable is a Sammy-approved doc in `docs/`, and step 8 is n/a. Security-relevant designs are red-teamed **pre-code** — the practice that caught the Phase 3 scope hole.
 
@@ -116,7 +116,7 @@ Invoked by the PM only after Sammy merges and says deploy. Deploy-order constrai
 Inherited from roadmap §6 (single source of truth — not duplicated here): review-before-merge triggers, barbell tiering, deterministic-checks-first, frontend merge hygiene, content-safety red line. Team-specific additions:
 
 1. **WIP limit: 2 stories in flight, 3 at absolute peak.** Your review bandwidth is the system's bottleneck by design; the schedule slips before the quality bar does. Parallel stories always get separate worktrees.
-2. **Delegation map is printed before every launch** — per-agent model/effort + one-line reasoning — and **actuals are reported at close** so your calibration loop stays closed.
+2. **Delegation map is printed before every launch** — per-agent model/effort + one-line reasoning — and **actuals are reported at close** so your calibration loop stays closed. Actuals are **three numbers, never one**: **build**, **verification** (scales with the count of checkable claims, not diff size), and **plan absorption** (folding a knowledge-producing story's ground truth back into the roadmap; scales with how many *other* stories rested on the corrected premises). Roadmap §5 defines all three. A blended number hides which lever to pull at recalibration.
 3. **Documents are the team's memory.** Every pipeline stage returns a structured report; the PR carries the full evidence bundle. If it isn't written down, the next session's team never knew it.
 4. **Escalate, don't improvise, on:** any safety-gate interaction, any AC ambiguity that changes scope, any dependency discovered mid-story that the roadmap doesn't show, and any deviation that would touch merge/deploy authority.
 5. **Kanban lives in roadmap §7** (v1). The PM updates it at story close via docs commit. Revisit (GitHub Projects) only if >2 concurrent stories makes the table confusing.
