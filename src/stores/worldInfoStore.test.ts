@@ -527,6 +527,29 @@ describe('scanMessagesForEntries — sticky carry-overs and inclusion groups', (
     expect(resultIds(result)).toEqual([alpha.id]);
   });
 
+  // The landmine S2 opened: excluding group-losers from `allMatched` also
+  // took them out of the `included` set that guards the relatedIds pull-in,
+  // so a loser could be dragged back in, land in matchedIds, and re-stamp
+  // its own sticky window every single turn — permanent injection.
+  it('never lets relatedIds resurrect a sticky group-loser or stamp its timer', () => {
+    const winner = mkEntry({ constant: true, group: 'g', order: 1 });
+    const loser = mkEntry({ keys: ['never'], group: 'g', order: 5, sticky: 3 });
+    const puller = mkEntry({
+      keys: ['dragon'],
+      order: 9,
+      relatedIds: [loser.id],
+    });
+    const activated = new Set<string>();
+    const result = scan(
+      mkBook([winner, loser, puller]),
+      msgs('dragon'),
+      opts({ currentTurn: 2, wiTimers: { [loser.id]: 1 } }),
+      activated
+    );
+    expect(resultIds(result)).toEqual([winner.id, puller.id]);
+    expect(activated.has(loser.id)).toBe(false);
+  });
+
   it('leaves ungrouped sticky carry-overs competing with nobody', () => {
     const a = mkEntry({ keys: ['kraken'], sticky: 3 });
     const b = mkEntry({ keys: ['wyvern'], sticky: 3 });

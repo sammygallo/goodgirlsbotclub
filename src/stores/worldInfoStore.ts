@@ -1475,6 +1475,12 @@ export function scanMessagesForEntries(
   const stickyMatches: MatchedEntry[] = stickyCandidates.filter(
     (c) => !stickyLosers.has(c.entry.id)
   );
+  // Every entry that reached the sticky pass this turn, winner or loser. A
+  // sticky carry-over is by definition NOT a fresh activation — it is
+  // injected precisely because nothing matched — so none of these may ever
+  // reach outActivatedIds below. Stamping one would push its timer forward
+  // every turn and make the carry-over permanent.
+  const stickyCandidateIds = new Set(stickyCandidates.map((c) => c.entry.id));
 
   const allMatched = matched.concat(stickyMatches);
 
@@ -1486,6 +1492,13 @@ export function scanMessagesForEntries(
   const byId = new Map<string, Candidate>();
   for (const c of candidates) byId.set(c.entry.id, c);
   const included = new Set(allMatched.map((m) => m.entry.id));
+  // Sticky group-losers were turned away by the exclusivity walk above and so
+  // are NOT in allMatched — which used to leave them looking un-included to
+  // the walk below, free to be pulled back in and (via matchedIds) to stamp
+  // their own sticky window every turn. `included` doubles as "already
+  // decided this turn", so seeding the losers into it restores what group
+  // exclusivity just decided: a loser stays out, by both doors.
+  for (const id of stickyLosers) included.add(id);
   const queue = [...allMatched];
   while (queue.length > 0) {
     const m = queue.pop() as MatchedEntry;
@@ -1524,9 +1537,16 @@ export function scanMessagesForEntries(
   // make it permanent — intersecting with the freshly-activated set is what
   // keeps them excluded. relatedIds pull-ins ARE fresh activations (they are
   // in matchedIds), so they register iff they too survive the trim.
+  //
+  // stickyCandidateIds is the second lock on the same door: matchedIds is
+  // only clean of carry-overs while nothing downstream adds one back, and
+  // the relatedIds walk above is exactly such a path. Checking the set
+  // states the invariant where it is relied on, instead of deriving it from
+  // another pass's bookkeeping.
   if (outActivatedIds) {
     const survivingIds = new Set(result.map((m) => m.entry.id));
     for (const id of matchedIds) {
+      if (stickyCandidateIds.has(id)) continue;
       if (survivingIds.has(id)) outActivatedIds.add(id);
     }
   }
