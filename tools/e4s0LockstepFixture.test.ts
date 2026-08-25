@@ -38,7 +38,7 @@ const FIXTURE = new URL(
  * changed, apply the same change to the other, and update BOTH constants.
  */
 const EXPECTED_SHA256 =
-  '3e8762155b22aee264a45485c1c327c187a9c1abbbba220d75a42a527d311993';
+  'c7d20ac0998a249e689376c382674c69502d862c8e3e7cce3bc1446dfc466df4';
 
 interface FixtureEntry {
   id: string;
@@ -71,8 +71,8 @@ describe('E4-S0 lockstep fixture', () => {
   // A future editor changing both copies in lockstep still has to keep the
   // table runnable by both engines, and every rule below is one the harnesses
   // silently depend on. Mirrors the backend's equivalent guard.
-  it('holds twelve vectors with unique ids', () => {
-    expect(fixture.vectors).toHaveLength(12);
+  it('holds fourteen vectors with unique ids', () => {
+    expect(fixture.vectors).toHaveLength(14);
     const ids = fixture.vectors.map((v) => v.id);
     expect(new Set(ids).size).toBe(ids.length);
   });

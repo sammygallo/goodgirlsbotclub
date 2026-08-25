@@ -15,7 +15,8 @@
       "relatedIds": "Present in the schema for shape parity but MUST stay empty in every vector: relatedIds pull-in and recursive passes are documented backend scope cuts, so any vector exercising them would be un-mirrorable. The frontend harness must therefore run with maxRecursionSteps: 0.",
       "probability": "No vector sets useProbability, so neither engine rolls. This keeps every vector RNG-free by construction.",
       "tie_break": "Sticky admission AND sticky emission both order by (order, lowercased label, content) ascending, where label = comment || keys[0] || id. Both engines must compute this identically; no engine may fall back to its own candidate/stable-sort order for ties (V8, V10).",
-      "content_comparison": "Content is compared by UNICODE CODE POINT, ascending. Python's `<` on str already does this. JavaScript's `<` on string does NOT — it compares UTF-16 code units, which differ from code points for astral characters (emoji). The frontend must compare code points explicitly. V12 is the kill vector; `localeCompare` is also NOT equivalent and must not be used."
+      "content_comparison": "Content is compared by UNICODE CODE POINT, ascending. Python's `<` on str already does this. JavaScript's `<` on string does NOT — it compares UTF-16 code units, which differ from code points for astral characters (emoji). The frontend must compare code points explicitly. V12 is the kill vector; `localeCompare` is also NOT equivalent and must not be used.",
+      "label_comparison": "Label = (comment || keys[0] || id) case-folded, then compared by UNICODE CODE POINT ascending — the same rule as content, one key up. Both halves are pinned: V13 the fold, V14 the code-point ordering. Accepted residual: Python str.lower() and JS String.toLowerCase() can differ on a few exotic characters (e.g. U+0130); not pinned, and considered out of scope for E4-S0."
     },
     "open_cross_engine_decision": "RESOLVED 2026-08-25 by the PM: the contract is (order, label, content) in BOTH engines. The backend already ordered by (order, label); the frontend moves from candidate order to this rule; both add content as the final key. V8 and V10 are the kill vectors.",
     "desync_guard": "Both repos commit a byte-identical copy of this file and assert its sha256 equals the constant recorded in each suite. Editing one copy alone turns that repo's suite red, so the two cannot silently drift apart."
@@ -649,6 +650,116 @@
         "activated": [],
         "evicted": [
           "e4500000-0000-4000-8000-000000001201"
+        ]
+      }
+    },
+    {
+      "id": "V13",
+      "name": "equal-order sticky pair whose labels reorder under case-folding",
+      "pins": "The .lower() in the label rule. Raw ASCII puts 'Banana'(B=66) before 'apple'(a=97); case-folded puts 'apple' before 'banana'. The contract is folded, so 'apple' survives. An engine comparing labels case-sensitively is RED here and green on every other vector.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001301",
+          "comment": "Banana",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001302",
+          "comment": "apple",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001301": 2,
+        "e4500000-0000-4000-8000-000000001302": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001302"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001301"
+        ]
+      }
+    },
+    {
+      "id": "V14",
+      "name": "equal-order sticky pair separated by astral vs BMP characters in their LABELS",
+      "pins": "Code-point ordering on the LABEL key, not just content. A label is comment||keys[0]||id — user-authored text, so emoji reach it. U+1F600 sorts BELOW U+F8FF by UTF-16 code unit and ABOVE it by code point; the contract is code points, so the U+F8FF label survives. A frontend using bare `<` on labels is RED here.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001401",
+          "comment": "😀 camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmx"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001402",
+          "comment": " camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmy"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001401": 2,
+        "e4500000-0000-4000-8000-000000001402": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001402"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001401"
         ]
       }
     }

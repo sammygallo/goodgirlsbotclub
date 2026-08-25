@@ -1197,8 +1197,10 @@ function pickDeterministicWinner(pool: MatchedEntry[]): MatchedEntry {
 /**
  * THE sticky ordering contract, used for BOTH group admission and emission
  * (see the two call sites in scanMessagesForEntries). `(order, lowercased
- * label, content)` ascending, where label = comment || keys[0] || id and
- * content compares BY CODE POINT (see compareByCodePoint — `<` is wrong here).
+ * label, content)` ascending, where label = comment || keys[0] || id. BOTH
+ * string keys compare BY CODE POINT (see compareByCodePoint — `<` is wrong
+ * here); the label is case-folded first, then compared, matching the backend's
+ * `.lower()` followed by Python's code-point `<`.
  *
  * Sticky entries have no fresh matched-key count — they are injected
  * precisely because nothing matched this turn — so pickDeterministicWinner's
@@ -1222,9 +1224,11 @@ function compareStickyForGroup(
   if (a.entry.order !== b.entry.order) return a.entry.order - b.entry.order;
   const label = (e: WorldInfoEntry) =>
     (e.comment || e.keys[0] || e.id).toLowerCase();
+  // Fold first, THEN compare by code point — the same order as the backend's
+  // `(comment or keys[0] or id).lower()` followed by Python's code-point `<`.
   const la = label(a.entry);
   const lb = label(b.entry);
-  if (la !== lb) return la < lb ? -1 : 1;
+  if (la !== lb) return compareByCodePoint(la, lb);
   return compareByCodePoint(a.entry.content, b.entry.content);
 }
 
@@ -1234,10 +1238,11 @@ function compareStickyForGroup(
  *
  * The two disagree on astral characters. U+1F600 is stored as the surrogate
  * pair D83D DE00, so JS reads its first unit as 0xD83D and puts it BELOW
- * U+F8FF, while Python compares 0x1F600 and puts it ABOVE. `content` is the
- * final tie-break in compareStickyForGroup precisely so both engines pick the
- * same survivor, so comparing it in code units would reopen the divergence
- * that key exists to close — an emoji in a lorebook entry would be enough.
+ * U+F8FF, while Python compares 0x1F600 and puts it ABOVE. Both of
+ * compareStickyForGroup's string keys exist precisely so the two engines pick
+ * the same survivor, so comparing either in code units would reopen the
+ * divergence those keys exist to close — an emoji in a lorebook entry would be
+ * enough, and `label` is a comment or a key, so users put emoji there too.
  *
  * `localeCompare` is NOT a substitute: it is locale- and ICU-version-dependent
  * collation, which the backend has no way to mirror.
