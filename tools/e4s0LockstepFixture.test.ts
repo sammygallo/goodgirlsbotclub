@@ -44,6 +44,9 @@ interface FixtureEntry {
   id: string;
   order: number;
   relatedIds: string[];
+  comment: string;
+  keys: string[];
+  content: string;
   [k: string]: unknown;
 }
 
@@ -128,6 +131,95 @@ describe('E4-S0 lockstep fixture', () => {
         expect(known.has(ref), `${v.id}: unknown id ${ref}`).toBe(true);
       }
     }
+  });
+
+  // The TEETH. Four vectors exist only to make a specific one-sided rule
+  // change fail: V11 (the label key is consulted at all), V12 (content
+  // compares by code point), V13 (the label is case-folded first) and V14 (the
+  // label compares by code point too). Each of those rules passed every
+  // earlier vector by accident before its vector was added, so deleting or
+  // defanging one would quietly return the table to that state.
+  //
+  // Written as EXISTENCE checks over the whole table rather than by vector id,
+  // deliberately: a renumbering, a merge that drops a vector, or an edit that
+  // softens one into a co-linear case all still have to leave *something*
+  // carrying the property, and cannot silently disable it by touching a name.
+  // Mirrors the backend guard's equivalent assertions.
+  const label = (e: FixtureEntry) =>
+    (e.comment || e.keys[0] || e.id).toLowerCase();
+
+  /** Local, deliberately independent of the implementation under guard. */
+  const byCodePoint = (a: string, b: string): number => {
+    if (a === b) return 0;
+    const ca = Array.from(a);
+    const cb = Array.from(b);
+    for (let i = 0; i < Math.min(ca.length, cb.length); i++) {
+      const pa = ca[i].codePointAt(0) ?? 0;
+      const pb = cb[i].codePointAt(0) ?? 0;
+      if (pa !== pb) return pa < pb ? -1 : 1;
+    }
+    return ca.length - cb.length;
+  };
+  const hasNonBmp = (s: string) =>
+    Array.from(s).some((c) => (c.codePointAt(0) ?? 0) > 0xffff);
+  /** Every equal-`order` pair in the table, which is where ties get broken. */
+  const equalOrderPairs = () => {
+    const pairs: Array<[FixtureEntry, FixtureEntry]> = [];
+    for (const v of fixture.vectors) {
+      for (let i = 0; i < v.entries.length; i++) {
+        for (let j = i + 1; j < v.entries.length; j++) {
+          if (v.entries[i].order === v.entries[j].order) {
+            pairs.push([v.entries[i], v.entries[j]]);
+          }
+        }
+      }
+    }
+    return pairs;
+  };
+
+  it('pits label order against content order in some equal-order pair', () => {
+    // Without this, every vector's content is co-linear with its label and the
+    // middle key can be deleted outright with the table still green.
+    const found = equalOrderPairs().some(([a, b]) => {
+      const l = byCodePoint(label(a), label(b));
+      const c = byCodePoint(a.content, b.content);
+      return l !== 0 && c !== 0 && Math.sign(l) !== Math.sign(c);
+    });
+    expect(found, 'no vector contradicts label order with content order').toBe(
+      true
+    );
+  });
+
+  it('reorders some equal-order pair of labels under case-folding', () => {
+    // Without this, the `.lower()`/`.toLowerCase()` fold can be dropped from
+    // both engines with the table still green (the backend proved exactly
+    // that against the twelve-vector version).
+    const found = equalOrderPairs().some(([a, b]) => {
+      const raw = byCodePoint(
+        a.comment || a.keys[0] || a.id,
+        b.comment || b.keys[0] || b.id
+      );
+      const folded = byCodePoint(label(a), label(b));
+      return (
+        raw !== 0 && folded !== 0 && Math.sign(raw) !== Math.sign(folded)
+      );
+    });
+    expect(found, 'no vector reorders its labels under case-folding').toBe(true);
+  });
+
+  it('carries a non-BMP character in some content and in some label', () => {
+    // The astral characters are what separate a code-point comparison from a
+    // UTF-16 code-unit one. Replace them with BMP text and both kill vectors
+    // (V12 for content, V14 for label) go green against a bare `<`.
+    const entries = fixture.vectors.flatMap((v) => v.entries);
+    expect(
+      entries.some((e) => hasNonBmp(e.content)),
+      'no entry content carries a non-BMP character'
+    ).toBe(true);
+    expect(
+      entries.some((e) => hasNonBmp(label(e))),
+      'no entry label carries a non-BMP character'
+    ).toBe(true);
   });
 
   it('keeps the three expectation sets consistent with each other', () => {
