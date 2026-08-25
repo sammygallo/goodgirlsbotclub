@@ -106,9 +106,19 @@ export function hasEmbeddingsKey(): boolean {
 // ---------------------------------------------------------------------------
 
 interface DataBankState {
-  /** Lorebook ids created via addDocument (or the legacy-blob migration) —
-   *  purely a display filter, never source of truth for the books/entries
-   *  themselves (that's worldInfoStore.ts, same as any other lorebook). */
+  /**
+   * Lorebook ids created via addDocument (or the legacy-blob migration).
+   *
+   * Never source of truth for the books/entries themselves — that is
+   * worldInfoStore.ts, same as any other lorebook. It IS, however, source of
+   * truth for one thing, and no longer merely a display filter: whether a
+   * book is a document. worldInfoStore's resolver reads it (through
+   * documentBookRegistry) to keep a character-scoped document from being
+   * mistaken for that character's embedded card lorebook and overwritten.
+   * Nothing else can carry that fact: the lorebook wire payload has no
+   * document flag, and the book's own contents are exactly what the user
+   * edits.
+   */
   lorebookIds: string[];
 
   /**
