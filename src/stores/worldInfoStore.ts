@@ -1189,6 +1189,28 @@ function pickDeterministicWinner(pool: MatchedEntry[]): MatchedEntry {
  * weighted-random selection — reserve that for cosmetic variety where
  * *which* entry fires genuinely doesn't matter to continuity.
  */
+/**
+ * Deterministic tie-break for sticky carry-overs competing for the same
+ * inclusion group. Sticky entries have no fresh matched-key count — they are
+ * injected precisely because nothing matched this turn — so
+ * pickDeterministicWinner's middle rank is meaningless for them: order first,
+ * then the same lowercased label. Kept as its own comparator (rather than
+ * reusing pickDeterministicWinner with a zeroed count) so the rule the
+ * backend's `_activation.py` has to mirror is stated in one place.
+ */
+function compareStickyForGroup(
+  a: { entry: WorldInfoEntry },
+  b: { entry: WorldInfoEntry }
+): number {
+  if (a.entry.order !== b.entry.order) return a.entry.order - b.entry.order;
+  const label = (e: WorldInfoEntry) =>
+    (e.comment || e.keys[0] || e.id).toLowerCase();
+  const la = label(a.entry);
+  const lb = label(b.entry);
+  if (la === lb) return 0;
+  return la < lb ? -1 : 1;
+}
+
 function resolveGroups(
   matches: MatchedEntry[],
   wonGroups: Set<string>
@@ -1417,16 +1439,40 @@ export function scanMessagesForEntries(
   // Sticky carry-overs: entries that were recently activated (within their
   // sticky window) and should remain injected even if keywords no longer match.
   // These do NOT reset their timer — only fresh activations do.
-  const stickyMatches: MatchedEntry[] = [];
+  const stickyCandidates: Candidate[] = [];
   for (const c of candidates) {
     if (matchedIds.has(c.entry.id)) continue;
     if (c.entry.sticky <= 0) continue;
     const last = wiTimers[c.entry.id];
     if (last === undefined) continue;
     if (currentTurn <= last + c.entry.sticky) {
-      stickyMatches.push(c);
+      stickyCandidates.push(c);
     }
   }
+
+  // Sticky carry-overs are subject to inclusion-group exclusivity too (#452).
+  // They used to be concatenated straight past resolveGroups, which broke the
+  // one-entry-per-group contract two ways: a sticky could co-inject with its
+  // own group's fresh winner, and two sticky siblings of the same group could
+  // both inject when neither freshly matched. A group already claimed this
+  // turn — by a fresh winner, or by a sticky admitted just above in this same
+  // walk — turns every later sticky in it away.
+  const stickyLosers = new Set<string>();
+  for (const c of [...stickyCandidates].sort(compareStickyForGroup)) {
+    const g = c.entry.group;
+    if (!g) continue; // ungrouped stickies never compete
+    if (wonGroups.has(g)) {
+      stickyLosers.add(c.entry.id);
+      continue;
+    }
+    wonGroups.add(g);
+  }
+  // Admission is decided by the sorted walk above; emission stays in candidate
+  // order so entries sharing an `order` keep their book order through the
+  // stable final sort, exactly as before this fix.
+  const stickyMatches: MatchedEntry[] = stickyCandidates.filter(
+    (c) => !stickyLosers.has(c.entry.id)
+  );
 
   const allMatched = matched.concat(stickyMatches);
 
@@ -1456,19 +1502,33 @@ export function scanMessagesForEntries(
     }
   }
 
-  // Report freshly activated IDs to the caller (excludes sticky carry-overs).
-  if (outActivatedIds) {
-    for (const id of matchedIds) {
-      outActivatedIds.add(id);
-    }
-  }
-
   const result = applyTokenBudget(
     allMatched,
     options.tokenBudget,
     options.profile,
     outScanReport
   );
+
+  // Report freshly activated IDs to the caller — an entry registers a timer
+  // only if it BOTH freshly activated this turn AND survived the budget trim
+  // (#452). This used to run before applyTokenBudget, so an evicted entry
+  // that never reached the prompt still started its cooldown and sticky
+  // windows, and was then blocked from firing on the next turn.
+  //
+  // Deliberately an INTERSECTION of matchedIds with the surviving ids, not a
+  // walk of `result` on its own: applyTokenBudget returns [...pinned,
+  // ...sorted] computed over allMatched, which also holds sticky carry-overs.
+  // Registering those would re-stamp a sticky entry's window every turn and
+  // make it permanent — intersecting with the freshly-activated set is what
+  // keeps them excluded. relatedIds pull-ins ARE fresh activations (they are
+  // in matchedIds), so they register iff they too survive the trim.
+  if (outActivatedIds) {
+    const survivingIds = new Set(result.map((m) => m.entry.id));
+    for (const id of matchedIds) {
+      if (survivingIds.has(id)) outActivatedIds.add(id);
+    }
+  }
+
   result.sort((a, b) => a.entry.order - b.entry.order);
   return result;
 }

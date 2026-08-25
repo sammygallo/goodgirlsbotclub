@@ -415,6 +415,128 @@ describe('scanMessagesForEntries — timed-effect regressions', () => {
     );
     expect(resultIds(result)).toEqual([sticky.id]);
   });
+
+  // E4-S0 / #452 S1 — timers used to be stamped before applyTokenBudget ran.
+  it('does not register a timer for an entry the token budget evicted', () => {
+    const big = 'x'.repeat(400); // ~100 tokens generic
+    const survivor = mkEntry({ keys: ['dragon'], order: 1, content: 'tiny' });
+    const evicted = mkEntry({ keys: ['dragon'], order: 500, content: big });
+    const activated = new Set<string>();
+    const result = scan(
+      mkBook([survivor, evicted]),
+      msgs('dragon'),
+      opts({ tokenBudget: 40 }),
+      activated
+    );
+    // The evicted entry never reached the prompt, so it must not start its
+    // cooldown/sticky windows — doing so also blocked it from firing next turn.
+    expect(resultIds(result)).toEqual([survivor.id]);
+    expect(activated.has(survivor.id)).toBe(true);
+    expect(activated.has(evicted.id)).toBe(false);
+  });
+
+  // The landmine in the S1 fix: populating from the post-budget survivor set
+  // directly would sweep sticky carry-overs in, and a sticky that re-stamps
+  // its own window every turn is permanent.
+  it('never registers a timer for a sticky carry-over that survives the budget', () => {
+    const sticky = mkEntry({ keys: ['dragon'], sticky: 3, content: 'tiny' });
+    const activated = new Set<string>();
+    const result = scan(
+      mkBook([sticky]),
+      msgs('nothing relevant'),
+      opts({ tokenBudget: 512, currentTurn: 2, wiTimers: { [sticky.id]: 1 } }),
+      activated
+    );
+    expect(resultIds(result)).toEqual([sticky.id]);
+    expect([...activated]).toEqual([]);
+  });
+
+  it('does not register a timer for a relatedIds pull-in the budget evicted', () => {
+    const big = 'x'.repeat(400);
+    const target = mkEntry({ keys: ['never-said'], order: 900, content: big });
+    const source = mkEntry({
+      keys: ['dragon'],
+      order: 1,
+      content: 'tiny',
+      relatedIds: [target.id],
+    });
+    const activated = new Set<string>();
+    const result = scan(
+      mkBook([source, target]),
+      msgs('dragon'),
+      opts({ tokenBudget: 40 }),
+      activated
+    );
+    expect(resultIds(result)).toEqual([source.id]);
+    expect(activated.has(target.id)).toBe(false);
+  });
+});
+
+// E4-S0 / #452 S2 — sticky matches used to be concatenated straight past
+// resolveGroups, so they never faced the one-entry-per-group contract.
+describe('scanMessagesForEntries — sticky carry-overs and inclusion groups', () => {
+  it("keeps a sticky carry-over out when its own group already has a fresh winner", () => {
+    const fresh = mkEntry({ keys: ['dragon'], group: 'g', order: 1 });
+    const stickySibling = mkEntry({
+      keys: ['kraken'],
+      group: 'g',
+      order: 2,
+      sticky: 3,
+    });
+    const result = scan(
+      mkBook([fresh, stickySibling]),
+      msgs('dragon'),
+      opts({ currentTurn: 2, wiTimers: { [stickySibling.id]: 1 } })
+    );
+    expect(resultIds(result)).toEqual([fresh.id]);
+  });
+
+  it('admits only the lowest-order of two sticky siblings when neither freshly matched', () => {
+    const low = mkEntry({ keys: ['kraken'], group: 'g', order: 10, sticky: 3 });
+    const high = mkEntry({ keys: ['wyvern'], group: 'g', order: 99, sticky: 3 });
+    const result = scan(
+      // Book order deliberately puts the loser first: admission is decided by
+      // the comparator, not by whichever candidate is seen first.
+      mkBook([high, low]),
+      msgs('nothing relevant'),
+      opts({ currentTurn: 2, wiTimers: { [low.id]: 1, [high.id]: 1 } })
+    );
+    expect(resultIds(result)).toEqual([low.id]);
+  });
+
+  it('breaks a sticky group tie on the lowercased label when orders match', () => {
+    const alpha = mkEntry({
+      keys: ['kraken'],
+      comment: 'Alpha',
+      group: 'g',
+      order: 10,
+      sticky: 3,
+    });
+    const beta = mkEntry({
+      keys: ['wyvern'],
+      comment: 'beta',
+      group: 'g',
+      order: 10,
+      sticky: 3,
+    });
+    const result = scan(
+      mkBook([beta, alpha]),
+      msgs('nothing relevant'),
+      opts({ currentTurn: 2, wiTimers: { [alpha.id]: 1, [beta.id]: 1 } })
+    );
+    expect(resultIds(result)).toEqual([alpha.id]);
+  });
+
+  it('leaves ungrouped sticky carry-overs competing with nobody', () => {
+    const a = mkEntry({ keys: ['kraken'], sticky: 3 });
+    const b = mkEntry({ keys: ['wyvern'], sticky: 3 });
+    const result = scan(
+      mkBook([a, b]),
+      msgs('nothing relevant'),
+      opts({ currentTurn: 2, wiTimers: { [a.id]: 1, [b.id]: 1 } })
+    );
+    expect(resultIds(result).sort()).toEqual([a.id, b.id].sort());
+  });
 });
 
 describe('ST-format round trip', () => {
