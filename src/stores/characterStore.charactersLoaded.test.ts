@@ -60,8 +60,14 @@ beforeEach(() => {
 });
 
 describe('characterStore.charactersLoaded', () => {
-  it('is false before anything has asked for the character list', () => {
-    expect(useCharacterStore.getState().charactersLoaded).toBe(false);
+  it('is false before anything has asked for the character list', async () => {
+    // A fresh module instance, deliberately — asserting on the shared store
+    // here would only re-read what beforeEach just wrote, and would hold
+    // just as well if the store DECLARED the flag true. This is the value
+    // the first render of a page load actually sees.
+    vi.resetModules();
+    const fresh = await import('./characterStore');
+    expect(fresh.useCharacterStore.getState().charactersLoaded).toBe(false);
   });
 
   it('rises on a successful fetch that returns NO characters', () => {

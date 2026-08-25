@@ -85,13 +85,24 @@ describe('detectDocumentBookOrphans — nothing to report', () => {
     // The card's embedded lorebook for a deleted character is
     // deleteCharacterBooks's problem, not this report's: only ids in the
     // document registry are in scope.
+    //
+    // The registry is deliberately NON-empty here. With it empty the early
+    // return does the work and this asserts nothing — a detector that
+    // scanned every book instead of the registry would still pass.
+    const registered = mkBook({
+      id: 'doc-owned',
+      ownerCharacterAvatar: AVATAR,
+    });
     const embedded = mkBook({
       id: 'embedded-book',
       ownerCharacterAvatar: GONE_AVATAR,
     });
     expect(
       detectDocumentBookOrphans(
-        input({ documentIds: [], books: [embedded] })
+        input({
+          documentIds: [registered.id],
+          books: [registered, embedded],
+        })
       )
     ).toEqual([]);
   });
