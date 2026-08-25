@@ -21,8 +21,11 @@ import { useLoreConflictStore } from '../../stores/loreConflictStore';
 import {
   useWorldInfoStore,
   auditBookHealth,
+  canConfidentlyDropUnresolvedLegacyIds,
   type WorldInfoBook,
 } from '../../stores/worldInfoStore';
+import { useDataBankStore } from '../../stores/dataBankStore';
+import { detectDocumentBookOrphans } from '../../utils/documentBookOrphans';
 import { profileForProvider, estimateTokens } from '../../utils/tokenizer';
 import { lintBook, worstSeverity } from '../../utils/lorebookLint';
 import {
@@ -46,6 +49,7 @@ import { LibraryBookRow } from './LibraryBookRow';
 import { ConflictResolutionSheet } from './ConflictResolutionSheet';
 import { BookAttachmentChips } from './BookAttachmentChips';
 import { EntrySearchResults } from './EntrySearchResults';
+import { DocumentOrphanNotice } from './DocumentOrphanNotice';
 import { CharacterEdit } from '../character/CharacterEdit';
 import { api } from '../../api/client';
 import type { TranscriptMsg } from '../../utils/lorebookFromTranscript';
@@ -131,6 +135,8 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
 
   const chatConfigs = useChatLoreConfigStore((s) => s.configs);
   const characters = useCharacterStore((s) => s.characters);
+  const charactersLoaded = useCharacterStore((s) => s.charactersLoaded);
+  const documentIds = useDataBankStore((s) => s.lorebookIds);
   const linkedBookIdsByAvatar = useCharacterStore((s) => s.linkedBookIdsByAvatar);
   const personas = usePersonaStore((s) => s.personas);
   const conflictRecords = useLoreConflictStore((s) => s.records);
@@ -323,6 +329,31 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
     return { reports, pinnedTotal };
   }, [books, activeBookIds, activeProvider]);
   const pinnedOverBudget = tokenBudget > 0 && health.pinnedTotal > tokenBudget;
+
+  // E4-S0 — orphaned Data Bank documents. Nothing else in the app looks at
+  // this: a stranded character-scoped document is invisible everywhere
+  // BECAUSE its owner is gone, and a registered id with no book behind it has
+  // no row to appear on at all.
+  //
+  // canConfidentlyDropUnresolvedLegacyIds() is not reactive on its own — it
+  // reads a module-level flag — so it is called here, per render, rather than
+  // inside the memo. Both of the store values it actually depends on are
+  // subscribed above (`books`, whose `set` happens immediately after that
+  // flag rises, and `sharedBooksStatus`), so this render runs on the
+  // transition; naming the boolean is then what lets the memo below depend on
+  // it honestly instead of on a call eslint cannot trace.
+  const booksSettled = canConfidentlyDropUnresolvedLegacyIds();
+  const documentOrphans = useMemo(
+    () =>
+      detectDocumentBookOrphans({
+        documentIds,
+        books,
+        characterAvatars: characters.map((c) => c.avatar),
+        booksSettled,
+        charactersSettled: charactersLoaded,
+      }),
+    [documentIds, books, characters, booksSettled, charactersLoaded]
+  );
 
   const handleCreate = () => {
     const trimmed = newBookName.trim();
@@ -518,6 +549,9 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
             </p>
           </div>
         </section>
+
+        {/* Orphaned documents (E4-S0). Renders null when there are none. */}
+        <DocumentOrphanNotice orphans={documentOrphans} />
 
         {/* Lorebook health */}
         <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-3">

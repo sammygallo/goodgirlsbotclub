@@ -104,6 +104,19 @@ export type CharacterSortMode = 'name' | 'date_added' | 'date_last_chat' | 'rece
 
 interface CharacterState {
   characters: CharacterInfo[];
+  /**
+   * True once fetchCharacters has SUCCEEDED at least once this session.
+   *
+   * Not derivable from the two fields above it: `characters` starts `[]` and
+   * `isLoading` starts false, so before the first fetch "this account has no
+   * characters" and "nobody has asked yet" are the same observable state.
+   * Anything that treats a missing character as evidence — E4-S0's orphaned
+   * document report is the first — has to tell those apart, or it accuses
+   * every character-scoped book of being orphaned for the whole window
+   * before the list lands. Cleared by resetUser so the next login re-earns
+   * it rather than inheriting the previous account's.
+   */
+  charactersLoaded: boolean;
   selectedCharacter: CharacterInfo | null;
   // Group chat support
   groupChatCharacters: CharacterInfo[];
@@ -235,6 +248,7 @@ interface CharacterState {
 
 export const useCharacterStore = create<CharacterState>((set, get) => ({
   characters: [],
+  charactersLoaded: false,
   selectedCharacter: null,
   groupChatCharacters: [],
   isGroupChatMode: false,
@@ -263,7 +277,10 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
         api.getCharacters(),
         useCharacterOwnershipStore.getState().fetchOwnership(),
       ]);
-      set({ characters, isLoading: false });
+      // charactersLoaded rises only here, in the SUCCESS branch — a failed
+      // fetch leaves it false, so a network hiccup at login never looks like
+      // "this account has no characters" to anything reading it as evidence.
+      set({ characters, isLoading: false, charactersLoaded: true });
     } catch (error) {
       set({
         isLoading: false,
@@ -1017,6 +1034,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   resetUser: () => {
     set({
       characters: [],
+      charactersLoaded: false,
       selectedCharacter: null,
       isGroupChatMode: false,
       groupChatCharacters: [],
