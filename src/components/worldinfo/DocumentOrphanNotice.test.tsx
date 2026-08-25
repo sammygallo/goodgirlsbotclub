@@ -28,14 +28,14 @@ afterEach(cleanup);
 
 const stranded: DocumentOrphan = {
   kind: 'owner-gone',
-  documentId: 'doc-stranded',
+  bookId: 'doc-stranded',
   bookName: 'Ivy Dossier',
   ownerCharacterAvatar: 'deleted-character.png',
 };
 
 const leftover: DocumentOrphan = {
   kind: 'unresolved-registration',
-  documentId: 'doc-vanished',
+  bookId: 'doc-vanished',
   bookName: null,
   ownerCharacterAvatar: null,
 };
@@ -46,12 +46,28 @@ describe('DocumentOrphanNotice', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('names a stranded document and the owner that no longer resolves', () => {
+  it('names a stranded book and the owner that no longer resolves', () => {
     render(<DocumentOrphanNotice orphans={[stranded]} />);
     expect(screen.getByText('Ivy Dossier')).toBeTruthy();
     expect(screen.getByText('deleted-character.png')).toBeTruthy();
     // The consequence, not just the fact — this is why it matters.
     expect(screen.getByText(/out of every chat/i)).toBeTruthy();
+  });
+
+  it('calls a stranded book a lorebook, not a document', () => {
+    // The stranded list covers every character-scoped book whose owner is
+    // gone — a character's own embedded card lorebook was never a Data Bank
+    // document, and calling it one sends the user looking in the wrong part
+    // of the app for it.
+    const card: DocumentOrphan = {
+      kind: 'owner-gone',
+      bookId: 'embedded-book',
+      bookName: "Ghost's Lorebook",
+      ownerCharacterAvatar: 'deleted-character.png',
+    };
+    const { container } = render(<DocumentOrphanNotice orphans={[card]} />);
+    expect(screen.getByText(/This lorebook belongs/i)).toBeTruthy();
+    expect(container.textContent).not.toMatch(/This document belongs/i);
   });
 
   it('reports an unresolved registration by id', () => {
@@ -61,7 +77,7 @@ describe('DocumentOrphanNotice', () => {
 
   it('reports both senses together, counted', () => {
     render(<DocumentOrphanNotice orphans={[stranded, leftover]} />);
-    expect(screen.getByText(/Orphaned documents \(2\)/)).toBeTruthy();
+    expect(screen.getByText(/Orphaned lorebooks \(2\)/)).toBeTruthy();
     expect(screen.getByText('Ivy Dossier')).toBeTruthy();
     expect(screen.getByText('doc-vanished')).toBeTruthy();
   });

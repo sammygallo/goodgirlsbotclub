@@ -6,11 +6,12 @@ import {
 import type { WorldInfoBook } from '../stores/worldInfoStore';
 
 // E4-S0 / AC4 — "already-orphaned character-scoped books are detected and
-// reported." Two independent ways a document goes orphaned, and one way the
-// detector could be worse than useless: firing during hydration, when a
-// document that is merely late looks exactly like a document that is gone.
-// Every readiness case below exists because the repair this ships alongside
-// already lost that race once.
+// reported." Two independent ways a book goes orphaned — a stranded owner,
+// which is any character-scoped book and not just a registered document, and
+// a registry record with no book behind it — and one way the detector could
+// be worse than useless: firing during hydration, when a book that is merely
+// late looks exactly like a book that is gone. Every readiness case below
+// exists because the repair this ships alongside already lost that race once.
 
 const AVATAR = 'seraphina.png';
 const GONE_AVATAR = 'deleted-character.png';
@@ -81,21 +82,18 @@ describe('detectDocumentBookOrphans — nothing to report', () => {
     ).toEqual([]);
   });
 
-  it('does not report a non-document book whose owner is gone', () => {
-    // The card's embedded lorebook for a deleted character is
-    // deleteCharacterBooks's problem, not this report's: only ids in the
-    // document registry are in scope.
-    //
-    // The registry is deliberately NON-empty here. With it empty the early
-    // return does the work and this asserts nothing — a detector that
-    // scanned every book instead of the registry would still pass.
+  it('leaves an embedded card lorebook alone while its character exists', () => {
+    // The registry is deliberately NON-empty and resolving here, so nothing
+    // in this result can be explained by "the registry was empty, so the
+    // detector had nothing to look at".
     const registered = mkBook({
       id: 'doc-owned',
       ownerCharacterAvatar: AVATAR,
     });
     const embedded = mkBook({
       id: 'embedded-book',
-      ownerCharacterAvatar: GONE_AVATAR,
+      name: "Seraphina's Lorebook",
+      ownerCharacterAvatar: AVATAR,
     });
     expect(
       detectDocumentBookOrphans(
@@ -122,7 +120,7 @@ describe('detectDocumentBookOrphans — owner-gone (sense b)', () => {
     ).toEqual([
       {
         kind: 'owner-gone',
-        documentId: 'doc-stranded',
+        bookId: 'doc-stranded',
         bookName: 'Ivy Dossier',
         ownerCharacterAvatar: GONE_AVATAR,
       },
@@ -146,7 +144,34 @@ describe('detectDocumentBookOrphans — owner-gone (sense b)', () => {
         books: [healthy, stranded],
       })
     );
-    expect(found.map((o) => o.documentId)).toEqual(['doc-stranded']);
+    expect(found.map((o) => o.bookId)).toEqual(['doc-stranded']);
+  });
+
+  it('reports an embedded card lorebook that outlived its character', () => {
+    // AC4 says character-scoped BOOKS, and the registry has no bearing on
+    // being stranded: a card lorebook orphaned by a deletion from before
+    // deleteCharacterBooks shipped is out of every scan for exactly the same
+    // reason a stranded document is, and has exactly as little to show for
+    // itself in the UI.
+    //
+    // The registry is EMPTY on purpose. This is the case a registry-keyed
+    // detector — or a `documentIds.length === 0` early return in front of
+    // one — cannot see at all, and it is the case the widening is for.
+    const embedded = mkBook({
+      id: 'embedded-book',
+      name: "Ghost's Lorebook",
+      ownerCharacterAvatar: GONE_AVATAR,
+    });
+    expect(
+      detectDocumentBookOrphans(input({ documentIds: [], books: [embedded] }))
+    ).toEqual([
+      {
+        kind: 'owner-gone',
+        bookId: 'embedded-book',
+        bookName: "Ghost's Lorebook",
+        ownerCharacterAvatar: GONE_AVATAR,
+      },
+    ]);
   });
 
   it('judges by ownerCharacterAvatar, not the derived scope field', () => {
@@ -171,7 +196,7 @@ describe('detectDocumentBookOrphans — unresolved registration (sense a)', () =
     ).toEqual([
       {
         kind: 'unresolved-registration',
-        documentId: 'doc-vanished',
+        bookId: 'doc-vanished',
         bookName: null,
         ownerCharacterAvatar: null,
       },
@@ -186,7 +211,7 @@ describe('detectDocumentBookOrphans — unresolved registration (sense a)', () =
     const found = detectDocumentBookOrphans(
       input({ documentIds: ['doc-vanished'], books: [other] })
     );
-    expect(found.map((o) => o.documentId)).toEqual(['doc-vanished']);
+    expect(found.map((o) => o.bookId)).toEqual(['doc-vanished']);
   });
 
   it('reports a duplicated registry id exactly once', () => {
@@ -244,17 +269,50 @@ describe('detectDocumentBookOrphans — the cold-start window', () => {
     ).toEqual([]);
   });
 
+  it('stays silent about an UNREGISTERED orphan while characters are unsettled', () => {
+    // The widened sense gets the same gate, and needs it just as badly: a
+    // character-scoped book is the normal state of every card lorebook on
+    // the account, so a detector that ran before the character list landed
+    // would report the user's entire library as stranded.
+    //
+    // This one is empty-registry by necessity (the widened sense is what is
+    // under test), which means an early return would ALSO produce `[]` here.
+    // What keeps it honest is 'reports an embedded card lorebook that
+    // outlived its character' above: that case, same empty registry, must
+    // report — so the two together can only both pass on a detector that
+    // reads the gate rather than the registry's length.
+    const embedded = mkBook({
+      id: 'embedded-book',
+      ownerCharacterAvatar: GONE_AVATAR,
+    });
+    expect(
+      detectDocumentBookOrphans(
+        input({
+          documentIds: [],
+          books: [embedded],
+          characterAvatars: [],
+          charactersSettled: false,
+        })
+      )
+    ).toEqual([]);
+  });
+
   it('stays fully silent on a cold start with both fetches outstanding', () => {
     // The whole-app cold boot, which is what a false positive would actually
-    // ship on: nothing settled, everything registered, nothing reported.
+    // ship on: nothing settled, nothing reported — the registered document
+    // and the card lorebook that is in no registry at all alike.
     const stranded = mkBook({
       id: 'doc-stranded',
+      ownerCharacterAvatar: GONE_AVATAR,
+    });
+    const embedded = mkBook({
+      id: 'embedded-book',
       ownerCharacterAvatar: GONE_AVATAR,
     });
     expect(
       detectDocumentBookOrphans({
         documentIds: ['doc-late', stranded.id],
-        books: [stranded],
+        books: [stranded, embedded],
         characterAvatars: [],
         booksSettled: false,
         charactersSettled: false,

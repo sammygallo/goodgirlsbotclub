@@ -6,17 +6,21 @@ export interface DocumentOrphanNoticeProps {
 }
 
 /**
- * E4-S0 — the user-visible half of orphaned-document detection.
+ * E4-S0 — the user-visible half of orphaned-lorebook detection.
  *
  * Renders nothing at all when there is nothing to report, which is the
  * ordinary case: this is a section that only exists on the accounts that
  * have the problem, not a permanent panel with an "all clear" state.
  *
+ * Says "lorebook", not "document": the stranded list covers every
+ * character-scoped book whose owner is gone, including a character's own
+ * embedded card lorebook, which was never a Data Bank document.
+ *
  * REPORT ONLY, by design. There is no delete button, no "clean up" action
  * and no reassign control here, and adding one would be a mistake: an
- * orphaned document is text the user uploaded and can no longer reach, so
- * the failure mode of a repair button is destroying the only copy. Telling
- * them it exists is the whole job.
+ * orphaned book is text the user wrote or uploaded and can no longer reach,
+ * so the failure mode of a repair button is destroying the only copy.
+ * Telling them it exists is the whole job.
  */
 export function DocumentOrphanNotice({ orphans }: DocumentOrphanNoticeProps) {
   if (orphans.length === 0) return null;
@@ -28,14 +32,14 @@ export function DocumentOrphanNotice({ orphans }: DocumentOrphanNoticeProps) {
     <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 space-y-3">
       <h2 className="text-sm font-semibold text-[var(--color-text-primary)] flex items-center gap-2">
         <AlertTriangle size={14} className="text-amber-400 shrink-0" />
-        Orphaned documents ({orphans.length})
+        Orphaned lorebooks ({orphans.length})
       </h2>
 
       {stranded.length > 0 && (
         <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 space-y-2">
           <p className="text-xs text-amber-400">
-            {stranded.length === 1 ? 'This document belongs' : 'These documents belong'}{' '}
-            to a character that no longer exists. A character-scoped document
+            {stranded.length === 1 ? 'This lorebook belongs' : 'These lorebooks belong'}{' '}
+            to a character that no longer exists. A character-scoped lorebook
             only ever reaches the scan through its owner, so{' '}
             {stranded.length === 1 ? 'it is' : 'they are'} out of every chat —
             global and per-character alike. The text is still here; nothing has
@@ -43,7 +47,7 @@ export function DocumentOrphanNotice({ orphans }: DocumentOrphanNoticeProps) {
           </p>
           <ul className="space-y-1">
             {stranded.map((o) => (
-              <li key={o.documentId} className="text-xs">
+              <li key={o.bookId} className="text-xs">
                 <span className="text-[var(--color-text-primary)] font-medium">
                   {o.bookName}
                 </span>
@@ -70,19 +74,20 @@ export function DocumentOrphanNotice({ orphans }: DocumentOrphanNoticeProps) {
             {leftover.length} document record
             {leftover.length === 1 ? '' : 's'} on this account{' '}
             {leftover.length === 1 ? 'points' : 'point'} at a lorebook that is
-            not here. Usually that means the document was deleted from the
-            library and the record outlived it — no text is missing. If you
-            added {leftover.length === 1 ? 'it' : 'them'} on another device and
-            expected {leftover.length === 1 ? 'it' : 'them'} here, the sync did
-            not bring {leftover.length === 1 ? 'it' : 'them'} across.
+            not here. Deleting a document clears its record, so the likely
+            cause is sync: {leftover.length === 1 ? 'it was' : 'they were'}{' '}
+            added on another device and{' '}
+            {leftover.length === 1 ? 'has' : 'have'} not come across yet. An
+            older version of the app could also leave a record behind when a
+            document was deleted. No text is missing either way.
           </p>
           <ul className="space-y-1">
             {leftover.map((o) => (
               <li
-                key={o.documentId}
+                key={o.bookId}
                 className="text-xs text-[var(--color-text-secondary)]"
               >
-                <code className="text-[11px]">{o.documentId}</code>
+                <code className="text-[11px]">{o.bookId}</code>
               </li>
             ))}
           </ul>
