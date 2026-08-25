@@ -1197,7 +1197,8 @@ function pickDeterministicWinner(pool: MatchedEntry[]): MatchedEntry {
 /**
  * THE sticky ordering contract, used for BOTH group admission and emission
  * (see the two call sites in scanMessagesForEntries). `(order, lowercased
- * label, content)` ascending, where label = comment || keys[0] || id.
+ * label, content)` ascending, where label = comment || keys[0] || id and
+ * content compares BY CODE POINT (see compareByCodePoint — `<` is wrong here).
  *
  * Sticky entries have no fresh matched-key count — they are injected
  * precisely because nothing matched this turn — so pickDeterministicWinner's
@@ -1224,10 +1225,37 @@ function compareStickyForGroup(
   const la = label(a.entry);
   const lb = label(b.entry);
   if (la !== lb) return la < lb ? -1 : 1;
-  const ca = a.entry.content;
-  const cb = b.entry.content;
-  if (ca === cb) return 0;
-  return ca < cb ? -1 : 1;
+  return compareByCodePoint(a.entry.content, b.entry.content);
+}
+
+/**
+ * Compare two strings by unicode CODE POINT, the way Python's `str` ordering
+ * does — deliberately not `<`, which compares UTF-16 CODE UNITS.
+ *
+ * The two disagree on astral characters. U+1F600 is stored as the surrogate
+ * pair D83D DE00, so JS reads its first unit as 0xD83D and puts it BELOW
+ * U+F8FF, while Python compares 0x1F600 and puts it ABOVE. `content` is the
+ * final tie-break in compareStickyForGroup precisely so both engines pick the
+ * same survivor, so comparing it in code units would reopen the divergence
+ * that key exists to close — an emoji in a lorebook entry would be enough.
+ *
+ * `localeCompare` is NOT a substitute: it is locale- and ICU-version-dependent
+ * collation, which the backend has no way to mirror.
+ */
+function compareByCodePoint(a: string, b: string): number {
+  if (a === b) return 0;
+  // Array.from splits on code points, not code units, so surrogate pairs stay
+  // whole and each element compares at its true scalar value.
+  const ca = Array.from(a);
+  const cb = Array.from(b);
+  const shared = Math.min(ca.length, cb.length);
+  for (let i = 0; i < shared; i++) {
+    const pa = ca[i].codePointAt(0) ?? 0;
+    const pb = cb[i].codePointAt(0) ?? 0;
+    if (pa !== pb) return pa < pb ? -1 : 1;
+  }
+  // Common prefix: the shorter string sorts first, as in both engines.
+  return ca.length - cb.length;
 }
 
 function resolveGroups(

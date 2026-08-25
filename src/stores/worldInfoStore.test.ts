@@ -787,7 +787,7 @@ describe('cross-engine decision vectors', () => {
 //
 // The table above is this repo's own; the one below is a file both repos
 // commit BYTE-IDENTICALLY (ggbc-backend holds it at tests/
-// e4s0_lockstep_vectors.json). Same ten cases, same expectations, run here
+// e4s0_lockstep_vectors.json). Same twelve cases, same expectations, run here
 // against scanMessagesForEntries and there against run_activation_engine.
 // It carries what the local table deliberately left out: eviction, and the
 // equal-order sticky ordering that decides it.

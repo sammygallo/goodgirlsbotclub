@@ -14,7 +14,8 @@
       "expect.evicted": "SET of entry ids that activated (freshly or as a sticky carry-over) and were then dropped by the token-budget trim. Backend: evicted_entry_ids. Frontend: report.dropped mapped to ids. A group LOSER is not evicted — it never entered the budget at all.",
       "relatedIds": "Present in the schema for shape parity but MUST stay empty in every vector: relatedIds pull-in and recursive passes are documented backend scope cuts, so any vector exercising them would be un-mirrorable. The frontend harness must therefore run with maxRecursionSteps: 0.",
       "probability": "No vector sets useProbability, so neither engine rolls. This keeps every vector RNG-free by construction.",
-      "tie_break": "Sticky admission AND sticky emission both order by (order, lowercased label, content) ascending, where label = comment || keys[0] || id. Both engines must compute this identically; no engine may fall back to its own candidate/stable-sort order for ties (V8, V10)."
+      "tie_break": "Sticky admission AND sticky emission both order by (order, lowercased label, content) ascending, where label = comment || keys[0] || id. Both engines must compute this identically; no engine may fall back to its own candidate/stable-sort order for ties (V8, V10).",
+      "content_comparison": "Content is compared by UNICODE CODE POINT, ascending. Python's `<` on str already does this. JavaScript's `<` on string does NOT — it compares UTF-16 code units, which differ from code points for astral characters (emoji). The frontend must compare code points explicitly. V12 is the kill vector; `localeCompare` is also NOT equivalent and must not be used."
     },
     "open_cross_engine_decision": "RESOLVED 2026-08-25 by the PM: the contract is (order, label, content) in BOTH engines. The backend already ordered by (order, label); the frontend moves from candidate order to this rule; both add content as the final key. V8 and V10 are the kill vectors.",
     "desync_guard": "Both repos commit a byte-identical copy of this file and assert its sha256 equals the constant recorded in each suite. Editing one copy alone turns that repo's suite red, so the two cannot silently drift apart."
@@ -538,6 +539,116 @@
         "activated": [],
         "evicted": [
           "e4500000-0000-4000-8000-000000001001"
+        ]
+      }
+    },
+    {
+      "id": "V11",
+      "name": "equal-order sticky pair whose label order contradicts their content order",
+      "pins": "The MIDDLE key of the (order, label, content) contract. Every other vector's content is co-linear with its label, so dropping the label key still yields the right answer by accident. Here 'Alpha camp' holds z-content and 'Zulu camp' holds a-content: label order keeps Alpha, content-only order would keep Zulu. Red in either engine if the label key is dropped or reordered.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001101",
+          "comment": "Alpha camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001102",
+          "comment": "Zulu camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001101": 2,
+        "e4500000-0000-4000-8000-000000001102": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001101"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001102"
+        ]
+      }
+    },
+    {
+      "id": "V12",
+      "name": "equal-order, equal-label sticky pair separated by astral vs BMP content",
+      "pins": "Code-point ordering, not UTF-16 code-unit ordering. Python's str comparison is by code point; JavaScript's `<` compares UTF-16 code units, so an astral character (U+1F600, lead surrogate 0xD83D) sorts BELOW U+F8FF in JS but ABOVE it in Python. The contract is code points: the U+F8FF entry survives. A frontend using bare `<` on content is RED here.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001201",
+          "comment": "Twin camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "😀mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001202",
+          "comment": "Twin camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001201": 2,
+        "e4500000-0000-4000-8000-000000001202": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001202"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001201"
         ]
       }
     }
