@@ -13,6 +13,11 @@ import {
 } from '../api/client';
 import { useChatLoreConfigStore } from './chatLoreConfigStore';
 import { useLoreConflictStore } from './loreConflictStore';
+import {
+  isRegisteredDocumentBook,
+  notifyUserBookActivation,
+  notifyBooksChanged,
+} from './documentBookRegistry';
 import type {
   CharacterBookV2,
   CharacterBookEntryV2,
@@ -1882,8 +1887,8 @@ interface PersistedShape {
  *  See createCharacterBook for why this needs to be set correctly in the
  *  very FIRST create request, not patched in after the fact. */
 /**
- * True for a "document" book — a Data Bank upload, whose every entry is a
- * keyless semantic-only chunk (see dataBankStore.addDocument).
+ * True for a "document" book — a Data Bank upload whose entries are
+ * machine-chunked prose (see dataBankStore.addDocument).
  *
  * Used for one thing only: keeping such a book from being mistaken for a
  * character's EMBEDDED card lorebook. A character can own several books (its
@@ -1892,17 +1897,34 @@ interface PersistedShape {
  * the array — so an unrelated card import, auto-memory append or delete could
  * land on a document instead (#450 F3).
  *
- * Derived from the book's own content on purpose: the lorebook wire payload
- * carries no document flag (see bookToWirePayload), and dataBankStore's
- * `lorebookIds` registry is by its own docstring a display filter that is
- * legitimately empty for some users. A hand-written book whose entries all
- * happen to be semantic-only is misclassified — and that direction is safe:
- * the cost is an extra empty embedded book, never a destroyed one.
+ * Identity first, content second, and the order matters. The registry (see
+ * documentBookRegistry.ts) is a DURABLE signal: written when the document is
+ * created, persisted locally and synced server-side, and unaffected by any
+ * ordinary edit the user makes to the book. The old check ("every entry is
+ * semanticOnly") was pure content, so adding a single keyworded entry —
+ * which the Data Bank's own copy now tells users to do — unmasked the
+ * document and handed it to upsertCharacterBook/importBookJson to overwrite
+ * and hard-delete.
+ *
+ * The content fallbacks below exist because the registry can legitimately
+ * be behind (a document created on another device, before that device's
+ * dataBankStore.fetchPrefs has landed). Both fallbacks lean the same way —
+ * toward CALLING something a document — because that is the direction that
+ * cannot destroy data: the cost of a false positive is one extra empty
+ * embedded book, the cost of a false negative is a destroyed document.
+ *
+ * That is also why a book with no visible entries counts as a document
+ * while the session's entry fetch is degraded: fetchNativeBooks answers a
+ * failed per-book entry GET with `entries: []`, so during such a session
+ * "no entries" means "we cannot see them", and guessing from content we
+ * do not have is exactly what must not happen.
  */
 function isDocumentBook(book: WorldInfoBook): boolean {
-  return (
-    book.entries.length > 0 && book.entries.every((e) => e.semanticOnly)
-  );
+  if (isRegisteredDocumentBook(book.id)) return true;
+  if (book.entries.length > 0) return book.entries.every((e) => e.semanticOnly);
+  // `_entriesFetchDegraded` is declared below with fetchNativeBooks, which
+  // owns it; this only ever reads it at call time, never at module init.
+  return _entriesFetchDegraded;
 }
 
 /**
@@ -2704,6 +2726,36 @@ function maybeWarnPinnedBudget(bookId: string, dto: LorebookEntryDTO) {
   );
 }
 
+/**
+ * Switching a world book off is not a local choice. Server-side retrieval
+ * requires EVERY world-scoped book to be active (serverRetrieval.ts
+ * condition 4), so one inactive world book demotes every one-on-one chat on
+ * the account to the local keyword scan — where a keyless entry (every Data
+ * Bank chunk) scores zero and cannot fire at all. The user is entitled to
+ * make that trade; they are not entitled to make it without being told.
+ *
+ * Fires only on the toggle that actually flips the account over: if some
+ * other world book is already inactive, retrieval is already off and a
+ * second toast would be noise rather than news.
+ */
+function warnIfLastActiveWorldBook(
+  book: WorldInfoBook,
+  composable: WorldInfoBook[],
+  nextActiveIds: string[]
+): void {
+  if (book.scope !== 'world') return;
+  const active = new Set(nextActiveIds);
+  for (const other of composable) {
+    if (other.id === book.id) continue;
+    if (other.scope !== 'world') continue;
+    if (!active.has(other.id)) return;
+  }
+  showToastGlobal(
+    `"${book.name}" is off. Server-side semantic matching needs every world book active, so until it's back on, one-on-one chats fall back to the local keyword scan — keyless entries like document chunks can't fire there.`,
+    'warning'
+  );
+}
+
 export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
   // -------------------------------------------------------------------------
   // Local-state mutation helpers shared by every native-synced mutator's
@@ -3370,11 +3422,21 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
 
     toggleBookActive: (bookId) => {
       const cur = get().activeBookIds;
-      const next = cur.includes(bookId)
+      const wasActive = cur.includes(bookId);
+      const next = wasActive
         ? cur.filter((id) => id !== bookId)
         : [...cur, bookId];
       saveActiveBooks(next);
       set({ activeBookIds: next });
+      // The ONLY user-driven activation path (the library row's checkbox);
+      // setBookActive above is the programmatic one. Keeping them apart is
+      // what lets dataBankStore tell "the user turned this document off"
+      // from "our own repair turned it on" — see its opt-out record.
+      const book = get().books.find((b) => b.id === bookId);
+      notifyUserBookActivation(bookId, !wasActive);
+      if (wasActive && book) {
+        warnIfLastActiveWorldBook(book, get().getComposableBooks(), next);
+      }
     },
 
     setScanDepth: (depth) => {
@@ -3916,7 +3978,14 @@ function snapshotForServer(s: WorldInfoState): PersistedShape {
   };
 }
 
-useWorldInfoStore.subscribe((state) => {
+useWorldInfoStore.subscribe((state, prev) => {
+  // The book list landing (or being replaced by a fresher fetch) is the
+  // event dataBankStore's activation repair waits on — its login-time call
+  // legitimately runs against an empty or stale `books`. Announced through
+  // the leaf registry rather than subscribed to from dataBankStore, which
+  // cannot touch this module at its own module scope: the two sit on
+  // opposite ends of an init cycle.
+  if (state.books !== prev.books) notifyBooksChanged();
   // Unconditional local-cache safety net: every mutator above already calls
   // saveBooks() itself, but a handful of call sites elsewhere in the app
   // (e.g. autoMemoryStore's autoExtracted flip) intentionally reach in via

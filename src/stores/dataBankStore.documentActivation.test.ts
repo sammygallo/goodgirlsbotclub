@@ -168,10 +168,8 @@ describe('addDocument — activation', () => {
 });
 
 describe('backfillDocumentBookActivation', () => {
-  /** Seeds a document book directly into both stores WITHOUT activating it —
-   *  the state every account created before this fix is in. */
-  function seedInactiveDocument(over: Partial<WorldInfoBook> = {}): WorldInfoBook {
-    const book: WorldInfoBook = {
+  function mkBook(over: Partial<WorldInfoBook> = {}): WorldInfoBook {
+    return {
       id: `doc-${Math.random().toString(36).slice(2)}`,
       name: 'Legacy Doc',
       entries: [],
@@ -183,10 +181,34 @@ describe('backfillDocumentBookActivation', () => {
       updatedAt: 0,
       ...over,
     };
-    useWorldInfoStore.setState({ books: [...useWorldInfoStore.getState().books, book] });
-    useDataBankStore.setState({
-      lorebookIds: [...useDataBankStore.getState().lorebookIds, book.id],
+  }
+
+  /** Puts a book into worldInfoStore's list without touching the registry —
+   *  an ordinary world book, or a document that has landed in `books` after
+   *  its id was already registered. */
+  function landBook(book: WorldInfoBook): WorldInfoBook {
+    useWorldInfoStore.setState({
+      books: [...useWorldInfoStore.getState().books, book],
     });
+    return book;
+  }
+
+  /** Registers a document id without the book itself having arrived — the
+   *  shape of a document created on another device. */
+  function registerDocumentId(id: string): void {
+    const ids = useDataBankStore.getState().lorebookIds;
+    if (ids.includes(id)) return;
+    useDataBankStore.setState({ lorebookIds: [...ids, id] });
+  }
+
+  /** Seeds a document book into both stores WITHOUT activating it — the
+   *  state every account created before this fix is in. Book first,
+   *  registry second: landing a book now re-runs the repair (that is the
+   *  cold-cache retry), so registering the id first would activate it before
+   *  the test has said `backfillDocumentBookActivation()` out loud. */
+  function seedInactiveDocument(over: Partial<WorldInfoBook> = {}): WorldInfoBook {
+    const book = landBook(mkBook(over));
+    registerDocumentId(book.id);
     return book;
   }
 
@@ -211,25 +233,158 @@ describe('backfillDocumentBookActivation', () => {
     expect(useWorldInfoStore.getState().activeBookIds).not.toContain(doc.id);
   });
 
-  it('runs at most once, so a deliberate deactivation afterwards sticks', () => {
+  it('leaves a deliberate deactivation alone for the rest of the session', () => {
     const doc = seedInactiveDocument();
     backfillDocumentBookActivation();
     expect(useWorldInfoStore.getState().activeBookIds).toContain(doc.id);
 
-    useWorldInfoStore.getState().setBookActive(doc.id, false);
+    // The user's own control — the library row's checkbox — which is what
+    // records the opt-out. setBookActive (the repair's own call) does not.
+    useWorldInfoStore.getState().toggleBookActive(doc.id);
     backfillDocumentBookActivation();
 
     expect(useWorldInfoStore.getState().activeBookIds).not.toContain(doc.id);
   });
 
-  it('does not arm its once-guard before both stores have loaded', () => {
-    // Registry populated, book list still empty (fetchPrefs order is not
-    // guaranteed) — the pass must be a no-op that still runs later.
-    useDataBankStore.setState({ lorebookIds: ['not-loaded-yet'] });
-    backfillDocumentBookActivation();
-
+  // The property the old version of this test claimed and never checked: it
+  // called the function twice inside ONE module instance, where a
+  // module-level `let` trivially holds. The guard resets on every page load,
+  // so only a reload proves anything.
+  it('leaves a deliberate deactivation alone across a page load', async () => {
     const doc = seedInactiveDocument();
     backfillDocumentBookActivation();
     expect(useWorldInfoStore.getState().activeBookIds).toContain(doc.id);
+
+    useWorldInfoStore.getState().toggleBookActive(doc.id);
+    expect(useWorldInfoStore.getState().activeBookIds).not.toContain(doc.id);
+
+    // A page load: brand-new module instances (every module-level flag back
+    // to its initial value), same localStorage. Only something PERSISTED can
+    // survive this — which is the point of the opt-out record.
+    vi.resetModules();
+    const freshDataBank = await import('./dataBankStore');
+    const freshWorldInfo = await import('./worldInfoStore');
+    freshWorldInfo.useWorldInfoStore.getState().initForUser('');
+    expect(freshDataBank.useDataBankStore.getState().lorebookIds).toContain(doc.id);
+
+    freshDataBank.backfillDocumentBookActivation();
+
+    expect(
+      freshWorldInfo.useWorldInfoStore.getState().activeBookIds
+    ).not.toContain(doc.id);
+  });
+
+  it('still repairs the OTHER documents when one has been opted out of', () => {
+    const optedOut = seedInactiveDocument({ name: 'Noisy Doc' });
+    backfillDocumentBookActivation();
+    useWorldInfoStore.getState().toggleBookActive(optedOut.id);
+
+    const fresh = seedInactiveDocument({ name: 'Field Notes' });
+    backfillDocumentBookActivation();
+
+    expect(useWorldInfoStore.getState().activeBookIds).toContain(fresh.id);
+    expect(useWorldInfoStore.getState().activeBookIds).not.toContain(optedOut.id);
+  });
+
+  it('does not arm its once-guard while a registered document is unresolvable', () => {
+    // The race the old test was named for and never ran. worldInfoStore
+    // hydrates `books` synchronously from a localStorage cache, so the list
+    // is NON-empty long before the server view lands — and a cache written
+    // before this document was added on another device does not contain it.
+    // "Some books are loaded" is not "this book is loaded".
+    landBook(mkBook({ id: 'stale-world-book', name: 'Cached World Book' }));
+    registerDocumentId('doc-from-other-device');
+    backfillDocumentBookActivation();
+
+    // worldInfoStore's fetch now lands the document.
+    landBook(mkBook({ id: 'doc-from-other-device' }));
+    backfillDocumentBookActivation();
+
+    expect(useWorldInfoStore.getState().activeBookIds).toContain(
+      'doc-from-other-device'
+    );
+  });
+
+  it('repairs on a cold cache, once the book list arrives on its own', () => {
+    // The login ordering finding #7 describes: dataBankStore.fetchPrefs wins
+    // the race, so the repair's only reachable call site runs against
+    // books=[]. Nothing calls it again — so the retry has to come from the
+    // book list itself landing, with no second call from any caller.
+    registerDocumentId('doc-cold');
+    backfillDocumentBookActivation();
+    expect(useWorldInfoStore.getState().activeBookIds).toEqual([]);
+
+    landBook(mkBook({ id: 'doc-cold' }));
+
+    expect(useWorldInfoStore.getState().activeBookIds).toContain('doc-cold');
+  });
+
+  it('never records an opt-out for a book that is not a document', () => {
+    const world = landBook(mkBook({ id: 'plain-world-book' }));
+    useWorldInfoStore.getState().setBookActive(world.id, true);
+    useWorldInfoStore.getState().toggleBookActive(world.id);
+    expect(useDataBankStore.getState().deactivatedDocumentIds).toEqual([]);
+  });
+
+  it('clears the opt-out when the user switches the document back on', () => {
+    const doc = seedInactiveDocument();
+    backfillDocumentBookActivation();
+    useWorldInfoStore.getState().toggleBookActive(doc.id);
+    expect(useDataBankStore.getState().deactivatedDocumentIds).toEqual([doc.id]);
+
+    useWorldInfoStore.getState().toggleBookActive(doc.id);
+    expect(useDataBankStore.getState().deactivatedDocumentIds).toEqual([]);
+  });
+});
+
+// E4-S0 / #450 F3. The document/embedded-book distinction has to survive
+// the user editing the document, because the app's own copy tells them to:
+// "Add keywords to a chunk in the lorebook editor if it has to fire
+// everywhere." A content heuristic cannot survive that; identity can.
+describe('document identity vs. the card lorebook', () => {
+  const CARD_JSON = JSON.stringify({
+    name: 'From Card',
+    entries: [{ keys: ['ivy'], content: 'card lore', enabled: true }],
+  });
+
+  it('protects a character-scoped document that has an ordinary entry added', () => {
+    const docId = useDataBankStore
+      .getState()
+      .addDocument('Ivy Dossier', 'chunk one text', 'character', AVATAR);
+    // Exactly what AddDocumentModal's copy advises.
+    useWorldInfoStore.getState().createEntry(docId, {
+      keys: ['rain'],
+      content: 'Ivy hates rain',
+    });
+    expect(bookById(docId)!.entries.some((e) => !e.semanticOnly)).toBe(true);
+
+    const imported = useWorldInfoStore
+      .getState()
+      .importBookJson(CARD_JSON, 'From Card', AVATAR);
+
+    expect(imported!.id).not.toBe(docId);
+    expect(bookById(docId)).toBeDefined();
+    expect(bookById(docId)!.entries.length).toBe(2);
+    expect(deleteLorebook).not.toHaveBeenCalledWith(docId);
+  });
+
+  it('protects the same document from a character-card re-import', () => {
+    const docId = useDataBankStore
+      .getState()
+      .addDocument('Ivy Dossier', 'chunk one text', 'character', AVATAR);
+    useWorldInfoStore.getState().createEntry(docId, {
+      keys: ['rain'],
+      content: 'Ivy hates rain',
+    });
+
+    const upserted = useWorldInfoStore.getState().upsertCharacterBook(
+      AVATAR,
+      { name: 'From Card', entries: [{ keys: ['ivy'], content: 'card lore' }] } as never,
+      'From Card'
+    );
+
+    expect(upserted.id).not.toBe(docId);
+    expect(bookById(docId)!.entries.length).toBe(2);
+    expect(bookById(docId)!.name).toBe('Ivy Dossier');
   });
 });
