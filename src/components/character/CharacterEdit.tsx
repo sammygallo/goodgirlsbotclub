@@ -112,8 +112,11 @@ export function CharacterEdit({
   const setLinkedTemplate = usePromptTemplateStore((s) => s.setLinkedTemplate);
 
   const lorebookSectionRef = useRef<HTMLDivElement>(null);
+  // Through the store's resolver, not a raw find: a character can own several
+  // books (character-scoped documents included) and only one of them is the
+  // card's. Selecting `books` keeps this reactive to library edits.
   const embeddedBook = useWorldInfoStore((s) =>
-    s.books.find((b) => b.ownerCharacterAvatar === character.avatar)
+    s.getCharacterBook(character.avatar)
   );
   const hasEmbeddedLorebook = !!embeddedBook;
   const embeddedEntryCount = embeddedBook?.entries.length ?? 0;

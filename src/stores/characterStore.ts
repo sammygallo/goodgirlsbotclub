@@ -428,8 +428,12 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       // Ownership cleanup happens server-side as part of /api/characters/delete
       // when the target is a global character. For personal characters there's
       // no metadata entry to clean up.
-      // Clean up character-embedded lorebook and linked-book references
-      useWorldInfoStore.getState().deleteCharacterBook(avatar);
+      // Clean up every book this character owned — its embedded lorebook and
+      // any character-scoped documents — plus linked-book references. Owned
+      // books are only ever reachable through their owner, so leaving them
+      // behind would strand them; the old call deleted whichever owned book
+      // came first, which could destroy a document and leave the card's book.
+      useWorldInfoStore.getState().deleteCharacterBooks(avatar);
       if (linkedBookIdsByAvatar[avatar]) {
         const nextLinks = { ...linkedBookIdsByAvatar };
         delete nextLinks[avatar];
@@ -1029,12 +1033,20 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
   getActiveBookIdsForCharacter: (avatar) => {
     if (!avatar) return [];
     const ids: string[] = [];
-    const embedded = useWorldInfoStore.getState().getCharacterBook(avatar);
-    if (embedded) ids.push(embedded.id);
+    // EVERY book this character owns, not just the embedded card book: a
+    // character-scoped Data Bank document is a second owned book, and
+    // resolving only the first left it invisible to the scan entirely
+    // (#450 F1). Owned books stay out of the global activeBookIds on
+    // purpose — an active foreign character-scoped book disqualifies every
+    // other character's chat from server retrieval (serverRetrieval.ts
+    // condition 5) — so this union is the only path that reaches them.
+    for (const owned of useWorldInfoStore.getState().getCharacterBooks(avatar)) {
+      ids.push(owned.id);
+    }
     const linked = get().linkedBookIdsByAvatar[avatar] || [];
     const allBooks = useWorldInfoStore.getState().books;
     for (const linkedId of linked) {
-      if (ids.includes(linkedId)) continue; // avoid double-adding the embedded id
+      if (ids.includes(linkedId)) continue; // avoid double-adding an owned id
       const book = allBooks.find((b) => b.id === linkedId);
       if (!book) continue;
       if (book.ownerCharacterAvatar && book.ownerCharacterAvatar !== avatar) {

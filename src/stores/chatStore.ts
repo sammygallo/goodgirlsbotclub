@@ -1029,7 +1029,8 @@ function buildConversationContext(
   const sub = (text: string) => (text ? processMacros(text, macroCtx) : '');
 
   // Scan active world info books for keyword matches against recent history.
-  // The character's embedded book + per-character linked books are
+  // The character's owned books (its embedded book plus any character-scoped
+  // documents) + per-character linked books are
   // auto-activated at scan time (scoped to this call), leaving the global
   // `activeBookIds` list untouched as the user navigates between characters.
   // Persona-linked books are unioned in on top of that so each scope
@@ -1786,8 +1787,9 @@ export function buildGroupConversationContext(
   const subWi = (text: string) => (text ? processMacros(text, wiMacroCtx) : '');
 
   // World Info. Book scoping is the union of every scope that can contribute
-  // to this room: the globally-active books, EVERY member's embedded + linked
-  // books (not just the current speaker's — lore about member B is precisely
+  // to this room: the globally-active books, EVERY member's owned (embedded
+  // book plus any character-scoped documents) + linked books
+  // (not just the current speaker's — lore about member B is precisely
   // what member A needs in order to react to them coherently), and the
   // speaker-resolved persona's books. The legacy chat-linked-books map is
   // folded in via resolveEffectiveBooks (chatConfig), not unioned directly

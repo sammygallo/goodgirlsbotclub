@@ -705,6 +705,107 @@ describe('store actions', () => {
   });
 });
 
+// E4-S0 / #450 F2+F3. A character can own more than one book: its card's
+// embedded lorebook, plus any character-scoped Data Bank document. Every
+// resolver used to take `books.find(ownerCharacterAvatar === avatar)` — first
+// match only — so a document could be mistaken for the card's book (and
+// destroyed by an unrelated delete), while itself staying invisible to the
+// chat scan.
+describe('character-owned book resolution', () => {
+  const AVATAR = 'ivy.png';
+
+  beforeEach(() => {
+    useWorldInfoStore.getState().resetUser();
+  });
+
+  /** A character-scoped document: keyless, semantic-only chunks. */
+  function addDocumentBook(name: string) {
+    return useWorldInfoStore
+      .getState()
+      .createBookWithEntries(
+        name,
+        [
+          { content: 'chunk one', comment: `chunk 1 of ${name}`, keys: [], semanticOnly: true, source: 'import' },
+          { content: 'chunk two', comment: `chunk 2 of ${name}`, keys: [], semanticOnly: true, source: 'import' },
+        ],
+        AVATAR
+      );
+  }
+
+  it('getCharacterBook skips a document book that would otherwise shadow the card book', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+    // The document was created first, so the old first-match resolver returned it.
+    expect(useWorldInfoStore.getState().books[0].id).toBe(doc.id);
+    expect(embedded.id).not.toBe(doc.id);
+    expect(useWorldInfoStore.getState().getCharacterBook(AVATAR)!.id).toBe(embedded.id);
+  });
+
+  it('getCharacterBooks returns every book the character owns', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+    useWorldInfoStore.getState().createBook('Unrelated World Book');
+
+    const owned = useWorldInfoStore.getState().getCharacterBooks(AVATAR);
+    expect(owned.map((b) => b.id).sort()).toEqual([doc.id, embedded.id].sort());
+  });
+
+  it('upsertCharacterBook replaces the card book, never a shadowing document', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+
+    const cardRaw = bookToCharacterBookV2(
+      mkBook([mkEntry({ keys: ['ivy'], content: 'card lore' })], { name: 'From Card' })
+    );
+    const upserted = useWorldInfoStore
+      .getState()
+      .upsertCharacterBook(AVATAR, cardRaw, 'From Card');
+
+    expect(upserted.id).toBe(embedded.id);
+    const after = useWorldInfoStore.getState().books.find((b) => b.id === doc.id)!;
+    expect(after.entries).toHaveLength(2);
+    expect(after.entries.every((e) => e.semanticOnly)).toBe(true);
+  });
+
+  it('deleteBook removes only the targeted book, leaving the character\'s others', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+
+    useWorldInfoStore.getState().deleteBook(embedded.id);
+
+    const remaining = useWorldInfoStore.getState().books.map((b) => b.id);
+    expect(remaining).toEqual([doc.id]);
+  });
+
+  it('deleteCharacterBooks removes every book the character owns and nothing else', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+    const otherChar = useWorldInfoStore
+      .getState()
+      .createCharacterBook('marcus.png', 'Marcus Lorebook');
+    const world = useWorldInfoStore.getState().createBook('World Book');
+    useWorldInfoStore.getState().setBookActive(world.id, true);
+
+    useWorldInfoStore.getState().deleteCharacterBooks(AVATAR);
+
+    const remaining = useWorldInfoStore.getState().books.map((b) => b.id);
+    expect(remaining.sort()).toEqual([otherChar.id, world.id].sort());
+    expect(remaining).not.toContain(doc.id);
+    expect(remaining).not.toContain(embedded.id);
+    expect(useWorldInfoStore.getState().activeBookIds).toEqual([world.id]);
+  });
+});
+
 describe('auditBookHealth', () => {
   it('counts pinned lore, shares, and dangling links over enabled entries', () => {
     const constant = mkEntry({ constant: true, content: 'x'.repeat(40) });

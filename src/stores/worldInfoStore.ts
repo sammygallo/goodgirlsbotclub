@@ -1312,7 +1312,9 @@ function applyTokenBudget(
  * (sticky / cooldown / delay).
  *
  * @param outActivatedIds - Optional Set that will be populated with the IDs of
- *   entries that were *freshly* activated this turn (excluding sticky carry-overs).
+ *   entries that were *freshly* activated this turn (excluding sticky carry-overs)
+ *   AND survived the token budget — an entry the budget evicted never reached
+ *   the prompt, so it must not start its cooldown/sticky windows either.
  *   Callers should persist this set via saveWiTimers() after a successful
  *   generation to update the timed-effects state for the next turn.
  * @param outScanReport - Optional report object (see WorldInfoScanReport)
@@ -1714,8 +1716,35 @@ interface WorldInfoState {
     name: string,
     autoExtracted?: boolean
   ) => WorldInfoBook;
+  /**
+   * The character's EMBEDDED (card) lorebook, or null. A character can own
+   * more than one book — character-scoped Data Bank documents are owned
+   * books too — so this deliberately skips document books rather than
+   * returning whichever owned book happens to come first; see
+   * findEmbeddedBook. Callers that want the character's whole owned set
+   * (the chat scan, notably) want getCharacterBooks instead.
+   */
   getCharacterBook: (ownerAvatar: string) => WorldInfoBook | null;
-  deleteCharacterBook: (ownerAvatar: string) => void;
+  /**
+   * EVERY book owned by this character — its embedded card book plus any
+   * character-scoped documents. This is the set that is in scope for that
+   * character's chats: owned books are deliberately kept OUT of the global
+   * activeBookIds (an active foreign character-scoped book disqualifies
+   * every other character's chat from server retrieval — see
+   * serverRetrieval.ts condition 5), so this union is the only path that
+   * reaches them.
+   */
+  getCharacterBooks: (ownerAvatar: string) => WorldInfoBook[];
+  /**
+   * Deletes EVERY book owned by this character — used when the character
+   * itself is deleted, which leaves owned books unreachable (they are hidden
+   * from the world list and only ever activated through their owner). Takes
+   * no book id on purpose: the old single-book variant deleted whichever
+   * owned book came first, so an unrelated delete could destroy a
+   * character-scoped document instead of the card's lorebook (#450 F3). To
+   * delete ONE specific book, call deleteBook(bookId).
+   */
+  deleteCharacterBooks: (ownerAvatar: string) => void;
   /**
    * Persist the auto-extracted flag onto an EXISTING book (one-way ratchet
    * — see update_lorebook's docstring; the backend never lets this un-set
@@ -1832,6 +1861,47 @@ interface PersistedShape {
  *  ordinary book is equivalent, since the server's own default is false).
  *  See createCharacterBook for why this needs to be set correctly in the
  *  very FIRST create request, not patched in after the fact. */
+/**
+ * True for a "document" book — a Data Bank upload, whose every entry is a
+ * keyless semantic-only chunk (see dataBankStore.addDocument).
+ *
+ * Used for one thing only: keeping such a book from being mistaken for a
+ * character's EMBEDDED card lorebook. A character can own several books (its
+ * card's, plus any character-scoped documents), but exactly one of them is
+ * the card's, and the resolvers below used to take whichever came first in
+ * the array — so an unrelated card import, auto-memory append or delete could
+ * land on a document instead (#450 F3).
+ *
+ * Derived from the book's own content on purpose: the lorebook wire payload
+ * carries no document flag (see bookToWirePayload), and dataBankStore's
+ * `lorebookIds` registry is by its own docstring a display filter that is
+ * legitimately empty for some users. A hand-written book whose entries all
+ * happen to be semantic-only is misclassified — and that direction is safe:
+ * the cost is an extra empty embedded book, never a destroyed one.
+ */
+function isDocumentBook(book: WorldInfoBook): boolean {
+  return (
+    book.entries.length > 0 && book.entries.every((e) => e.semanticOnly)
+  );
+}
+
+/**
+ * The character's embedded (card) lorebook: the first book it owns that is
+ * not a document. Null when the character owns nothing but documents — in
+ * which case callers create a fresh embedded book rather than overwriting
+ * one of them.
+ */
+function findEmbeddedBook(
+  books: WorldInfoBook[],
+  ownerAvatar: string
+): WorldInfoBook | null {
+  return (
+    books.find(
+      (b) => b.ownerCharacterAvatar === ownerAvatar && !isDocumentBook(b)
+    ) || null
+  );
+}
+
 function bookToWirePayload(book: WorldInfoBook): Record<string, unknown> {
   return {
     id: book.id,
@@ -3336,9 +3406,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
           book.ownerCharacterAvatar = ownerAvatar;
           // scope is derived — recompute alongside ownerCharacterAvatar.
           book.scope = 'character';
-          const existing = get().books.find(
-            (b) => b.ownerCharacterAvatar === ownerAvatar
-          );
+          const existing = findEmbeddedBook(get().books, ownerAvatar);
           const without = existing
             ? get().books.filter((b) => b.id !== existing.id)
             : get().books;
@@ -3370,9 +3438,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
     },
 
     upsertCharacterBook: (ownerAvatar, raw, fallbackName) => {
-      const existing = get().books.find(
-        (b) => b.ownerCharacterAvatar === ownerAvatar
-      );
+      const existing = findEmbeddedBook(get().books, ownerAvatar);
       const now = Date.now();
       if (existing) {
         // Preserve the book id (keeps linked-books references stable) and
@@ -3413,9 +3479,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
       // creating a second — the model is one embedded book per character.
       // Note: autoExtracted is NOT applied here even if requested — see
       // markBookAutoExtracted for retroactively flagging an existing book.
-      const existing = get().books.find(
-        (b) => b.ownerCharacterAvatar === ownerAvatar
-      );
+      const existing = findEmbeddedBook(get().books, ownerAvatar);
       if (existing) return existing;
       const trimmed = name.trim() || 'Character Lorebook';
       const now = Date.now();
@@ -3443,24 +3507,29 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
     },
 
     getCharacterBook: (ownerAvatar) => {
-      return (
-        get().books.find((b) => b.ownerCharacterAvatar === ownerAvatar) || null
-      );
+      return findEmbeddedBook(get().books, ownerAvatar);
     },
 
-    deleteCharacterBook: (ownerAvatar) => {
-      const existing = get().books.find(
+    getCharacterBooks: (ownerAvatar) => {
+      return get().books.filter((b) => b.ownerCharacterAvatar === ownerAvatar);
+    },
+
+    deleteCharacterBooks: (ownerAvatar) => {
+      const owned = get().books.filter(
         (b) => b.ownerCharacterAvatar === ownerAvatar
       );
-      if (!existing) return;
-      const next = get().books.filter((b) => b.id !== existing.id);
-      const activeNext = get().activeBookIds.filter((id) => id !== existing.id);
+      if (owned.length === 0) return;
+      const ownedIds = new Set(owned.map((b) => b.id));
+      const next = get().books.filter((b) => !ownedIds.has(b.id));
+      const activeNext = get().activeBookIds.filter((id) => !ownedIds.has(id));
       saveBooks(next);
       saveActiveBooks(activeNext);
       set({ books: next, activeBookIds: activeNext });
-      api.deleteLorebook(existing.id).catch((err) => {
-        console.warn('[worldInfoStore] failed to delete character lorebook on server', err);
-      });
+      for (const book of owned) {
+        api.deleteLorebook(book.id).catch((err) => {
+          console.warn('[worldInfoStore] failed to delete character lorebook on server', err);
+        });
+      }
     },
 
     getChatLinkedBookIds: (chatFileName) => {
