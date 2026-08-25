@@ -1195,13 +1195,24 @@ function pickDeterministicWinner(pool: MatchedEntry[]): MatchedEntry {
  * *which* entry fires genuinely doesn't matter to continuity.
  */
 /**
- * Deterministic tie-break for sticky carry-overs competing for the same
- * inclusion group. Sticky entries have no fresh matched-key count — they are
- * injected precisely because nothing matched this turn — so
- * pickDeterministicWinner's middle rank is meaningless for them: order first,
- * then the same lowercased label. Kept as its own comparator (rather than
- * reusing pickDeterministicWinner with a zeroed count) so the rule the
+ * THE sticky ordering contract, used for BOTH group admission and emission
+ * (see the two call sites in scanMessagesForEntries). `(order, lowercased
+ * label, content)` ascending, where label = comment || keys[0] || id.
+ *
+ * Sticky entries have no fresh matched-key count — they are injected
+ * precisely because nothing matched this turn — so pickDeterministicWinner's
+ * middle rank is meaningless for them. Kept as its own comparator (rather
+ * than reusing pickDeterministicWinner with a zeroed count) so the rule the
  * backend's `_activation.py` has to mirror is stated in one place.
+ *
+ * Why `content` is the last key, rather than `id` or either engine's own
+ * candidate order: neither of those is mutually computable. The backend's
+ * candidate order is SQL `ORDER BY (insertion_order, id)` over random UUIDs,
+ * which a browser cannot reproduce, and the two id spaces are not reliably
+ * shared in the first place (E2-S5). `content` is the one field both engines
+ * hold identically — it is what actually gets injected — so it is the only
+ * final key that can make them agree. Ties past it are entries with the same
+ * order, label and text: indistinguishable in the prompt either way.
  */
 function compareStickyForGroup(
   a: { entry: WorldInfoEntry },
@@ -1212,8 +1223,11 @@ function compareStickyForGroup(
     (e.comment || e.keys[0] || e.id).toLowerCase();
   const la = label(a.entry);
   const lb = label(b.entry);
-  if (la === lb) return 0;
-  return la < lb ? -1 : 1;
+  if (la !== lb) return la < lb ? -1 : 1;
+  const ca = a.entry.content;
+  const cb = b.entry.content;
+  if (ca === cb) return 0;
+  return ca < cb ? -1 : 1;
 }
 
 function resolveGroups(
@@ -1464,8 +1478,9 @@ export function scanMessagesForEntries(
   // both inject when neither freshly matched. A group already claimed this
   // turn — by a fresh winner, or by a sticky admitted just above in this same
   // walk — turns every later sticky in it away.
+  const stickyOrdered = [...stickyCandidates].sort(compareStickyForGroup);
   const stickyLosers = new Set<string>();
-  for (const c of [...stickyCandidates].sort(compareStickyForGroup)) {
+  for (const c of stickyOrdered) {
     const g = c.entry.group;
     if (!g) continue; // ungrouped stickies never compete
     if (wonGroups.has(g)) {
@@ -1474,10 +1489,20 @@ export function scanMessagesForEntries(
     }
     wonGroups.add(g);
   }
-  // Admission is decided by the sorted walk above; emission stays in candidate
-  // order so entries sharing an `order` keep their book order through the
-  // stable final sort, exactly as before this fix.
-  const stickyMatches: MatchedEntry[] = stickyCandidates.filter(
+  // Emission uses the SAME order as admission, and deliberately not candidate
+  // (book array) order (E4-S0). applyTokenBudget sorts by `order` alone with a
+  // stable sort, so whatever order sticky matches arrive in is what breaks
+  // ties among equal-`order` entries — i.e. it picks which one the budget trim
+  // pops off the tail. The backend cannot adopt candidate order (its own is
+  // SQL `(insertion_order, id)` over random UUIDs, not reproducible in a
+  // browser), so emitting in book order meant the two engines evicted
+  // DIFFERENT entries from the same chat state and put opposite lore in the
+  // prompt — measured, not hypothetical. compareStickyForGroup is mutually
+  // computable, so both engines can and now do use it.
+  //
+  // Ordering only. Which stickies are eligible is unchanged: ungrouped ones
+  // still skip group exclusivity entirely in the walk above.
+  const stickyMatches: MatchedEntry[] = stickyOrdered.filter(
     (c) => !stickyLosers.has(c.entry.id)
   );
   // Every entry that reached the sticky pass this turn, winner or loser. A
