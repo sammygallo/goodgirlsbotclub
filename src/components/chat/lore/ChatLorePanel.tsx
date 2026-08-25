@@ -87,7 +87,10 @@ function BaseEntryViewer({
           {entry.constant ? (
             <em>No keywords (always active)</em>
           ) : entry.semanticOnly ? (
-            <em>Semantic only (no keywords needed)</em>
+            <em>
+              Semantic only — no keywords, matched by meaning server-side. Doesn't fire
+              in group chats or on turns that fall back to the local keyword scan.
+            </em>
           ) : entry.keys.length > 0 ? (
             entry.keys.map((k, i) => (
               <span

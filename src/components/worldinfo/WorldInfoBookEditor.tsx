@@ -356,7 +356,9 @@ function ReadOnlyEntryDetail({
           </p>
         ) : entry.semanticOnly ? (
           <p className="text-sm text-[var(--color-text-secondary)] italic">
-            Semantic only — activates on meaning, not keywords (server-side retrieval)
+            Semantic only — activates on meaning, not keywords. That matching runs
+            server-side, so this entry doesn't fire in group chats, or on one-on-one
+            turns that fall back to the local keyword scan.
           </p>
         ) : entry.keys.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">

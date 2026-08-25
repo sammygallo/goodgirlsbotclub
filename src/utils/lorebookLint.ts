@@ -110,13 +110,15 @@ export function lintEntry(
     });
   }
 
-  // semanticOnly entries (e.g. auto-chunked Data Bank imports) are keyless
-  // by design — they fire via the SERVER's semantic/FTS recall
-  // (/retrieval/context), which this client-side scanner has no equivalent
-  // of. Flagging them as "can never fire" would be simply wrong: they do
-  // fire, just not through the local keyword scan this lint models. (They
-  // also can't be critical — semanticOnly + critical is rejected server-side
-  // — so the critical branch below is unreachable for them regardless.)
+  // semanticOnly entries (e.g. auto-chunked Data Bank imports) are keyless by
+  // design and fire through the SERVER's semantic/FTS recall
+  // (/retrieval/context) instead. That is a narrower guarantee than "it
+  // fires": server retrieval is never used in group chats, and any solo turn
+  // whose lore config the server can't replicate falls back to this same
+  // keyword scan, where a keyless entry scores zero. So they are neither
+  // "can never fire" (the error below) nor fine — hence a separate warning.
+  // (They also can't be critical: semanticOnly + critical is rejected
+  // server-side, so the critical wording below never applies to them.)
   if (!entry.constant && !entry.semanticOnly && keys.length === 0) {
     findings.push({
       code: 'no-trigger',
@@ -125,6 +127,16 @@ export function lintEntry(
       message: entry.critical
         ? 'Critical, but nothing can trigger it: add a keyword or make it Constant. A critical entry with no trigger never fires at all.'
         : 'No keywords and not Constant — nothing can ever trigger this entry.',
+    });
+  }
+
+  if (!entry.constant && entry.semanticOnly && keys.length === 0) {
+    findings.push({
+      code: 'semantic-only-not-everywhere',
+      severity: 'warning',
+      field: 'keys',
+      message:
+        'Semantic matching runs server-side only. With no keywords this entry cannot fire in group chats, or on any one-on-one turn that falls back to the local keyword scan. Add a keyword if it has to fire everywhere.',
     });
   }
 

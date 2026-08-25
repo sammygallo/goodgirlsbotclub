@@ -87,8 +87,10 @@ export function AddDocumentModal({ isOpen, onClose, onCreated }: AddDocumentModa
       <div className="space-y-4">
         <p className="text-sm text-[var(--color-text-secondary)]">
           Paste or upload text — it's chunked automatically into a new lorebook, one entry per
-          chunk. Relevant chunks are injected into context the same way any other lorebook entry
-          is.
+          chunk. Chunks carry no keywords, so they're matched by meaning instead. That matching
+          runs on the server: chunks can fire in one-on-one chats, but not in group chats and not
+          on turns that fall back to the local keyword scan. Add keywords to a chunk in the
+          lorebook editor if it has to fire everywhere.
         </p>
 
         <Input
