@@ -114,9 +114,13 @@ describe('lorebook entries become world rules', () => {
           {
             bookId: 'authored',
             bookName: "Ivy's lorebook",
+            // Full-length authored entries, deliberately: the budget loop
+            // `continue`s past an entry it cannot afford rather than
+            // breaking, so a one-line entry would slip into the leftover
+            // headroom and the test would pass with or without the fix.
             entries: [
-              { id: 'a1', keys: ['duke'], content: 'The duke is dead.', constant: false, critical: false, category: '', enabled: true },
-              { id: 'a2', keys: ['reach'], content: 'The Reach floods yearly.', constant: false, critical: false, category: '', enabled: true },
+              { id: 'a1', keys: ['duke'], content: `The duke is dead. ${'y'.repeat(2000)}`, constant: false, critical: false, category: '', enabled: true },
+              { id: 'a2', keys: ['reach'], content: `The Reach floods yearly. ${'y'.repeat(2000)}`, constant: false, critical: false, category: '', enabled: true },
             ],
           },
         ],
