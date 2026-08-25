@@ -264,6 +264,22 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
       .getState()
       .createBookWithEntries(trimmedName, entries, ownerCharacterAvatar);
 
+    // A global document has to be ACTIVE or it does nothing — and worse than
+    // nothing: scanMessagesForEntries skips inactive books, and an inactive
+    // world book makes every solo chat on the account ineligible for server
+    // retrieval (serverRetrieval.ts condition 4), silently demoting all of
+    // the user's OTHER lore to the keyword-only local scan. Adding one
+    // document used to turn server retrieval off account-wide, permanently.
+    //
+    // Character-scoped documents are deliberately NOT activated: activeBookIds
+    // is global, and an active character-scoped book owned by someone other
+    // than the character generating disqualifies that chat too (condition 5).
+    // They reach the scan through characterStore.getActiveBookIdsForCharacter,
+    // which unions every book the character owns.
+    if (book.scope === 'world') {
+      useWorldInfoStore.getState().setBookActive(book.id, true);
+    }
+
     const lorebookIds = [...get().lorebookIds, book.id];
     saveIndex(lorebookIds);
     set({ lorebookIds });
@@ -278,6 +294,7 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
     try { localStorage.removeItem(LEGACY_EMBED_KEY_STORAGE); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
     _databankImportAttempted = false;
+    _activationBackfillDone = false;
   },
 
   fetchPrefs: async () => {
@@ -322,6 +339,12 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
     } catch {
       // ensureDataBankImported already handles its own retry guard/logging.
     }
+
+    // Repair documents added before global documents were activated on
+    // creation — see backfillDocumentBookActivation. Safe here: initForUser
+    // has already seeded worldInfoStore's books/activeBookIds from the local
+    // cache synchronously by the time authStore fires this fetchPrefs.
+    backfillDocumentBookActivation();
   },
 }));
 
@@ -358,5 +381,50 @@ export async function ensureDataBankImportedAndIndexed(): Promise<void> {
   useWorldInfoStore
     .getState()
     .fetchPrefs()
+    .then(() => backfillDocumentBookActivation())
     .catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// One-time activation repair for documents added before this fix
+// ---------------------------------------------------------------------------
+
+let _activationBackfillDone = false;
+
+/**
+ * Activates every global document book that isn't already active.
+ *
+ * addDocument never activated the book it created, so on an existing account
+ * every global document is sitting inactive. That is not merely "the document
+ * doesn't fire": an inactive world book trips
+ * isChatEligibleForServerRetrieval's condition 4, which turns server-side
+ * retrieval off for EVERY solo chat on the account and demotes all of the
+ * user's other lore to the keyword-only local scan. Adding one document was
+ * enough to do it, permanently, with nothing in the UI to say so.
+ *
+ * Global scope only: a character-scoped document must stay out of the global
+ * activeBookIds (condition 5 — see addDocument's note), and reaches the scan
+ * through getActiveBookIdsForCharacter instead.
+ *
+ * Idempotent, and runs at most once per session (module flag, reset by
+ * resetUser, same idiom as _databankImportAttempted) so it repairs the
+ * historical state without fighting a user who deliberately deactivates a
+ * document afterwards. Returns without arming the flag whenever either input
+ * is still empty — both stores' fetchPrefs fire unordered from authStore, so
+ * an empty registry or book list means "not loaded yet", not "nothing to do".
+ */
+export function backfillDocumentBookActivation(): void {
+  if (_activationBackfillDone) return;
+  const documentIds = useDataBankStore.getState().lorebookIds;
+  if (documentIds.length === 0) return;
+  const wi = useWorldInfoStore.getState();
+  if (wi.books.length === 0) return;
+  _activationBackfillDone = true;
+  for (const id of documentIds) {
+    const book = wi.books.find((b) => b.id === id);
+    if (!book) continue;
+    if (book.scope !== 'world') continue;
+    if (wi.activeBookIds.includes(id)) continue;
+    useWorldInfoStore.getState().setBookActive(id, true);
+  }
 }
