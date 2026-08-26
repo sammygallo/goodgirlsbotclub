@@ -306,12 +306,19 @@ wait_for_image() {
   if [ -z "$RUN" ]; then
     # No build for this SHA. THREE causes, and they are NOT interchangeable:
     #   (a) every changed file matched paths-ignore  -> genuinely safe
-    #   (b) the commit message carried a skip marker -> genuinely safe
+    #   (b) the commit message carried a skip marker -> author said skip
     #   (c) GitHub silently dropped the event        -> :latest is STALE
+    # Only (a) is detected. (b) and (c) are indistinguishable from here, so
+    # both are treated as (c) and force a rebuild. That is deliberate: on a
+    # DEPLOY, an unnecessary 1-minute build is free and a stale image is not.
+    # A skip marker on a commit that changes bundle files will therefore be
+    # overridden here, which is the correct trade for this code path.
     # (c) is real and has happened (2026-08-26, twice in one deploy). It is
     # invisible: no run, no error, an empty list identical to (a)/(b).
     local LAST_SHA
-    LAST_SHA=$(gh run list --repo "$REPO" --workflow docker-publish.yml --limit 30 \
+    # --branch main: :latest is published from main, so a successful run on
+    # some other ref must not be mistaken for the image now in the registry.
+    LAST_SHA=$(gh run list --repo "$REPO" --workflow docker-publish.yml --branch main --limit 30 \
       --json headSha,conclusion --jq '[.[] | select(.conclusion=="success")][0].headSha')
 
     # Gate 1 — ancestry. NECESSARY BUT NOT SUFFICIENT. It proves :latest was
@@ -328,8 +335,24 @@ wait_for_image() {
     # paths-ignore so this cannot drift when that list is edited. Fails
     # toward rebuilding: a file counts as ignorable only if it clearly
     # matches a pattern.
-    local UNIGNORED
-    UNIGNORED=$(git -C "$DIR" diff --name-only "$LAST_SHA".."$SHA" | python3 -c '
+    #
+    # EVERY step below fails CLOSED. An empty result must only ever mean
+    # "genuinely nothing to build" — never "the check itself broke". The
+    # git diff status, the interpreter status, and a completion sentinel
+    # are all checked, because a guard that answers its own crash with
+    # "Safe to deploy" is worse than no guard at all.
+    #
+    # --no-renames is REQUIRED. With rename detection on, `git mv
+    # src/foo.ts docs/v2/foo.ts` reports ONLY the ignorable destination
+    # path, so moving a source file into an ignored directory would read
+    # as fully ignorable and ship a stale image. Verified on this repo.
+    local DELTA
+    if ! DELTA=$(git -C "$DIR" diff --no-renames --name-only "$LAST_SHA".."$SHA"); then
+      echo "  ERROR: cannot diff ${LAST_SHA:0:7}..HEAD. Do NOT deploy."
+      return 1
+    fi
+    local MATCH_OUT UNIGNORED
+    if ! MATCH_OUT=$(printf '%s\n' "$DELTA" | python3 -c '
 import sys, re, pathlib
 pats, inblock = [], False
 for raw in pathlib.Path(sys.argv[1]).read_text().splitlines():
@@ -339,6 +362,8 @@ for raw in pathlib.Path(sys.argv[1]).read_text().splitlines():
         m = re.match(r"^\s*-\s*[\x27\"]?(.+?)[\x27\"]?\s*$", raw)
         if m: pats.append(m.group(1))
         else: inblock = False
+if any(p.startswith("!") for p in pats):
+    sys.exit("paths-ignore uses a ! negation pattern; this matcher does not implement negation")
 def ignored(path):
     for pat in pats:
         rx = re.escape(pat)
@@ -348,7 +373,18 @@ def ignored(path):
 for line in sys.stdin:
     f = line.strip()
     if f and not ignored(f): print(f)
-' "$DIR/.github/workflows/docker-publish.yml")
+print("__MATCHER_OK__")
+' "$DIR/.github/workflows/docker-publish.yml"); then
+      echo "  ERROR: the paths-ignore matcher failed (traceback above). Do NOT deploy."
+      return 1
+    fi
+    # The sentinel must be the last line. Its absence means the matcher died
+    # mid-stream, which must never be read as "nothing to build".
+    case "$MATCH_OUT" in
+      *__MATCHER_OK__) ;;
+      *) echo "  ERROR: matcher produced no completion sentinel. Do NOT deploy."; return 1 ;;
+    esac
+    UNIGNORED=$(printf '%s\n' "$MATCH_OUT" | grep -v '^__MATCHER_OK__$' || true)
 
     if [ -z "$UNIGNORED" ]; then
       echo "  no build for this SHA, and every file changed since ${LAST_SHA:0:7} is"
@@ -357,7 +393,6 @@ for line in sys.stdin:
     fi
 
     echo "  *** NO BUILD RAN, but these files since ${LAST_SHA:0:7} CAN reach the image:"
-    git -C "$DIR" diff --name-only "$LAST_SHA".."$SHA" | head -0  # keep output tidy
     echo "$UNIGNORED" | sed 's/^/      /'
     echo "  :latest is from ${LAST_SHA:0:7} and does NOT contain your change."
     echo "  GitHub almost certainly dropped the event. Deploying now ships the OLD image."
@@ -706,7 +741,7 @@ ssh root@159.89.180.146 "df -h / && docker image prune -af"
 The docker-publish workflow triggers on every push to the default branch. For docs-only or `.gitignore`-only changes that's wasted CI time. **Note:** `[skip ci]` in a PR's commit message does NOT work with the `--merge` strategy — GitHub creates a new merge commit that doesn't inherit the tag. Options:
 
 1. Use `--squash` or `--rebase` for docs-only PRs (preserves the commit message).
-2. Add `paths-ignore` to `.github/workflows/docker-publish.yml`. **Done** — goodgirlsbotclub#349 and ggbc-backend#49. Note both are explicit allow-lists, NOT `docs/**`: three docs in the frontend are compiled into the bundle via Vite `?raw` imports (`docs/faq.md`, `docs/character-guide.md`, `docs/hypercode-guide.md`), so a blanket ignore would silently ship a stale FAQ.
+2. Add `paths-ignore` to `.github/workflows/docker-publish.yml`. **Done** — goodgirlsbotclub#349 and ggbc-backend#49. Note both are explicit allow-lists, NOT `docs/**`: **four** docs in the frontend are compiled into the bundle via Vite `?raw` imports (`docs/faq.md`, `docs/character-guide.md`, `docs/hypercode-guide.md`, `docs/lorebook-guide.md`), so a blanket ignore would silently ship a stale FAQ or guide. This list is load-bearing twice over — it gates the build, and `wait_for_image` reads the same allow-list to decide whether a missing build is benign. Verify it against `grep -rn '?raw' src/` before editing.
 
 #### ⚠️ Never write the skip-CI marker literally in a commit message
 
