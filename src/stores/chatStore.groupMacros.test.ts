@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // chatStore pulls serverSettings (and through it the api layer) at module
 // load — neutralize before importing, per the worldInfoStore.test.ts pattern.
@@ -25,6 +25,7 @@ const { useWorldInfoStore, DEFAULT_ENTRY } = await import('./worldInfoStore');
 const { useCharacterStore } = await import('./characterStore');
 const { usePersonaStore } = await import('./personaStore');
 const { useSettingsStore } = await import('./settingsStore');
+const { api } = await import('../api/client');
 
 import type { WorldInfoBook, WorldInfoEntry } from './worldInfoStore';
 import type { CharacterInfo } from '../api/client';
@@ -551,6 +552,35 @@ describe('review-fix 1: the speaker scenario is substituted exactly ONCE per bui
     expect(useChatStore.getState().getChatVariables(CHAT_FILE).day).toBe('0');
   });
 
+  it('resolves the fallback scenario through getCharacterField (deliberate, reviewed change)', () => {
+    // Round 2, ACCEPT-AND-PIN. Sharing ONE substituted string between the card
+    // block and the `Current scenario:` line meant both sites had to resolve the
+    // field the same way, so the fallback moved from
+    //   `currentCharacter.scenario || currentCharacter.data?.scenario || ''`
+    // to `getCharacterField(currentCharacter, 'scenario')`. That is not a no-op:
+    // for a card whose top-level `scenario` is whitespace-only and whose
+    // `data.scenario` is real, the OLD expression took the whitespace (it is
+    // truthy) and emitted `Current scenario:` followed by blanks; the NEW one
+    // skips whitespace-only values and emits data.scenario. The new behavior is
+    // what the join card block already emitted for that same card and what solo
+    // does at :1186, and emitting whitespace was never intended. Reviewed and
+    // accepted rather than reverted — this test pins the CHOSEN behavior.
+    const splitCard = {
+      name: 'Seraphina',
+      avatar: 'seraphina.png',
+      scenario: '   ',
+      data: { scenario: 'The library at dusk.' },
+    } as unknown as CharacterInfo;
+
+    const text = textOf(
+      buildGroupConversationContext([mkMsg('hi')], [splitCard, marcus], splitCard)
+    );
+
+    expect(text).toContain('Current scenario: The library at dusk.');
+    // The pre-E9-S6 expression emitted the whitespace instead.
+    expect(text).not.toMatch(/^Current scenario: +$/m);
+  });
+
   it('emits a byte-identical value at the card-block and Current-scenario sites', () => {
     const text = textOf(buildWithCountingScenario());
     const cardScenario = text.match(/^Scenario: (.*)$/m)?.[1];
@@ -578,6 +608,30 @@ describe('review-fix 2: history turns substitute against their AUTHOR', () => {
 
     expect(textOf(ctx)).toContain('[Marcus]: *Marcus looks up as User walks in.*');
     expect(textOf(ctx)).not.toContain('*Seraphina looks up');
+  });
+
+  it('prefers characterAvatar over a `name` that matches a DIFFERENT member', () => {
+    // Round 2. Every other fixture in this suite has msg.name agreeing with the
+    // roster, so the name fallback covered for the avatar branch and deleting
+    // the branch outright left every group test green. Here the two DISAGREE,
+    // which is exactly the case avatar-first exists for: the member was renamed
+    // after this turn was stored, so `name` is the stale display string and the
+    // avatar is the durable identity. Marcus's avatar under Seraphina's stored
+    // name; Seraphina is also the speaker, so BOTH fallbacks would say
+    // Seraphina — resolving to Marcus can only come from the avatar branch.
+    const renamedTurn = {
+      ...mkMsg('I am {{char}}.', false, 'Seraphina'),
+      characterAvatar: 'marcus.png',
+    } as ChatMessage;
+
+    const ctx = buildGroupConversationContext(
+      [renamedTurn],
+      [seraphina, marcus],
+      seraphina
+    );
+
+    expect(textOf(ctx)).toContain('[Seraphina]: I am Marcus.');
+    expect(textOf(ctx)).not.toContain('I am Seraphina.');
   });
 
   it('falls back to a name match when the turn predates characterAvatar', () => {
@@ -732,6 +786,120 @@ describe("review-fix 4: the blank-user-turn image exemption tracks whether THIS 
   });
 });
 
+describe('review-fix A: the image exemption is per-TURN, not per-build', () => {
+  // Round 2. `attachmentsFolded` is one fact about the whole build, but the
+  // exemption is evaluated per message, so it used to keep EVERY blank
+  // image-carrying user turn in the last-30 window. api.generateMessage folds
+  // the caller's attachments into ONE turn — the last message with role 'user',
+  // found by a backwards scan at client.ts:1485-1507 — so every older kept turn
+  // shipped `{ role: 'user', content: '' }` with nothing ever folded into it.
+  const imgUser = (content: string, b64: string) =>
+    ({
+      ...mkMsg(content, true, 'User'),
+      images: [`data:image/png;base64,${b64}`],
+    }) as ChatMessage;
+
+  it('DROPS an older blank image turn even when this build folds attachments', () => {
+    // The reproduction from the re-review: two image-carrying user turns, the
+    // older one blank. Only the newest can receive the fold.
+    const ctx = buildGroupConversationContext(
+      [
+        imgUser('', 'AAAA'),
+        mkMsg('a reply', false, 'Marcus'),
+        imgUser('what about this one', 'BBBB'),
+      ],
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true
+    );
+
+    // Nothing empty ships. Without the index condition the older turn survives
+    // as `{ role: 'user', content: '' }` and this is the assertion that catches it.
+    expect(ctx.every((c) => c.content.trim() !== '')).toBe(true);
+    const userTurns = ctx.filter((c) => c.role === 'user');
+    expect(userTurns.map((c) => c.content)).toEqual(['what about this one']);
+  });
+
+  it('still KEEPS the newest blank image turn when it is not the only message', () => {
+    // The other side of the index condition: it must not over-drop. This turn
+    // IS the one client.ts folds into, so it has to survive even though the
+    // history in front of it is what makes the index non-trivial.
+    const ctx = buildGroupConversationContext(
+      [
+        mkMsg('earlier line', true, 'User'),
+        mkMsg('a reply', false, 'Marcus'),
+        imgUser('', 'BBBB'),
+      ],
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true
+    );
+
+    const userTurns = ctx.filter((c) => c.role === 'user');
+    expect(userTurns.map((c) => c.content)).toEqual(['earlier line', '']);
+    // And it is the LAST user-role entry, i.e. the one the backwards fold scan
+    // in client.ts will land on.
+    const lastUserIdx = ctx.map((c) => c.role).lastIndexOf('user');
+    expect(ctx[lastUserIdx].content).toBe('');
+  });
+});
+
+describe('review-fix B: after_an world info is joined BEFORE the history loop', () => {
+  // Round 2. FIX 3 moved the card block above three of the four non-depth WI
+  // joins; after_an was still joined at its emission site, after the history
+  // loop. Solo joins all four at chatStore.ts:1276-1283 and only then runs its
+  // history loop at :1476, so group inverted solo for this one position: a
+  // {{setvar}} in a history turn was visible to a {{getvar}} in after_an lore
+  // in group and not in solo.
+  it('does NOT let a history-turn write reach an after_an {{getvar}}', () => {
+    const afterAnEntry = mkEntry({
+      constant: true,
+      position: 'after_an',
+      content: 'Seen [{{getvar::histVar}}].',
+    });
+    useBooks([mkBook([afterAnEntry])]);
+
+    const ctx = buildGroupConversationContext(
+      [mkMsg('Look {{setvar::histVar::yes}} here')],
+      [seraphina, marcus],
+      seraphina
+    );
+
+    expect(textOf(ctx)).toContain('Seen [].');
+    expect(textOf(ctx)).not.toContain('Seen [yes].');
+    // The write itself still happened — this is an ordering claim, not a claim
+    // that the history turn's macros stopped running.
+    expect(useChatStore.getState().getChatVariables(CHAT_FILE).histVar).toBe('yes');
+  });
+
+  it('emits the after_an block in the same place as before (layout untouched)', () => {
+    // FIX B moves COMPUTATION only. The push stays at the post-history slot.
+    const afterAnEntry = mkEntry({
+      constant: true,
+      position: 'after_an',
+      content: 'Tail lore.',
+    });
+    useBooks([mkBook([afterAnEntry])]);
+
+    const ctx = buildGroupConversationContext(
+      [mkMsg('hello'), mkMsg('a reply', false, 'Marcus')],
+      [seraphina, marcus],
+      seraphina
+    );
+
+    expect(ctx[ctx.length - 1]).toEqual({ role: 'system', content: 'Tail lore.' });
+    expect(ctx.map((c) => c.role)).toEqual(['system', 'user', 'assistant', 'system']);
+  });
+});
+
 describe('review-fix 6a: every substituted card field is pinned in BOTH modes', () => {
   // C13: three of the six card fields this story substitutes had no test that
   // would go red. One test per (mode, field) pair, each using a non-speaking
@@ -870,5 +1038,73 @@ describe('review-fix 6d + 7: deliberately-unfixed behaviors, pinned so they cann
 
     expect(ctx.every((c) => c.role === 'system')).toBe(true);
     expect(ctx.some((c) => c.role === 'user' || c.role === 'assistant')).toBe(false);
+  });
+});
+
+describe('review-fix C: the PRODUCTION call site passes the real attachmentsFolded', () => {
+  // Round 2. The builder's behavior was pinned but its wiring was not:
+  // neutralizing generateGroupTurn's `attachmentsFolded` argument left the whole
+  // suite green, because the parameter DEFAULTS to `true`. So a test that only
+  // exercises the true direction proves nothing about the wiring — a removed
+  // argument still reads as `true`. These two drive the real
+  // forceGroupMemberTalk -> generateGroupTurn -> api.generateMessage path and
+  // differ in ONE input, the active model, whose only effect on this fixture is
+  // whether `imagesFromLastUserMessage` returns images for the call site's
+  // `Boolean(images && images.length > 0)` to read.
+  //
+  // currentChatFile is deliberately null: forceGroupMemberTalk's finally-block
+  // flush is gated on it, so the whole saveChatToBackend path stays out of the
+  // test, and buildGroupConversationContext's chat-variable persistence is a
+  // no-op. Neither is under test here.
+  const blankImageTurn = () =>
+    ({
+      ...mkMsg('', true, 'User'),
+      images: ['data:image/png;base64,AAAA'],
+    }) as ChatMessage;
+
+  /** Run one forced group turn and return the context handed to the API. */
+  const contextSentWithModel = async (model: string) => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockResolvedValue(null);
+    useSettingsStore.setState({ activeProvider: 'openai', activeModel: model });
+    useChatStore.setState({
+      currentChatFile: null,
+      isSending: false,
+      messages: [blankImageTurn()],
+      groupChats: [],
+    });
+
+    await useChatStore
+      .getState()
+      .forceGroupMemberTalk(seraphina, [seraphina, marcus]);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    return spy.mock.calls[0][0] as { role: string; content: string }[];
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('passes TRUE when this turn really carries the attachments', async () => {
+    // gpt-4o is a vision model, so imagesFromLastUserMessage resolves the
+    // stored attachment and generateGroupTurn hands it to api.generateMessage.
+    // The blank carrier turn therefore has to survive.
+    const sent = await contextSentWithModel('gpt-4o');
+
+    const userTurns = sent.filter((c) => c.role === 'user');
+    expect(userTurns.map((c) => c.content)).toEqual(['']);
+  });
+
+  it('passes FALSE when this turn carries no attachments', async () => {
+    // gpt-4 is not a vision model, so imagesFromLastUserMessage returns
+    // undefined, nothing is folded, and the carrier turn must be dropped rather
+    // than shipping an empty content block. This is the direction that catches a
+    // removed/hardcoded-true argument, since the parameter's default is `true`.
+    const sent = await contextSentWithModel('gpt-4');
+
+    expect(sent.some((c) => c.role === 'user')).toBe(false);
+    expect(sent.every((c) => c.content.trim() !== '')).toBe(true);
   });
 });

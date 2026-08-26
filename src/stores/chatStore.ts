@@ -1754,9 +1754,10 @@ export function buildGroupConversationContext(
   wiTimerOut?: WiScanOut,
   /**
    * E9-S6 review-fix: whether THIS build's caller will hand the same image
-   * attachments to `api.generateMessage`. It decides whether a blank user turn
-   * that exists ONLY to carry an attachment is worth keeping — see the history
-   * loop below. Defaults to `true`, the historical group behavior and what
+   * attachments to `api.generateMessage`. It is one half of the test for whether
+   * a blank user turn that exists ONLY to carry an attachment is worth keeping —
+   * the turn also has to be the one the fold lands on, see the history loop
+   * below. Defaults to `true`, the historical group behavior and what
    * solo can always assume, so existing callers and tests are unaffected;
    * `generateGroupTurn` passes the real value for the turn it is building.
    */
@@ -2084,6 +2085,17 @@ export function buildGroupConversationContext(
   const wiBeforeChar = joinWi(wiByPosition.before_char);
   const wiAfterChar = joinWi(wiByPosition.after_char);
   const wiBeforeAn = joinWi(wiByPosition.before_an);
+  // E9-S6 review-fix (round 2): after_an is JOINED here with its three siblings,
+  // even though it is EMITTED after the history loop below. Solo renders all
+  // four non-depth positions together at :1276-1283, before its own history loop
+  // at :1476; joining this one at its emission site instead left group inverting
+  // solo for exactly one position — a {{setvar}} in a history turn was visible to
+  // a {{getvar}} in after_an lore in group but not in solo. Computation moves,
+  // emission does not: the `context.push` stays at the post-history slot, so the
+  // prompt layout is byte-identical. joinWi is still called exactly once per
+  // position, so the wiRendered single-pass invariant and the end-of-build
+  // `wiTimerOut.fired` set are unchanged.
+  const wiAfterAn = joinWi(wiByPosition.after_an);
 
   // World-info positional sections. A group prompt has no promptOrder
   // section map to slot them into (it's one flat system message), so the
@@ -2154,6 +2166,19 @@ CONTENT RULES:
   // #414: exclude hidden messages from the group prompt too. Filter before the
   // slice so a hidden message doesn't consume one of the last-30 slots.
   const recentMessages = messages.filter((m) => !m.hidden).slice(-30).filter((m) => !m.isSystem);
+  // E9-S6 review-fix (round 2): `attachmentsFolded` answers a question about the
+  // whole BUILD ("does this generateMessage call carry images?"), but the image
+  // exemption in the loop below is evaluated per MESSAGE. api.generateMessage
+  // folds the caller's attachments into exactly ONE turn — the last message with
+  // role 'user', located by a backwards scan (client.ts:1485-1507) — so at most
+  // one blank user turn can ever be redeemed by a fold. Index of that turn,
+  // computed once so the loop can require the turn to BE it.
+  const lastUserIndexInRecent = (() => {
+    for (let i = recentMessages.length - 1; i >= 0; i--) {
+      if (recentMessages[i].isUser) return i;
+    }
+    return -1;
+  })();
   for (let i = 0; i < recentMessages.length; i++) {
     const msg = recentMessages[i];
     const depthFromEnd = recentMessages.length - i;
@@ -2193,19 +2218,33 @@ CONTENT RULES:
       ? subSpeaker(msg.content)
       : subMember(authorOfTurn(msg), msg.content);
     const hasImages = Array.isArray(msg.images) && msg.images.length > 0;
-    // E9-S6 review-fix: the image exemption only earns its keep when THIS
-    // build's request actually carries the attachments. `api.generateMessage`
-    // folds only the CALLER-supplied `images` argument (client.ts:1484-1508),
-    // and sendGroupMessage passes them for the FIRST speaker of a round only
-    // (a deliberate cost decision: "We'd re-send the same bytes to each
-    // character otherwise"). For every later speaker there is nothing to fold,
-    // so an unconditional exemption shipped `{ role: 'user', content: '' }`
-    // verbatim — the exact empty content block that 400s Claude, and that keeps
-    // 400ing that speaker for as long as the image message stays in the last
-    // 30. When the fold WILL happen the turn must survive: dropping it would
-    // make client.ts's `lastUserIdx` scan fold the image into an EARLIER user
-    // turn, attaching it to the wrong message.
-    const keepForAttachment = hasImages && attachmentsFolded;
+    // E9-S6 review-fix: a blank user turn is worth keeping ONLY as a carrier for
+    // an attachment that is about to be folded into it, so the exemption has to
+    // match the one turn client.ts will actually fold into. Two conditions, and
+    // both are load-bearing:
+    //   - `attachmentsFolded`: api.generateMessage folds only the CALLER-supplied
+    //     `images` argument (client.ts:1484-1508), and sendGroupMessage passes it
+    //     for the FIRST speaker of a round only (a deliberate cost decision:
+    //     "We'd re-send the same bytes to each character otherwise"). For every
+    //     later speaker there is nothing to fold at all.
+    //   - `i === lastUserIndexInRecent`: even when this build DOES carry images,
+    //     the fold lands on a single turn. An older blank image-carrying turn
+    //     gets nothing folded into it no matter what, so keeping it just ships
+    //     `{ role: 'user', content: '' }` — the empty content block that 400s
+    //     Claude and keeps 400ing while that message stays in the last 30.
+    // When the fold WILL happen the turn must survive: dropping it would make
+    // client.ts's backwards `lastUserIdx` scan fold the image into an EARLIER
+    // user turn, attaching it to the wrong message. And when the last user turn
+    // is itself dropped here (blank with nothing to carry), every user turn that
+    // remains is non-blank, so the misplaced fold still produces a valid request.
+    // KNOWN GAP, out of this story's scope and filed separately: a group author's
+    // note configured with role 'user' is pushed at its own depth, which for a
+    // build whose newest message is not the user's (forceGroupMemberTalk on a
+    // history ending in an assistant turn) can land AFTER the kept turn and take
+    // the fold instead. Same outcome on main and pre-fix — this narrows the
+    // window rather than closing that one.
+    const keepForAttachment =
+      hasImages && attachmentsFolded && i === lastUserIndexInRecent;
     const skipBlankUserTurn =
       msg.isUser && subbedContent.trim() === '' && !keepForAttachment;
     if (!skipBlankUserTurn) {
@@ -2258,8 +2297,8 @@ CONTENT RULES:
     }
   }
 
-  // Post-history slot (solo chat's wi_after_an stage).
-  const wiAfterAn = joinWi(wiByPosition.after_an);
+  // Post-history slot (solo chat's wi_after_an stage). Joined above with the
+  // other three non-depth positions; only the emission happens here.
   if (wiAfterAn) context.push({ role: 'system', content: wiAfterAn });
 
   // Phase 9.3: persist any macro variable writes back to the chat's store.
