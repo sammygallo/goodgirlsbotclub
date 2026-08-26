@@ -1751,7 +1751,16 @@ export function buildGroupConversationContext(
   scenarioOverride?: string,
   ragContext?: string,
   cardMode: GroupCardMode = DEFAULT_GROUP_CARD_MODE,
-  wiTimerOut?: WiScanOut
+  wiTimerOut?: WiScanOut,
+  /**
+   * E9-S6 review-fix: whether THIS build's caller will hand the same image
+   * attachments to `api.generateMessage`. It decides whether a blank user turn
+   * that exists ONLY to carry an attachment is worth keeping — see the history
+   * loop below. Defaults to `true`, the historical group behavior and what
+   * solo can always assume, so existing callers and tests are unaffected;
+   * `generateGroupTurn` passes the real value for the turn it is building.
+   */
+  attachmentsFolded: boolean = true
 ): { role: 'user' | 'assistant' | 'system'; content: string }[] {
   const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
 
@@ -1772,11 +1781,18 @@ export function buildGroupConversationContext(
   // variable map, persisted at the end of the build. {{char}} resolves to the
   // speaker whose turn this is — the model is being asked to write exactly
   // that character, so a speaker-relative macro means the same thing here as
-  // it does in a solo chat. E9-S6: this is the group build's single
-  // speaker-relative substitution point, reused for world-info content, the
-  // author's note, history turns, the scenario fallback, and the speaker's
-  // own mes_example — everything that lives OUTSIDE a per-member card block
-  // (see subMember below for what happens INSIDE one).
+  // it does in a solo chat. E9-S6: this is the group build's speaker-relative
+  // substitution point, used for world-info content, the author's note, USER
+  // history turns, the scenario fallback, and the speaker's own mes_example.
+  // Per-member card blocks and stored ASSISTANT turns resolve against their
+  // own character instead (see subMember / authorOfTurn below).
+  // KNOWN GAP, deliberately left alone here: an entry from a world-info book
+  // OWNED by member B is substituted speaker-relative like every other entry,
+  // so {{char}} in B's own lore renders as the SPEAKER's name underneath the
+  // "[Information about B, another character…]" header wrapWiContent adds.
+  // That predates this change (the previous subWi behaved identically) and is
+  // filed separately — this comment describes what the code does, not a claim
+  // that member-owned lore is covered.
   const variables: Record<string, string> = groupChatFile
     ? { ...groupChatState.getChatVariables(groupChatFile) }
     : {};
@@ -1943,9 +1959,45 @@ export function buildGroupConversationContext(
       .map(({ c }) => c)
       .join('\n\n');
 
-  const wiBeforeChar = joinWi(wiByPosition.before_char);
-  const wiAfterChar = joinWi(wiByPosition.after_char);
-  const wiBeforeAn = joinWi(wiByPosition.before_an);
+  // E9-S6 review-fix: card fields, the speaker's scenario and the speaker's
+  // mes_example are computed BEFORE the joinWi calls below. Solo resolves its
+  // card fields first (:1184-1187) and renders world info afterwards
+  // (:1276-1282); group had the two stages inverted. That was unobservable
+  // while group card fields shipped raw, but once they execute macros the
+  // inversion bites: a {{setvar}} in a card description landed one stage too
+  // late for a {{getvar}} in a lore entry, so build 1 rendered the OLD value
+  // and every later build stayed exactly one behind, never self-correcting.
+  // This moves COMPUTATION only — the emitted section order in the system
+  // prompt below is byte-identical, and the joinWi/wiRendered single-pass
+  // invariant is untouched (nothing moved here calls joinWi or wrapWiContent).
+
+  // E9-S6 review-fix: the speaker's scenario reaches the prompt at TWO sites in
+  // join mode — the speaker's own card block, and the `Current scenario:`
+  // fallback below — and it used to be substituted separately at each. That
+  // re-ran every write/roll macro inside it: a scenario of `Day {{incvar::day}}`
+  // advanced the persisted counter by two per turn forever and emitted two
+  // disagreeing values ("Scenario: Day 1" and "Current scenario: Day 2") in one
+  // prompt. It is now substituted at most ONCE per build and the resulting
+  // STRING is reused at both sites. For the SPEAKER,
+  // subMember(currentCharacter, …) and subSpeaker(…) build the same context, so
+  // one string is correct at both. Mirrors solo's :1186, which computes each
+  // card field once and reuses it.
+  // Deliberately lazy rather than an eager const: in swap mode WITH a
+  // scenarioOverride neither site renders the speaker's scenario, and an eager
+  // computation would start executing its write macros for text nothing emits
+  // — trading the double-execution bug for a phantom-execution one. Laziness
+  // also keeps the speaker's scenario executing at its original position in the
+  // card-block map rather than ahead of it, so macro ordering between a
+  // member's own fields is unchanged.
+  let speakerScenarioMemo: string | null = null;
+  const speakerScenario = (): string => {
+    if (speakerScenarioMemo === null) {
+      speakerScenarioMemo = subSpeaker(
+        getCharacterField(currentCharacter, 'scenario')
+      );
+    }
+    return speakerScenarioMemo;
+  };
 
   // Phase 5.3: build the "Characters in this conversation" block according to
   // the chosen mode. Swap keeps the flat one-liner-per-member view (only the
@@ -1960,7 +2012,9 @@ export function buildGroupConversationContext(
         const isCurrent = char.avatar === currentCharacter.avatar;
         const desc = subMember(char, getCharacterField(char, 'description'));
         const pers = subMember(char, getCharacterField(char, 'personality'));
-        const scen = subMember(char, getCharacterField(char, 'scenario'));
+        const scen = isCurrent
+          ? speakerScenario()
+          : subMember(char, getCharacterField(char, 'scenario'));
         const examples = subMember(char, getCharacterField(char, 'mes_example'));
         const header = isCurrent
           ? `[SPEAKING NOW] ${char.name}`
@@ -2008,13 +2062,13 @@ export function buildGroupConversationContext(
       model: activeModel,
     }).trim();
   } else {
-    // E9-S6/AC2: fallback scenario is the speaker's own field, rendered
+    // E9-S6/AC2: the fallback scenario is the speaker's own field, rendered
     // outside any per-member card block, so it keeps the speaker-relative
-    // convention (subSpeaker) rather than scenarioOverride's deliberate
-    // char-scrubbing above.
-    scenarioText = subSpeaker(
-      currentCharacter.scenario || currentCharacter.data?.scenario || ''
-    );
+    // convention rather than scenarioOverride's deliberate char-scrubbing
+    // above. It reuses the ONE substituted string computed above instead of
+    // running the field through processMacros a second time — see
+    // speakerScenario for why that mattered.
+    scenarioText = speakerScenario();
   }
 
   // Include the current speaker's example dialogue if available — mirrors what
@@ -2026,6 +2080,10 @@ export function buildGroupConversationContext(
     cardMode === 'join'
       ? ''
       : subSpeaker(getCharacterField(currentCharacter, 'mes_example'));
+
+  const wiBeforeChar = joinWi(wiByPosition.before_char);
+  const wiAfterChar = joinWi(wiByPosition.after_char);
+  const wiBeforeAn = joinWi(wiByPosition.before_an);
 
   // World-info positional sections. A group prompt has no promptOrder
   // section map to slot them into (it's one flat system message), so the
@@ -2073,6 +2131,26 @@ CONTENT RULES:
     wiAtDepthByDepth[d].push(m);
   }
 
+  // E9-S6 review-fix: a stored assistant turn is its AUTHOR's text, so its
+  // macros must resolve against that author rather than against whoever
+  // happens to speak next. Both seeding paths (startNewGroupChat,
+  // addGroupChatMember) push each member's `first_mes` into history RAW, and
+  // {{char}} is one of the most common idioms in a card greeting — substituting
+  // Marcus's stored greeting against Seraphina emitted
+  // `[Marcus]: *Seraphina looks up as User walks in.*`, i.e. the same stored
+  // line asserting a different identity depending on who speaks next. That is
+  // precisely the identity bleed the per-member card substitution above exists
+  // to prevent. Resolution order is avatar (ChatMessage.characterAvatar) ->
+  // `name` match -> the current speaker: chats that predate `characterAvatar`
+  // still have to resolve to a real member rather than throwing or handing
+  // buildMacroContext an undefined character.
+  const authorOfTurn = (msg: ChatMessage): CharacterInfo =>
+    (msg.characterAvatar
+      ? characters.find((c) => c.avatar === msg.characterAvatar)
+      : undefined) ??
+    characters.find((c) => c.name === msg.name) ??
+    currentCharacter;
+
   // #414: exclude hidden messages from the group prompt too. Filter before the
   // slice so a hidden message doesn't consume one of the last-30 slots.
   const recentMessages = messages.filter((m) => !m.hidden).slice(-30).filter((m) => !m.isSystem);
@@ -2104,15 +2182,32 @@ CONTENT RULES:
 
     // E9-S6/AC5+AC6: substitute FIRST, then apply the `[Name]: ` prefix for
     // non-user turns — matching solo's history + blank-guard (:1521-1538).
-    // A user turn whose post-macro content is blank AND has no image
-    // attachment is skipped entirely (an empty content block 400s
-    // providers); an image-only user message is kept so client.ts can still
-    // fold its attachment into the request. Blank ASSISTANT turns are left
-    // exactly as before — a documented, separate out-of-scope parity gap
-    // (see the story brief), not touched here.
-    const subbedContent = subSpeaker(msg.content);
+    // A user turn whose post-macro content is blank and carries nothing else
+    // is skipped entirely (an empty content block 400s providers). Blank
+    // ASSISTANT turns are left exactly as before — a documented, separate
+    // out-of-scope parity gap (see the story brief), not touched here.
+    // A user's own line stays speaker-relative: {{char}} in text the USER
+    // typed means "the character I'm talking to", which in a group is the
+    // current speaker. Everything else is its author's own text.
+    const subbedContent = msg.isUser
+      ? subSpeaker(msg.content)
+      : subMember(authorOfTurn(msg), msg.content);
     const hasImages = Array.isArray(msg.images) && msg.images.length > 0;
-    const skipBlankUserTurn = msg.isUser && subbedContent.trim() === '' && !hasImages;
+    // E9-S6 review-fix: the image exemption only earns its keep when THIS
+    // build's request actually carries the attachments. `api.generateMessage`
+    // folds only the CALLER-supplied `images` argument (client.ts:1484-1508),
+    // and sendGroupMessage passes them for the FIRST speaker of a round only
+    // (a deliberate cost decision: "We'd re-send the same bytes to each
+    // character otherwise"). For every later speaker there is nothing to fold,
+    // so an unconditional exemption shipped `{ role: 'user', content: '' }`
+    // verbatim — the exact empty content block that 400s Claude, and that keeps
+    // 400ing that speaker for as long as the image message stays in the last
+    // 30. When the fold WILL happen the turn must survive: dropping it would
+    // make client.ts's `lastUserIdx` scan fold the image into an EARLIER user
+    // turn, attaching it to the wrong message.
+    const keepForAttachment = hasImages && attachmentsFolded;
+    const skipBlankUserTurn =
+      msg.isUser && subbedContent.trim() === '' && !keepForAttachment;
     if (!skipBlankUserTurn) {
       const contentWithName = msg.isUser
         ? subbedContent
@@ -2133,10 +2228,15 @@ CONTENT RULES:
   }
 
   // If depth exceeds history, prepend. E9-S6/AC4: same post-macro trim guard
-  // as the in-loop injection above — this and that branch are mutually
-  // exclusive (depth is either <= recentMessages.length, matched in the loop,
-  // or > it, matched here), so the note's content is substituted exactly once
-  // per build no matter which branch fires.
+  // as the in-loop injection above. For depth >= 1 the two branches are
+  // mutually exclusive — the loop matches 1 <= depth <= recentMessages.length
+  // and this one matches depth > recentMessages.length — so a note that fires
+  // has its content substituted exactly once per build.
+  // Depth 0 matches NEITHER branch and is dropped entirely (the loop only
+  // reaches depthFromEnd >= 1 and this test is strictly greater-than): a real
+  // bug, separately filed, deliberately out of this story's scope. Solo has an
+  // explicit depth-0 branch at :1553-1561; group does not. Do not read the
+  // exactly-once claim above as depth-0 coverage.
   if (groupAuthorNote && groupAuthorNote.depth > recentMessages.length) {
     const anContent = subSpeaker(groupAuthorNote.content);
     if (anContent.trim()) {
@@ -2232,7 +2332,12 @@ async function generateGroupTurn(
     scenarioOverride,
     ragCtx ?? undefined,
     groupCardMode,
-    wiOut
+    wiOut,
+    // E9-S6 review-fix: only this turn's own `images` argument reaches
+    // api.generateMessage below, so only this turn can have an attachment
+    // folded into it. Callers that withhold images for a later speaker in the
+    // round must not leave a blank user turn behind to carry nothing.
+    Boolean(images && images.length > 0)
   );
 
   const finalContext = await runGenerateInterceptors(
