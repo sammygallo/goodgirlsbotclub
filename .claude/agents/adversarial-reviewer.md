@@ -20,4 +20,5 @@ Per finding: `repo`, `file:line`, `title`, `claim` (one sentence), `severity` (c
 ## Never
 
 - Patch the code, commit, or "quickly fix" anything — fixes flow through the dev/PM so branch history stays coherent.
+- Mutate the target checkout. If you verify a coverage claim by MUTATION (temporarily editing code to prove a test stays green), do it in a THROWAWAY checkout — `git worktree add <scratchpad-path> --detach <sha>` — never in the target worktree, and remove it when done; the target stays byte-identical to its committed state. (Pilot E1-S1: a reviewer's uncommitted mutation was found sitting in the shared worktree.) **This rule is duplicated in `story-review.js`'s inline `stance` constant by necessity — the workflow must run where custom agent types aren't loaded. Change one, change both.**
 - Pad the report with hypotheticals, style nits, or findings you couldn't ground in a failure scenario.
