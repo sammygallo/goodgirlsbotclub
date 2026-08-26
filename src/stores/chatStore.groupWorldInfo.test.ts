@@ -289,6 +289,51 @@ describe('buildGroupConversationContext — attribution labels', () => {
   });
 });
 
+describe('buildGroupConversationContext — attribution is keyed on avatar, not name', () => {
+  // Nothing in the roster enforces unique `name`s: toggleGroupChatCharacter /
+  // setGroupChatCharacters (characterStore.ts) key membership on avatar and
+  // never check name, so two different cards sharing a display name is a
+  // real, reachable roster shape, not a contrived one.
+  const marcus1 = {
+    ...mkChar('Marcus', 'marcus1.png'),
+    description: 'The younger Marcus.',
+  } as CharacterInfo;
+  const marcus2 = {
+    ...mkChar('Marcus', 'marcus2.png'),
+    description: 'The elder Marcus, a traitor.',
+  } as CharacterInfo;
+
+  it("labels a name-twin owner's lore, and substitutes it against the OWNER's card, not the same-named speaker's", () => {
+    const entry = mkEntry({ keys: ['dragon'], content: '{{char}} is: {{description}}' });
+    useBooks([mkBook([entry], { ownerCharacterAvatar: marcus2.avatar })], []);
+
+    // marcus1 is speaking; marcus2 owns the book. Same `name`, different
+    // `avatar` and different card — the map (:1928-1934) resolves the owner
+    // by avatar, so the body must come from marcus2 regardless of the name
+    // collision.
+    const ctx = buildGroupConversationContext(
+      [mkMsg('a dragon lands')],
+      [marcus1, marcus2],
+      marcus1
+    );
+
+    const text = textOf(ctx);
+    const fullBlock =
+      '[Information about Marcus, another character in this conversation]\n' +
+      'Marcus is: The elder Marcus, a traitor.';
+    expect(text).toContain(fullBlock);
+    // Regression guard for the header itself: pre-fix, the header was gated
+    // on `owner.name !== currentCharacter.name`, which is false here (both
+    // are "Marcus"), so the block above rendered UNLABELLED — a bare
+    // "Marcus is: The elder Marcus, a traitor." reads as the SPEAKING
+    // Marcus's own fact. Confirm no such bare copy survives alongside the
+    // labelled one.
+    expect(text.split(fullBlock).join('')).not.toContain(
+      'Marcus is: The elder Marcus, a traitor.'
+    );
+  });
+});
+
 describe('buildGroupConversationContext — positions', () => {
   it('puts before_char lore ahead of the character block', () => {
     const entry = mkEntry({

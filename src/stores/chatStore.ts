@@ -1751,7 +1751,17 @@ export function buildGroupConversationContext(
   scenarioOverride?: string,
   ragContext?: string,
   cardMode: GroupCardMode = DEFAULT_GROUP_CARD_MODE,
-  wiTimerOut?: WiScanOut
+  wiTimerOut?: WiScanOut,
+  /**
+   * E9-S6 review-fix: whether THIS build's caller will hand the same image
+   * attachments to `api.generateMessage`. It is one half of the test for whether
+   * a blank user turn that exists ONLY to carry an attachment is worth keeping —
+   * the turn also has to be the one the fold lands on, see the history loop
+   * below. Defaults to `true`, the historical group behavior and what
+   * solo can always assume, so existing callers and tests are unaffected;
+   * `generateGroupTurn` passes the real value for the turn it is building.
+   */
+  attachmentsFolded: boolean = true
 ): { role: 'user' | 'assistant' | 'system'; content: string }[] {
   const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
 
@@ -1768,11 +1778,18 @@ export function buildGroupConversationContext(
   const personaDescription = persona?.description || '';
   const { activeModel, activeProvider } = useSettingsStore.getState();
 
-  // Phase 9.3 parity with solo chat: macros inside world-info content read
-  // from and write to the chat's variable map, persisted at the end of the
-  // build. {{char}} resolves to the speaker whose turn this is — the model is
-  // being asked to write exactly that character, so a speaker-relative macro
-  // in a lore entry means the same thing here as it does in a solo chat.
+  // Phase 9.3 parity with solo chat: macros read from and write to the chat's
+  // variable map, persisted at the end of the build. {{char}} resolves to the
+  // speaker whose turn this is — the model is being asked to write exactly
+  // that character, so a speaker-relative macro means the same thing here as
+  // it does in a solo chat. E9-S6: this is the group build's speaker-relative
+  // substitution point, used for room-shared and persona-scoped world-info
+  // content, the author's note, USER history turns, the scenario fallback (and
+  // the scenario override), and the speaker's own mes_example.
+  // Text that belongs to ONE named character resolves against that character
+  // instead (see subMember below): per-member card blocks, stored ASSISTANT
+  // turns (authorOfTurn), and entries from a world-info book owned by a
+  // specific member (wrapWiContent).
   const variables: Record<string, string> = groupChatFile
     ? { ...groupChatState.getChatVariables(groupChatFile) }
     : {};
@@ -1784,7 +1801,25 @@ export function buildGroupConversationContext(
     activeModel,
     variables
   );
-  const subWi = (text: string) => (text ? processMacros(text, wiMacroCtx) : '');
+  const subSpeaker = (text: string) => (text ? processMacros(text, wiMacroCtx) : '');
+  // E9-S6/AC8: {{char}}/{{description}}/{{personality}}/{{scenario}} inside a
+  // MEMBER's own card block must resolve to THAT member, not the current
+  // speaker — resolving member B's card text with the speaker's name would be
+  // the same identity-bleed the WI attribution wrapper below (:1894-1907,
+  // pre-rename line numbers) exists to prevent. Same shared `variables`
+  // reference as subSpeaker, so a {{setvar}} inside a card field still lands
+  // in the one map persisted at the end of the build.
+  const memberMacroCtx = (member: CharacterInfo) =>
+    buildMacroContext(
+      member,
+      personaName,
+      personaDescription,
+      visibleMessages,
+      activeModel,
+      variables
+    );
+  const subMember = (member: CharacterInfo, text: string) =>
+    text ? processMacros(text, memberMacroCtx(member)) : '';
 
   // World Info. Book scoping is the union of every scope that can contribute
   // to this room: the globally-active books, EVERY member's owned (embedded
@@ -1882,7 +1917,11 @@ export function buildGroupConversationContext(
   // chat-linked without being owned by anyone actually in the room, and an
   // unlabelled block of that owner's lore would read as the current
   // speaker's — the same identity-bleed this attribution exists to prevent.
-  const memberNameByOwnedBookId = new Map<string, string>();
+  // The map carries the owner's whole CharacterInfo rather than just their
+  // name: the substitution below needs the owner's card fields, and the name
+  // is `.name` off the same object. A parallel name map would be a second
+  // structure to keep in sync with this one for nothing.
+  const memberByOwnedBookId = new Map<string, CharacterInfo>();
   for (const book of composableBooks) {
     if (!book.ownerCharacterAvatar) continue;
     const owner =
@@ -1890,19 +1929,58 @@ export function buildGroupConversationContext(
       characterStoreState.characters.find(
         (c) => c.avatar === book.ownerCharacterAvatar
       );
-    if (owner) memberNameByOwnedBookId.set(book.id, owner.name);
+    if (owner) memberByOwnedBookId.set(book.id, owner);
   }
   const personaBookIdSet = new Set(personaBookIds);
   const wrapWiContent = (m: MatchedEntry): string => {
-    const content = subWi(m.entry.content);
+    // An entry out of a book this room has positively identified as member B's
+    // is B's own lore, so its macros resolve against B — the same subMember
+    // mechanism the per-member card blocks use, and for the same reason.
+    // Substituting it speaker-relative produced a block that named B in its
+    // attribution header and the SPEAKER in its body: B's own
+    // `{{char}} distrusts {{user}}.` came out as
+    //   [Information about Marcus, another character in this conversation]
+    //   Seraphina distrusts User.
+    // i.e. the prompt asserting a trait off Marcus's card as a fact about
+    // Seraphina, inside the very wrapper that exists to stop that bleed. Solo
+    // renders the same entry correctly because it has one character.
+    // Which context each kind of book gets:
+    //   - PERSONA-scoped: subSpeaker. That lore is about the USER, {{char}} in
+    //     it is genuinely ambiguous, and it is not this fix. Checked first, so
+    //     a book that is both persona-linked and character-owned stays
+    //     persona-relative — matching the header precedence below.
+    //   - character-OWNED: the owner's context. Keyed on OWNERSHIP, not on
+    //     whether the header is emitted, and both are keyed on AVATAR, not
+    //     NAME: the header below is suppressed only when
+    //     `owner.avatar === currentCharacter.avatar` — the same key this map
+    //     is built from above, and the same one `isCurrent` (:2056) and
+    //     `authorOfTurn` (:2266-2271) use. Only in that case are
+    //     subMember(owner, …) and subSpeaker(…) equivalent, because owner IS
+    //     currentCharacter. Nothing enforces unique `name`s across the
+    //     roster (membership is keyed on avatar throughout —
+    //     toggleGroupChatCharacter / setGroupChatCharacters have no name
+    //     check), so gating either test on name instead would let two
+    //     different cards that happen to share a name disagree: one test
+    //     would treat the owner as the speaker while the other did not.
+    //     An owner resolved from the full roster rather than this room's
+    //     members is still the right macro character — the header already
+    //     names them as the subject.
+    //   - room-shared / unowned: subSpeaker. Correct today, matches solo, and
+    //     the group convention documented above ({{char}} = the speaker).
+    // Still exactly ONE processMacros call per entry per build, so the
+    // wiRendered/joinWi single-pass invariant below is untouched.
+    const isPersonaBook = personaBookIdSet.has(m.bookId);
+    const owner = isPersonaBook ? undefined : memberByOwnedBookId.get(m.bookId);
+    const content = owner
+      ? subMember(owner, m.entry.content)
+      : subSpeaker(m.entry.content);
     if (!content.trim()) return '';
-    if (personaBookIdSet.has(m.bookId)) {
+    if (isPersonaBook) {
       const subject = personaName || 'the user';
       return `[Information about ${subject}, the user you're talking to]\n${content}`;
     }
-    const ownerName = memberNameByOwnedBookId.get(m.bookId);
-    if (ownerName && ownerName !== currentCharacter.name) {
-      return `[Information about ${ownerName}, another character in this conversation]\n${content}`;
+    if (owner && owner.avatar !== currentCharacter.avatar) {
+      return `[Information about ${owner.name}, another character in this conversation]\n${content}`;
     }
     return content;
   };
@@ -1921,9 +1999,49 @@ export function buildGroupConversationContext(
       .map(({ c }) => c)
       .join('\n\n');
 
-  const wiBeforeChar = joinWi(wiByPosition.before_char);
-  const wiAfterChar = joinWi(wiByPosition.after_char);
-  const wiBeforeAn = joinWi(wiByPosition.before_an);
+  // E9-S6 review-fix: card fields, the speaker's scenario and the speaker's
+  // mes_example are computed BEFORE the joinWi calls below. Solo resolves its
+  // card fields first (:1184-1187) and renders world info afterwards
+  // (:1276-1282); group had the two stages inverted. That was unobservable
+  // while group card fields shipped raw, but once they execute macros the
+  // inversion bites: a {{setvar}} in a card description landed one stage too
+  // late for a {{getvar}} in a lore entry, so build 1 rendered the OLD value
+  // and every later build stayed exactly one behind, never self-correcting.
+  // This moves COMPUTATION only — the SECTION ORDER of the system prompt below
+  // is unchanged, and the joinWi/wiRendered single-pass invariant is untouched
+  // (nothing moved here calls joinWi or wrapWiContent). Read "unchanged" as
+  // order, not bytes: the whole point is that a lore entry now reads the FRESH
+  // value a card field wrote, so its rendered text can differ — and an entry
+  // that renders empty is dropped by joinWi, exactly as it is in solo. See the
+  // after_an note below for the same distinction spelled out in full.
+
+  // E9-S6 review-fix: the speaker's scenario reaches the prompt at TWO sites in
+  // join mode — the speaker's own card block, and the `Current scenario:`
+  // fallback below — and it used to be substituted separately at each. That
+  // re-ran every write/roll macro inside it: a scenario of `Day {{incvar::day}}`
+  // advanced the persisted counter by two per turn forever and emitted two
+  // disagreeing values ("Scenario: Day 1" and "Current scenario: Day 2") in one
+  // prompt. It is now substituted at most ONCE per build and the resulting
+  // STRING is reused at both sites. For the SPEAKER,
+  // subMember(currentCharacter, …) and subSpeaker(…) build the same context, so
+  // one string is correct at both. Mirrors solo's :1186, which computes each
+  // card field once and reuses it.
+  // Deliberately lazy rather than an eager const: in swap mode WITH a
+  // scenarioOverride neither site renders the speaker's scenario, and an eager
+  // computation would start executing its write macros for text nothing emits
+  // — trading the double-execution bug for a phantom-execution one. Laziness
+  // also keeps the speaker's scenario executing at its original position in the
+  // card-block map rather than ahead of it, so macro ordering between a
+  // member's own fields is unchanged.
+  let speakerScenarioMemo: string | null = null;
+  const speakerScenario = (): string => {
+    if (speakerScenarioMemo === null) {
+      speakerScenarioMemo = subSpeaker(
+        getCharacterField(currentCharacter, 'scenario')
+      );
+    }
+    return speakerScenarioMemo;
+  };
 
   // Phase 5.3: build the "Characters in this conversation" block according to
   // the chosen mode. Swap keeps the flat one-liner-per-member view (only the
@@ -1936,10 +2054,12 @@ export function buildGroupConversationContext(
     cardBlock = characters
       .map((char) => {
         const isCurrent = char.avatar === currentCharacter.avatar;
-        const desc = getCharacterField(char, 'description');
-        const pers = getCharacterField(char, 'personality');
-        const scen = getCharacterField(char, 'scenario');
-        const examples = getCharacterField(char, 'mes_example');
+        const desc = subMember(char, getCharacterField(char, 'description'));
+        const pers = subMember(char, getCharacterField(char, 'personality'));
+        const scen = isCurrent
+          ? speakerScenario()
+          : subMember(char, getCharacterField(char, 'scenario'));
+        const examples = subMember(char, getCharacterField(char, 'mes_example'));
         const header = isCurrent
           ? `[SPEAKING NOW] ${char.name}`
           : char.name;
@@ -1955,8 +2075,8 @@ export function buildGroupConversationContext(
   } else {
     cardBlock = characters
       .map((char) => {
-        const desc = getCharacterField(char, 'description');
-        const pers = getCharacterField(char, 'personality');
+        const desc = subMember(char, getCharacterField(char, 'description'));
+        const pers = subMember(char, getCharacterField(char, 'personality'));
         const details = [
           desc && `Description: ${desc}`,
           pers && `Personality: ${pers}`,
@@ -1969,7 +2089,54 @@ export function buildGroupConversationContext(
   // Resolve scenario: override wins, else falls back to current character's
   // scenario. Macros are processed on the override, but {{char}} is ambiguous
   // in a group (multiple speakers), so we scrub char-specific substitutions
-  // by passing an empty charName + character fields.
+  // by passing an empty charName + character fields. That scrubbing is
+  // deliberate and stays; the `variables` reference below is NOT part of it.
+  //
+  // E9-S6 (scope widened by Sammy): this branch builds its own inline
+  // MacroContext rather than going through buildMacroContext, and it used to
+  // omit `variables` entirely — the one key that is not char-specific. The
+  // effect was confined to this path: {{getvar::x}} in an override always
+  // rendered empty (processMacros reads `ctx.variables?.[key] ?? ''`) and
+  // {{setvar::x::…}} writes were computed and then dropped on the floor
+  // (`if (ctx.variables) ctx.variables[key] = value`). It now receives the
+  // SAME mutable map object the other two contexts in this function share
+  // (subSpeaker's wiMacroCtx and subMember's per-member contexts), not a copy
+  // — a copy would make the writes visible to the rest of THIS build and then
+  // lose them at the setChatVariables persist below.
+  //
+  // A {{setvar}} in an override is now a REAL persisted write, so it has to
+  // run exactly once per build, and it does: this branch is the `if` half of
+  // an if/else whose `else` is the fallback, `scenarioOverride` reaches the
+  // function only as the value read straight off the group-chat record
+  // (sendGroupMessage/forceGroupMemberTalk -> generateGroupTurn), and nothing
+  // downstream re-substitutes `scenarioText` — it is interpolated into the
+  // system prompt as a finished string.
+  //
+  // ORDER: this sits where it already sat — after the card blocks above, before
+  // the joinWi calls below — and that is the intended slot, not an accident of
+  // where the code happened to be. Solo has no scenario-override equivalent, so
+  // there is no parity answer to copy; the reasoning is:
+  //   1. It is the scenario stage. The override and the fallback are mutually
+  //      exclusive renderings of the same slot, and the fallback executes right
+  //      here (in the `else` below, or inside the join card block just above).
+  //      Running them at the same point means turning an override on or off
+  //      does not shift when every OTHER macro in the build executes.
+  //   2. Cards before scenario, scenario before world info, matches solo's
+  //      stage order (card fields :1184-1187, world info :1276-1282) and the
+  //      review fix that moved cardBlock above the joins for exactly that
+  //      reason. So an override's {{getvar}} sees card-field writes, and a lore
+  //      entry's {{getvar}} sees the override's writes, in the SAME build.
+  //   3. Emission order does not fully back this up, and should not be read
+  //      as though it did: `before_an`/`after_an` are both computed and
+  //      printed after this block, consistent with #2. `before_char` /
+  //      `after_char` are not — they print ABOVE `Current scenario:` in the
+  //      finished prompt (:2213-2218) but are joined, and therefore
+  //      macro-executed, below this block same as before_an/after_an
+  //      (:2176-2178/:2205). A {{setvar}} in a before_char/after_char entry
+  //      runs too late for this override's {{getvar}} to see it, even though
+  //      it prints earlier on the page. That gap is a consequence of #2 (all
+  //      four WI positions execute as one group, after scenario) and is not
+  //      something this fix changes or claims to fix.
   let scenarioText = '';
   if (scenarioOverride && scenarioOverride.trim()) {
     scenarioText = processMacros(scenarioOverride, {
@@ -1984,17 +2151,58 @@ export function buildGroupConversationContext(
       lastUserMessage: '',
       lastCharMessage: '',
       model: activeModel,
+      variables,
     }).trim();
   } else {
-    scenarioText =
-      currentCharacter.scenario || currentCharacter.data?.scenario || '';
+    // E9-S6/AC2: the fallback scenario is the speaker's own field, rendered
+    // outside any per-member card block, so it keeps the speaker-relative
+    // convention rather than scenarioOverride's deliberate char-scrubbing
+    // above. It reuses the ONE substituted string computed above instead of
+    // running the field through processMacros a second time — see
+    // speakerScenario for why that mattered.
+    scenarioText = speakerScenario();
   }
 
   // Include the current speaker's example dialogue if available — mirrors what
   // buildConversationContext does for solo chat. In Join mode this is already
   // baked into the speaker's own block above, so we suppress the duplicate.
+  // E9-S6/AC3: speaker-relative substitution — this lives outside the
+  // per-member card blocks built above.
   const mesExample =
-    cardMode === 'join' ? '' : getCharacterField(currentCharacter, 'mes_example');
+    cardMode === 'join'
+      ? ''
+      : subSpeaker(getCharacterField(currentCharacter, 'mes_example'));
+
+  const wiBeforeChar = joinWi(wiByPosition.before_char);
+  const wiAfterChar = joinWi(wiByPosition.after_char);
+  const wiBeforeAn = joinWi(wiByPosition.before_an);
+  // E9-S6 review-fix (round 2): after_an is JOINED here with its three siblings,
+  // even though it is EMITTED after the history loop below. Solo renders all
+  // four non-depth positions together at :1276-1283, before its own history loop
+  // at :1476; joining this one at its emission site instead left group inverting
+  // solo for exactly one position — a {{setvar}} in a history turn was visible to
+  // a {{getvar}} in after_an lore in group but not in solo. Computation moves,
+  // emission does not: the `context.push` stays at the post-history slot, so the
+  // SLOT ORDER of the prompt is unchanged.
+  //
+  // What this does NOT claim (round-3 review corrected an earlier version of
+  // this comment that did): the emitted BYTES can change, and so can the
+  // `wiTimerOut.fired` set. joinWi only adds an entry to `wiRendered` when its
+  // wrapped content is non-empty, and moving the join changes what an after_an
+  // entry renders TO — it can no longer read a {{setvar}} a history turn writes.
+  // An entry that used to render non-empty on that value now renders empty, so
+  // its whole system message disappears from the prompt and it drops out of
+  // `fired`. That is the point of the fix, not a side effect: it is what solo
+  // already does.
+  // Unchanged: joinWi is still called exactly once per position (the wiRendered
+  // single-pass invariant, which exists so {{setvar}} cannot execute twice), and
+  // the derivation of `fired` at :2335 is untouched.
+  // Who sees the changed set: `fired` feeds captureWiFired -> recordWiFired
+  // (utils/wiFired.ts) -> the persisted `header.wi_fired` map -> story-ingest WI
+  // replay (utils/storyIngest/wiReplay.ts). It is telemetry and story-bible
+  // replay. It is NOT the WI sticky/cooldown clock: those timers come from the
+  // `activated` set via saveWiTimers (:2488), which rendering never touches.
+  const wiAfterAn = joinWi(wiByPosition.after_an);
 
   // World-info positional sections. A group prompt has no promptOrder
   // section map to slot them into (it's one flat system message), so the
@@ -2042,19 +2250,59 @@ CONTENT RULES:
     wiAtDepthByDepth[d].push(m);
   }
 
+  // E9-S6 review-fix: a stored assistant turn is its AUTHOR's text, so its
+  // macros must resolve against that author rather than against whoever
+  // happens to speak next. Both seeding paths (startNewGroupChat,
+  // addGroupChatMember) push each member's `first_mes` into history RAW, and
+  // {{char}} is one of the most common idioms in a card greeting — substituting
+  // Marcus's stored greeting against Seraphina emitted
+  // `[Marcus]: *Seraphina looks up as User walks in.*`, i.e. the same stored
+  // line asserting a different identity depending on who speaks next. That is
+  // precisely the identity bleed the per-member card substitution above exists
+  // to prevent. Resolution order is avatar (ChatMessage.characterAvatar) ->
+  // `name` match -> the current speaker: chats that predate `characterAvatar`
+  // still have to resolve to a real member rather than throwing or handing
+  // buildMacroContext an undefined character.
+  const authorOfTurn = (msg: ChatMessage): CharacterInfo =>
+    (msg.characterAvatar
+      ? characters.find((c) => c.avatar === msg.characterAvatar)
+      : undefined) ??
+    characters.find((c) => c.name === msg.name) ??
+    currentCharacter;
+
   // #414: exclude hidden messages from the group prompt too. Filter before the
   // slice so a hidden message doesn't consume one of the last-30 slots.
   const recentMessages = messages.filter((m) => !m.hidden).slice(-30).filter((m) => !m.isSystem);
+  // E9-S6 review-fix (round 2): `attachmentsFolded` answers a question about the
+  // whole BUILD ("does this generateMessage call carry images?"), but the image
+  // exemption in the loop below is evaluated per MESSAGE. api.generateMessage
+  // folds the caller's attachments into exactly ONE turn — the last message with
+  // role 'user', located by a backwards scan (client.ts:1485-1507) — so at most
+  // one blank user turn can ever be redeemed by a fold. Index of that turn,
+  // computed once so the loop can require the turn to BE it.
+  const lastUserIndexInRecent = (() => {
+    for (let i = recentMessages.length - 1; i >= 0; i--) {
+      if (recentMessages[i].isUser) return i;
+    }
+    return -1;
+  })();
   for (let i = 0; i < recentMessages.length; i++) {
     const msg = recentMessages[i];
     const depthFromEnd = recentMessages.length - i;
 
-    // Inject author's note at the configured depth
+    // Inject author's note at the configured depth. E9-S6/AC4: guard the
+    // post-macro result exactly like solo (:1487-1497) — `getAuthorNote`
+    // only rejects RAW blank content, so a macro-only note (e.g.
+    // {{setvar::x::1}}) renders to '' and an empty content block 400s
+    // providers like Claude, silently breaking every later turn in the chat.
     if (groupAuthorNote && depthFromEnd === groupAuthorNote.depth) {
-      context.push({
-        role: groupAuthorNote.role,
-        content: groupAuthorNote.content,
-      });
+      const anContent = subSpeaker(groupAuthorNote.content);
+      if (anContent.trim()) {
+        context.push({
+          role: groupAuthorNote.role,
+          content: anContent,
+        });
+      }
     }
 
     // WI at-depth entries: inject as system messages at the matching depth
@@ -2064,13 +2312,57 @@ CONTENT RULES:
       if (content) context.push({ role: 'system', content });
     }
 
-    const contentWithName = msg.isUser
-      ? msg.content
-      : `[${msg.name}]: ${msg.content}`;
-    context.push({
-      role: msg.isUser ? 'user' : 'assistant',
-      content: contentWithName,
-    });
+    // E9-S6/AC5+AC6: substitute FIRST, then apply the `[Name]: ` prefix for
+    // non-user turns — matching solo's history + blank-guard (:1521-1538).
+    // A user turn whose post-macro content is blank and carries nothing else
+    // is skipped entirely (an empty content block 400s providers). Blank
+    // ASSISTANT turns are left exactly as before — a documented, separate
+    // out-of-scope parity gap (see the story brief), not touched here.
+    // A user's own line stays speaker-relative: {{char}} in text the USER
+    // typed means "the character I'm talking to", which in a group is the
+    // current speaker. Everything else is its author's own text.
+    const subbedContent = msg.isUser
+      ? subSpeaker(msg.content)
+      : subMember(authorOfTurn(msg), msg.content);
+    const hasImages = Array.isArray(msg.images) && msg.images.length > 0;
+    // E9-S6 review-fix: a blank user turn is worth keeping ONLY as a carrier for
+    // an attachment that is about to be folded into it, so the exemption has to
+    // match the one turn client.ts will actually fold into. Two conditions, and
+    // both are load-bearing:
+    //   - `attachmentsFolded`: api.generateMessage folds only the CALLER-supplied
+    //     `images` argument (client.ts:1484-1508), and sendGroupMessage passes it
+    //     for the FIRST speaker of a round only (a deliberate cost decision:
+    //     "We'd re-send the same bytes to each character otherwise"). For every
+    //     later speaker there is nothing to fold at all.
+    //   - `i === lastUserIndexInRecent`: even when this build DOES carry images,
+    //     the fold lands on a single turn. An older blank image-carrying turn
+    //     gets nothing folded into it no matter what, so keeping it just ships
+    //     `{ role: 'user', content: '' }` — the empty content block that 400s
+    //     Claude and keeps 400ing while that message stays in the last 30.
+    // When the fold WILL happen the turn must survive: dropping it would make
+    // client.ts's backwards `lastUserIdx` scan fold the image into an EARLIER
+    // user turn, attaching it to the wrong message. And when the last user turn
+    // is itself dropped here (blank with nothing to carry), every user turn that
+    // remains is non-blank, so the misplaced fold still produces a valid request.
+    // KNOWN GAP, out of this story's scope and filed separately: a group author's
+    // note configured with role 'user' is pushed at its own depth, which for a
+    // build whose newest message is not the user's (forceGroupMemberTalk on a
+    // history ending in an assistant turn) can land AFTER the kept turn and take
+    // the fold instead. Same outcome on main and pre-fix — this narrows the
+    // window rather than closing that one.
+    const keepForAttachment =
+      hasImages && attachmentsFolded && i === lastUserIndexInRecent;
+    const skipBlankUserTurn =
+      msg.isUser && subbedContent.trim() === '' && !keepForAttachment;
+    if (!skipBlankUserTurn) {
+      const contentWithName = msg.isUser
+        ? subbedContent
+        : `[${msg.name}]: ${subbedContent}`;
+      context.push({
+        role: msg.isUser ? 'user' : 'assistant',
+        content: contentWithName,
+      });
+    }
   }
 
   // Depth 0 — the trailing slot, after the newest message and closest to the
@@ -2081,13 +2373,25 @@ CONTENT RULES:
     if (content) context.push({ role: 'system', content });
   }
 
-  // If depth exceeds history, prepend
+  // If depth exceeds history, prepend. E9-S6/AC4: same post-macro trim guard
+  // as the in-loop injection above. For depth >= 1 the two branches are
+  // mutually exclusive — the loop matches 1 <= depth <= recentMessages.length
+  // and this one matches depth > recentMessages.length — so a note that fires
+  // has its content substituted exactly once per build.
+  // Depth 0 matches NEITHER branch and is dropped entirely (the loop only
+  // reaches depthFromEnd >= 1 and this test is strictly greater-than): a real
+  // bug, separately filed, deliberately out of this story's scope. Solo has an
+  // explicit depth-0 branch at :1553-1561; group does not. Do not read the
+  // exactly-once claim above as depth-0 coverage.
   if (groupAuthorNote && groupAuthorNote.depth > recentMessages.length) {
-    // Insert after the system prompt (index 1)
-    context.splice(1, 0, {
-      role: groupAuthorNote.role,
-      content: groupAuthorNote.content,
-    });
+    const anContent = subSpeaker(groupAuthorNote.content);
+    if (anContent.trim()) {
+      // Insert after the system prompt (index 1)
+      context.splice(1, 0, {
+        role: groupAuthorNote.role,
+        content: anContent,
+      });
+    }
   }
 
   // WI at-depth overflow: entries whose depth exceeds the history length land
@@ -2100,8 +2404,8 @@ CONTENT RULES:
     }
   }
 
-  // Post-history slot (solo chat's wi_after_an stage).
-  const wiAfterAn = joinWi(wiByPosition.after_an);
+  // Post-history slot (solo chat's wi_after_an stage). Joined above with the
+  // other three non-depth positions; only the emission happens here.
   if (wiAfterAn) context.push({ role: 'system', content: wiAfterAn });
 
   // Phase 9.3: persist any macro variable writes back to the chat's store.
@@ -2174,7 +2478,12 @@ async function generateGroupTurn(
     scenarioOverride,
     ragCtx ?? undefined,
     groupCardMode,
-    wiOut
+    wiOut,
+    // E9-S6 review-fix: only this turn's own `images` argument reaches
+    // api.generateMessage below, so only this turn can have an attachment
+    // folded into it. Callers that withhold images for a later speaker in the
+    // round must not leave a blank user turn behind to carry nothing.
+    Boolean(images && images.length > 0)
   );
 
   const finalContext = await runGenerateInterceptors(
