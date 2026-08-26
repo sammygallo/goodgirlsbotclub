@@ -1783,17 +1783,13 @@ export function buildGroupConversationContext(
   // speaker whose turn this is — the model is being asked to write exactly
   // that character, so a speaker-relative macro means the same thing here as
   // it does in a solo chat. E9-S6: this is the group build's speaker-relative
-  // substitution point, used for world-info content, the author's note, USER
-  // history turns, the scenario fallback, and the speaker's own mes_example.
-  // Per-member card blocks and stored ASSISTANT turns resolve against their
-  // own character instead (see subMember / authorOfTurn below).
-  // KNOWN GAP, deliberately left alone here: an entry from a world-info book
-  // OWNED by member B is substituted speaker-relative like every other entry,
-  // so {{char}} in B's own lore renders as the SPEAKER's name underneath the
-  // "[Information about B, another character…]" header wrapWiContent adds.
-  // That predates this change (the previous subWi behaved identically) and is
-  // filed separately — this comment describes what the code does, not a claim
-  // that member-owned lore is covered.
+  // substitution point, used for room-shared and persona-scoped world-info
+  // content, the author's note, USER history turns, the scenario fallback (and
+  // the scenario override), and the speaker's own mes_example.
+  // Text that belongs to ONE named character resolves against that character
+  // instead (see subMember below): per-member card blocks, stored ASSISTANT
+  // turns (authorOfTurn), and entries from a world-info book owned by a
+  // specific member (wrapWiContent).
   const variables: Record<string, string> = groupChatFile
     ? { ...groupChatState.getChatVariables(groupChatFile) }
     : {};
@@ -1921,7 +1917,11 @@ export function buildGroupConversationContext(
   // chat-linked without being owned by anyone actually in the room, and an
   // unlabelled block of that owner's lore would read as the current
   // speaker's — the same identity-bleed this attribution exists to prevent.
-  const memberNameByOwnedBookId = new Map<string, string>();
+  // The map carries the owner's whole CharacterInfo rather than just their
+  // name: the substitution below needs the owner's card fields, and the name
+  // is `.name` off the same object. A parallel name map would be a second
+  // structure to keep in sync with this one for nothing.
+  const memberByOwnedBookId = new Map<string, CharacterInfo>();
   for (const book of composableBooks) {
     if (!book.ownerCharacterAvatar) continue;
     const owner =
@@ -1929,19 +1929,50 @@ export function buildGroupConversationContext(
       characterStoreState.characters.find(
         (c) => c.avatar === book.ownerCharacterAvatar
       );
-    if (owner) memberNameByOwnedBookId.set(book.id, owner.name);
+    if (owner) memberByOwnedBookId.set(book.id, owner);
   }
   const personaBookIdSet = new Set(personaBookIds);
   const wrapWiContent = (m: MatchedEntry): string => {
-    const content = subSpeaker(m.entry.content);
+    // An entry out of a book this room has positively identified as member B's
+    // is B's own lore, so its macros resolve against B — the same subMember
+    // mechanism the per-member card blocks use, and for the same reason.
+    // Substituting it speaker-relative produced a block that named B in its
+    // attribution header and the SPEAKER in its body: B's own
+    // `{{char}} distrusts {{user}}.` came out as
+    //   [Information about Marcus, another character in this conversation]
+    //   Seraphina distrusts User.
+    // i.e. the prompt asserting a trait off Marcus's card as a fact about
+    // Seraphina, inside the very wrapper that exists to stop that bleed. Solo
+    // renders the same entry correctly because it has one character.
+    // Which context each kind of book gets:
+    //   - PERSONA-scoped: subSpeaker. That lore is about the USER, {{char}} in
+    //     it is genuinely ambiguous, and it is not this fix. Checked first, so
+    //     a book that is both persona-linked and character-owned stays
+    //     persona-relative — matching the header precedence below.
+    //   - character-OWNED: the owner's context. Keyed on OWNERSHIP, not on
+    //     whether the header is emitted: the header is suppressed when the
+    //     owner IS the speaker, but the two contexts are equivalent in that
+    //     case anyway, so gating the substitution on the header instead would
+    //     buy nothing and leave a divergence for the next reader to trip on.
+    //     An owner resolved from the full roster rather than this room's
+    //     members is still the right macro character — the header already
+    //     names them as the subject.
+    //   - room-shared / unowned: subSpeaker. Correct today, matches solo, and
+    //     the group convention documented above ({{char}} = the speaker).
+    // Still exactly ONE processMacros call per entry per build, so the
+    // wiRendered/joinWi single-pass invariant below is untouched.
+    const isPersonaBook = personaBookIdSet.has(m.bookId);
+    const owner = isPersonaBook ? undefined : memberByOwnedBookId.get(m.bookId);
+    const content = owner
+      ? subMember(owner, m.entry.content)
+      : subSpeaker(m.entry.content);
     if (!content.trim()) return '';
-    if (personaBookIdSet.has(m.bookId)) {
+    if (isPersonaBook) {
       const subject = personaName || 'the user';
       return `[Information about ${subject}, the user you're talking to]\n${content}`;
     }
-    const ownerName = memberNameByOwnedBookId.get(m.bookId);
-    if (ownerName && ownerName !== currentCharacter.name) {
-      return `[Information about ${ownerName}, another character in this conversation]\n${content}`;
+    if (owner && owner.name !== currentCharacter.name) {
+      return `[Information about ${owner.name}, another character in this conversation]\n${content}`;
     }
     return content;
   };

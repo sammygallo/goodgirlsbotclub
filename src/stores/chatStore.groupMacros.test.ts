@@ -1415,3 +1415,178 @@ describe("scope-widening 1: a scenarioOverride shares the build's variables map"
     expect(text).not.toContain('Seraphina is furious.');
   });
 });
+
+describe('scope-widening 2: a member-OWNED world-info book substitutes against its OWNER', () => {
+  // wrapWiContent called subSpeaker for every entry, including entries out of a
+  // book it had already positively identified as a specific member's. The
+  // result was a block naming member B in its attribution header and the
+  // SPEAKER in its body — the prompt asserting a trait off B's card as a fact
+  // about the speaker, inside the wrapper that exists to prevent exactly that.
+
+  it("resolves {{char}} in a non-speaking member's own lore to that member, in the same block that names them", () => {
+    useBooks(
+      [
+        mkBook([mkEntry({ constant: true, content: '{{char}} distrusts {{user}}.' })], {
+          ownerCharacterAvatar: marcus.avatar,
+        }),
+      ],
+      []
+    );
+
+    const ctx = buildGroupConversationContext(
+      [mkMsg('hi')],
+      [seraphina, marcus],
+      seraphina
+    );
+
+    // Asserted as ONE block, not two independent `toContain`s: a mutant that
+    // uses the owner's context for the header and the speaker's for the body
+    // still satisfies "contains Marcus" and "contains the header", so the
+    // header and the body have to be pinned together to catch it.
+    expect(textOf(ctx)).toContain(
+      '[Information about Marcus, another character in this conversation]\n' +
+        'Marcus distrusts User.'
+    );
+    expect(textOf(ctx)).not.toContain('Seraphina distrusts User.');
+  });
+
+  it("resolves {{description}} in a member's own lore to that member's own card", () => {
+    // Kills a fix that only patches charName: the whole macro context has to be
+    // the owner's, the same way the per-member card blocks get it.
+    const knight = {
+      name: 'Marcus',
+      avatar: 'marcus.png',
+      description: 'A stern knight.',
+    } as CharacterInfo;
+    useBooks(
+      [
+        mkBook([mkEntry({ constant: true, content: 'Known for: {{description}}' })], {
+          ownerCharacterAvatar: knight.avatar,
+        }),
+      ],
+      []
+    );
+
+    const text = textOf(
+      buildGroupConversationContext([mkMsg('hi')], [seraphina, knight], seraphina)
+    );
+
+    expect(text).toContain('Known for: A stern knight.');
+    expect(text).not.toContain('Known for: Seraphina description');
+  });
+
+  it('uses the owner context for an owner who is not in this room', () => {
+    // Same case the attribution header already handles: a globally-active book
+    // whose owner is not a member. The header names them as the subject, so the
+    // body has to be theirs too.
+    useBooks([
+      mkBook([mkEntry({ constant: true, content: '{{char}} hunts dragons.' })], {
+        ownerCharacterAvatar: marcus.avatar,
+      }),
+    ]);
+    useCharacterStore.setState({ characters: [seraphina, marcus] });
+
+    const text = textOf(
+      buildGroupConversationContext([mkMsg('hi')], [seraphina], seraphina)
+    );
+
+    expect(text).toContain(
+      '[Information about Marcus, another character in this conversation]\n' +
+        'Marcus hunts dragons.'
+    );
+  });
+
+  it('keeps a PERSONA-scoped book speaker-relative even when it is also character-owned', () => {
+    // Persona lore is about the USER; {{char}} in it is ambiguous and is
+    // deliberately left speaker-relative. The book here is BOTH persona-linked
+    // and Marcus-owned, which is the only fixture that can tell "persona wins"
+    // apart from "ownership wins" — a plain persona book has no owner to lose
+    // to.
+    const book = mkBook(
+      [mkEntry({ constant: true, content: 'Ash trusts {{char}}.' })],
+      { ownerCharacterAvatar: marcus.avatar }
+    );
+    useBooks([book]);
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p1',
+          name: 'Ash',
+          description: 'A wandering smith.',
+          linkedBookIds: [book.id],
+        },
+      ],
+      activePersonaId: 'p1',
+    } as never);
+
+    const text = textOf(
+      buildGroupConversationContext([mkMsg('hi')], [seraphina, marcus], seraphina)
+    );
+
+    expect(text).toContain(
+      "[Information about Ash, the user you're talking to]\nAsh trusts Seraphina."
+    );
+    expect(text).not.toContain('Ash trusts Marcus.');
+  });
+
+  it('keeps a room-shared (unowned) book speaker-relative', () => {
+    // Parity pin: solo resolves {{char}} to the one character, and a book
+    // nobody owns has no better answer than the speaker.
+    useBooks([mkBook([mkEntry({ constant: true, content: 'The host is {{char}}.' })])]);
+
+    const text = textOf(
+      buildGroupConversationContext([mkMsg('hi')], [seraphina, marcus], seraphina)
+    );
+
+    expect(text).toContain('The host is Seraphina.');
+    expect(text).not.toContain('The host is Marcus.');
+  });
+
+  it("renders the SPEAKER's own owned lore unlabelled and speaker-named", () => {
+    // The substitution is keyed on OWNERSHIP, not on whether the header is
+    // emitted. This case cannot distinguish the two: when the owner IS the
+    // speaker, subMember(speaker, …) and subSpeaker(…) build the same context
+    // from the same CharacterInfo, so a header-gated mutant is unobservable by
+    // construction. Pinned anyway so the ownership-keyed path is exercised for
+    // the speaker and the header suppression stays correct alongside it.
+    useBooks(
+      [
+        mkBook([mkEntry({ constant: true, content: '{{char}} fears dragons.' })], {
+          ownerCharacterAvatar: seraphina.avatar,
+        }),
+      ],
+      []
+    );
+
+    const text = textOf(
+      buildGroupConversationContext([mkMsg('hi')], [seraphina, marcus], seraphina)
+    );
+
+    expect(text).toContain('Seraphina fears dragons.');
+    expect(text).not.toContain('another character in this conversation');
+  });
+
+  it('runs a write macro in owned lore exactly once (joinWi single-pass invariant)', () => {
+    // wrapWiContent runs macros, so the wiRendered set exists precisely so no
+    // entry is wrapped twice. Switching which context an owned entry uses must
+    // not add a second pass.
+    useChatStore.setState({ chatVariables: { [CHAT_FILE]: { n: '0' } } });
+    useBooks(
+      [
+        mkBook([mkEntry({ constant: true, content: '{{char}} on turn {{incvar::n}}.' })], {
+          ownerCharacterAvatar: marcus.avatar,
+        }),
+      ],
+      []
+    );
+
+    const ctx = buildGroupConversationContext(
+      [mkMsg('hi')],
+      [seraphina, marcus],
+      seraphina
+    );
+
+    expect(useChatStore.getState().getChatVariables(CHAT_FILE).n).toBe('1');
+    expect(ctx.filter((c) => c.content.includes('Marcus on turn 1.')).length).toBe(1);
+  });
+});
