@@ -261,11 +261,29 @@ being a lie on a merge that *should* have built.
 
 Note `paths-ignore` covers only what its allow-list names. `.claude/**`
 is NOT in it — a skill-doc change will still trigger a build unless the
-commit says `[skip ci]`.
+commit carries a skip marker. That allow-list is now load-bearing twice
+over: it gates the build, and `wait_for_image` reads it to decide whether
+a missing build is benign. Keep it accurate, and keep it conservative —
+anything not listed is treated as reaching the image, which is the safe
+default in both directions.
 
 Use this helper for each repo whose code you merged. It resolves the run
-by `headSha`, tolerates the run not existing yet, and distinguishes
-"skipped on purpose" from "something is wrong":
+by `headSha`, tolerates the run not existing yet, verifies the run it
+watched actually built HEAD, and — the part that matters — distinguishes
+**"skipped on purpose"** from **"GitHub dropped the event and `:latest`
+is stale"**. Those two look identical from the outside: no run, no error,
+an empty list.
+
+**Do not weaken the no-run branch back into an ancestry check.** Ancestry
+proves `:latest` was built from real code on this line; it proves nothing
+about whether that image contains your change, because the pre-merge
+commit is *always* an ancestor. On **2026-08-26** the old version reported
+*":latest is from 4196478, an ancestor of HEAD. Safe to deploy"* — where
+`4196478` was the commit immediately **before** the merge being deployed.
+Following it would have shipped the old image and reported success. The
+helper now asks the question that actually matters: *does anything in
+`LAST_SHA..HEAD` reach the image?*, matched against the workflow's own
+`paths-ignore` so it cannot drift when that list is edited.
 
 ```bash
 # usage: wait_for_image <repo> <local-checkout-path>
@@ -286,29 +304,129 @@ wait_for_image() {
   done
 
   if [ -z "$RUN" ]; then
-    # No build for this SHA. Two legitimate causes: every changed file
-    # matched paths-ignore, or the commit message carried [skip ci].
-    # Don't try to distinguish them — verify the OUTCOME instead: the
-    # published :latest must still descend from a commit on this line,
-    # so we know it corresponds to real code.
+    # No build for this SHA. THREE causes, and they are NOT interchangeable:
+    #   (a) every changed file matched paths-ignore  -> genuinely safe
+    #   (b) the commit message carried a skip marker -> author said skip
+    #   (c) GitHub silently dropped the event        -> :latest is STALE
+    # Only (a) is detected. (b) and (c) are indistinguishable from here, so
+    # both are treated as (c) and force a rebuild. That is deliberate: on a
+    # DEPLOY, an unnecessary 1-minute build is free and a stale image is not.
+    # A skip marker on a commit that changes bundle files will therefore be
+    # overridden here, which is the correct trade for this code path.
+    # (c) is real and has happened (2026-08-26, twice in one deploy). It is
+    # invisible: no run, no error, an empty list identical to (a)/(b).
     local LAST_SHA
-    LAST_SHA=$(gh run list --repo "$REPO" --workflow docker-publish.yml --limit 30 \
+    # --branch main: :latest is published from main, so a successful run on
+    # some other ref must not be mistaken for the image now in the registry.
+    LAST_SHA=$(gh run list --repo "$REPO" --workflow docker-publish.yml --branch main --limit 30 \
       --json headSha,conclusion --jq '[.[] | select(.conclusion=="success")][0].headSha')
-    if [ -n "$LAST_SHA" ] && git -C "$DIR" merge-base --is-ancestor "$LAST_SHA" "$SHA" 2>/dev/null; then
-      echo "  no build for this SHA (paths-ignore, or [skip ci] in the commit)."
-      echo "  :latest is from ${LAST_SHA:0:7}, an ancestor of HEAD. Safe to deploy."
+
+    # Gate 1 — ancestry. NECESSARY BUT NOT SUFFICIENT. It proves :latest was
+    # built from real code on this line; it says NOTHING about whether that
+    # image contains YOUR change. The pre-merge commit is always an ancestor.
+    if [ -z "$LAST_SHA" ] || ! git -C "$DIR" merge-base --is-ancestor "$LAST_SHA" "$SHA" 2>/dev/null; then
+      echo "  ERROR: no build for this SHA, and the last successful build (${LAST_SHA:0:7})"
+      echo "  is NOT an ancestor of HEAD. Do NOT deploy — investigate."
+      return 1
+    fi
+
+    # Gate 2 — the question that actually matters: does anything in
+    # LAST_SHA..HEAD reach the image? Matched against the workflow's OWN
+    # paths-ignore so this cannot drift when that list is edited. Fails
+    # toward rebuilding: a file counts as ignorable only if it clearly
+    # matches a pattern.
+    #
+    # EVERY step below fails CLOSED. An empty result must only ever mean
+    # "genuinely nothing to build" — never "the check itself broke". The
+    # git diff status, the interpreter status, and a completion sentinel
+    # are all checked, because a guard that answers its own crash with
+    # "Safe to deploy" is worse than no guard at all.
+    #
+    # --no-renames is REQUIRED. With rename detection on, `git mv
+    # src/foo.ts docs/v2/foo.ts` reports ONLY the ignorable destination
+    # path, so moving a source file into an ignored directory would read
+    # as fully ignorable and ship a stale image. Verified on this repo.
+    local DELTA
+    if ! DELTA=$(git -C "$DIR" diff --no-renames --name-only "$LAST_SHA".."$SHA"); then
+      echo "  ERROR: cannot diff ${LAST_SHA:0:7}..HEAD. Do NOT deploy."
+      return 1
+    fi
+    local MATCH_OUT UNIGNORED
+    if ! MATCH_OUT=$(printf '%s\n' "$DELTA" | python3 -c '
+import sys, re, pathlib
+pats, inblock = [], False
+for raw in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    if raw.strip().startswith("#") or not raw.strip(): continue
+    if re.match(r"^\s*paths-ignore:\s*$", raw): inblock = True; continue
+    if inblock:
+        m = re.match(r"^\s*-\s*[\x27\"]?(.+?)[\x27\"]?\s*$", raw)
+        if m: pats.append(m.group(1))
+        else: inblock = False
+if any(p.startswith("!") for p in pats):
+    sys.exit("paths-ignore uses a ! negation pattern; this matcher does not implement negation")
+def ignored(path):
+    for pat in pats:
+        rx = re.escape(pat)
+        rx = rx.replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+        if re.fullmatch(rx, path): return True
+    return False
+for line in sys.stdin:
+    f = line.strip()
+    if f and not ignored(f): print(f)
+print("__MATCHER_OK__")
+' "$DIR/.github/workflows/docker-publish.yml"); then
+      echo "  ERROR: the paths-ignore matcher failed (traceback above). Do NOT deploy."
+      return 1
+    fi
+    # The sentinel must be the last line. Its absence means the matcher died
+    # mid-stream, which must never be read as "nothing to build".
+    case "$MATCH_OUT" in
+      *__MATCHER_OK__) ;;
+      *) echo "  ERROR: matcher produced no completion sentinel. Do NOT deploy."; return 1 ;;
+    esac
+    UNIGNORED=$(printf '%s\n' "$MATCH_OUT" | grep -v '^__MATCHER_OK__$' || true)
+
+    if [ -z "$UNIGNORED" ]; then
+      echo "  no build for this SHA, and every file changed since ${LAST_SHA:0:7} is"
+      echo "  covered by paths-ignore. :latest genuinely contains this code. Safe."
       return 0
     fi
-    echo "  ERROR: no build for this SHA, and the last successful build (${LAST_SHA:0:7})"
-    echo "  is NOT an ancestor of HEAD. Do NOT deploy — investigate."
-    return 1
+
+    echo "  *** NO BUILD RAN, but these files since ${LAST_SHA:0:7} CAN reach the image:"
+    echo "$UNIGNORED" | sed 's/^/      /'
+    echo "  :latest is from ${LAST_SHA:0:7} and does NOT contain your change."
+    echo "  GitHub almost certainly dropped the event. Deploying now ships the OLD image."
+    if grep -qE '^[[:space:]]*workflow_dispatch:' "$DIR/.github/workflows/docker-publish.yml"; then
+      echo "  --> re-triggering via workflow_dispatch (cheap, idempotent)"
+      gh workflow run docker-publish.yml --repo "$REPO" --ref main || {
+        echo "  dispatch failed. Do NOT deploy."; return 1; }
+      for i in $(seq 1 24); do
+        RUN=$(gh run list --repo "$REPO" --workflow docker-publish.yml --limit 10 \
+          --json databaseId,headSha,event \
+          --jq "[.[] | select(.headSha==\"$SHA\" and .event==\"workflow_dispatch\")][0].databaseId")
+        [ -n "$RUN" ] && [ "$RUN" != "null" ] && break
+        RUN=""; sleep 5
+      done
+      [ -n "$RUN" ] || { echo "  dispatch produced no run for ${SHA:0:7}. Do NOT deploy."; return 1; }
+      echo "  dispatched run: $RUN"
+    else
+      echo "  This workflow declares no workflow_dispatch. Do NOT deploy — investigate."
+      return 1
+    fi
   fi
 
   gh run watch "$RUN" --repo "$REPO" --exit-status
   # Explicit conclusion check — see the pipe warning below.
-  local CONCLUSION
+  local CONCLUSION RUNSHA
   CONCLUSION=$(gh run view "$RUN" --repo "$REPO" --json conclusion --jq .conclusion)
-  echo "  conclusion: $CONCLUSION"
+  RUNSHA=$(gh run view "$RUN" --repo "$REPO" --json headSha --jq .headSha)
+  echo "  conclusion: $CONCLUSION (built ${RUNSHA:0:7})"
+  # The run must have built HEAD. Guards the 'green for the wrong commit'
+  # failure this section's prose warns about.
+  if [ "$RUNSHA" != "$SHA" ]; then
+    echo "  ERROR: that run built ${RUNSHA:0:7}, not HEAD ${SHA:0:7}. Do NOT deploy."
+    return 1
+  fi
   [ "$CONCLUSION" = "success" ]
 }
 
@@ -324,7 +442,7 @@ Typical durations:
 - **Frontend CI:** ~1.5–3 minutes (Vite build on GitHub runner with GHA cache)
 - **Backend CI:** ~3–5 minutes (pytest + ruff + multi-arch Docker image build). Measured 2026-07-31 across the last 5 successful runs: 3.9–4.2 min.
 
-On a **sync-only** run (nothing merged this time — see the Arguments note about deploying with no pending work), `wait_for_image` still does the right thing: it finds no run for the current SHA, confirms the published `:latest` came from an ancestor commit, and returns 0. You can also eyeball recent runs directly:
+On a **sync-only** run (nothing merged this time — see the Arguments note about deploying with no pending work), `wait_for_image` still does the right thing: it finds no run for the current SHA, confirms `:latest` came from an ancestor commit, finds the delta since that commit is empty (or entirely `paths-ignore`d), and returns 0. If the delta turns out to contain anything that reaches the image, it will say so and re-trigger the build rather than let you deploy a stale `:latest` — which is the correct behavior, not a false alarm. You can also eyeball recent runs directly:
 
 ```bash
 gh run list --repo sammygallo/goodgirlsbotclub --workflow docker-publish.yml --limit 3 \
@@ -623,7 +741,7 @@ ssh root@159.89.180.146 "df -h / && docker image prune -af"
 The docker-publish workflow triggers on every push to the default branch. For docs-only or `.gitignore`-only changes that's wasted CI time. **Note:** `[skip ci]` in a PR's commit message does NOT work with the `--merge` strategy — GitHub creates a new merge commit that doesn't inherit the tag. Options:
 
 1. Use `--squash` or `--rebase` for docs-only PRs (preserves the commit message).
-2. Add `paths-ignore` to `.github/workflows/docker-publish.yml`. **Done** — goodgirlsbotclub#349 and ggbc-backend#49. Note both are explicit allow-lists, NOT `docs/**`: three docs in the frontend are compiled into the bundle via Vite `?raw` imports (`docs/faq.md`, `docs/character-guide.md`, `docs/hypercode-guide.md`), so a blanket ignore would silently ship a stale FAQ.
+2. Add `paths-ignore` to `.github/workflows/docker-publish.yml`. **Done** — goodgirlsbotclub#349 and ggbc-backend#49. Note both are explicit allow-lists, NOT `docs/**`: **four** docs in the frontend are compiled into the bundle via Vite `?raw` imports (`docs/faq.md`, `docs/character-guide.md`, `docs/hypercode-guide.md`, `docs/lorebook-guide.md`), so a blanket ignore would silently ship a stale FAQ or guide. This list is load-bearing twice over — it gates the build, and `wait_for_image` reads the same allow-list to decide whether a missing build is benign. Verify it against `grep -rn '?raw' src/` before editing.
 
 #### ⚠️ Never write the skip-CI marker literally in a commit message
 
