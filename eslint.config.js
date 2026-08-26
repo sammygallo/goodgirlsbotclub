@@ -10,7 +10,13 @@ export default defineConfig([
   // independent clones (often at other commits) that live physically inside
   // this tree. `eslint .` would otherwise recurse into them and lint stale
   // code that isn't part of this checkout.
-  globalIgnores(['dist', '.claude/worktrees/**']),
+  //
+  // .claude/workflows/*.js are agent-orchestration scripts, not app code. The
+  // workflow runtime executes them as a function body — top-level `return` and
+  // injected globals (`agent`, `parallel`, `phase`, `log`, `args`) are part of
+  // that contract — so parsing them as ES modules reports a spurious
+  // "'return' outside of function" error.
+  globalIgnores(['dist', '.claude/worktrees/**', '.claude/workflows/**']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
