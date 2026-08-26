@@ -162,10 +162,10 @@ Features are grouped into **phases** ordered by user impact and dependency. Each
 - **ST Feature:** Mute/unmute members, force individual response, auto-mode (continuous generation), character reordering, allow self-responses toggle.
 - **Work:** Mute toggle per member ✅ (landed with 5.1). Force-talk button. Auto-mode with configurable delay. Drag-to-reorder member list. Group scenario override.
 
-### 5.3 Character Card Handling in Groups
-- **Gap:** Basic per-character system prompts. No join mode.
-- **ST Feature:** Swap mode (only active speaker's info) vs Join mode (all members' info combined).
-- **Work:** Add character card handling strategy selector. Implement join mode with configurable prefix/suffix.
+### 5.3 Character Card Handling in Groups ✅
+- **SHIPPED 2026-04-11** in PR #59 (`b5938390`). `GroupCardMode = 'swap' | 'join'` on `GroupChatInfo`, legacy chats migrating to `'swap'`, the two-branch card block in `buildGroupConversationContext`, and a "Card mode" segmented picker in `GroupChatControls`.
+- **Not built:** the "configurable prefix/suffix" half — join's `## ` header, `[SPEAKING NOW]` speaker marker and `---` separator are hard-coded. Deliberately not scheduled (roadmap v3 §1/§5); it would edit the group prompt builder ahead of E2-S2's golden fixtures.
+- ⚠️ This section read "Gap: no join mode" for **four and a half months after it shipped**, and that claim reached roadmap v3 as story E9-S1, which blocked at intake on 2026-08-26.
 
 ---
 
@@ -297,13 +297,14 @@ Features are grouped into **phases** ordered by user impact and dependency. Each
 - **ST Feature:** KoboldCpp, llama.cpp, Ollama, Oobabooga, TabbyAPI.
 - **Work:** Add OpenAI-compatible custom endpoint configuration (covers Ollama, LM Studio, llama.cpp server, KoboldCpp, etc.). URL + optional API key input. Model list auto-fetch where supported.
 
-### 10.2 Additional Cloud Providers
-- **Gap:** 6 providers (OpenAI, Claude, Gemini, Mistral, Groq, OpenRouter).
-- **ST Feature:** 15+ cloud providers.
-- **Work:** Add: DeepSeek, Cohere, NovelAI, AI Horde (free community), Perplexity, Fireworks AI. Each needs: auth config, model list, request/response mapping, streaming support.
+### 10.2 Additional Cloud Providers — mostly shipped
+- **SHIPPED 2026-04-11** in `ecf1f90e` (nineteen minutes after the 5.3 commit): DeepSeek, Cohere and Perplexity. `src/api/providerCatalog.ts` now carries 44 provider entries including `deepseek`, `cohere`, `perplexity` and `fireworks`.
+- **Actually remaining, and it is not "add providers":** none of the shipped providers has a `profileForProvider` case (`src/utils/tokenizer.ts:33-46` maps only `openai`/`groq`/`mistralai`/`openrouter`/`claude`/`makersuite`), so every one of them silently falls through to the `generic` 3.8 chars-per-token profile — over-pricing history and shrinking the usable context window with no visible error. AI Horde exists only as an image backend. Tracked as roadmap v3 **E9-S3**, re-scoped accordingly.
 
-### 10.3 Text Completion API Support
-- **Gap:** Only chat completion format.
+### 10.3 Text Completion API Support ✅
+- **SHIPPED before roadmap v3** (verified in code 2026-08-24): `CompletionMode = 'chat' | 'text'` (`generationStore.ts:94`), `isTextCompletionMode()` through all six generate paths, client posting `body.prompt`, backend route live.
+- ⚠️ The stale "Gap" line below is what carried into roadmap v3 as story E9-S4 and had to be withdrawn.
+- **Superseded Gap:** Only chat completion format.
 - **ST Feature:** Full text completion support for local models.
 - **Work:** Text completion request builder. Instruct mode integration. Context template system. Model-specific tokenizer selection.
 
