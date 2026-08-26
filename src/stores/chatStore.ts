@@ -1768,11 +1768,15 @@ export function buildGroupConversationContext(
   const personaDescription = persona?.description || '';
   const { activeModel, activeProvider } = useSettingsStore.getState();
 
-  // Phase 9.3 parity with solo chat: macros inside world-info content read
-  // from and write to the chat's variable map, persisted at the end of the
-  // build. {{char}} resolves to the speaker whose turn this is — the model is
-  // being asked to write exactly that character, so a speaker-relative macro
-  // in a lore entry means the same thing here as it does in a solo chat.
+  // Phase 9.3 parity with solo chat: macros read from and write to the chat's
+  // variable map, persisted at the end of the build. {{char}} resolves to the
+  // speaker whose turn this is — the model is being asked to write exactly
+  // that character, so a speaker-relative macro means the same thing here as
+  // it does in a solo chat. E9-S6: this is the group build's single
+  // speaker-relative substitution point, reused for world-info content, the
+  // author's note, history turns, the scenario fallback, and the speaker's
+  // own mes_example — everything that lives OUTSIDE a per-member card block
+  // (see subMember below for what happens INSIDE one).
   const variables: Record<string, string> = groupChatFile
     ? { ...groupChatState.getChatVariables(groupChatFile) }
     : {};
@@ -1784,7 +1788,25 @@ export function buildGroupConversationContext(
     activeModel,
     variables
   );
-  const subWi = (text: string) => (text ? processMacros(text, wiMacroCtx) : '');
+  const subSpeaker = (text: string) => (text ? processMacros(text, wiMacroCtx) : '');
+  // E9-S6/AC8: {{char}}/{{description}}/{{personality}}/{{scenario}} inside a
+  // MEMBER's own card block must resolve to THAT member, not the current
+  // speaker — resolving member B's card text with the speaker's name would be
+  // the same identity-bleed the WI attribution wrapper below (:1894-1907,
+  // pre-rename line numbers) exists to prevent. Same shared `variables`
+  // reference as subSpeaker, so a {{setvar}} inside a card field still lands
+  // in the one map persisted at the end of the build.
+  const memberMacroCtx = (member: CharacterInfo) =>
+    buildMacroContext(
+      member,
+      personaName,
+      personaDescription,
+      visibleMessages,
+      activeModel,
+      variables
+    );
+  const subMember = (member: CharacterInfo, text: string) =>
+    text ? processMacros(text, memberMacroCtx(member)) : '';
 
   // World Info. Book scoping is the union of every scope that can contribute
   // to this room: the globally-active books, EVERY member's owned (embedded
@@ -1894,7 +1916,7 @@ export function buildGroupConversationContext(
   }
   const personaBookIdSet = new Set(personaBookIds);
   const wrapWiContent = (m: MatchedEntry): string => {
-    const content = subWi(m.entry.content);
+    const content = subSpeaker(m.entry.content);
     if (!content.trim()) return '';
     if (personaBookIdSet.has(m.bookId)) {
       const subject = personaName || 'the user';
@@ -1936,10 +1958,10 @@ export function buildGroupConversationContext(
     cardBlock = characters
       .map((char) => {
         const isCurrent = char.avatar === currentCharacter.avatar;
-        const desc = getCharacterField(char, 'description');
-        const pers = getCharacterField(char, 'personality');
-        const scen = getCharacterField(char, 'scenario');
-        const examples = getCharacterField(char, 'mes_example');
+        const desc = subMember(char, getCharacterField(char, 'description'));
+        const pers = subMember(char, getCharacterField(char, 'personality'));
+        const scen = subMember(char, getCharacterField(char, 'scenario'));
+        const examples = subMember(char, getCharacterField(char, 'mes_example'));
         const header = isCurrent
           ? `[SPEAKING NOW] ${char.name}`
           : char.name;
@@ -1955,8 +1977,8 @@ export function buildGroupConversationContext(
   } else {
     cardBlock = characters
       .map((char) => {
-        const desc = getCharacterField(char, 'description');
-        const pers = getCharacterField(char, 'personality');
+        const desc = subMember(char, getCharacterField(char, 'description'));
+        const pers = subMember(char, getCharacterField(char, 'personality'));
         const details = [
           desc && `Description: ${desc}`,
           pers && `Personality: ${pers}`,
@@ -1986,15 +2008,24 @@ export function buildGroupConversationContext(
       model: activeModel,
     }).trim();
   } else {
-    scenarioText =
-      currentCharacter.scenario || currentCharacter.data?.scenario || '';
+    // E9-S6/AC2: fallback scenario is the speaker's own field, rendered
+    // outside any per-member card block, so it keeps the speaker-relative
+    // convention (subSpeaker) rather than scenarioOverride's deliberate
+    // char-scrubbing above.
+    scenarioText = subSpeaker(
+      currentCharacter.scenario || currentCharacter.data?.scenario || ''
+    );
   }
 
   // Include the current speaker's example dialogue if available — mirrors what
   // buildConversationContext does for solo chat. In Join mode this is already
   // baked into the speaker's own block above, so we suppress the duplicate.
+  // E9-S6/AC3: speaker-relative substitution — this lives outside the
+  // per-member card blocks built above.
   const mesExample =
-    cardMode === 'join' ? '' : getCharacterField(currentCharacter, 'mes_example');
+    cardMode === 'join'
+      ? ''
+      : subSpeaker(getCharacterField(currentCharacter, 'mes_example'));
 
   // World-info positional sections. A group prompt has no promptOrder
   // section map to slot them into (it's one flat system message), so the
@@ -2049,12 +2080,19 @@ CONTENT RULES:
     const msg = recentMessages[i];
     const depthFromEnd = recentMessages.length - i;
 
-    // Inject author's note at the configured depth
+    // Inject author's note at the configured depth. E9-S6/AC4: guard the
+    // post-macro result exactly like solo (:1487-1497) — `getAuthorNote`
+    // only rejects RAW blank content, so a macro-only note (e.g.
+    // {{setvar::x::1}}) renders to '' and an empty content block 400s
+    // providers like Claude, silently breaking every later turn in the chat.
     if (groupAuthorNote && depthFromEnd === groupAuthorNote.depth) {
-      context.push({
-        role: groupAuthorNote.role,
-        content: groupAuthorNote.content,
-      });
+      const anContent = subSpeaker(groupAuthorNote.content);
+      if (anContent.trim()) {
+        context.push({
+          role: groupAuthorNote.role,
+          content: anContent,
+        });
+      }
     }
 
     // WI at-depth entries: inject as system messages at the matching depth
@@ -2064,13 +2102,26 @@ CONTENT RULES:
       if (content) context.push({ role: 'system', content });
     }
 
-    const contentWithName = msg.isUser
-      ? msg.content
-      : `[${msg.name}]: ${msg.content}`;
-    context.push({
-      role: msg.isUser ? 'user' : 'assistant',
-      content: contentWithName,
-    });
+    // E9-S6/AC5+AC6: substitute FIRST, then apply the `[Name]: ` prefix for
+    // non-user turns — matching solo's history + blank-guard (:1521-1538).
+    // A user turn whose post-macro content is blank AND has no image
+    // attachment is skipped entirely (an empty content block 400s
+    // providers); an image-only user message is kept so client.ts can still
+    // fold its attachment into the request. Blank ASSISTANT turns are left
+    // exactly as before — a documented, separate out-of-scope parity gap
+    // (see the story brief), not touched here.
+    const subbedContent = subSpeaker(msg.content);
+    const hasImages = Array.isArray(msg.images) && msg.images.length > 0;
+    const skipBlankUserTurn = msg.isUser && subbedContent.trim() === '' && !hasImages;
+    if (!skipBlankUserTurn) {
+      const contentWithName = msg.isUser
+        ? subbedContent
+        : `[${msg.name}]: ${subbedContent}`;
+      context.push({
+        role: msg.isUser ? 'user' : 'assistant',
+        content: contentWithName,
+      });
+    }
   }
 
   // Depth 0 — the trailing slot, after the newest message and closest to the
@@ -2081,13 +2132,20 @@ CONTENT RULES:
     if (content) context.push({ role: 'system', content });
   }
 
-  // If depth exceeds history, prepend
+  // If depth exceeds history, prepend. E9-S6/AC4: same post-macro trim guard
+  // as the in-loop injection above — this and that branch are mutually
+  // exclusive (depth is either <= recentMessages.length, matched in the loop,
+  // or > it, matched here), so the note's content is substituted exactly once
+  // per build no matter which branch fires.
   if (groupAuthorNote && groupAuthorNote.depth > recentMessages.length) {
-    // Insert after the system prompt (index 1)
-    context.splice(1, 0, {
-      role: groupAuthorNote.role,
-      content: groupAuthorNote.content,
-    });
+    const anContent = subSpeaker(groupAuthorNote.content);
+    if (anContent.trim()) {
+      // Insert after the system prompt (index 1)
+      context.splice(1, 0, {
+        role: groupAuthorNote.role,
+        content: anContent,
+      });
+    }
   }
 
   // WI at-depth overflow: entries whose depth exceeds the history length land
