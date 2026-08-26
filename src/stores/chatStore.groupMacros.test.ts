@@ -850,6 +850,35 @@ describe('review-fix A: the image exemption is per-TURN, not per-build', () => {
     const lastUserIdx = ctx.map((c) => c.role).lastIndexOf('user');
     expect(ctx[lastUserIdx].content).toBe('');
   });
+
+  it('KEEPS a blank image turn that is the last USER turn but not the last message', () => {
+    // Round 3. The two tests above cannot tell `i === lastUserIndexInRecent`
+    // from `i === recentMessages.length - 1`: in both fixtures the newest
+    // message IS the user's, so the two expressions agree and the length-based
+    // mutant is silent. It is not harmless — it drops the attachment carrier
+    // in any round where a member has already replied, which is the ordinary
+    // state of a group chat.
+    //
+    // This is the forceGroupMemberTalk shape: imagesFromLastUserMessage
+    // (chatStore.ts:2969) scans BACKWARDS for the last user message, so the
+    // build really does carry this turn's attachment even though an assistant
+    // turn sits after it — and client.ts's own backwards `lastUserIdx` scan
+    // will fold into it. Dropping it loses the image.
+    const ctx = buildGroupConversationContext(
+      [imgUser('', 'AAAA'), mkMsg('a reply', false, 'Marcus')],
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true
+    );
+
+    const userTurns = ctx.filter((c) => c.role === 'user');
+    expect(userTurns.map((c) => c.content)).toEqual(['']);
+    expect(ctx.map((c) => c.role)).toEqual(['system', 'user', 'assistant']);
+  });
 });
 
 describe('review-fix B: after_an world info is joined BEFORE the history loop', () => {
@@ -897,6 +926,47 @@ describe('review-fix B: after_an world info is joined BEFORE the history loop', 
 
     expect(ctx[ctx.length - 1]).toEqual({ role: 'system', content: 'Tail lore.' });
     expect(ctx.map((c) => c.role)).toEqual(['system', 'user', 'assistant', 'system']);
+  });
+
+  it('drops the now-empty after_an render out of the fired set as well', () => {
+    // Round 3. "Layout untouched" above is a claim about SLOT ORDER, not about
+    // emitted bytes: moving the join changes what an after_an entry renders TO,
+    // so an entry that is nothing but a {{getvar}} of a history-turn write now
+    // renders empty, its system message disappears from the prompt entirely,
+    // and joinWi never records it in wiRendered — so it leaves `fired` too.
+    // That is solo's behavior and the point of the fix, but it is a real change
+    // to `wi_fired` telemetry (captureWiFired -> recordWiFired -> header.wi_fired
+    // -> storyIngest/wiReplay), so it is pinned rather than left to a comment.
+    // Restoring the old join position turns 'Seen [yes].'-style content back on
+    // and reddens this.
+    const afterAnEntry = mkEntry({
+      constant: true,
+      position: 'after_an',
+      content: '{{getvar::histVar}}',
+    });
+    useBooks([mkBook([afterAnEntry])]);
+
+    const wiOut = {
+      currentTurn: 1,
+      timers: {} as Record<string, number>,
+      activated: new Set<string>(),
+      fired: undefined as unknown,
+    };
+
+    const ctx = buildGroupConversationContext(
+      [mkMsg('Look {{setvar::histVar::yes}} here')],
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      wiOut as never
+    );
+
+    expect(wiOut.fired as unknown[]).toEqual([]);
+    expect(textOf(ctx)).not.toContain('yes');
+    // Only the last emitted slot could have carried it, and nothing was pushed.
+    expect(ctx.map((c) => c.role)).toEqual(['system', 'user']);
   });
 });
 
@@ -1052,6 +1122,16 @@ describe('review-fix C: the PRODUCTION call site passes the real attachmentsFold
   // whether `imagesFromLastUserMessage` returns images for the call site's
   // `Boolean(images && images.length > 0)` to read.
   //
+  // Round 3: that pair alone is NOT enough. `activeModel` is also what drives
+  // supportsVision, so on those two fixtures "carries images" and "can see
+  // images" always agree, and swapping the production expression for
+  // `supportsVision(provider, model)` passes both while reintroducing the
+  // original FIX 4 bug. The third test below is the discriminator: a
+  // vision-capable model on a speaker that genuinely receives no attachments —
+  // the later-speaker-in-a-round case FIX 4 exists for. It drives
+  // sendGroupMessage rather than forceGroupMemberTalk because that per-speaker
+  // withholding is where the two answers come apart in production.
+  //
   // currentChatFile is deliberately null: forceGroupMemberTalk's finally-block
   // flush is gated on it, so the whole saveChatToBackend path stays out of the
   // test, and buildGroupConversationContext's chat-variable persistence is a
@@ -1083,7 +1163,37 @@ describe('review-fix C: the PRODUCTION call site passes the real attachmentsFold
     return spy.mock.calls[0][0] as { role: string; content: string }[];
   };
 
+  // A round that streams to completion reaches recordTurnUsage -> the usage
+  // store's persist middleware, which writes localStorage UNGUARDED (unlike
+  // saveWiTimers' try/catch). This runtime's global `localStorage` is an inert
+  // `{}` — Node's Web Storage needs --localstorage-file — so `setItem` is not a
+  // function and the throw is swallowed by sendGroupMessage's catch, ending the
+  // round after one speaker. Same in-memory Storage the store suites use
+  // (chatLoreConfigStore.test.ts et al), installed only for this describe and
+  // restored after so the rest of the file keeps the runtime it was written for.
+  const realLocalStorage = globalThis.localStorage;
+  class MemoryStorage {
+    private store = new Map<string, string>();
+    getItem(key: string): string | null {
+      return this.store.has(key) ? this.store.get(key)! : null;
+    }
+    setItem(key: string, value: string): void {
+      this.store.set(key, String(value));
+    }
+    removeItem(key: string): void {
+      this.store.delete(key);
+    }
+    clear(): void {
+      this.store.clear();
+    }
+  }
+
+  beforeEach(() => {
+    globalThis.localStorage = new MemoryStorage() as unknown as Storage;
+  });
+
   afterEach(() => {
+    globalThis.localStorage = realLocalStorage;
     vi.restoreAllMocks();
   });
 
@@ -1106,5 +1216,68 @@ describe('review-fix C: the PRODUCTION call site passes the real attachmentsFold
 
     expect(sent.some((c) => c.role === 'user')).toBe(false);
     expect(sent.every((c) => c.content.trim() !== '')).toBe(true);
+  });
+
+  /** One SSE content frame, as the generation proxy emits them. A real stream
+   *  is needed here (not a null return) because generateGroupTurn bails on a
+   *  null stream and sendGroupMessage's round loop breaks with it — the second
+   *  speaker is the whole point of the test below. */
+  const sseOnce = (text: string): ReadableStream<Uint8Array> => {
+    const encoder = new TextEncoder();
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`
+          )
+        );
+        controller.close();
+      },
+    });
+  };
+
+  it('passes FALSE for the SECOND speaker of a round on a VISION model', async () => {
+    // The discriminating case. gpt-4o CAN see images, and the round really does
+    // carry one — but sendGroupMessage hands `resolvedImages` to the first
+    // speaker only ("We'd re-send the same bytes to each character otherwise",
+    // chatStore.ts:4685-4696). So for speaker two, supportsVision says TRUE and
+    // "this call carries images" says FALSE, and only the second is the right
+    // answer: nothing will be folded into that build, so a blank carrier turn
+    // left in it ships `{ role: 'user', content: '' }` and 400s Claude.
+    //
+    // Mutating the production expression at chatStore.ts:2399 to
+    // `supportsVision(provider, model)` passes both tests above and reddens
+    // exactly this one.
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () => sseOnce('[emotion:neutral] ok'));
+    useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4o' });
+    useChatStore.setState({
+      currentChatFile: null,
+      isSending: false,
+      messages: [],
+      groupChats: [],
+    });
+
+    // Empty text + one attachment: the image-only send ChatInput permits.
+    // No groupChats record, so the activation strategy falls back to 'list' —
+    // every member speaks once, in order.
+    await useChatStore
+      .getState()
+      .sendGroupMessage('', [seraphina, marcus], ['data:image/png;base64,AAAA']);
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    const first = spy.mock.calls[0][0] as { role: string; content: string }[];
+    const second = spy.mock.calls[1][0] as { role: string; content: string }[];
+
+    // Speaker one DOES carry the attachment, so the blank carrier survives for
+    // client.ts to fold into.
+    expect(spy.mock.calls[0][6]).toHaveLength(1);
+    expect(first.filter((c) => c.role === 'user').map((c) => c.content)).toEqual(['']);
+
+    // Speaker two carries nothing, so the same blank turn must be dropped.
+    expect(spy.mock.calls[1][6]).toBeUndefined();
+    expect(second.some((c) => c.role === 'user')).toBe(false);
+    expect(second.every((c) => c.content.trim() !== '')).toBe(true);
   });
 });

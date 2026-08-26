@@ -1968,9 +1968,13 @@ export function buildGroupConversationContext(
   // inversion bites: a {{setvar}} in a card description landed one stage too
   // late for a {{getvar}} in a lore entry, so build 1 rendered the OLD value
   // and every later build stayed exactly one behind, never self-correcting.
-  // This moves COMPUTATION only — the emitted section order in the system
-  // prompt below is byte-identical, and the joinWi/wiRendered single-pass
-  // invariant is untouched (nothing moved here calls joinWi or wrapWiContent).
+  // This moves COMPUTATION only — the SECTION ORDER of the system prompt below
+  // is unchanged, and the joinWi/wiRendered single-pass invariant is untouched
+  // (nothing moved here calls joinWi or wrapWiContent). Read "unchanged" as
+  // order, not bytes: the whole point is that a lore entry now reads the FRESH
+  // value a card field wrote, so its rendered text can differ — and an entry
+  // that renders empty is dropped by joinWi, exactly as it is in solo. See the
+  // after_an note below for the same distinction spelled out in full.
 
   // E9-S6 review-fix: the speaker's scenario reaches the prompt at TWO sites in
   // join mode — the speaker's own card block, and the `Current scenario:`
@@ -2092,9 +2096,25 @@ export function buildGroupConversationContext(
   // solo for exactly one position — a {{setvar}} in a history turn was visible to
   // a {{getvar}} in after_an lore in group but not in solo. Computation moves,
   // emission does not: the `context.push` stays at the post-history slot, so the
-  // prompt layout is byte-identical. joinWi is still called exactly once per
-  // position, so the wiRendered single-pass invariant and the end-of-build
-  // `wiTimerOut.fired` set are unchanged.
+  // SLOT ORDER of the prompt is unchanged.
+  //
+  // What this does NOT claim (round-3 review corrected an earlier version of
+  // this comment that did): the emitted BYTES can change, and so can the
+  // `wiTimerOut.fired` set. joinWi only adds an entry to `wiRendered` when its
+  // wrapped content is non-empty, and moving the join changes what an after_an
+  // entry renders TO — it can no longer read a {{setvar}} a history turn writes.
+  // An entry that used to render non-empty on that value now renders empty, so
+  // its whole system message disappears from the prompt and it drops out of
+  // `fired`. That is the point of the fix, not a side effect: it is what solo
+  // already does.
+  // Unchanged: joinWi is still called exactly once per position (the wiRendered
+  // single-pass invariant, which exists so {{setvar}} cannot execute twice), and
+  // the derivation of `fired` at :2335 is untouched.
+  // Who sees the changed set: `fired` feeds captureWiFired -> recordWiFired
+  // (utils/wiFired.ts) -> the persisted `header.wi_fired` map -> story-ingest WI
+  // replay (utils/storyIngest/wiReplay.ts). It is telemetry and story-bible
+  // replay. It is NOT the WI sticky/cooldown clock: those timers come from the
+  // `activated` set via saveWiTimers (:2488), which rendering never touches.
   const wiAfterAn = joinWi(wiByPosition.after_an);
 
   // World-info positional sections. A group prompt has no promptOrder
