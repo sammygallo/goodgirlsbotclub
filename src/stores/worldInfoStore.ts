@@ -13,6 +13,12 @@ import {
 } from '../api/client';
 import { useChatLoreConfigStore } from './chatLoreConfigStore';
 import { useLoreConflictStore } from './loreConflictStore';
+import {
+  isRegisteredDocumentBook,
+  notifyUserBookActivation,
+  notifyBooksChanged,
+  notifyBooksDeleted,
+} from './documentBookRegistry';
 import type {
   CharacterBookV2,
   CharacterBookEntryV2,
@@ -1189,6 +1195,75 @@ function pickDeterministicWinner(pool: MatchedEntry[]): MatchedEntry {
  * weighted-random selection — reserve that for cosmetic variety where
  * *which* entry fires genuinely doesn't matter to continuity.
  */
+/**
+ * THE sticky ordering contract, used for BOTH group admission and emission
+ * (see the two call sites in scanMessagesForEntries). `(order, lowercased
+ * label, content)` ascending, where label = comment || keys[0] || id. BOTH
+ * string keys compare BY CODE POINT (see compareByCodePoint — `<` is wrong
+ * here); the label is case-folded first, then compared, matching the backend's
+ * `.lower()` followed by Python's code-point `<`.
+ *
+ * Sticky entries have no fresh matched-key count — they are injected
+ * precisely because nothing matched this turn — so pickDeterministicWinner's
+ * middle rank is meaningless for them. Kept as its own comparator (rather
+ * than reusing pickDeterministicWinner with a zeroed count) so the rule the
+ * backend's `_activation.py` has to mirror is stated in one place.
+ *
+ * Why `content` is the last key, rather than `id` or either engine's own
+ * candidate order: neither of those is mutually computable. The backend's
+ * candidate order is SQL `ORDER BY (insertion_order, id)` over random UUIDs,
+ * which a browser cannot reproduce, and the two id spaces are not reliably
+ * shared in the first place (E2-S5). `content` is the one field both engines
+ * hold identically — it is what actually gets injected — so it is the only
+ * final key that can make them agree. Ties past it are entries with the same
+ * order, label and text: indistinguishable in the prompt either way.
+ */
+function compareStickyForGroup(
+  a: { entry: WorldInfoEntry },
+  b: { entry: WorldInfoEntry }
+): number {
+  if (a.entry.order !== b.entry.order) return a.entry.order - b.entry.order;
+  const label = (e: WorldInfoEntry) =>
+    (e.comment || e.keys[0] || e.id).toLowerCase();
+  // Fold first, THEN compare by code point — the same order as the backend's
+  // `(comment or keys[0] or id).lower()` followed by Python's code-point `<`.
+  const la = label(a.entry);
+  const lb = label(b.entry);
+  if (la !== lb) return compareByCodePoint(la, lb);
+  return compareByCodePoint(a.entry.content, b.entry.content);
+}
+
+/**
+ * Compare two strings by unicode CODE POINT, the way Python's `str` ordering
+ * does — deliberately not `<`, which compares UTF-16 CODE UNITS.
+ *
+ * The two disagree on astral characters. U+1F600 is stored as the surrogate
+ * pair D83D DE00, so JS reads its first unit as 0xD83D and puts it BELOW
+ * U+F8FF, while Python compares 0x1F600 and puts it ABOVE. Both of
+ * compareStickyForGroup's string keys exist precisely so the two engines pick
+ * the same survivor, so comparing either in code units would reopen the
+ * divergence those keys exist to close — an emoji in a lorebook entry would be
+ * enough, and `label` is a comment or a key, so users put emoji there too.
+ *
+ * `localeCompare` is NOT a substitute: it is locale- and ICU-version-dependent
+ * collation, which the backend has no way to mirror.
+ */
+function compareByCodePoint(a: string, b: string): number {
+  if (a === b) return 0;
+  // Array.from splits on code points, not code units, so surrogate pairs stay
+  // whole and each element compares at its true scalar value.
+  const ca = Array.from(a);
+  const cb = Array.from(b);
+  const shared = Math.min(ca.length, cb.length);
+  for (let i = 0; i < shared; i++) {
+    const pa = ca[i].codePointAt(0) ?? 0;
+    const pb = cb[i].codePointAt(0) ?? 0;
+    if (pa !== pb) return pa < pb ? -1 : 1;
+  }
+  // Common prefix: the shorter string sorts first, as in both engines.
+  return ca.length - cb.length;
+}
+
 function resolveGroups(
   matches: MatchedEntry[],
   wonGroups: Set<string>
@@ -1290,7 +1365,9 @@ function applyTokenBudget(
  * (sticky / cooldown / delay).
  *
  * @param outActivatedIds - Optional Set that will be populated with the IDs of
- *   entries that were *freshly* activated this turn (excluding sticky carry-overs).
+ *   entries that were *freshly* activated this turn (excluding sticky carry-overs)
+ *   AND survived the token budget — an entry the budget evicted never reached
+ *   the prompt, so it must not start its cooldown/sticky windows either.
  *   Callers should persist this set via saveWiTimers() after a successful
  *   generation to update the timed-effects state for the next turn.
  * @param outScanReport - Optional report object (see WorldInfoScanReport)
@@ -1417,16 +1494,57 @@ export function scanMessagesForEntries(
   // Sticky carry-overs: entries that were recently activated (within their
   // sticky window) and should remain injected even if keywords no longer match.
   // These do NOT reset their timer — only fresh activations do.
-  const stickyMatches: MatchedEntry[] = [];
+  const stickyCandidates: Candidate[] = [];
   for (const c of candidates) {
     if (matchedIds.has(c.entry.id)) continue;
     if (c.entry.sticky <= 0) continue;
     const last = wiTimers[c.entry.id];
     if (last === undefined) continue;
     if (currentTurn <= last + c.entry.sticky) {
-      stickyMatches.push(c);
+      stickyCandidates.push(c);
     }
   }
+
+  // Sticky carry-overs are subject to inclusion-group exclusivity too (#452).
+  // They used to be concatenated straight past resolveGroups, which broke the
+  // one-entry-per-group contract two ways: a sticky could co-inject with its
+  // own group's fresh winner, and two sticky siblings of the same group could
+  // both inject when neither freshly matched. A group already claimed this
+  // turn — by a fresh winner, or by a sticky admitted just above in this same
+  // walk — turns every later sticky in it away.
+  const stickyOrdered = [...stickyCandidates].sort(compareStickyForGroup);
+  const stickyLosers = new Set<string>();
+  for (const c of stickyOrdered) {
+    const g = c.entry.group;
+    if (!g) continue; // ungrouped stickies never compete
+    if (wonGroups.has(g)) {
+      stickyLosers.add(c.entry.id);
+      continue;
+    }
+    wonGroups.add(g);
+  }
+  // Emission uses the SAME order as admission, and deliberately not candidate
+  // (book array) order (E4-S0). applyTokenBudget sorts by `order` alone with a
+  // stable sort, so whatever order sticky matches arrive in is what breaks
+  // ties among equal-`order` entries — i.e. it picks which one the budget trim
+  // pops off the tail. The backend cannot adopt candidate order (its own is
+  // SQL `(insertion_order, id)` over random UUIDs, not reproducible in a
+  // browser), so emitting in book order meant the two engines evicted
+  // DIFFERENT entries from the same chat state and put opposite lore in the
+  // prompt — measured, not hypothetical. compareStickyForGroup is mutually
+  // computable, so both engines can and now do use it.
+  //
+  // Ordering only. Which stickies are eligible is unchanged: ungrouped ones
+  // still skip group exclusivity entirely in the walk above.
+  const stickyMatches: MatchedEntry[] = stickyOrdered.filter(
+    (c) => !stickyLosers.has(c.entry.id)
+  );
+  // Every entry that reached the sticky pass this turn, winner or loser. A
+  // sticky carry-over is by definition NOT a fresh activation — it is
+  // injected precisely because nothing matched — so none of these may ever
+  // reach outActivatedIds below. Stamping one would push its timer forward
+  // every turn and make the carry-over permanent.
+  const stickyCandidateIds = new Set(stickyCandidates.map((c) => c.entry.id));
 
   const allMatched = matched.concat(stickyMatches);
 
@@ -1438,6 +1556,13 @@ export function scanMessagesForEntries(
   const byId = new Map<string, Candidate>();
   for (const c of candidates) byId.set(c.entry.id, c);
   const included = new Set(allMatched.map((m) => m.entry.id));
+  // Sticky group-losers were turned away by the exclusivity walk above and so
+  // are NOT in allMatched — which used to leave them looking un-included to
+  // the walk below, free to be pulled back in and (via matchedIds) to stamp
+  // their own sticky window every turn. `included` doubles as "already
+  // decided this turn", so seeding the losers into it restores what group
+  // exclusivity just decided: a loser stays out, by both doors.
+  for (const id of stickyLosers) included.add(id);
   const queue = [...allMatched];
   while (queue.length > 0) {
     const m = queue.pop() as MatchedEntry;
@@ -1456,19 +1581,40 @@ export function scanMessagesForEntries(
     }
   }
 
-  // Report freshly activated IDs to the caller (excludes sticky carry-overs).
-  if (outActivatedIds) {
-    for (const id of matchedIds) {
-      outActivatedIds.add(id);
-    }
-  }
-
   const result = applyTokenBudget(
     allMatched,
     options.tokenBudget,
     options.profile,
     outScanReport
   );
+
+  // Report freshly activated IDs to the caller — an entry registers a timer
+  // only if it BOTH freshly activated this turn AND survived the budget trim
+  // (#452). This used to run before applyTokenBudget, so an evicted entry
+  // that never reached the prompt still started its cooldown and sticky
+  // windows, and was then blocked from firing on the next turn.
+  //
+  // Deliberately an INTERSECTION of matchedIds with the surviving ids, not a
+  // walk of `result` on its own: applyTokenBudget returns [...pinned,
+  // ...sorted] computed over allMatched, which also holds sticky carry-overs.
+  // Registering those would re-stamp a sticky entry's window every turn and
+  // make it permanent — intersecting with the freshly-activated set is what
+  // keeps them excluded. relatedIds pull-ins ARE fresh activations (they are
+  // in matchedIds), so they register iff they too survive the trim.
+  //
+  // stickyCandidateIds is the second lock on the same door: matchedIds is
+  // only clean of carry-overs while nothing downstream adds one back, and
+  // the relatedIds walk above is exactly such a path. Checking the set
+  // states the invariant where it is relied on, instead of deriving it from
+  // another pass's bookkeeping.
+  if (outActivatedIds) {
+    const survivingIds = new Set(result.map((m) => m.entry.id));
+    for (const id of matchedIds) {
+      if (stickyCandidateIds.has(id)) continue;
+      if (survivingIds.has(id)) outActivatedIds.add(id);
+    }
+  }
+
   result.sort((a, b) => a.entry.order - b.entry.order);
   return result;
 }
@@ -1654,8 +1800,35 @@ interface WorldInfoState {
     name: string,
     autoExtracted?: boolean
   ) => WorldInfoBook;
+  /**
+   * The character's EMBEDDED (card) lorebook, or null. A character can own
+   * more than one book — character-scoped Data Bank documents are owned
+   * books too — so this deliberately skips document books rather than
+   * returning whichever owned book happens to come first; see
+   * findEmbeddedBook. Callers that want the character's whole owned set
+   * (the chat scan, notably) want getCharacterBooks instead.
+   */
   getCharacterBook: (ownerAvatar: string) => WorldInfoBook | null;
-  deleteCharacterBook: (ownerAvatar: string) => void;
+  /**
+   * EVERY book owned by this character — its embedded card book plus any
+   * character-scoped documents. This is the set that is in scope for that
+   * character's chats: owned books are deliberately kept OUT of the global
+   * activeBookIds (an active foreign character-scoped book disqualifies
+   * every other character's chat from server retrieval — see
+   * serverRetrieval.ts condition 5), so this union is the only path that
+   * reaches them.
+   */
+  getCharacterBooks: (ownerAvatar: string) => WorldInfoBook[];
+  /**
+   * Deletes EVERY book owned by this character — used when the character
+   * itself is deleted, which leaves owned books unreachable (they are hidden
+   * from the world list and only ever activated through their owner). Takes
+   * no book id on purpose: the old single-book variant deleted whichever
+   * owned book came first, so an unrelated delete could destroy a
+   * character-scoped document instead of the card's lorebook (#450 F3). To
+   * delete ONE specific book, call deleteBook(bookId).
+   */
+  deleteCharacterBooks: (ownerAvatar: string) => void;
   /**
    * Persist the auto-extracted flag onto an EXISTING book (one-way ratchet
    * — see update_lorebook's docstring; the backend never lets this un-set
@@ -1772,6 +1945,64 @@ interface PersistedShape {
  *  ordinary book is equivalent, since the server's own default is false).
  *  See createCharacterBook for why this needs to be set correctly in the
  *  very FIRST create request, not patched in after the fact. */
+/**
+ * True for a "document" book — a Data Bank upload whose entries are
+ * machine-chunked prose (see dataBankStore.addDocument).
+ *
+ * Used for one thing only: keeping such a book from being mistaken for a
+ * character's EMBEDDED card lorebook. A character can own several books (its
+ * card's, plus any character-scoped documents), but exactly one of them is
+ * the card's, and the resolvers below used to take whichever came first in
+ * the array — so an unrelated card import, auto-memory append or delete could
+ * land on a document instead (#450 F3).
+ *
+ * Identity first, content second, and the order matters. The registry (see
+ * documentBookRegistry.ts) is a DURABLE signal: written when the document is
+ * created, persisted locally and synced server-side, and unaffected by any
+ * ordinary edit the user makes to the book. The old check ("every entry is
+ * semanticOnly") was pure content, so adding a single keyworded entry —
+ * which the Data Bank's own copy now tells users to do — unmasked the
+ * document and handed it to upsertCharacterBook/importBookJson to overwrite
+ * and hard-delete.
+ *
+ * The content fallbacks below exist because the registry can legitimately
+ * be behind (a document created on another device, before that device's
+ * dataBankStore.fetchPrefs has landed). Both fallbacks lean the same way —
+ * toward CALLING something a document — because that is the direction that
+ * cannot destroy data: the cost of a false positive is one extra empty
+ * embedded book, the cost of a false negative is a destroyed document.
+ *
+ * That is also why a book with no visible entries counts as a document
+ * while the session's entry fetch is degraded: fetchNativeBooks answers a
+ * failed per-book entry GET with `entries: []`, so during such a session
+ * "no entries" means "we cannot see them", and guessing from content we
+ * do not have is exactly what must not happen.
+ */
+function isDocumentBook(book: WorldInfoBook): boolean {
+  if (isRegisteredDocumentBook(book.id)) return true;
+  if (book.entries.length > 0) return book.entries.every((e) => e.semanticOnly);
+  // `_entriesFetchDegraded` is declared below with fetchNativeBooks, which
+  // owns it; this only ever reads it at call time, never at module init.
+  return _entriesFetchDegraded;
+}
+
+/**
+ * The character's embedded (card) lorebook: the first book it owns that is
+ * not a document. Null when the character owns nothing but documents — in
+ * which case callers create a fresh embedded book rather than overwriting
+ * one of them.
+ */
+function findEmbeddedBook(
+  books: WorldInfoBook[],
+  ownerAvatar: string
+): WorldInfoBook | null {
+  return (
+    books.find(
+      (b) => b.ownerCharacterAvatar === ownerAvatar && !isDocumentBook(b)
+    ) || null
+  );
+}
+
 function bookToWirePayload(book: WorldInfoBook): Record<string, unknown> {
   return {
     id: book.id,
@@ -2554,6 +2785,36 @@ function maybeWarnPinnedBudget(bookId: string, dto: LorebookEntryDTO) {
   );
 }
 
+/**
+ * Switching a world book off is not a local choice. Server-side retrieval
+ * requires EVERY world-scoped book to be active (serverRetrieval.ts
+ * condition 4), so one inactive world book demotes every one-on-one chat on
+ * the account to the local keyword scan — where a keyless entry (every Data
+ * Bank chunk) scores zero and cannot fire at all. The user is entitled to
+ * make that trade; they are not entitled to make it without being told.
+ *
+ * Fires only on the toggle that actually flips the account over: if some
+ * other world book is already inactive, retrieval is already off and a
+ * second toast would be noise rather than news.
+ */
+function warnIfLastActiveWorldBook(
+  book: WorldInfoBook,
+  composable: WorldInfoBook[],
+  nextActiveIds: string[]
+): void {
+  if (book.scope !== 'world') return;
+  const active = new Set(nextActiveIds);
+  for (const other of composable) {
+    if (other.id === book.id) continue;
+    if (other.scope !== 'world') continue;
+    if (!active.has(other.id)) return;
+  }
+  showToastGlobal(
+    `"${book.name}" is off. Server-side semantic matching needs every world book active, so until it's back on, one-on-one chats fall back to the local keyword scan — keyless entries like document chunks can't fire there.`,
+    'warning'
+  );
+}
+
 export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
   // -------------------------------------------------------------------------
   // Local-state mutation helpers shared by every native-synced mutator's
@@ -2907,6 +3168,16 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
         chatLinkedBookIds: chatNext,
       });
 
+      // The Data Bank registry rides WITH the local removal, not with the
+      // post-confirm prune below, because it is the same kind of thing as
+      // activeBookIds membership: a flag about a book id we are holding, not
+      // data that has to be reconstructed. That is exactly what the two
+      // stores below are not — their overlays and conflict records can't be
+      // rebuilt once dropped, which is why they wait for the DELETE. This one
+      // undoes exactly, so it can go now and keep the window in which a
+      // deleted document reads as an orphaned registration down to zero.
+      const undoRegistryPrune = notifyBooksDeleted([bookId]);
+
       // The cross-store prune below (chatLoreConfigStore/loreConflictStore)
       // strips real data — per-chat overlays and pending Auto Memory
       // conflict records — that DOES still reference this book id, and
@@ -2930,6 +3201,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
         },
         (err) => {
           console.warn('[worldInfoStore] failed to delete lorebook on server', err);
+          undoRegistryPrune();
           set((s) => {
             const books = s.books.some((b) => b.id === bookId) ? s.books : [...s.books, prevBook];
             const activeBookIds =
@@ -3220,11 +3492,21 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
 
     toggleBookActive: (bookId) => {
       const cur = get().activeBookIds;
-      const next = cur.includes(bookId)
+      const wasActive = cur.includes(bookId);
+      const next = wasActive
         ? cur.filter((id) => id !== bookId)
         : [...cur, bookId];
       saveActiveBooks(next);
       set({ activeBookIds: next });
+      // The ONLY user-driven activation path (the library row's checkbox);
+      // setBookActive above is the programmatic one. Keeping them apart is
+      // what lets dataBankStore tell "the user turned this document off"
+      // from "our own repair turned it on" — see its opt-out record.
+      const book = get().books.find((b) => b.id === bookId);
+      notifyUserBookActivation(bookId, !wasActive);
+      if (wasActive && book) {
+        warnIfLastActiveWorldBook(book, get().getComposableBooks(), next);
+      }
     },
 
     setScanDepth: (depth) => {
@@ -3276,9 +3558,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
           book.ownerCharacterAvatar = ownerAvatar;
           // scope is derived — recompute alongside ownerCharacterAvatar.
           book.scope = 'character';
-          const existing = get().books.find(
-            (b) => b.ownerCharacterAvatar === ownerAvatar
-          );
+          const existing = findEmbeddedBook(get().books, ownerAvatar);
           const without = existing
             ? get().books.filter((b) => b.id !== existing.id)
             : get().books;
@@ -3310,9 +3590,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
     },
 
     upsertCharacterBook: (ownerAvatar, raw, fallbackName) => {
-      const existing = get().books.find(
-        (b) => b.ownerCharacterAvatar === ownerAvatar
-      );
+      const existing = findEmbeddedBook(get().books, ownerAvatar);
       const now = Date.now();
       if (existing) {
         // Preserve the book id (keeps linked-books references stable) and
@@ -3353,9 +3631,7 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
       // creating a second — the model is one embedded book per character.
       // Note: autoExtracted is NOT applied here even if requested — see
       // markBookAutoExtracted for retroactively flagging an existing book.
-      const existing = get().books.find(
-        (b) => b.ownerCharacterAvatar === ownerAvatar
-      );
+      const existing = findEmbeddedBook(get().books, ownerAvatar);
       if (existing) return existing;
       const trimmed = name.trim() || 'Character Lorebook';
       const now = Date.now();
@@ -3383,24 +3659,36 @@ export const useWorldInfoStore = create<WorldInfoState>((set, get) => {
     },
 
     getCharacterBook: (ownerAvatar) => {
-      return (
-        get().books.find((b) => b.ownerCharacterAvatar === ownerAvatar) || null
-      );
+      return findEmbeddedBook(get().books, ownerAvatar);
     },
 
-    deleteCharacterBook: (ownerAvatar) => {
-      const existing = get().books.find(
+    getCharacterBooks: (ownerAvatar) => {
+      return get().books.filter((b) => b.ownerCharacterAvatar === ownerAvatar);
+    },
+
+    deleteCharacterBooks: (ownerAvatar) => {
+      const owned = get().books.filter(
         (b) => b.ownerCharacterAvatar === ownerAvatar
       );
-      if (!existing) return;
-      const next = get().books.filter((b) => b.id !== existing.id);
-      const activeNext = get().activeBookIds.filter((id) => id !== existing.id);
+      if (owned.length === 0) return;
+      const ownedIds = new Set(owned.map((b) => b.id));
+      const next = get().books.filter((b) => !ownedIds.has(b.id));
+      const activeNext = get().activeBookIds.filter((id) => !ownedIds.has(id));
       saveBooks(next);
       saveActiveBooks(activeNext);
       set({ books: next, activeBookIds: activeNext });
-      api.deleteLorebook(existing.id).catch((err) => {
-        console.warn('[worldInfoStore] failed to delete character lorebook on server', err);
-      });
+      // Every book at once, and no undo captured: this path's local removal
+      // is final by design (its DELETEs are fire-and-forget, warn-only, with
+      // no rollback), so a registry record kept back "in case one failed"
+      // would point at a book this session has already dropped — the very
+      // leftover the prune exists to prevent. A character's documents and
+      // its embedded card lorebook go the same way.
+      notifyBooksDeleted(owned.map((b) => b.id));
+      for (const book of owned) {
+        api.deleteLorebook(book.id).catch((err) => {
+          console.warn('[worldInfoStore] failed to delete character lorebook on server', err);
+        });
+      }
     },
 
     getChatLinkedBookIds: (chatFileName) => {
@@ -3767,7 +4055,14 @@ function snapshotForServer(s: WorldInfoState): PersistedShape {
   };
 }
 
-useWorldInfoStore.subscribe((state) => {
+useWorldInfoStore.subscribe((state, prev) => {
+  // The book list landing (or being replaced by a fresher fetch) is the
+  // event dataBankStore's activation repair waits on — its login-time call
+  // legitimately runs against an empty or stale `books`. Announced through
+  // the leaf registry rather than subscribed to from dataBankStore, which
+  // cannot touch this module at its own module scope: the two sit on
+  // opposite ends of an init cycle.
+  if (state.books !== prev.books) notifyBooksChanged();
   // Unconditional local-cache safety net: every mutator above already calls
   // saveBooks() itself, but a handful of call sites elsewhere in the app
   // (e.g. autoMemoryStore's autoExtracted flip) intentionally reach in via

@@ -80,6 +80,24 @@ describe('lintEntry — entries that can never fire', () => {
     );
   });
 
+  // E4-S0 / #450 F4 — the honest half of the finding above: server-side
+  // matching is not "everywhere", and the lint used to say nothing at all.
+  it('warns that a keyless semanticOnly entry cannot fire on local-scan turns', () => {
+    const findings = lintEntry(mkEntry({ keys: [], semanticOnly: true }));
+    const finding = findings.find((f) => f.code === 'semantic-only-not-everywhere');
+    expect(finding?.severity).toBe('warning');
+    expect(finding?.message).toMatch(/group chats/i);
+    expect(finding?.message).toMatch(/server-side/i);
+  });
+
+  it('stays quiet about semantic matching once the entry has keywords', () => {
+    // With keys the entry matches in the local scan like any other, so the
+    // "not everywhere" caveat no longer applies.
+    expect(codes(mkEntry({ keys: ['ivy'], semanticOnly: true }))).not.toContain(
+      'semantic-only-not-everywhere'
+    );
+  });
+
   it('calls out a critical entry with no trigger specifically', () => {
     const findings = lintEntry(mkEntry({ keys: [], critical: true }));
     const noTrigger = findings.find((f) => f.code === 'no-trigger');

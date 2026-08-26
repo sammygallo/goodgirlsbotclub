@@ -305,6 +305,83 @@ describe('R2 per-id drop rule — entries', () => {
   });
 });
 
+// E4-S0 / #450 F3. Same degraded fetch, a second consumer: the resolver that
+// decides which of a character's owned books is its EMBEDDED card lorebook.
+// A book that reads as `entries: []` because its per-book GET failed must
+// not be classified from content it does not have — and the only safe guess
+// is "document", because that is the one that never overwrites or deletes.
+describe('character-book resolution off a degraded entries fetch', () => {
+  const AVATAR = 'ivy.png';
+
+  it('never hands a zero-entry owned book to upsertCharacterBook as the card book', async () => {
+    await runSession({
+      map: null,
+      native: [
+        // Document first in the array, so a first-match resolver picks it.
+        {
+          dto: mkBookDto({
+            id: 'uuid-doc',
+            name: 'Ivy Dossier',
+            ownerCharacterAvatar: AVATAR,
+          }),
+          entries: [],
+        },
+        {
+          dto: mkBookDto({
+            id: 'uuid-embedded',
+            name: 'Ivy Lorebook',
+            ownerCharacterAvatar: AVATAR,
+          }),
+          entries: [mkEntryDto({ id: 'uuid-entry', lorebook_id: 'uuid-embedded', keys: ['ivy'], content: 'card lore' })],
+        },
+      ],
+      failEntriesFor: ['uuid-doc'],
+    });
+
+    const store = useWorldInfoStore.getState();
+    expect(store.books.find((b) => b.id === 'uuid-doc')!.entries).toHaveLength(0);
+    expect(store.getCharacterBook(AVATAR)!.id).toBe('uuid-embedded');
+
+    const upserted = store.upsertCharacterBook(
+      AVATAR,
+      { name: 'From Card', entries: [{ keys: ['x'], content: 'fresh' }] } as never,
+      'From Card'
+    );
+
+    expect(upserted.id).toBe('uuid-embedded');
+    const doc = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'uuid-doc')!;
+    expect(doc.name).toBe('Ivy Dossier');
+  });
+
+  it('still resolves a zero-entry owned book normally when the fetch was clean', async () => {
+    // The other direction: with every entries GET green, an empty owned book
+    // really is empty — an embedded book the user created and hasn't filled
+    // in — and createCharacterBook must reuse it rather than pile up a
+    // second one.
+    await runSession({
+      map: null,
+      native: [
+        {
+          dto: mkBookDto({
+            id: 'uuid-empty-embedded',
+            name: 'Ivy Lorebook',
+            ownerCharacterAvatar: AVATAR,
+          }),
+          entries: [],
+        },
+      ],
+    });
+
+    const store = useWorldInfoStore.getState();
+    expect(store.getCharacterBook(AVATAR)!.id).toBe('uuid-empty-embedded');
+    expect(store.createCharacterBook(AVATAR, 'Ivy Lorebook').id).toBe(
+      'uuid-empty-embedded'
+    );
+  });
+});
+
 describe('R2 session scoping', () => {
   it('a previous account\'s map keys never authorize drops after resetUser', async () => {
     // Account A: map names LEGACY_BOOK with a dead successor — drop is

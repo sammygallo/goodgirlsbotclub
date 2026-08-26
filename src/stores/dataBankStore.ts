@@ -39,6 +39,12 @@ import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, reco
 import { api, settingsApi, SECRET_KEYS, type SecretsResponse } from '../api/client';
 import { useSettingsStore } from './settingsStore';
 import { useWorldInfoStore, type WorldInfoEntry } from './worldInfoStore';
+import {
+  setDocumentBookIds,
+  onUserBookActivation,
+  onBooksChanged,
+  onBooksDeleted,
+} from './documentBookRegistry';
 
 // ---------------------------------------------------------------------------
 // Embeddings-key gate. The backend resolves a fallback chain server-side —
@@ -101,10 +107,36 @@ export function hasEmbeddingsKey(): boolean {
 // ---------------------------------------------------------------------------
 
 interface DataBankState {
-  /** Lorebook ids created via addDocument (or the legacy-blob migration) —
-   *  purely a display filter, never source of truth for the books/entries
-   *  themselves (that's worldInfoStore.ts, same as any other lorebook). */
+  /**
+   * Lorebook ids created via addDocument (or the legacy-blob migration).
+   *
+   * Never source of truth for the books/entries themselves — that is
+   * worldInfoStore.ts, same as any other lorebook. It IS, however, source of
+   * truth for one thing, and no longer merely a display filter: whether a
+   * book is a document. worldInfoStore's resolver reads it (through
+   * documentBookRegistry) to keep a character-scoped document from being
+   * mistaken for that character's embedded card lorebook and overwritten.
+   * Nothing else can carry that fact: the lorebook wire payload has no
+   * document flag, and the book's own contents are exactly what the user
+   * edits.
+   */
   lorebookIds: string[];
+
+  /**
+   * Document book ids the user has explicitly switched OFF in the library.
+   *
+   * The activation repair below has no other way to tell the state it
+   * exists to fix ("this document was never activated") from a deliberate
+   * choice ("I turned this one off"): both read as "in the registry, not in
+   * activeBookIds". Recording the choice — durably, and synced alongside
+   * the registry so it holds on every device — is what stops the repair
+   * from reverting it on the next page load, forever.
+   *
+   * Written only from the user-facing toggle (see the
+   * onUserBookActivation listener at the bottom of this module), never from
+   * the repair's own setBookActive calls.
+   */
+  deactivatedDocumentIds: string[];
 
   /**
    * Store the OpenAI embeddings key as a server-side secret
@@ -162,12 +194,18 @@ const LEGACY_DOCUMENTS_STORAGE_KEY = 'stm:data-bank';
 
 interface PersistedShape {
   lorebookIds: string[];
+  /** Optional: absent in every blob written before the opt-out existed. */
+  deactivatedDocumentIds?: string[];
 }
+
+/** The whole persisted slice, in one value — the two fields are written
+ *  together so an opt-out can never be dropped by a registry-only save. */
+type IndexSnapshot = Required<PersistedShape>;
 
 let _persistEnabled = false;
 let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-function schedulePersist(lorebookIds: string[]): void {
+function schedulePersist(snapshot: IndexSnapshot): void {
   if (!_persistEnabled) return;
   try { markSectionDirty(LOCAL_TS_KEY); } catch { /* ignore */ }
   if (_persistTimer) clearTimeout(_persistTimer);
@@ -175,35 +213,50 @@ function schedulePersist(lorebookIds: string[]): void {
     _persistTimer = null;
     patchServerKey(
       SERVER_KEY,
-      { lorebookIds } as unknown as Record<string, unknown>,
+      snapshot as unknown as Record<string, unknown>,
       LOCAL_TS_KEY,
     ).catch(() => {});
   }, 500);
 }
 
-function loadFromStorage(): string[] {
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v) => typeof v === 'string') : [];
+}
+
+function loadFromStorage(): IndexSnapshot {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as PersistedShape;
-      return Array.isArray(parsed.lorebookIds) ? parsed.lorebookIds : [];
+      return {
+        lorebookIds: strings(parsed.lorebookIds),
+        deactivatedDocumentIds: strings(parsed.deactivatedDocumentIds),
+      };
     }
   } catch { /* ignore */ }
-  return [];
+  return { lorebookIds: [], deactivatedDocumentIds: [] };
 }
 
-function writeCache(lorebookIds: string[]): void {
+function writeCache(snapshot: IndexSnapshot): void {
   try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ lorebookIds } satisfies PersistedShape),
-    );
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
   } catch { /* ignore */ }
 }
 
-function saveIndex(lorebookIds: string[]): void {
-  writeCache(lorebookIds);
-  schedulePersist(lorebookIds);
+function saveIndex(snapshot: IndexSnapshot): void {
+  writeCache(snapshot);
+  schedulePersist(snapshot);
+}
+
+/** Current persisted slice as held in state — the base every save builds on,
+ *  so one field's write never silently reverts the other's. */
+function indexSnapshot(over: Partial<IndexSnapshot> = {}): IndexSnapshot {
+  const s = useDataBankStore.getState();
+  return {
+    lorebookIds: s.lorebookIds,
+    deactivatedDocumentIds: s.deactivatedDocumentIds,
+    ...over,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +292,7 @@ async function ensureDataBankImported(): Promise<Array<{ name: string; lorebook_
 // ---------------------------------------------------------------------------
 
 export const useDataBankStore = create<DataBankState>((set, get) => ({
-  lorebookIds: loadFromStorage(),
+  ...loadFromStorage(),
 
   setEmbeddingsApiKey: async (key) => {
     const trimmed = key.trim();
@@ -264,14 +317,30 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
       .getState()
       .createBookWithEntries(trimmedName, entries, ownerCharacterAvatar);
 
+    // A global document has to be ACTIVE or it does nothing — and worse than
+    // nothing: scanMessagesForEntries skips inactive books, and an inactive
+    // world book makes every solo chat on the account ineligible for server
+    // retrieval (serverRetrieval.ts condition 4), silently demoting all of
+    // the user's OTHER lore to the keyword-only local scan. Adding one
+    // document used to turn server retrieval off account-wide, permanently.
+    //
+    // Character-scoped documents are deliberately NOT activated: activeBookIds
+    // is global, and an active character-scoped book owned by someone other
+    // than the character generating disqualifies that chat too (condition 5).
+    // They reach the scan through characterStore.getActiveBookIdsForCharacter,
+    // which unions every book the character owns.
+    if (book.scope === 'world') {
+      useWorldInfoStore.getState().setBookActive(book.id, true);
+    }
+
     const lorebookIds = [...get().lorebookIds, book.id];
-    saveIndex(lorebookIds);
+    saveIndex(indexSnapshot({ lorebookIds }));
     set({ lorebookIds });
     return book.id;
   },
 
   resetUser: () => {
-    set({ lorebookIds: [] });
+    set({ lorebookIds: [], deactivatedDocumentIds: [] });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     try { localStorage.removeItem(LEGACY_DOCUMENTS_STORAGE_KEY); } catch { /* ignore */ }
     // Legacy: older builds stored the embeddings key in localStorage; purge it.
@@ -290,11 +359,11 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
 
       if (!stored) {
         _persistEnabled = true;
-        const lorebookIds = get().lorebookIds;
-        if (lorebookIds.length > 0) {
+        const snapshot = indexSnapshot();
+        if (snapshot.lorebookIds.length > 0) {
           patchServerKey(
             SERVER_KEY,
-            { lorebookIds } as unknown as Record<string, unknown>,
+            snapshot as unknown as Record<string, unknown>,
             LOCAL_TS_KEY,
           ).catch(() => {});
         }
@@ -302,15 +371,18 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
         _persistEnabled = true;
         patchServerKey(
           SERVER_KEY,
-          { lorebookIds: get().lorebookIds } as unknown as Record<string, unknown>,
+          indexSnapshot() as unknown as Record<string, unknown>,
           LOCAL_TS_KEY,
         ).catch(() => {});
       } else {
         _persistEnabled = false;
-        const lorebookIds = Array.isArray(stored.lorebookIds) ? stored.lorebookIds : [];
-        writeCache(lorebookIds);
+        const snapshot: IndexSnapshot = {
+          lorebookIds: strings(stored.lorebookIds),
+          deactivatedDocumentIds: strings(stored.deactivatedDocumentIds),
+        };
+        writeCache(snapshot);
         try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
-        set({ lorebookIds });
+        set(snapshot);
         _persistEnabled = true;
       }
     } catch {
@@ -322,6 +394,13 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
     } catch {
       // ensureDataBankImported already handles its own retry guard/logging.
     }
+
+    // Repair documents added before global documents were activated on
+    // creation — see backfillDocumentBookActivation. This is the earliest
+    // call, not the only one: worldInfoStore's books may still be a stale
+    // cache (or empty) at this point, and the subscription at the bottom of
+    // this module re-runs the repair when they land.
+    backfillDocumentBookActivation();
   },
 }));
 
@@ -344,11 +423,19 @@ export const useDataBankStore = create<DataBankState>((set, get) => ({
  */
 export async function ensureDataBankImportedAndIndexed(): Promise<void> {
   const migrated = await ensureDataBankImported();
-  if (migrated.length === 0) return;
+  if (migrated.length === 0) {
+    // Nothing to migrate is the ordinary case for an already-migrated
+    // account, and it used to return here — which put the activation repair
+    // retry below on the far side of an early return that is ALWAYS taken,
+    // i.e. made it dead code for every account that needed it. The repair is
+    // cheap and idempotent; run it on every trip through here.
+    backfillDocumentBookActivation();
+    return;
+  }
   const migratedIds = migrated.map((b) => b.lorebook_id);
   const current = useDataBankStore.getState().lorebookIds;
   const lorebookIds = Array.from(new Set([...current, ...migratedIds]));
-  saveIndex(lorebookIds);
+  saveIndex(indexSnapshot({ lorebookIds }));
   useDataBankStore.setState({ lorebookIds });
   // Refresh worldInfoStore's book list so the just-migrated books show up
   // without waiting for the next login. Best-effort: if this fails, the
@@ -358,5 +445,173 @@ export async function ensureDataBankImportedAndIndexed(): Promise<void> {
   useWorldInfoStore
     .getState()
     .fetchPrefs()
+    .then(() => backfillDocumentBookActivation())
     .catch(() => {});
 }
+
+// ---------------------------------------------------------------------------
+// Activation repair for documents added before this fix
+// ---------------------------------------------------------------------------
+
+/**
+ * Activates every global document book that isn't already active and that
+ * the user hasn't deliberately switched off.
+ *
+ * addDocument never activated the book it created, so on an existing account
+ * every global document is sitting inactive. That is not merely "the document
+ * doesn't fire": an inactive world book trips
+ * isChatEligibleForServerRetrieval's condition 4, which turns server-side
+ * retrieval off for EVERY solo chat on the account and demotes all of the
+ * user's other lore to the keyword-only local scan. Adding one document was
+ * enough to do it, permanently, with nothing in the UI to say so.
+ *
+ * Global scope only: a character-scoped document must stay out of the global
+ * activeBookIds (condition 5 — see addDocument's note), and reaches the scan
+ * through getActiveBookIdsForCharacter instead.
+ *
+ * Deliberately has NO once-per-session guard, which is the opposite of how
+ * this started, and the reason is the whole shape of the fix:
+ *
+ * A guard needs a readiness test, and every cheap one is wrong. "The book
+ * list is non-empty" was the one used, and it fails on the ordinary case:
+ * both stores' fetchPrefs fire unordered from authStore, and worldInfoStore
+ * seeds `books` synchronously from a localStorage cache that can predate a
+ * document added on another device. So a non-empty book list happily
+ * coexists with an id that does not resolve — the guard armed, the
+ * unresolvable id was skipped, and the account-wide retrieval outage this
+ * repair exists to end survived the entire session.
+ *
+ * The honest readiness test is per id, and the honest response to "not
+ * resolvable yet" is to try again later. So: repair whatever resolves now,
+ * and let the caller (and the book-list subscription at the bottom of this
+ * module) call again. Idempotent by construction — every book it would
+ * touch is one that is registered, world-scoped, and currently inactive.
+ *
+ * Re-running is only SAFE because a deliberate deactivation is recorded
+ * durably in `deactivatedDocumentIds`. A module flag could never carry that:
+ * it resets on every page load, so the repair could not tell "never
+ * activated" from "the user turned this off", and it chose wrong every
+ * single reload — silently re-activating a document the user had switched
+ * off, with no sequence of actions that made it stick.
+ */
+export function backfillDocumentBookActivation(): void {
+  const { lorebookIds: documentIds, deactivatedDocumentIds } =
+    useDataBankStore.getState();
+  if (documentIds.length === 0) return;
+  const wi = useWorldInfoStore.getState();
+  const optedOut = new Set(deactivatedDocumentIds);
+  for (const id of documentIds) {
+    // Unresolvable means "not visible to us yet, or gone" — never "nothing
+    // to do". Skipping it here costs one more array scan on the next call.
+    const book = wi.books.find((b) => b.id === id);
+    if (!book) continue;
+    if (book.scope !== 'world') continue;
+    if (optedOut.has(id)) continue;
+    if (wi.activeBookIds.includes(id)) continue;
+    useWorldInfoStore.getState().setBookActive(id, true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-store wiring, all of it through documentBookRegistry.ts. Registering
+// with a leaf module rather than reaching into worldInfoStore from module
+// scope is not style: the two stores close a module-init cycle
+// (worldInfoStore -> loreConflictStore -> authStore -> dataBankStore), so a
+// direct call here runs against a half-evaluated module and TDZ-crashes the
+// app on load. See that module's header.
+// ---------------------------------------------------------------------------
+
+/** Keep worldInfoStore's document-identity check backed by the registry, so
+ *  a character-scoped document is never mistaken for the card's embedded
+ *  lorebook and overwritten — no matter what its entries look like after the
+ *  user has edited them (#450 F3). */
+setDocumentBookIds(useDataBankStore.getState().lorebookIds);
+useDataBankStore.subscribe((state, prev) => {
+  if (state.lorebookIds === prev.lorebookIds) return;
+  setDocumentBookIds(state.lorebookIds);
+});
+
+/** Record the user's own activation choices for document books. Only
+ *  toggleBookActive reaches this — the repair's setBookActive deliberately
+ *  does not — so "off" here always means the user said off. */
+onUserBookActivation((bookId, active) => {
+  const { lorebookIds, deactivatedDocumentIds } = useDataBankStore.getState();
+  // Non-documents have nothing to opt out of: the repair only ever touches
+  // ids in the registry.
+  if (!lorebookIds.includes(bookId)) return;
+  const alreadyRecorded = deactivatedDocumentIds.includes(bookId);
+  let next: string[];
+  if (!active && !alreadyRecorded) {
+    next = [...deactivatedDocumentIds, bookId];
+  } else if (active && alreadyRecorded) {
+    next = deactivatedDocumentIds.filter((id) => id !== bookId);
+  } else {
+    return;
+  }
+  saveIndex(indexSnapshot({ deactivatedDocumentIds: next }));
+  useDataBankStore.setState({ deactivatedDocumentIds: next });
+});
+
+/**
+ * Prune deleted books out of the document registry.
+ *
+ * `lorebookIds` is persisted and synced, so without this a delete leaves a
+ * record that outlives the book on every device — the registry only grows,
+ * and every leftover reads as an orphaned document to
+ * detectDocumentBookOrphans, which would make its report cry wolf on
+ * ordinary use of the delete button.
+ *
+ * `deactivatedDocumentIds` goes with it: an opt-out only means anything as
+ * an answer to "should the repair activate this?", and there is nothing left
+ * to activate. Both fields are written in ONE snapshot through saveIndex, so
+ * the pair can't half-persist.
+ *
+ * The undo is id-scoped against whatever state holds when it runs, not a
+ * saved copy of the whole arrays — same rule as worldInfoStore's own
+ * rollback, so a document added while the DELETE was in flight isn't
+ * clobbered by a delete that failed.
+ */
+onBooksDeleted((bookIds) => {
+  const doomed = new Set(bookIds);
+  const { lorebookIds, deactivatedDocumentIds } = useDataBankStore.getState();
+  const prunedIds = lorebookIds.filter((id) => doomed.has(id));
+  const prunedOptOuts = deactivatedDocumentIds.filter((id) => doomed.has(id));
+  // Most deletes are of ordinary lorebooks, which are in neither list.
+  if (prunedIds.length === 0 && prunedOptOuts.length === 0) return () => {};
+
+  const pruned: IndexSnapshot = {
+    lorebookIds: lorebookIds.filter((id) => !doomed.has(id)),
+    deactivatedDocumentIds: deactivatedDocumentIds.filter(
+      (id) => !doomed.has(id)
+    ),
+  };
+  saveIndex(indexSnapshot(pruned));
+  useDataBankStore.setState(pruned);
+
+  return () => {
+    const current = useDataBankStore.getState();
+    const restored: IndexSnapshot = {
+      lorebookIds: [
+        ...current.lorebookIds,
+        ...prunedIds.filter((id) => !current.lorebookIds.includes(id)),
+      ],
+      deactivatedDocumentIds: [
+        ...current.deactivatedDocumentIds,
+        ...prunedOptOuts.filter(
+          (id) => !current.deactivatedDocumentIds.includes(id)
+        ),
+      ],
+    };
+    saveIndex(indexSnapshot(restored));
+    useDataBankStore.setState(restored);
+  };
+});
+
+/** Retry the repair whenever worldInfoStore's book list changes. This is
+ *  what makes the per-id readiness rule above converge: the login-time call
+ *  legitimately runs against an empty or stale `books`, and this fires when
+ *  the real list lands. Costs one early return for accounts with no
+ *  documents, which is most of them. */
+onBooksChanged(() => {
+  backfillDocumentBookActivation();
+});

@@ -27,7 +27,7 @@ export function CharacterLorebookSection({
 }: CharacterLorebookSectionProps) {
   const books = useWorldInfoStore((s) => s.books);
   const createCharacterBook = useWorldInfoStore((s) => s.createCharacterBook);
-  const deleteCharacterBook = useWorldInfoStore((s) => s.deleteCharacterBook);
+  const getCharacterBook = useWorldInfoStore((s) => s.getCharacterBook);
   const deleteBook = useWorldInfoStore((s) => s.deleteBook);
   const importBookJson = useWorldInfoStore((s) => s.importBookJson);
   const exportBookJson = useWorldInfoStore((s) => s.exportBookJson);
@@ -97,7 +97,11 @@ export function CharacterLorebookSection({
     }
   };
 
-  const embeddedBook = books.find((b) => b.ownerCharacterAvatar === avatar);
+  // Via the store rather than a local find: a character can own more than one
+  // book (character-scoped documents are owned books too) and only the store
+  // knows which of them is the card's. `books` is selected above, so this
+  // still recomputes whenever the library changes.
+  const embeddedBook = getCharacterBook(avatar);
   // Only non-character-owned books are eligible to be linked as extras
   // (picking another character's embedded book would be surprising).
   const candidateBooks = books.filter((b) => b.ownerCharacterAvatar == null);
@@ -239,7 +243,10 @@ export function CharacterLorebookSection({
               <button
                 type="button"
                 onClick={() => {
-                  deleteCharacterBook(avatar);
+                  // By id, not by owner: an owner-keyed delete would take
+                  // whichever book the store listed first for this character,
+                  // which is not necessarily the one shown here.
+                  deleteBook(embeddedBook.id);
                   setConfirmRemove(false);
                 }}
                 className="px-2 py-1 rounded bg-red-500/80 text-white hover:bg-red-500"

@@ -67,12 +67,24 @@ const {
   DEFAULT_ENTRY,
 } = await import('./worldInfoStore');
 
+import {
+  setDocumentBookIds,
+  resetDocumentBookRegistry,
+} from './documentBookRegistry';
+
 import type {
   WorldInfoBook,
   WorldInfoEntry,
   WorldInfoScanOptions,
   WorldInfoScanReport,
 } from './worldInfoStore';
+
+// Imported as raw text, not as a JSON module, for two reasons: the app
+// project does not enable resolveJsonModule (and widening it for one test
+// would be the wrong trade), and the shared fixture's whole point is that
+// both repos hold the same BYTES — see tools/e4s0LockstepFixture.test.ts,
+// which hashes the same file and is what actually pins them.
+import lockstepVectorsRaw from './__fixtures__/e4s0_lockstep_vectors.json?raw';
 
 let idCounter = 0;
 function mkEntry(over: Partial<WorldInfoEntry> = {}): WorldInfoEntry {
@@ -415,6 +427,467 @@ describe('scanMessagesForEntries — timed-effect regressions', () => {
     );
     expect(resultIds(result)).toEqual([sticky.id]);
   });
+
+  // E4-S0 / #452 S1 — timers used to be stamped before applyTokenBudget ran.
+  it('does not register a timer for an entry the token budget evicted', () => {
+    const big = 'x'.repeat(400); // ~100 tokens generic
+    const survivor = mkEntry({ keys: ['dragon'], order: 1, content: 'tiny' });
+    const evicted = mkEntry({ keys: ['dragon'], order: 500, content: big });
+    const activated = new Set<string>();
+    const result = scan(
+      mkBook([survivor, evicted]),
+      msgs('dragon'),
+      opts({ tokenBudget: 40 }),
+      activated
+    );
+    // The evicted entry never reached the prompt, so it must not start its
+    // cooldown/sticky windows — doing so also blocked it from firing next turn.
+    expect(resultIds(result)).toEqual([survivor.id]);
+    expect(activated.has(survivor.id)).toBe(true);
+    expect(activated.has(evicted.id)).toBe(false);
+  });
+
+  // The landmine in the S1 fix: populating from the post-budget survivor set
+  // directly would sweep sticky carry-overs in, and a sticky that re-stamps
+  // its own window every turn is permanent.
+  it('never registers a timer for a sticky carry-over that survives the budget', () => {
+    const sticky = mkEntry({ keys: ['dragon'], sticky: 3, content: 'tiny' });
+    const activated = new Set<string>();
+    const result = scan(
+      mkBook([sticky]),
+      msgs('nothing relevant'),
+      opts({ tokenBudget: 512, currentTurn: 2, wiTimers: { [sticky.id]: 1 } }),
+      activated
+    );
+    expect(resultIds(result)).toEqual([sticky.id]);
+    expect([...activated]).toEqual([]);
+  });
+
+  it('does not register a timer for a relatedIds pull-in the budget evicted', () => {
+    const big = 'x'.repeat(400);
+    const target = mkEntry({ keys: ['never-said'], order: 900, content: big });
+    const source = mkEntry({
+      keys: ['dragon'],
+      order: 1,
+      content: 'tiny',
+      relatedIds: [target.id],
+    });
+    const activated = new Set<string>();
+    const result = scan(
+      mkBook([source, target]),
+      msgs('dragon'),
+      opts({ tokenBudget: 40 }),
+      activated
+    );
+    expect(resultIds(result)).toEqual([source.id]);
+    expect(activated.has(target.id)).toBe(false);
+  });
+});
+
+// E4-S0 / #452 S2 — sticky matches used to be concatenated straight past
+// resolveGroups, so they never faced the one-entry-per-group contract.
+describe('scanMessagesForEntries — sticky carry-overs and inclusion groups', () => {
+  it("keeps a sticky carry-over out when its own group already has a fresh winner", () => {
+    const fresh = mkEntry({ keys: ['dragon'], group: 'g', order: 1 });
+    const stickySibling = mkEntry({
+      keys: ['kraken'],
+      group: 'g',
+      order: 2,
+      sticky: 3,
+    });
+    const result = scan(
+      mkBook([fresh, stickySibling]),
+      msgs('dragon'),
+      opts({ currentTurn: 2, wiTimers: { [stickySibling.id]: 1 } })
+    );
+    expect(resultIds(result)).toEqual([fresh.id]);
+  });
+
+  it('admits only the lowest-order of two sticky siblings when neither freshly matched', () => {
+    const low = mkEntry({ keys: ['kraken'], group: 'g', order: 10, sticky: 3 });
+    const high = mkEntry({ keys: ['wyvern'], group: 'g', order: 99, sticky: 3 });
+    const result = scan(
+      // Book order deliberately puts the loser first: admission is decided by
+      // the comparator, not by whichever candidate is seen first.
+      mkBook([high, low]),
+      msgs('nothing relevant'),
+      opts({ currentTurn: 2, wiTimers: { [low.id]: 1, [high.id]: 1 } })
+    );
+    expect(resultIds(result)).toEqual([low.id]);
+  });
+
+  it('breaks a sticky group tie on the lowercased label when orders match', () => {
+    const alpha = mkEntry({
+      keys: ['kraken'],
+      comment: 'Alpha',
+      group: 'g',
+      order: 10,
+      sticky: 3,
+    });
+    const beta = mkEntry({
+      keys: ['wyvern'],
+      comment: 'beta',
+      group: 'g',
+      order: 10,
+      sticky: 3,
+    });
+    const result = scan(
+      mkBook([beta, alpha]),
+      msgs('nothing relevant'),
+      opts({ currentTurn: 2, wiTimers: { [alpha.id]: 1, [beta.id]: 1 } })
+    );
+    expect(resultIds(result)).toEqual([alpha.id]);
+  });
+
+  // The landmine S2 opened: excluding group-losers from `allMatched` also
+  // took them out of the `included` set that guards the relatedIds pull-in,
+  // so a loser could be dragged back in, land in matchedIds, and re-stamp
+  // its own sticky window every single turn — permanent injection.
+  it('never lets relatedIds resurrect a sticky group-loser or stamp its timer', () => {
+    const winner = mkEntry({ constant: true, group: 'g', order: 1 });
+    const loser = mkEntry({ keys: ['never'], group: 'g', order: 5, sticky: 3 });
+    const puller = mkEntry({
+      keys: ['dragon'],
+      order: 9,
+      relatedIds: [loser.id],
+    });
+    const activated = new Set<string>();
+    const result = scan(
+      mkBook([winner, loser, puller]),
+      msgs('dragon'),
+      opts({ currentTurn: 2, wiTimers: { [loser.id]: 1 } }),
+      activated
+    );
+    expect(resultIds(result)).toEqual([winner.id, puller.id]);
+    expect(activated.has(loser.id)).toBe(false);
+  });
+
+  it('leaves ungrouped sticky carry-overs competing with nobody', () => {
+    const a = mkEntry({ keys: ['kraken'], sticky: 3 });
+    const b = mkEntry({ keys: ['wyvern'], sticky: 3 });
+    const result = scan(
+      mkBook([a, b]),
+      msgs('nothing relevant'),
+      opts({ currentTurn: 2, wiTimers: { [a.id]: 1, [b.id]: 1 } })
+    );
+    expect(resultIds(result).sort()).toEqual([a.id, b.id].sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-engine decision vectors (E4-S0).
+//
+// The activation rules are implemented twice — here, and in ggbc-backend's
+// app/routers/_activation.py — and until this table existed the only thing
+// holding the two in lockstep was a claim in two docstrings. Each vector is
+// a fixture plus the two decisions BOTH engines make: which entries are
+// admitted, and which of them register a timer. The backend suite
+// (tests/test_retrieval_context.py) mirrors this table verbatim, so a
+// one-sided change to either engine turns a test red instead of shipping as
+// "the server gave me different lore than the local scan did on the very
+// next turn".
+//
+// Scope is deliberate: relatedIds is a documented backend scope cut, so this
+// table stays on admission and timer registration. Sticky EMISSION order (and
+// with it token-budget eviction among equal-order entries) used to be a second
+// exclusion — an open divergence between the engines — and is now settled; it
+// is pinned by the shared fixture suite below, which also covers eviction.
+// ---------------------------------------------------------------------------
+interface VectorEntry {
+  comment: string;
+  keys?: string[];
+  constant?: boolean;
+  group?: string;
+  groupOverride?: boolean;
+  order?: number;
+  sticky?: number;
+  cooldown?: number;
+  delay?: number;
+}
+
+interface DecisionVector {
+  name: string;
+  entries: VectorEntry[];
+  timers: Record<string, number>;
+  turn: number;
+  message: string;
+  admitted: string[];
+  registered: string[];
+}
+
+const DECISION_VECTORS: DecisionVector[] = [
+  {
+    name: 'a fresh keyword match is admitted and registers its timer',
+    entries: [{ comment: 'lore', keys: ['dragon'], sticky: 3 }],
+    timers: {},
+    turn: 1,
+    message: 'a dragon appears',
+    admitted: ['lore'],
+    registered: ['lore'],
+  },
+  {
+    name: 'a sticky carry-over is admitted and registers nothing',
+    entries: [{ comment: 'lore', keys: ['dragon'], sticky: 3 }],
+    timers: { lore: 1 },
+    turn: 2,
+    message: 'nothing relevant',
+    admitted: ['lore'],
+    registered: [],
+  },
+  {
+    name: 'a cooldown blocks the fresh match entirely',
+    entries: [{ comment: 'lore', keys: ['dragon'], cooldown: 3 }],
+    timers: { lore: 5 },
+    turn: 6,
+    message: 'a dragon appears',
+    admitted: [],
+    registered: [],
+  },
+  {
+    name: 'a delay blocks activation until its turn',
+    entries: [{ comment: 'lore', keys: ['dragon'], delay: 5 }],
+    timers: {},
+    turn: 2,
+    message: 'a dragon appears',
+    admitted: [],
+    registered: [],
+  },
+  {
+    name: "a group's fresh winner turns away its sticky sibling",
+    entries: [
+      { comment: 'fresh', keys: ['dragon'], group: 'g', order: 1 },
+      { comment: 'carry', keys: ['kraken'], group: 'g', order: 2, sticky: 5 },
+    ],
+    timers: { carry: 5 },
+    turn: 6,
+    message: 'a dragon appears',
+    admitted: ['fresh'],
+    registered: ['fresh'],
+  },
+  {
+    name: 'two sticky siblings of one group: the lower order wins',
+    entries: [
+      { comment: 'high', keys: ['wyvern'], group: 'g', order: 99, sticky: 3 },
+      { comment: 'low', keys: ['kraken'], group: 'g', order: 10, sticky: 3 },
+    ],
+    timers: { high: 1, low: 1 },
+    turn: 2,
+    message: 'nothing relevant',
+    admitted: ['low'],
+    registered: [],
+  },
+  {
+    name: 'equal orders break on the lowercased label',
+    entries: [
+      { comment: 'beta', keys: ['wyvern'], group: 'g', order: 10, sticky: 3 },
+      { comment: 'Alpha', keys: ['kraken'], group: 'g', order: 10, sticky: 3 },
+    ],
+    timers: { beta: 1, Alpha: 1 },
+    turn: 2,
+    message: 'nothing relevant',
+    admitted: ['Alpha'],
+    registered: [],
+  },
+  {
+    // A deliberate divergence from the fresh path, where groupOverride buys
+    // an exclusive pool. Pinned so that "fix" landing in one engine alone
+    // shows up as a red test rather than as two chats' worth of
+    // contradictory lore.
+    name: 'groupOverride is ignored on the sticky path',
+    entries: [
+      { comment: 'plain', keys: ['kraken'], group: 'camp', order: 1, sticky: 3 },
+      {
+        comment: 'override',
+        keys: ['wyvern'],
+        group: 'camp',
+        order: 5,
+        groupOverride: true,
+        sticky: 3,
+      },
+    ],
+    timers: { plain: 1, override: 1 },
+    turn: 2,
+    message: 'nothing relevant',
+    admitted: ['plain'],
+    registered: [],
+  },
+  {
+    name: 'ungrouped sticky carry-overs never compete',
+    entries: [
+      { comment: 'one', keys: ['kraken'], sticky: 3 },
+      { comment: 'two', keys: ['wyvern'], sticky: 3 },
+    ],
+    timers: { one: 1, two: 1 },
+    turn: 2,
+    message: 'nothing relevant',
+    admitted: ['one', 'two'],
+    registered: [],
+  },
+  {
+    name: 'a constant entry claims its group ahead of a sticky sibling',
+    entries: [
+      { comment: 'always', constant: true, group: 'g', order: 1 },
+      { comment: 'carry', keys: ['never'], group: 'g', order: 5, sticky: 3 },
+    ],
+    timers: { carry: 1 },
+    turn: 2,
+    message: 'nothing relevant',
+    admitted: ['always'],
+    registered: ['always'],
+  },
+];
+
+describe('cross-engine decision vectors', () => {
+  for (const vector of DECISION_VECTORS) {
+    it(vector.name, () => {
+      // comment doubles as the vector's stable name: it is the one entry
+      // field both engines carry, so expectations read the same in both
+      // suites without sharing generated ids.
+      const entries = vector.entries.map((spec) =>
+        mkEntry({
+          comment: spec.comment,
+          keys: spec.keys ?? [],
+          constant: spec.constant ?? false,
+          group: spec.group ?? '',
+          groupOverride: spec.groupOverride ?? false,
+          order: spec.order ?? 100,
+          sticky: spec.sticky ?? 0,
+          cooldown: spec.cooldown ?? 0,
+          delay: spec.delay ?? 0,
+        })
+      );
+      const idOf = (comment: string) =>
+        entries.find((e) => e.comment === comment)!.id;
+      const wiTimers: Record<string, number> = {};
+      for (const [comment, turn] of Object.entries(vector.timers)) {
+        wiTimers[idOf(comment)] = turn;
+      }
+
+      const activated = new Set<string>();
+      const result = scan(
+        mkBook(entries),
+        msgs(vector.message),
+        opts({ currentTurn: vector.turn, wiTimers, maxRecursionSteps: 0 }),
+        activated
+      );
+
+      const nameOf = (id: string) => entries.find((e) => e.id === id)!.comment;
+      expect(resultIds(result).map(nameOf).sort()).toEqual(
+        [...vector.admitted].sort()
+      );
+      expect([...activated].map(nameOf).sort()).toEqual(
+        [...vector.registered].sort()
+      );
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// E4-S0 shared lockstep fixture.
+//
+// The table above is this repo's own; the one below is a file both repos
+// commit BYTE-IDENTICALLY (ggbc-backend holds it at tests/
+// e4s0_lockstep_vectors.json). Same twelve cases, same expectations, run here
+// against scanMessagesForEntries and there against run_activation_engine.
+// It carries what the local table deliberately left out: eviction, and the
+// equal-order sticky ordering that decides it.
+//
+// Its `_readme.semantics` block is the spec for this harness: `entries` is in
+// CANONICAL CANDIDATE ORDER and is seeded into the book in that array order,
+// every expectation is compared as a SET, and relatedIds stays empty so the
+// run needs maxRecursionSteps: 0.
+//
+// The seeding order is honoured because the fixture specifies it and because
+// the backend genuinely needs it (its candidate order is SQL, so the rows have
+// to be seeded to produce it). On THIS side it is no longer load-bearing, and
+// that is the point: with sticky emission moved onto the shared comparator,
+// reversing the seed order leaves all ten vectors green (mutation-verified).
+// Candidate order no longer reaches the result at all, which is precisely why
+// the two engines can now agree without sharing one.
+//
+// Do not edit the fixture here alone. tools/e4s0LockstepFixture.test.ts
+// asserts its sha256 against the same constant the backend suite asserts, so
+// a one-sided edit turns this repo red rather than silently un-pairing the
+// two engines.
+// ---------------------------------------------------------------------------
+interface LockstepVectorEntry {
+  id: string;
+  comment: string;
+  order: number;
+  group: string;
+  groupOverride: boolean;
+  sticky: number;
+  cooldown: number;
+  keys: string[];
+  relatedIds: string[];
+  constant: boolean;
+  critical: boolean;
+  content: string;
+}
+
+interface LockstepVector {
+  id: string;
+  name: string;
+  pins: string;
+  turn: number;
+  budgetTokens: number;
+  message: string;
+  entries: LockstepVectorEntry[];
+  timers: Record<string, number>;
+  expect: { injected: string[]; activated: string[]; evicted: string[] };
+}
+
+const LOCKSTEP_VECTORS: LockstepVector[] = (
+  JSON.parse(lockstepVectorsRaw) as { vectors: LockstepVector[] }
+).vectors;
+
+/** Every expectation in the fixture is a SET; ids sort lexicographically. */
+const asSet = (ids: string[]) => [...ids].sort();
+
+describe('E4-S0 shared lockstep vectors', () => {
+  for (const vector of LOCKSTEP_VECTORS) {
+    it(`${vector.id} — ${vector.name}`, () => {
+      // Seeded in the fixture's array order, with the fixture's own ids —
+      // the ids matter here, since every expectation is expressed in them.
+      const entries = vector.entries.map((spec) =>
+        mkEntry({
+          id: spec.id,
+          comment: spec.comment,
+          order: spec.order,
+          group: spec.group,
+          groupOverride: spec.groupOverride,
+          sticky: spec.sticky,
+          cooldown: spec.cooldown,
+          keys: spec.keys,
+          relatedIds: spec.relatedIds,
+          constant: spec.constant,
+          critical: spec.critical,
+          content: spec.content,
+        })
+      );
+
+      const activated = new Set<string>();
+      const report = emptyReport();
+      const result = scan(
+        mkBook(entries),
+        msgs(vector.message),
+        opts({
+          currentTurn: vector.turn,
+          wiTimers: { ...vector.timers },
+          tokenBudget: vector.budgetTokens,
+          maxRecursionSteps: 0,
+        }),
+        activated,
+        report
+      );
+
+      expect(asSet(resultIds(result))).toEqual(asSet(vector.expect.injected));
+      expect(asSet([...activated])).toEqual(asSet(vector.expect.activated));
+      expect(asSet(report.dropped.map((m) => m.entry.id))).toEqual(
+        asSet(vector.expect.evicted)
+      );
+    });
+  }
 });
 
 describe('ST-format round trip', () => {
@@ -580,6 +1053,191 @@ describe('store actions', () => {
 
     const copy = useWorldInfoStore.getState().duplicateBook(book.id)!;
     expect(copy.visibility).toBe('private');
+  });
+});
+
+// E4-S0 / #450 F2+F3. A character can own more than one book: its card's
+// embedded lorebook, plus any character-scoped Data Bank document. Every
+// resolver used to take `books.find(ownerCharacterAvatar === avatar)` — first
+// match only — so a document could be mistaken for the card's book (and
+// destroyed by an unrelated delete), while itself staying invisible to the
+// chat scan.
+describe('character-owned book resolution', () => {
+  const AVATAR = 'ivy.png';
+
+  beforeEach(() => {
+    useWorldInfoStore.getState().resetUser();
+    resetDocumentBookRegistry();
+  });
+
+  afterEach(() => {
+    resetDocumentBookRegistry();
+  });
+
+  /** A character-scoped document: keyless, semantic-only chunks. */
+  function addDocumentBook(name: string) {
+    return useWorldInfoStore
+      .getState()
+      .createBookWithEntries(
+        name,
+        [
+          { content: 'chunk one', comment: `chunk 1 of ${name}`, keys: [], semanticOnly: true, source: 'import' },
+          { content: 'chunk two', comment: `chunk 2 of ${name}`, keys: [], semanticOnly: true, source: 'import' },
+        ],
+        AVATAR
+      );
+  }
+
+  it('getCharacterBook skips a document book that would otherwise shadow the card book', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+    // The document was created first, so the old first-match resolver returned it.
+    expect(useWorldInfoStore.getState().books[0].id).toBe(doc.id);
+    expect(embedded.id).not.toBe(doc.id);
+    expect(useWorldInfoStore.getState().getCharacterBook(AVATAR)!.id).toBe(embedded.id);
+  });
+
+  it('getCharacterBooks returns every book the character owns', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+    useWorldInfoStore.getState().createBook('Unrelated World Book');
+
+    const owned = useWorldInfoStore.getState().getCharacterBooks(AVATAR);
+    expect(owned.map((b) => b.id).sort()).toEqual([doc.id, embedded.id].sort());
+  });
+
+  it('upsertCharacterBook replaces the card book, never a shadowing document', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+
+    const cardRaw = bookToCharacterBookV2(
+      mkBook([mkEntry({ keys: ['ivy'], content: 'card lore' })], { name: 'From Card' })
+    );
+    const upserted = useWorldInfoStore
+      .getState()
+      .upsertCharacterBook(AVATAR, cardRaw, 'From Card');
+
+    expect(upserted.id).toBe(embedded.id);
+    const after = useWorldInfoStore.getState().books.find((b) => b.id === doc.id)!;
+    expect(after.entries).toHaveLength(2);
+    expect(after.entries.every((e) => e.semanticOnly)).toBe(true);
+  });
+
+  it('deleteBook removes only the targeted book, leaving the character\'s others', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+
+    useWorldInfoStore.getState().deleteBook(embedded.id);
+
+    const remaining = useWorldInfoStore.getState().books.map((b) => b.id);
+    expect(remaining).toEqual([doc.id]);
+  });
+
+  // The heuristic this replaced ("every entry is semanticOnly") was pure
+  // content, and content is exactly what the user is invited to change:
+  // AddDocumentModal tells them to add keywords to a chunk. Registry
+  // membership is written at creation, synced, and untouchable from the
+  // lorebook editor.
+  it('keeps treating a registered document as one after an ordinary entry is added', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    setDocumentBookIds([doc.id]);
+    useWorldInfoStore.getState().createEntry(doc.id, {
+      keys: ['rain'],
+      content: 'Ivy hates rain',
+    });
+
+    expect(useWorldInfoStore.getState().getCharacterBook(AVATAR)).toBeNull();
+    const upserted = useWorldInfoStore
+      .getState()
+      .upsertCharacterBook(
+        AVATAR,
+        bookToCharacterBookV2(
+          mkBook([mkEntry({ keys: ['ivy'], content: 'card lore' })], {
+            name: 'From Card',
+          })
+        ),
+        'From Card'
+      );
+    expect(upserted.id).not.toBe(doc.id);
+    const after = useWorldInfoStore.getState().books.find((b) => b.id === doc.id)!;
+    expect(after.name).toBe('Ivy Dossier');
+    expect(after.entries).toHaveLength(3);
+  });
+
+  it('deleteCharacterBooks removes every book the character owns and nothing else', () => {
+    const doc = addDocumentBook('Ivy Dossier');
+    const embedded = useWorldInfoStore
+      .getState()
+      .createCharacterBook(AVATAR, 'Ivy Lorebook');
+    const otherChar = useWorldInfoStore
+      .getState()
+      .createCharacterBook('marcus.png', 'Marcus Lorebook');
+    const world = useWorldInfoStore.getState().createBook('World Book');
+    useWorldInfoStore.getState().setBookActive(world.id, true);
+
+    useWorldInfoStore.getState().deleteCharacterBooks(AVATAR);
+
+    const remaining = useWorldInfoStore.getState().books.map((b) => b.id);
+    expect(remaining.sort()).toEqual([otherChar.id, world.id].sort());
+    expect(remaining).not.toContain(doc.id);
+    expect(remaining).not.toContain(embedded.id);
+    expect(useWorldInfoStore.getState().activeBookIds).toEqual([world.id]);
+  });
+});
+
+// E4-S0. Deactivating a world book is an account-wide decision wearing a
+// per-book checkbox: server-side retrieval requires EVERY world book active
+// (serverRetrieval.ts condition 4). The user gets to make that trade; they
+// don't get to make it unknowingly.
+describe('toggleBookActive — telling the user what off costs', () => {
+  beforeEach(() => {
+    useWorldInfoStore.getState().resetUser();
+    showToastGlobal.mockReset();
+  });
+
+  it('warns on the toggle that switches server retrieval off', () => {
+    const alpha = useWorldInfoStore.getState().createBook('Alpha');
+    const beta = useWorldInfoStore.getState().createBook('Beta');
+    useWorldInfoStore.getState().setBookActive(alpha.id, true);
+    useWorldInfoStore.getState().setBookActive(beta.id, true);
+    showToastGlobal.mockReset();
+
+    useWorldInfoStore.getState().toggleBookActive(alpha.id);
+
+    expect(showToastGlobal).toHaveBeenCalledTimes(1);
+    expect(String(showToastGlobal.mock.calls[0][0])).toContain('Alpha');
+    expect(String(showToastGlobal.mock.calls[0][0])).toContain('keyword scan');
+
+    // Retrieval is already off — a second warning would be noise, not news.
+    showToastGlobal.mockReset();
+    useWorldInfoStore.getState().toggleBookActive(beta.id);
+    expect(showToastGlobal).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet when a book is switched back ON', () => {
+    const alpha = useWorldInfoStore.getState().createBook('Alpha');
+    useWorldInfoStore.getState().toggleBookActive(alpha.id);
+    expect(showToastGlobal).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet for a character-owned book, which condition 4 never reads', () => {
+    const owned = useWorldInfoStore
+      .getState()
+      .createCharacterBook('ivy.png', 'Ivy Lorebook');
+    useWorldInfoStore.getState().setBookActive(owned.id, true);
+    showToastGlobal.mockReset();
+
+    useWorldInfoStore.getState().toggleBookActive(owned.id);
+
+    expect(showToastGlobal).not.toHaveBeenCalled();
   });
 });
 

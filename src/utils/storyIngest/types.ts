@@ -138,6 +138,11 @@ export interface ColdStartSources {
       category: string;
       /** A disabled entry never reaches a prompt, so it is not canon. */
       enabled: boolean;
+      /** Machine-chunked Data Bank prose rather than an authored rule — see
+       *  the world-rule budget in coldStart.ts, which ranks these last so an
+       *  uploaded reference document can never evict the character's own
+       *  lore from the bible. Optional: absent means "authored". */
+      semanticOnly?: boolean;
     }[];
   }[];
 }

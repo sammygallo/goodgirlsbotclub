@@ -87,6 +87,53 @@ describe('lorebook entries become world rules', () => {
     expect(rules[0].source.kind).toBe('lorebook_entry');
   });
 
+  // E4-S0: activating document books put Data Bank chunks into this ingest's
+  // book set for the first time. A big upload is hundreds of chunks and the
+  // rule budget is 180KB, so without a ranking rule the chunks spend it all
+  // and the character's authored lore is what lands in rulesDropped.
+  it('never lets document chunks evict authored lore from the budget', async () => {
+    const chunk = (i: number) => ({
+      id: `c${i}`,
+      keys: [],
+      content: `chunk ${i} ${'x'.repeat(2000)}`,
+      constant: false,
+      critical: false,
+      category: '',
+      enabled: true,
+      semanticOnly: true,
+    });
+    const out = await runColdStart(
+      sources({
+        lorebooks: [
+          {
+            // Document book FIRST, which is the order that used to decide it.
+            bookId: 'doc',
+            bookName: 'Uploaded reference',
+            entries: Array.from({ length: 120 }, (_, i) => chunk(i)),
+          },
+          {
+            bookId: 'authored',
+            bookName: "Ivy's lorebook",
+            // Full-length authored entries, deliberately: the budget loop
+            // `continue`s past an entry it cannot afford rather than
+            // breaking, so a one-line entry would slip into the leftover
+            // headroom and the test would pass with or without the fix.
+            entries: [
+              { id: 'a1', keys: ['duke'], content: `The duke is dead. ${'y'.repeat(2000)}`, constant: false, critical: false, category: '', enabled: true },
+              { id: 'a2', keys: ['reach'], content: `The Reach floods yearly. ${'y'.repeat(2000)}`, constant: false, critical: false, category: '', enabled: true },
+            ],
+          },
+        ],
+      })
+    );
+    const rules = out.world.rules ?? [];
+    expect(rules.some((r) => r.text.includes('The duke is dead.'))).toBe(true);
+    expect(rules.some((r) => r.text.includes('The Reach floods yearly.'))).toBe(true);
+    // The budget did bind — this is a displacement test, not a "everything
+    // fits" test.
+    expect(out.rulesDropped).toBeGreaterThan(0);
+  });
+
   it('skips empty entries', async () => {
     const out = await runColdStart(
       sources({

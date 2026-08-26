@@ -1,0 +1,767 @@
+{
+  "_readme": {
+    "purpose": "Shared cross-engine decision vectors for E4-S0. The same cases are asserted in ggbc-backend (tests/test_retrieval_context.py, run_activation_engine via POST /retrieval/context) and goodgirlsbotclub (src/stores/worldInfoStore.test.ts, scanMessagesForEntries). If the two engines ever drift, both suites go red.",
+    "authored_by": "backend story-dev (E4-S0 review-fix cycle). Adopt VERBATIM; do not renumber or re-express.",
+    "semantics": {
+      "entry_order_is_load_bearing": "Entries are listed in CANONICAL CANDIDATE ORDER = ascending (order, id). The backend's fetch_scoped_lorebook_entries does ORDER BY (insertion_order, id); the frontend iterates book.entries in array order. Seeding the frontend book in this array order and the backend rows with these exact ids makes both engines observe the same candidate order, which is what makes equal-`order` cases comparable at all.",
+      "ids": "Real UUIDs so the backend can seed them directly. The frontend uses the same strings as entry ids (they are the same id space in production). Within a vector, ascending id order matches the listed order.",
+      "turn": "backend turn_no (= number of AI messages in the seeded chat) / frontend options.currentTurn.",
+      "message": "The single trailing user message; it is the whole keyword haystack. Backend: _messages_with_turn_count(turn, message). Frontend: msgs(message).",
+      "budgetTokens": "0 means unlimited (both engines' convention). Non-zero budgets are sized against the shared 'generic' estimator (3.8 chars/token); the 200-char no-whitespace content used below costs exactly 53 tokens in both engines.",
+      "timers": "entry id -> last_activated_turn. Backend: lorebook_entry_timed_state rows. Frontend: options.wiTimers.",
+      "expect.injected": "SET of entry ids in the final injection list. Backend: ActivationResult.entries. Frontend: resultIds(result). Compared as a set, never a list — the two engines are only required to agree on membership, since the final sort is by `order` alone and equal-`order` emission order is not part of this contract.",
+      "expect.activated": "SET of entry ids whose timers register this turn. Backend: activated_entry_ids. Frontend: the outActivatedIds set. Sticky carry-overs are NEVER in it.",
+      "expect.evicted": "SET of entry ids that activated (freshly or as a sticky carry-over) and were then dropped by the token-budget trim. Backend: evicted_entry_ids. Frontend: report.dropped mapped to ids. A group LOSER is not evicted — it never entered the budget at all.",
+      "relatedIds": "Present in the schema for shape parity but MUST stay empty in every vector: relatedIds pull-in and recursive passes are documented backend scope cuts, so any vector exercising them would be un-mirrorable. The frontend harness must therefore run with maxRecursionSteps: 0.",
+      "probability": "No vector sets useProbability, so neither engine rolls. This keeps every vector RNG-free by construction.",
+      "tie_break": "Sticky admission AND sticky emission both order by (order, lowercased label, content) ascending, where label = comment || keys[0] || id. Both engines must compute this identically; no engine may fall back to its own candidate/stable-sort order for ties (V8, V10).",
+      "content_comparison": "Content is compared by UNICODE CODE POINT, ascending. Python's `<` on str already does this. JavaScript's `<` on string does NOT — it compares UTF-16 code units, which differ from code points for astral characters (emoji). The frontend must compare code points explicitly. V12 is the kill vector; `localeCompare` is also NOT equivalent and must not be used.",
+      "label_comparison": "Label = (comment || keys[0] || id) case-folded, then compared by UNICODE CODE POINT ascending — the same rule as content, one key up. Both halves are pinned: V13 the fold, V14 the code-point ordering. Accepted residual: Python str.lower() and JS String.toLowerCase() can differ on a few exotic characters (e.g. U+0130); not pinned, and considered out of scope for E4-S0."
+    },
+    "open_cross_engine_decision": "RESOLVED 2026-08-25 by the PM: the contract is (order, label, content) in BOTH engines. The backend already ordered by (order, label); the frontend moves from candidate order to this rule; both add content as the final key. V8 and V10 are the kill vectors.",
+    "desync_guard": "Both repos commit a byte-identical copy of this file and assert its sha256 equals the constant recorded in each suite. Editing one copy alone turns that repo's suite red, so the two cannot silently drift apart."
+  },
+  "vectors": [
+    {
+      "id": "V1",
+      "name": "budget-evicted fresh entry injects nothing and registers no timer",
+      "pins": "S1 — activated_entry_ids is the intersection of the fresh set with the trim survivors, not the pre-trim fresh set.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "a dragon appears",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000101",
+          "comment": "Dragon lore, high priority",
+          "order": 1,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 0,
+          "cooldown": 0,
+          "keys": [
+            "dragon"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000000102",
+          "comment": "Dragon lore, low priority",
+          "order": 2,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 0,
+          "cooldown": 0,
+          "keys": [
+            "dragon"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        }
+      ],
+      "timers": {},
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000101"
+        ],
+        "activated": [
+          "e4500000-0000-4000-8000-000000000101"
+        ],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000000102"
+        ]
+      }
+    },
+    {
+      "id": "V2",
+      "name": "sticky survivor injects without registering its own timer",
+      "pins": "A sticky carry-over inside its window injects even though nothing matched, and never re-stamps its own window.",
+      "turn": 4,
+      "budgetTokens": 0,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000201",
+          "comment": "Unicorn lore",
+          "order": 1,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "A unicorn watches the ford."
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000000201": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000201"
+        ],
+        "activated": [],
+        "evicted": []
+      }
+    },
+    {
+      "id": "V3",
+      "name": "two sticky siblings of one group: exactly one injects",
+      "pins": "S2(b) — with no fresh winner, the first sticky in the (order, label) walk claims the group and the sibling is turned away. The loser is NOT an eviction.",
+      "turn": 4,
+      "budgetTokens": 0,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000301",
+          "comment": "Camp lore, the earlier one",
+          "order": 1,
+          "group": "camp",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "The camp is pitched by the ford."
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000000302",
+          "comment": "Camp lore, the later one",
+          "order": 2,
+          "group": "camp",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "The camp is pitched on the ridge."
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000000301": 2,
+        "e4500000-0000-4000-8000-000000000302": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000301"
+        ],
+        "activated": [],
+        "evicted": []
+      }
+    },
+    {
+      "id": "V4",
+      "name": "sticky carry-over loses its group to a fresh winner",
+      "pins": "S2(a) — won_groups from the fresh pass binds the sticky pass, so a sticky sibling can no longer co-inject with its own group's fresh winner.",
+      "turn": 4,
+      "budgetTokens": 0,
+      "message": "a dragon appears",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000401",
+          "comment": "Version A of the camp lore",
+          "order": 1,
+          "group": "camp",
+          "groupOverride": false,
+          "sticky": 0,
+          "cooldown": 0,
+          "keys": [
+            "dragon"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "Version A of the camp lore."
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000000402",
+          "comment": "Version B of the camp lore",
+          "order": 2,
+          "group": "camp",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "Version B of the camp lore."
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000000402": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000401"
+        ],
+        "activated": [
+          "e4500000-0000-4000-8000-000000000401"
+        ],
+        "evicted": []
+      }
+    },
+    {
+      "id": "V5",
+      "name": "ungrouped sticky carry-overs are unaffected by exclusivity",
+      "pins": "Group exclusivity binds only entries with a non-empty group; the S2 walk must not turn ungrouped stickies away.",
+      "turn": 4,
+      "budgetTokens": 0,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000501",
+          "comment": "An ungrouped unicorn fact",
+          "order": 1,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "An ungrouped unicorn fact."
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000000502",
+          "comment": "An ungrouped griffin fact",
+          "order": 2,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "An ungrouped griffin fact."
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000000501": 2,
+        "e4500000-0000-4000-8000-000000000502": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000501",
+          "e4500000-0000-4000-8000-000000000502"
+        ],
+        "activated": [],
+        "evicted": []
+      }
+    },
+    {
+      "id": "V6",
+      "name": "equal order falls through to the lowercased label, against candidate order",
+      "pins": "The second half of the shared sticky tie-break. Candidate order is deliberately label-DESCENDING ('Zulu camp' has the lower id and is listed first), so only the label comparator can produce this result.",
+      "turn": 4,
+      "budgetTokens": 0,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000601",
+          "comment": "Zulu camp",
+          "order": 7,
+          "group": "camp",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "Camp lore filed under Z."
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000000602",
+          "comment": "Alpha camp",
+          "order": 7,
+          "group": "camp",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "Camp lore filed under A."
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000000601": 2,
+        "e4500000-0000-4000-8000-000000000602": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000602"
+        ],
+        "activated": [],
+        "evicted": []
+      }
+    },
+    {
+      "id": "V7",
+      "name": "groupOverride is NOT consulted on the sticky path",
+      "pins": "A deliberate, documented divergence from the fresh path (resolveGroups gives overrides an exclusive pool; the sticky walk does not). Pinned so a one-sided 'fix' in either engine goes red in that engine's own suite.",
+      "turn": 4,
+      "budgetTokens": 0,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000701",
+          "comment": "Camp, lower order, no override",
+          "order": 1,
+          "group": "camp",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "Camp lore without an override."
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000000702",
+          "comment": "Camp, higher order, override set",
+          "order": 5,
+          "group": "camp",
+          "groupOverride": true,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "Camp lore with an override."
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000000701": 2,
+        "e4500000-0000-4000-8000-000000000702": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000701"
+        ],
+        "activated": [],
+        "evicted": []
+      }
+    },
+    {
+      "id": "V8",
+      "name": "equal-order ungrouped sticky pair under a one-entry budget",
+      "pins": "The cross-engine trim divergence. Candidate order is [Zulu, Alpha] and both share order 10, so whichever engine emits sticky matches in candidate order keeps Zulu and whichever emits in (order, label) order keeps Alpha. The contract is the label order: Alpha survives, Zulu is the eviction. BACKEND GREEN / FRONTEND RED today — see _readme.open_cross_engine_decision.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000801",
+          "comment": "Zulu camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000000802",
+          "comment": "Alpha camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000000801": 2,
+        "e4500000-0000-4000-8000-000000000802": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000802"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000000801"
+        ]
+      }
+    },
+    {
+      "id": "V9",
+      "name": "a constant entry is pinned and eats the budget; the sticky carry-over beside it is evicted",
+      "pins": "Constant/critical pinning runs before the trim in both engines, a pinned entry can drive `remaining` to 0, and an evicted sticky carry-over appears in the eviction signal while still registering no timer.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000000901",
+          "comment": "Always-on world rule",
+          "order": 1,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 0,
+          "cooldown": 0,
+          "keys": [],
+          "relatedIds": [],
+          "constant": true,
+          "critical": false,
+          "content": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000000902",
+          "comment": "Sticky unicorn lore",
+          "order": 2,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000000902": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000000901"
+        ],
+        "activated": [
+          "e4500000-0000-4000-8000-000000000901"
+        ],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000000902"
+        ]
+      }
+    },
+    {
+      "id": "V10",
+      "name": "equal-order, equal-label sticky pair — content breaks the tie",
+      "pins": "The residual left open by V8: when order AND label collide, neither engine may fall through to its own stable-sort order (SQL (insertion_order,id) vs array order) or they diverge again. Final tie-break is entry CONTENT ascending — the one field both engines hold identically, since it is what gets injected. Ids cannot serve: the two id spaces are not reliably shared (see E2-S5).",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001001",
+          "comment": "Twin camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001002",
+          "comment": "Twin camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001001": 2,
+        "e4500000-0000-4000-8000-000000001002": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001002"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001001"
+        ]
+      }
+    },
+    {
+      "id": "V11",
+      "name": "equal-order sticky pair whose label order contradicts their content order",
+      "pins": "The MIDDLE key of the (order, label, content) contract. Every other vector's content is co-linear with its label, so dropping the label key still yields the right answer by accident. Here 'Alpha camp' holds z-content and 'Zulu camp' holds a-content: label order keeps Alpha, content-only order would keep Zulu. Red in either engine if the label key is dropped or reordered.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001101",
+          "comment": "Alpha camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001102",
+          "comment": "Zulu camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001101": 2,
+        "e4500000-0000-4000-8000-000000001102": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001101"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001102"
+        ]
+      }
+    },
+    {
+      "id": "V12",
+      "name": "equal-order, equal-label sticky pair separated by astral vs BMP content",
+      "pins": "Code-point ordering, not UTF-16 code-unit ordering. Python's str comparison is by code point; JavaScript's `<` compares UTF-16 code units, so an astral character (U+1F600, lead surrogate 0xD83D) sorts BELOW U+F8FF in JS but ABOVE it in Python. The contract is code points: the U+F8FF entry survives. A frontend using bare `<` on content is RED here.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001201",
+          "comment": "Twin camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "😀mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001202",
+          "comment": "Twin camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001201": 2,
+        "e4500000-0000-4000-8000-000000001202": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001202"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001201"
+        ]
+      }
+    },
+    {
+      "id": "V13",
+      "name": "equal-order sticky pair whose labels reorder under case-folding",
+      "pins": "The .lower() in the label rule. Raw ASCII puts 'Banana'(B=66) before 'apple'(a=97); case-folded puts 'apple' before 'banana'. The contract is folded, so 'apple' survives. An engine comparing labels case-sensitively is RED here and green on every other vector.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001301",
+          "comment": "Banana",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001302",
+          "comment": "apple",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001301": 2,
+        "e4500000-0000-4000-8000-000000001302": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001302"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001301"
+        ]
+      }
+    },
+    {
+      "id": "V14",
+      "name": "equal-order sticky pair separated by astral vs BMP characters in their LABELS",
+      "pins": "Code-point ordering on the LABEL key, not just content. A label is comment||keys[0]||id — user-authored text, so emoji reach it. U+1F600 sorts BELOW U+F8FF by UTF-16 code unit and ABOVE it by code point; the contract is code points, so the U+F8FF label survives. A frontend using bare `<` on labels is RED here.",
+      "turn": 4,
+      "budgetTokens": 53,
+      "message": "nothing relevant here",
+      "entries": [
+        {
+          "id": "e4500000-0000-4000-8000-000000001401",
+          "comment": "😀 camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "unicorn"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmx"
+        },
+        {
+          "id": "e4500000-0000-4000-8000-000000001402",
+          "comment": " camp",
+          "order": 10,
+          "group": "",
+          "groupOverride": false,
+          "sticky": 3,
+          "cooldown": 0,
+          "keys": [
+            "griffin"
+          ],
+          "relatedIds": [],
+          "constant": false,
+          "critical": false,
+          "content": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmy"
+        }
+      ],
+      "timers": {
+        "e4500000-0000-4000-8000-000000001401": 2,
+        "e4500000-0000-4000-8000-000000001402": 2
+      },
+      "expect": {
+        "injected": [
+          "e4500000-0000-4000-8000-000000001402"
+        ],
+        "activated": [],
+        "evicted": [
+          "e4500000-0000-4000-8000-000000001401"
+        ]
+      }
+    }
+  ]
+}
