@@ -1950,10 +1950,18 @@ export function buildGroupConversationContext(
     //     a book that is both persona-linked and character-owned stays
     //     persona-relative — matching the header precedence below.
     //   - character-OWNED: the owner's context. Keyed on OWNERSHIP, not on
-    //     whether the header is emitted: the header is suppressed when the
-    //     owner IS the speaker, but the two contexts are equivalent in that
-    //     case anyway, so gating the substitution on the header instead would
-    //     buy nothing and leave a divergence for the next reader to trip on.
+    //     whether the header is emitted, and both are keyed on AVATAR, not
+    //     NAME: the header below is suppressed only when
+    //     `owner.avatar === currentCharacter.avatar` — the same key this map
+    //     is built from above, and the same one `isCurrent` (:2048) and
+    //     `authorOfTurn` (:2250-2255) use. Only in that case are
+    //     subMember(owner, …) and subSpeaker(…) equivalent, because owner IS
+    //     currentCharacter. Nothing enforces unique `name`s across the
+    //     roster (membership is keyed on avatar throughout —
+    //     toggleGroupChatCharacter / setGroupChatCharacters have no name
+    //     check), so gating either test on name instead would let two
+    //     different cards that happen to share a name disagree: one test
+    //     would treat the owner as the speaker while the other did not.
     //     An owner resolved from the full roster rather than this room's
     //     members is still the right macro character — the header already
     //     names them as the subject.
@@ -1971,7 +1979,7 @@ export function buildGroupConversationContext(
       const subject = personaName || 'the user';
       return `[Information about ${subject}, the user you're talking to]\n${content}`;
     }
-    if (owner && owner.name !== currentCharacter.name) {
+    if (owner && owner.avatar !== currentCharacter.avatar) {
       return `[Information about ${owner.name}, another character in this conversation]\n${content}`;
     }
     return content;
@@ -2118,9 +2126,17 @@ export function buildGroupConversationContext(
   //      review fix that moved cardBlock above the joins for exactly that
   //      reason. So an override's {{getvar}} sees card-field writes, and a lore
   //      entry's {{getvar}} sees the override's writes, in the SAME build.
-  //   3. It matches emission order: `Current scenario:` is printed between the
-  //      card block and the before_an lore, so read top-to-bottom the prompt's
-  //      variable writes happen in the order the prompt reads.
+  //   3. Emission order does not fully back this up, and should not be read
+  //      as though it did: `before_an`/`after_an` are both computed and
+  //      printed after this block, consistent with #2. `before_char` /
+  //      `after_char` are not — they print ABOVE `Current scenario:` in the
+  //      finished prompt (:2198-2201) but are joined, and therefore
+  //      macro-executed, below this block same as before_an/after_an
+  //      (:2160-2161/:2189). A {{setvar}} in a before_char/after_char entry
+  //      runs too late for this override's {{getvar}} to see it, even though
+  //      it prints earlier on the page. That gap is a consequence of #2 (all
+  //      four WI positions execute as one group, after scenario) and is not
+  //      something this fix changes or claims to fix.
   let scenarioText = '';
   if (scenarioOverride && scenarioOverride.trim()) {
     scenarioText = processMacros(scenarioOverride, {
