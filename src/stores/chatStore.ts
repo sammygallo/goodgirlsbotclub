@@ -2050,7 +2050,46 @@ export function buildGroupConversationContext(
   // Resolve scenario: override wins, else falls back to current character's
   // scenario. Macros are processed on the override, but {{char}} is ambiguous
   // in a group (multiple speakers), so we scrub char-specific substitutions
-  // by passing an empty charName + character fields.
+  // by passing an empty charName + character fields. That scrubbing is
+  // deliberate and stays; the `variables` reference below is NOT part of it.
+  //
+  // E9-S6 (scope widened by Sammy): this branch builds its own inline
+  // MacroContext rather than going through buildMacroContext, and it used to
+  // omit `variables` entirely — the one key that is not char-specific. The
+  // effect was confined to this path: {{getvar::x}} in an override always
+  // rendered empty (processMacros reads `ctx.variables?.[key] ?? ''`) and
+  // {{setvar::x::…}} writes were computed and then dropped on the floor
+  // (`if (ctx.variables) ctx.variables[key] = value`). It now receives the
+  // SAME mutable map object the other two contexts in this function share
+  // (subSpeaker's wiMacroCtx and subMember's per-member contexts), not a copy
+  // — a copy would make the writes visible to the rest of THIS build and then
+  // lose them at the setChatVariables persist below.
+  //
+  // A {{setvar}} in an override is now a REAL persisted write, so it has to
+  // run exactly once per build, and it does: this branch is the `if` half of
+  // an if/else whose `else` is the fallback, `scenarioOverride` reaches the
+  // function only as the value read straight off the group-chat record
+  // (sendGroupMessage/forceGroupMemberTalk -> generateGroupTurn), and nothing
+  // downstream re-substitutes `scenarioText` — it is interpolated into the
+  // system prompt as a finished string.
+  //
+  // ORDER: this sits where it already sat — after the card blocks above, before
+  // the joinWi calls below — and that is the intended slot, not an accident of
+  // where the code happened to be. Solo has no scenario-override equivalent, so
+  // there is no parity answer to copy; the reasoning is:
+  //   1. It is the scenario stage. The override and the fallback are mutually
+  //      exclusive renderings of the same slot, and the fallback executes right
+  //      here (in the `else` below, or inside the join card block just above).
+  //      Running them at the same point means turning an override on or off
+  //      does not shift when every OTHER macro in the build executes.
+  //   2. Cards before scenario, scenario before world info, matches solo's
+  //      stage order (card fields :1184-1187, world info :1276-1282) and the
+  //      review fix that moved cardBlock above the joins for exactly that
+  //      reason. So an override's {{getvar}} sees card-field writes, and a lore
+  //      entry's {{getvar}} sees the override's writes, in the SAME build.
+  //   3. It matches emission order: `Current scenario:` is printed between the
+  //      card block and the before_an lore, so read top-to-bottom the prompt's
+  //      variable writes happen in the order the prompt reads.
   let scenarioText = '';
   if (scenarioOverride && scenarioOverride.trim()) {
     scenarioText = processMacros(scenarioOverride, {
@@ -2065,6 +2104,7 @@ export function buildGroupConversationContext(
       lastUserMessage: '',
       lastCharMessage: '',
       model: activeModel,
+      variables,
     }).trim();
   } else {
     // E9-S6/AC2: the fallback scenario is the speaker's own field, rendered

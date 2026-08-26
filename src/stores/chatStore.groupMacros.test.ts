@@ -1281,3 +1281,137 @@ describe('review-fix C: the PRODUCTION call site passes the real attachmentsFold
     expect(second.every((c) => c.content.trim() !== '')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// E9-S6 SCOPE WIDENING (authorized by Sammy after the review round). Two
+// defects the review found and the PM had deferred as pre-existing are fixed
+// here instead. Same standard as everything above: each test below was
+// mutation-verified against the production code it names.
+// ---------------------------------------------------------------------------
+
+describe("scope-widening 1: a scenarioOverride shares the build's variables map", () => {
+  // The override branch builds its own inline MacroContext (to scrub {{char}},
+  // which is ambiguous in a group) and used to omit `variables` along with the
+  // char-specific fields. {{getvar}} therefore always rendered empty and
+  // {{setvar}} writes were computed and dropped — on this path only.
+
+  it('reads a seeded chat variable through {{getvar}} in an override', () => {
+    useChatStore.setState({ chatVariables: { [CHAT_FILE]: { mood: 'furious' } } });
+
+    const text = textOf(
+      buildGroupConversationContext(
+        [mkMsg('hi')],
+        [seraphina, marcus],
+        seraphina,
+        'The room is {{getvar::mood}}.'
+      )
+    );
+
+    expect(text).toContain('Current scenario: The room is furious.');
+  });
+
+  it('persists a {{setvar}} written from inside an override', () => {
+    // The half a `{ ...variables }` copy would fail: a copy makes the write
+    // visible for the rest of the build and then loses it at the
+    // setChatVariables persist, so only this assertion separates "same object
+    // reference" from "a copy that looked like it worked".
+    useChatStore.setState({ chatVariables: { [CHAT_FILE]: {} } });
+
+    buildGroupConversationContext(
+      [mkMsg('hi')],
+      [seraphina, marcus],
+      seraphina,
+      'A cellar.{{setvar::place::cellar}}'
+    );
+
+    expect(useChatStore.getState().getChatVariables(CHAT_FILE).place).toBe('cellar');
+  });
+
+  it("makes an override's write visible to a world-info {{getvar}} in the SAME build", () => {
+    // Pins the ORDER decision as well as the shared reference: the override is
+    // substituted after the card blocks and BEFORE the joinWi calls, so lore
+    // reads the value this build wrote rather than the previous build's.
+    useChatStore.setState({ chatVariables: { [CHAT_FILE]: { place: 'nowhere' } } });
+    useBooks([
+      mkBook([mkEntry({ constant: true, content: 'They meet at [{{getvar::place}}].' })]),
+    ]);
+
+    const text = textOf(
+      buildGroupConversationContext(
+        [mkMsg('hi')],
+        [seraphina, marcus],
+        seraphina,
+        'A cellar.{{setvar::place::cellar}}'
+      )
+    );
+
+    expect(text).toContain('They meet at [cellar].');
+    expect(text).not.toContain('They meet at [nowhere].');
+  });
+
+  it("sees a card field's write from earlier in the same build", () => {
+    // The other side of the ordering decision: card blocks are computed above
+    // the scenario branch, so an override's {{getvar}} reads a card-field
+    // {{setvar}} from this build, not the last one.
+    const host = {
+      name: 'Seraphina',
+      avatar: 'seraphina.png',
+      description: '{{setvar::mood::furious}}A calm host.',
+    } as CharacterInfo;
+    useChatStore.setState({ chatVariables: { [CHAT_FILE]: { mood: 'calm' } } });
+
+    const text = textOf(
+      buildGroupConversationContext(
+        [mkMsg('hi')],
+        [host, marcus],
+        host,
+        'The room is {{getvar::mood}}.'
+      )
+    );
+
+    expect(text).toContain('Current scenario: The room is furious.');
+    expect(text).not.toContain('Current scenario: The room is calm.');
+  });
+
+  it('runs an override write macro exactly once per build', () => {
+    // {{setvar}} in an override is a REAL persisted write now, so the
+    // exactly-once claim has to be pinned here too: the override branch is the
+    // `if` half of an if/else and nothing downstream re-substitutes the
+    // resulting string.
+    useChatStore.setState({ chatVariables: { [CHAT_FILE]: { day: '0' } } });
+
+    const ctx = buildGroupConversationContext(
+      [mkMsg('hi')],
+      [seraphina, marcus],
+      seraphina,
+      'Day {{incvar::day}}.'
+    );
+
+    expect(useChatStore.getState().getChatVariables(CHAT_FILE).day).toBe('1');
+    expect(textOf(ctx)).toContain('Current scenario: Day 1.');
+    expect(ctx.filter((c) => c.content.includes('Day 1.')).length).toBe(1);
+  });
+
+  it('still scrubs {{char}} while sharing the variables map', () => {
+    // The cheapest wrong fix is to delete the inline context and reuse
+    // subSpeaker's, which would hand the override a `variables` map AND the
+    // speaker's identity. This is the same assertion as the AC2 test above,
+    // repeated here so the widened-scope section fails on its own if someone
+    // takes that shortcut.
+    useChatStore.setState({ chatVariables: { [CHAT_FILE]: { mood: 'furious' } } });
+
+    const text = textOf(
+      buildGroupConversationContext(
+        [mkMsg('hi')],
+        [seraphina, marcus],
+        seraphina,
+        '{{char}} is {{getvar::mood}}.'
+      )
+    );
+
+    // The override result is trimmed, so the empty {{char}} leaves one space
+    // rather than two — the point is that no name lands there.
+    expect(text).toContain('Current scenario: is furious.');
+    expect(text).not.toContain('Seraphina is furious.');
+  });
+});
