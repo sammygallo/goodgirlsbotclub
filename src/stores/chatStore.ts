@@ -1953,8 +1953,8 @@ export function buildGroupConversationContext(
     //     whether the header is emitted, and both are keyed on AVATAR, not
     //     NAME: the header below is suppressed only when
     //     `owner.avatar === currentCharacter.avatar` — the same key this map
-    //     is built from above, and the same one `isCurrent` (:2048) and
-    //     `authorOfTurn` (:2250-2255) use. Only in that case are
+    //     is built from above, and the same one `isCurrent` (:2056) and
+    //     `authorOfTurn` (:2266-2271) use. Only in that case are
     //     subMember(owner, …) and subSpeaker(…) equivalent, because owner IS
     //     currentCharacter. Nothing enforces unique `name`s across the
     //     roster (membership is keyed on avatar throughout —
@@ -2130,9 +2130,9 @@ export function buildGroupConversationContext(
   //      as though it did: `before_an`/`after_an` are both computed and
   //      printed after this block, consistent with #2. `before_char` /
   //      `after_char` are not — they print ABOVE `Current scenario:` in the
-  //      finished prompt (:2198-2201) but are joined, and therefore
+  //      finished prompt (:2213-2218) but are joined, and therefore
   //      macro-executed, below this block same as before_an/after_an
-  //      (:2160-2161/:2189). A {{setvar}} in a before_char/after_char entry
+  //      (:2176-2178/:2205). A {{setvar}} in a before_char/after_char entry
   //      runs too late for this override's {{getvar}} to see it, even though
   //      it prints earlier on the page. That gap is a consequence of #2 (all
   //      four WI positions execute as one group, after scenario) and is not
