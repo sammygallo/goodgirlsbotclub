@@ -70,7 +70,10 @@ describe('resolveRagContext — group identity resolution', () => {
     // is what supplied the avatar): the group save/load identity is always
     // slot 0 (Seraphina here), regardless of who's actually speaking.
     const messages = [mkMsg('hello there')];
-    await resolveRagContext(messages, 'group1.jsonl');
+    // The boundary is an ARGUMENT since E2-S2 task 1b (the caller derives it —
+    // group from `groupHistoryWindow`, solo from an uncommitted builder pass).
+    // Null here: these tests are about identity resolution, not the boundary.
+    await resolveRagContext(messages, 'group1.jsonl', null);
 
     expect(spy).toHaveBeenCalledTimes(1);
     const [characterAvatar, fileName] = spy.mock.calls[0];
@@ -82,7 +85,7 @@ describe('resolveRagContext — group identity resolution', () => {
     useChatStore.setState({ groupChats: [] });
     const spy = vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ chunks: [] });
     const messages = [mkMsg('hello there')];
-    await resolveRagContext(messages, 'solo-chat.jsonl');
+    await resolveRagContext(messages, 'solo-chat.jsonl', null);
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][0]).toBe('marcus.png');
@@ -93,7 +96,7 @@ describe('resolveRagContext — group identity resolution', () => {
     useCharacterStore.setState({ selectedCharacter: null });
     const spy = vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ chunks: [] });
     const messages = [mkMsg('hello there')];
-    const result = await resolveRagContext(messages, 'solo-chat.jsonl');
+    const result = await resolveRagContext(messages, 'solo-chat.jsonl', null);
 
     expect(spy).not.toHaveBeenCalled();
     expect(result).toBeNull();
@@ -114,7 +117,7 @@ describe('resolveRagContext — never-throws wrapper', () => {
     vi.spyOn(api, 'getRetrievalMessages').mockRejectedValue(new Error('network blip'));
     const messages = [mkMsg('hello there')];
 
-    await expect(resolveRagContext(messages, 'solo-chat.jsonl')).resolves.toBeNull();
+    await expect(resolveRagContext(messages, 'solo-chat.jsonl', null)).resolves.toBeNull();
   });
 
   it('resolves to null instead of throwing on an unexpected response shape', async () => {
@@ -122,6 +125,6 @@ describe('resolveRagContext — never-throws wrapper', () => {
     vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ notChunks: [] });
     const messages = [mkMsg('hello there')];
 
-    await expect(resolveRagContext(messages, 'solo-chat.jsonl')).resolves.toBeNull();
+    await expect(resolveRagContext(messages, 'solo-chat.jsonl', null)).resolves.toBeNull();
   });
 });

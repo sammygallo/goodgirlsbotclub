@@ -320,8 +320,9 @@ export interface PromptBreakdown {
      *
      * FALSE IS NOT A MODE TEST. `ctxConfig.responseReserve` is read only
      * inside the token-aware branch (the `trimHistoryToBudget` call in
-     * `finishConversationContext` and `ragBoundary.ts:128` — cited by construct,
-     * not line: this comment's own commit moved the line once already),
+     * `finishConversationContext` — cited by construct, not line: this
+     * comment's own commit moved the line once already; the second reader it
+     * used to name, `ragBoundary.ts`, was deleted by task 1b),
      * so it constrains nothing in group — which has no history trim at all —
      * AND nothing on a solo build with `tokenAware` off. Deriving this from
      * `mode` would tell a solo user with trimming disabled that N tokens of
@@ -343,9 +344,12 @@ export interface PromptBreakdown {
   /**
    * The oldest KEPT entry that is a real chat message, by `ChatMessage.id`.
    * Null when the kept history is all injected notes, or when the entries
-   * carry no ids. Task 1b's consumer — the real boundary that retires
-   * `ragBoundary`'s re-simulation. Recorded now because it falls out of the
-   * Stage-B classification for free; nothing reads it yet.
+   * carry no ids. The real boundary that RETIRED `ragBoundary`'s
+   * re-simulation: task 1b's solo call sites read it off an uncommitted
+   * `finishConversationContext` pass and hand it to `resolveRagContext`.
+   * Falls out of the Stage-B classification for free, so it is recorded here
+   * whenever a collector is attached — but the call sites read it from
+   * `FinishedConversation.boundaryId`, which needs no collector.
    */
   boundaryId: string | null;
 }

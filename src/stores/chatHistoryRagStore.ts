@@ -9,7 +9,8 @@
  * from the browser). That's gone: embedding now happens server-side, as a
  * side effect of `POST /chats/save` (gated on `enabled` below), and
  * recall is a single `POST /retrieval/messages` call — see
- * `resolveRagContext` in chatStore.ts and `src/utils/ragBoundary.ts`. This
+ * `resolveRagContext` in chatStore.ts, which is handed the raw-history
+ * boundary by its caller rather than deriving one. This
  * store keeps exactly what's still genuinely client-side: the `enabled`
  * flag itself (synced, same as before) and the one-time enable-time
  * backfill trigger for chats that predate this cutover.

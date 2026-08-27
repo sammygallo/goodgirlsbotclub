@@ -1251,8 +1251,9 @@ export const api = {
    * POST /retrieval/messages — Phase 2 chat-history message recall (see
    * ggbc-backend's app/routers/retrieval.py). Pure read from the caller's
    * point of view. `boundaryId` is the ggbc_id (ChatMessage.id) of the
-   * oldest message in the caller's kept raw tail — see
-   * src/utils/ragBoundary.ts's computeRagBoundary for how it's derived.
+   * oldest message in the caller's kept raw tail. Solo callers read it off
+   * an uncommitted `finishConversationContext` pass and group callers off
+   * `groupHistoryWindow`; see `resolveRagContext` in chatStore.ts.
    */
   async getRetrievalMessages(
     characterAvatar: string,
