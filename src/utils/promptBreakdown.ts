@@ -240,7 +240,9 @@ export interface PromptBreakdown {
      * is what decides if the panel draws a Reserved slice (AC 7).
      *
      * FALSE IS NOT A MODE TEST. `ctxConfig.responseReserve` is read only
-     * inside the token-aware branch (chatStore.ts:1938, ragBoundary.ts:128),
+     * inside the token-aware branch (the `trimHistoryToBudget` call in
+     * `finishConversationContext` and `ragBoundary.ts:128` — cited by construct,
+     * not line: this comment's own commit moved the line once already),
      * so it constrains nothing in group — which has no history trim at all —
      * AND nothing on a solo build with `tokenAware` off. Deriving this from
      * `mode` would tell a solo user with trimming disabled that N tokens of

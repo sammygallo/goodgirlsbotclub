@@ -908,8 +908,26 @@ describe('token breakdown — a collector describes one pass, not their union', 
     build();
     const afterOne = b.slices.length;
     const stageAAfterOne = b.totals.stageA;
+    const stampAfterOne = b.publishedAt;
     build();
     expect(b.slices.length, 'the second build appended to the first').toBe(afterOne);
+    // The re-entry RE-STAMP is the only stamp on the reuse path — the scoped
+    // fix-round review proved deleting it left the whole suite green while the
+    // stamp's entire purpose (letting task 3 tell two builds apart) died. A
+    // re-entered collector must carry the LAST build's identity, not the first's.
+    expect(
+      b.publishedAt,
+      "the re-entered collector still carries the first build's stamp"
+    ).toBeGreaterThan(stampAfterOne!);
+    // And the chat half: switch the live chat underneath the third build — the
+    // stamp must follow the build, not the constructor.
+    useChatStore.setState({ currentChatFile: 'breakdown-restamp-other.jsonl' });
+    build();
+    expect(
+      b.chatFile,
+      'a re-entered collector still names the previous build\'s chat'
+    ).toBe('breakdown-restamp-other.jsonl');
+    useChatStore.setState({ currentChatFile: null });
     expect(b.totals.stageA).toBe(stageAAfterOne);
     expect(
       b.totals.stageA +
