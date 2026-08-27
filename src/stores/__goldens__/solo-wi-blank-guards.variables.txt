@@ -1,0 +1,22 @@
+# solo/wi-blank-guards   [R3: the macro-empty filter on wiTimerOut.fired]
+# what: Solo's counterpart of group/blank-guards. Four world-info entries
+#   whose content renders to '' — one at a NON-depth position and one at each
+#   of the three at-depth emission sites (in-loop depth 1, the depth-0
+#   trailing slot, the depth-9 overflow unshift) — each paired with a
+#   non-blank sibling at the same slot so the slot still emits and the blank
+#   one is the only thing that can disappear. Every blank entry carries its
+#   own {{addvar}} counter, so its macros are proven to have RUN exactly once
+#   while its content reached nothing. The four `wiRendered` filters (:1512,
+#   :1577, :1626 and :1724) were each deletable with the suite green;
+#   .fired.txt is where deleting one now shows up.
+# pins: :1144-1154 wiRendered / joinWi, :1512 in-loop filter, :1577 depth-0
+#   filter, :1626 overflow filter, :1724 the non-depth filter
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+soloWiBlankInLoop = "1"
+soloWiBlankNonDepth = "1"
+soloWiBlankOverflow = "1"
+soloWiBlankZero = "1"
+wiGuard = "depth-9"
+══════════════════════════════════════════════════════════════════════════
+5 key(s)

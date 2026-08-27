@@ -9,6 +9,7 @@
 # pins: :2298-2306 in-loop AN guard, :2308-2313 wi at-depth guard
 # wiTimerOut.currentTurn (in): 1
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = (none)
 trimmedAtDepth = (none)

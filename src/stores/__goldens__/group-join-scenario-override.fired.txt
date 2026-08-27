@@ -5,6 +5,7 @@
 # pins: :2054-2074 + :2141-2155
 # wiTimerOut.currentTurn (in): 1
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = (none)
 trimmedAtDepth = (none)

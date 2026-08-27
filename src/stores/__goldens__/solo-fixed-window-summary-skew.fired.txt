@@ -1,18 +1,21 @@
 # solo/fixed-window-summary-skew   [R2: C15 + C4 — the non-token-aware window]
 # what: Thirty messages with three SYSTEM turns inside the last twelve,
 #   tokenAware off with messageCount 12, and a summary covering the first
-#   twenty non-system turns. Two things are pinned that nothing else reaches.
-#   (1) :1350 slices the last twelve RAW messages and only then filters
-#   system turns, so nine reach the prompt — group got a dedicated fixture
-#   for this, solo did not. (2) `windowSkew` is 27-9=18, so the compaction
-#   offset rebases to 2 and keeps seven turns; without the rebase the offset
-#   would be 20, the MIN_RAW_TAIL cap would clamp it to 3, and six would
-#   remain. Every other build has windowSkew 0.
-# pins: :1345-1350 slice-before-filter, :1359 windowSkew, :1406-1419
-#   cappedOffset
+#   twenty non-system turns. What it pins that nothing else reaches:
+#   `windowSkew` is 27-9=18, so the compaction offset rebases to 2 and keeps
+#   seven turns; without the rebase the offset would be 20, the MIN_RAW_TAIL
+#   cap would clamp it to 3, and six would remain. Every other build has
+#   windowSkew 0. It does NOT pin :1350's slice-before-filter ordering,
+#   however much its shape suggests it: once a summary is present the offset
+#   rebase subtracts windowSkew again, the window terms cancel, and both
+#   orderings emit the same tail. Swapping them is green here.
+#   `token-aware-off` is the fixture that pins that ordering, and a
+#   self-check keeps its input capable of it.
+# pins: :1359 windowSkew, :1406-1419 cappedOffset
 # wiTimerOut.currentTurn (in): 15
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
 # serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = (none)
 trimmedAtDepth = (none)

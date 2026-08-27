@@ -2,7 +2,11 @@
 # what: The only fixture with either flag off. The full card ships both a
 #   system_prompt and post_history_instructions; with both flags false the
 #   user's own main prompt wins the mainPrompt chain instead and char_phi
-#   renders empty. Ignoring EITHER flag is green without this.
+#   renders empty. Ignoring EITHER flag is green without this. Both card
+#   fields carry an {{addvar}} counter and both are declared ABSENT: the
+#   flags gate a ternary, so hoisting either `sub()` out of it — execute the
+#   macro, throw the text away — leaves every prompt golden identical while
+#   still writing the user's chat variables.
 # pins: :1205-1211 the two flag gates, :1257-1261 the mainPrompt chain
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════

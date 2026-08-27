@@ -1,0 +1,77 @@
+# solo/wi-sections-disabled   [R3: the section-enable filter on wiTimerOut.fired]
+# what: The all-sections state with two WORLD-INFO sections disabled —
+#   wi_before_char (which holds two entries, one of them the persona-linked
+#   one) and wi_after_an. Nothing else disables a wi_* section while entries
+#   sit in it, so :1722 — the filter that keeps a disabled section's entries
+#   out of the fired set — could be deleted outright and the whole suite
+#   stayed green. The point is legible in .fired.txt: three of the five
+#   scanned entries are gone from `fired` even though the scan matched all
+#   five, and the two blocks are gone from the prompt. NOTE the
+#   deliberately-recorded waste: a disabled section's entries are still
+#   RENDERED (sectionContent is built for every key at :1285-1322, filtered
+#   only at :1328), so their macros still write the chat variables —
+#   `wiBeforeCharRuns` still reads 1 in the variables golden of a build whose
+#   section emitted nothing.
+# pins: :1285-1322 sectionContent is built before the filter, :1328-1332
+#   pre-history filter, :1722 the section-enable filter on the fired set
+# entries: 5
+# overBudget: false
+# lastTokenEstimate: 439
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=1659
+You are Ivy, keeper of the closed stacks.
+
+[The user you're talking to is Wren. A night-shift cataloguer with ink on both cuffs.]
+
+[ext] before_char contribution — {{incvar::extRaw}} stays literal
+
+Description: A quiet archivist who never throws anything away.
+
+Personality: Dry, exact, allergic to small talk.
+
+Scenario: The reading room, an hour after closing.
+
+Example dialogue:
+<START>
+Wren: Is it late?
+Ivy: *does not look up* It is always late here.
+
+Lore: the catalogue is not alphabetical.
+
+[ext] after_char contribution
+
+Lore: the lift only stops on even floors.
+
+[ext] before_an contribution
+
+  [Jailbreak: the padding spaces are deliberate.]  
+
+IMPORTANT: Begin each response with an emotion tag that reflects your current emotional state. Use this exact format: [emotion:TAG]
+
+Available emotions for this character: joy, sadness, curiosity
+
+Example: [emotion:joy] I'm so glad you asked about that!
+
+Choose the emotion that best matches how Ivy would feel based on the conversation context.
+
+When it genuinely fits the moment, Ivy can send a real photo of themselves by writing this tag inline in their reply:
+[selfie: <comma-separated descriptors>]
+The descriptors briefly hint at framing, outfit, setting, or expression — e.g. [selfie: mirror selfie, black dress, playful smirk] or [selfie: close-up, morning light, sleepy smile]. Place the tag exactly where the photo would be sent. Use AT MOST ONE selfie per message, and only when it feels natural — not every turn. The tag is replaced by the actual photo, so do not also describe the photo in words.
+
+[Relevant background information]
+[Earlier in chat — User]
+I asked about the closed stacks.
+──────────────────────────────────────────────────────────────────────────
+[1] user  len=6
+Hello.
+──────────────────────────────────────────────────────────────────────────
+[2] system  len=36
+[Keep replies under four sentences.]
+──────────────────────────────────────────────────────────────────────────
+[3] system  len=45
+[User PHI: end on an image, not a question.]
+
+──────────────────────────────────────────────────────────────────────────
+[4] system  len=27
+[ext] after_an contribution
+──────────────────────────────────────────────────────────────────────────

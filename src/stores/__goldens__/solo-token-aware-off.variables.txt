@@ -12,6 +12,7 @@
 #   estimateConversationTokens
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
-(no variables written by this build)
+charPhiSub = "1"
+charSysPrompt = "1"
 ══════════════════════════════════════════════════════════════════════════
-0 key(s)
+2 key(s)

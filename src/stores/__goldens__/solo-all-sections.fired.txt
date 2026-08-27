@@ -12,13 +12,14 @@
 # wiTimerOut.currentTurn (in): 0
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
 # serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = b-pos/e-bc, b-persona-linked/e-persona-linked, b-pos/e-ac, b-pos/e-ba, b-pos/e-aa
 trimmedAtDepth = (none)
 activated      = e-aa, e-ac, e-ba, e-bc, e-persona-linked
 ══════════════════════════════════════════════════════════════════════════
 scanReport.budget           = 0
-scanReport.pinnedTokens     = 50
-scanReport.totalTokens      = 50
+scanReport.pinnedTokens     = 58
+scanReport.totalTokens      = 58
 scanReport.pinnedOverBudget = false
 scanReport.dropped          = (none)

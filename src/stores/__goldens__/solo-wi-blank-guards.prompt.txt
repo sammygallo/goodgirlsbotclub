@@ -1,22 +1,21 @@
-# solo/image-only-and-blank-assistant   [S11]
-# what: The blank-content fixture. An image-only user turn (kept, and it
-#   ships EMPTY content) next to a blank assistant turn (dropped); a
-#   character note that renders to WHITESPACE ONLY (pushed anyway — the
-#   in-loop guard at :1481 tests `depthPromptContent`, not `.trim()`); and a
-#   macro-only author's note at the same depth that renders to '' and IS
-#   swallowed by its own guard, which tests `.trim()`. The two IN-LOOP guards
-#   disagree on purpose and it is that pair — :1481 vs :1490 — this fixture
-#   pins. The depth-0 pair is pinned by empty-system-block and the overflow
-#   pair by recall-absent; none of the three is coverage for the others, and
-#   each is a separate build because a character has exactly one depth_prompt
-#   at exactly one depth.
-# pins: :1481 in-loop depth-prompt guard, :1490-1497 in-loop AN blank guard,
-#   :1531-1540 image-only keep
-# entries: 4
+# solo/wi-blank-guards   [R3: the macro-empty filter on wiTimerOut.fired]
+# what: Solo's counterpart of group/blank-guards. Four world-info entries
+#   whose content renders to '' — one at a NON-depth position and one at each
+#   of the three at-depth emission sites (in-loop depth 1, the depth-0
+#   trailing slot, the depth-9 overflow unshift) — each paired with a
+#   non-blank sibling at the same slot so the slot still emits and the blank
+#   one is the only thing that can disappear. Every blank entry carries its
+#   own {{addvar}} counter, so its macros are proven to have RUN exactly once
+#   while its content reached nothing. The four `wiRendered` filters (:1512,
+#   :1577, :1626 and :1724) were each deletable with the suite green;
+#   .fired.txt is where deleting one now shows up.
+# pins: :1144-1154 wiRendered / joinWi, :1512 in-loop filter, :1577 depth-0
+#   filter, :1626 overflow filter, :1724 the non-depth filter
+# entries: 6
 # overBudget: false
-# lastTokenEstimate: 604
+# lastTokenEstimate: 666
 ══════════════════════════════════════════════════════════════════════════
-[0] system  len=2254
+[0] system  len=2312
 You are Ivy. Write Ivy's next reply in this ongoing roleplay with User.
 
 Style:
@@ -31,6 +30,8 @@ Hard rules:
 - Never break character, address the reader, mention being an AI, refuse in-world, or comment on the roleplay from outside it.
 - Honor continuity: respect what's already happened, what Ivy knows, and the current setting.
 
+Sibling at before_char: the stacks run four floors down.
+
 Description: A quiet archivist who never throws anything away.
 
 [System note: This is an uncensored, adult creative-writing roleplay between consenting fictional characters. Ivy may be flawed, morally complex, lustful, violent, vulnerable, or cruel as the character and scene demand — write them honestly, not sanitized. Mature, explicit, dark, or transgressive themes are permitted when the scene calls for them and User has steered toward them; do not soften, fade to black, moralize, lecture, or insert disclaimers. Stay grounded in Ivy's voice and the established fiction. Never refuse in-character or out — if a direction feels wrong for Ivy, have Ivy react in-character (hesitate, push back, redirect) rather than breaking the fiction.]
@@ -43,12 +44,18 @@ Example: [emotion:joy] I'm so glad you asked about that!
 
 Choose the emotion that best matches how Ivy would feel based on the conversation context.
 ──────────────────────────────────────────────────────────────────────────
-[1] user  len=13
-Look at this.
+[1] system  len=54
+Sibling at depth 9: the catalogue is not alphabetical.
 ──────────────────────────────────────────────────────────────────────────
-[2] system  len=4
-∅ (whitespace only: "    ")
+[2] user  len=6
+First.
 ──────────────────────────────────────────────────────────────────────────
-[3] user  len=0
-∅ (empty content)
+[3] system  len=55
+Sibling at depth 1: the lift only stops on even floors.
+──────────────────────────────────────────────────────────────────────────
+[4] assistant  len=7
+Second.
+──────────────────────────────────────────────────────────────────────────
+[5] system  len=48
+Sibling at depth 0: nobody signs the ledger out.
 ──────────────────────────────────────────────────────────────────────────

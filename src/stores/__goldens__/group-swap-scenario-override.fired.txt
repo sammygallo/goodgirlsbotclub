@@ -5,6 +5,7 @@
 # pins: :2036-2044 lazy speakerScenario, :2141-2155 override branch
 # wiTimerOut.currentTurn (in): 1
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = (none)
 trimmedAtDepth = (none)

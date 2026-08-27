@@ -2,8 +2,8 @@
 # what: A linked style template is active: the user main prompt beats the
 #   card's system_prompt, and char_phi becomes the style reinforcement
 #   instead of the card's post-history instructions.
-# pins: :1189-1191 linkedStyleActive, :1257-1261 mainPrompt, :1314-1318
-#   char_phi
+# pins: :1189-1191 linkedStyleActive, :1209-1211 the linkedStyleActive arm of
+#   the PHI gate, :1257-1261 mainPrompt, :1314-1318 char_phi
 # entries: 3
 # overBudget: false
 # lastTokenEstimate: 361

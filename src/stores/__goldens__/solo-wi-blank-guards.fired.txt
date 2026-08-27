@@ -1,0 +1,27 @@
+# solo/wi-blank-guards   [R3: the macro-empty filter on wiTimerOut.fired]
+# what: Solo's counterpart of group/blank-guards. Four world-info entries
+#   whose content renders to '' — one at a NON-depth position and one at each
+#   of the three at-depth emission sites (in-loop depth 1, the depth-0
+#   trailing slot, the depth-9 overflow unshift) — each paired with a
+#   non-blank sibling at the same slot so the slot still emits and the blank
+#   one is the only thing that can disappear. Every blank entry carries its
+#   own {{addvar}} counter, so its macros are proven to have RUN exactly once
+#   while its content reached nothing. The four `wiRendered` filters (:1512,
+#   :1577, :1626 and :1724) were each deletable with the suite green;
+#   .fired.txt is where deleting one now shows up.
+# pins: :1144-1154 wiRendered / joinWi, :1512 in-loop filter, :1577 depth-0
+#   filter, :1626 overflow filter, :1724 the non-depth filter
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-wiblank/e-sib-bc, b-wiblank/e-sib-d9, b-wiblank/e-sib-d1, b-wiblank/e-sib-d0
+trimmedAtDepth = (none)
+activated      = e-blank-bc, e-blank-d0, e-blank-d1, e-blank-d9, e-sib-bc, e-sib-d0, e-sib-d1, e-sib-d9
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 117
+scanReport.totalTokens      = 117
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

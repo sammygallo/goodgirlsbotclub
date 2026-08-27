@@ -11,6 +11,7 @@
 #   swap mesExample
 # wiTimerOut.currentTurn (in): 1
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = b-gmacro/e-gmacro
 trimmedAtDepth = (none)

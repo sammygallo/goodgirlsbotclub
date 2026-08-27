@@ -11,6 +11,8 @@
 #   18 keys, :1336-1338 the untrimmed push + join, :1684-1690 Stage C
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
-(no variables written by this build)
+charPhiSub = "1"
+charSysPrompt = "1"
+wiBeforeCharRuns = "1"
 ══════════════════════════════════════════════════════════════════════════
-0 key(s)
+3 key(s)

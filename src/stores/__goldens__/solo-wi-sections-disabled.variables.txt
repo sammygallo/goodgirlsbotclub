@@ -1,0 +1,23 @@
+# solo/wi-sections-disabled   [R3: the section-enable filter on wiTimerOut.fired]
+# what: The all-sections state with two WORLD-INFO sections disabled —
+#   wi_before_char (which holds two entries, one of them the persona-linked
+#   one) and wi_after_an. Nothing else disables a wi_* section while entries
+#   sit in it, so :1722 — the filter that keeps a disabled section's entries
+#   out of the fired set — could be deleted outright and the whole suite
+#   stayed green. The point is legible in .fired.txt: three of the five
+#   scanned entries are gone from `fired` even though the scan matched all
+#   five, and the two blocks are gone from the prompt. NOTE the
+#   deliberately-recorded waste: a disabled section's entries are still
+#   RENDERED (sectionContent is built for every key at :1285-1322, filtered
+#   only at :1328), so their macros still write the chat variables —
+#   `wiBeforeCharRuns` still reads 1 in the variables golden of a build whose
+#   section emitted nothing.
+# pins: :1285-1322 sectionContent is built before the filter, :1328-1332
+#   pre-history filter, :1722 the section-enable filter on the fired set
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+charPhiSub = "1"
+charSysPrompt = "1"
+wiBeforeCharRuns = "1"
+══════════════════════════════════════════════════════════════════════════
+3 key(s)

@@ -10,6 +10,8 @@
 # wiTimerOut.currentTurn (in): 0
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
 # serverMatchedEntries (in): (none — the local scan runs)
+# toasts: 1
+# toast[warning]: Constant + critical lore (~58 tokens) exceeds the World Info budget (40). Raise the budget or demote entries.
 ══════════════════════════════════════════════════════════════════════════
 fired          = b-budget/e-pinned-a, b-budget/e-pinned-b
 trimmedAtDepth = (none)

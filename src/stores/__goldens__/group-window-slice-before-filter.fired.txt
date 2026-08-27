@@ -5,6 +5,7 @@
 # pins: :2275 slice-before-filter
 # wiTimerOut.currentTurn (in): 20
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = (none)
 trimmedAtDepth = (none)

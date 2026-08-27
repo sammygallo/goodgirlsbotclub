@@ -7,6 +7,8 @@
 # pins: :1866-1895 group WI budget + fail-loud, worldInfoStore.ts:1319-1358
 # wiTimerOut.currentTurn (in): 0
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: 1
+# toast[warning]: Constant + critical lore (~60 tokens) exceeds the World Info budget (40). Raise the budget or demote entries.
 ══════════════════════════════════════════════════════════════════════════
 fired          = b-gbudget/e-gpinned, b-gbudget/e-gcritical
 trimmedAtDepth = (none)

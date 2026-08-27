@@ -15,6 +15,7 @@
 # wiTimerOut.currentTurn (in): 3
 # wiTimerOut.timers (in): e-cooldown=3, e-sticky=2
 # serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = b-scan/e-key-hit, b-scan/e-sticky
 trimmedAtDepth = (none)

@@ -492,8 +492,16 @@ const IVY_FULL = mkChar({
   personality: 'Dry, exact, allergic to small talk.',
   scenario: 'The reading room, an hour after closing.',
   mes_example: '<START>\n{{user}}: Is it late?\n{{char}}: *does not look up* It is always late here.',
-  system_prompt: 'You are Ivy, keeper of the closed stacks.',
-  post_history_instructions: '[Keep replies under four sentences.]',
+  // The two {{addvar}} counters are what make the SUPPRESSION gates at
+  // chatStore.ts:1205-1211 observable. Both fields are read through a
+  // ternary whose false arm is `''`, so hoisting the `sub()` out of either
+  // one (execute the macro, discard the text) changes nothing any prompt
+  // golden can see — it only writes the user's chat variables. The fixtures
+  // that turn each gate OFF declare these in `absentCounters`.
+  // `{{addvar}}` renders to '' (macros.ts:442-453), so no prompt golden moves.
+  system_prompt: 'You are Ivy, keeper of the closed stacks.{{addvar::charSysPrompt::1}}',
+  post_history_instructions:
+    '[Keep replies under four sentences.]{{addvar::charPhiSub::1}}',
 });
 
 const HELLO: ChatMessage[] = [mkMsg('m1', 'Hello.')];
@@ -526,7 +534,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     pins:
       ':1046 persona-book union, :1133-1136 persona wrapper, :1285-1322 all 18 keys, ' +
       ':1336-1338 the untrimmed push + join, :1684-1690 Stage C',
-    counters: [],
+    counters: ['wiBeforeCharRuns'],
     // joinExt emits `c.content` verbatim (:1178-1181) — an extension is a
     // third-party contributor, and running its text through the chat's macro
     // engine would let it write the user's chat variables. Absent here is the
@@ -545,7 +553,15 @@ export const SOLO_FIXTURES: SoloFixture[] = [
             // substituted content untrimmed, joinWi joins it untrimmed, and
             // :1336 pushes the section untrimmed. `.trim()` anywhere along
             // that path shows up here.
-            mkEntry('e-bc', { content: 'Lore: the stacks run four floors down.\n\n', position: 'before_char' }),
+            // The {{addvar}} renders to '' and is what wi-sections-disabled
+            // reads: sectionContent is built for EVERY key (:1285-1322) and
+            // only then filtered (:1328), so a disabled section still runs
+            // its entries' macros against the user's chat variables.
+            mkEntry('e-bc', {
+              content:
+                'Lore: the stacks run four floors down.{{addvar::wiBeforeCharRuns::1}}\n\n',
+              position: 'before_char',
+            }),
             mkEntry('e-ac', { content: 'Lore: the catalogue is not alphabetical.', position: 'after_char' }),
             mkEntry('e-ba', { content: 'Lore: the lift only stops on even floors.', position: 'before_an' }),
             mkEntry('e-aa', { content: 'Lore: nobody signs the ledger out.', position: 'after_an' }),
@@ -618,11 +634,18 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     what:
       'Every pre-history section disabled. The Stage-A push at :1335 is ' +
       'unconditional, so the prompt still opens with an EMPTY system message. ' +
-      "Also carries a macro-only author's note at DEPTH 0, which renders to " +
-      "'' and must be swallowed by the depth-0 blank guard — an empty content " +
-      'block 400s Claude.',
-    pins: ':1327-1338 the unconditional push (audit §4.4), :1556-1562 depth-0 AN blank guard',
-    counters: ['anGuardRuns'],
+      "Also carries the two DEPTH-0 blank guards: a macro-only author's note " +
+      "that renders to '' and is swallowed by :1557, and a character note " +
+      'that renders to WHITESPACE ONLY and is swallowed by :1548, which tests ' +
+      '`.trim()`. The in-loop depth-prompt guard (:1481) tests truthiness and ' +
+      'would have pushed that same whitespace — see ' +
+      'image-only-and-blank-assistant, which pins the in-loop half, and ' +
+      'recall-absent, which pins the overflow half. Neither depth-0 entry may ' +
+      'appear in the prompt golden: an empty content block 400s Claude.',
+    pins:
+      ':1327-1338 the unconditional push (audit §4.4), :1548 depth-0 ' +
+      'depth-prompt .trim() guard, :1556-1562 depth-0 AN blank guard',
+    counters: ['anGuardRuns', 'depthPromptRuns'],
     setup: () => {
       withPromptOrder((order) =>
         order.map((e) =>
@@ -637,7 +660,25 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       // not: writing the same literal twice is byte-identical to writing it
       // once, so a setvar-only guard fixture cannot detect double execution.
       withAuthorNote('{{setvar::anGuard::depth-0}}{{addvar::anGuardRuns::1}}', 0);
-      return { messages: HELLO, character: IVY_MINIMAL };
+      return {
+        messages: HELLO,
+        character: mkChar({
+          ...IVY_MINIMAL,
+          data: {
+            extensions: {
+              depth_prompt: {
+                // Renders to '    ' — truthy but blank. :1548 tests `.trim()`,
+                // so it is dropped; relaxing that guard to plain truthiness
+                // (the shape :1481 and :1593 both use) ships an all-whitespace
+                // context entry, which is what this fixture makes visible.
+                prompt: '  {{addvar::depthPromptRuns::1}}  ',
+                depth: 0,
+                role: 'system',
+              },
+            },
+          },
+        }),
+      };
     },
   },
 
@@ -909,9 +950,13 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       "note that renders to WHITESPACE ONLY (pushed anyway — the in-loop " +
       'guard at :1481 tests `depthPromptContent`, not `.trim()`); and a ' +
       "macro-only author's note at the same depth that renders to '' and IS " +
-      'swallowed by its own guard, which tests `.trim()`. The two guards ' +
-      'disagree on purpose and both are pinned here.',
-    pins: ':1481 depth-prompt guard, :1490-1497 in-loop AN blank guard, :1531-1540 image-only keep',
+      'swallowed by its own guard, which tests `.trim()`. The two IN-LOOP ' +
+      'guards disagree on purpose and it is that pair — :1481 vs :1490 — ' +
+      'this fixture pins. The depth-0 pair is pinned by empty-system-block ' +
+      'and the overflow pair by recall-absent; none of the three is ' +
+      'coverage for the others, and each is a separate build because a ' +
+      'character has exactly one depth_prompt at exactly one depth.',
+    pins: ':1481 in-loop depth-prompt guard, :1490-1497 in-loop AN blank guard, :1531-1540 image-only keep',
     counters: ['depthPromptRuns', 'anGuardRuns'],
     setup: () => {
       const char = mkChar({
@@ -1053,12 +1098,33 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'Same build with no ragContext — rag_context renders empty and is ' +
       "filtered out. Also carries a macro-only author's note at an OVERFLOW " +
       'depth (5 > 1 message), the third and last of solo\'s three blank-AN ' +
-      'guards.',
-    pins: ':1305-1307 / :1330-1332, :1603-1610 overflow AN blank guard',
-    counters: ['anGuardRuns'],
+      'guards, and a character note at the SAME overflow depth that renders ' +
+      'to whitespace only. The two disagree: :1605 swallows the note because ' +
+      'it tests `.trim()`, :1593 unshifts the whitespace because it tests ' +
+      'truthiness. That asymmetry against the depth-0 pair (empty-system-' +
+      'block) is filed as #477 — when it is fixed this golden loses an entry, ' +
+      'which is the point of pinning it.',
+    pins:
+      ':1305-1307 / :1330-1332, :1591-1600 overflow depth-prompt truthy guard, ' +
+      ':1603-1610 overflow AN blank guard',
+    counters: ['anGuardRuns', 'depthPromptRuns'],
     setup: () => {
       withAuthorNote('{{setvar::anGuard::overflow}}{{addvar::anGuardRuns::1}}', 5);
-      return { messages: HELLO, character: IVY_MINIMAL };
+      return {
+        messages: HELLO,
+        character: mkChar({
+          ...IVY_MINIMAL,
+          data: {
+            extensions: {
+              depth_prompt: {
+                prompt: '  {{addvar::depthPromptRuns::1}}  ',
+                depth: 5,
+                role: 'user',
+              },
+            },
+          },
+        }),
+      };
     },
   },
 
@@ -1112,8 +1178,16 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'Anthropic. Numbers are chosen so the MIN_RAW_TAIL cap does NOT bind: ' +
       'offset 10-2=8 keeps 12 turns, and dropping the rebase would keep 10.',
     pins:
-      ':1195-1199 pureChatMode, :1240-1247 charInfoParts, :1314-1318 char_phi, ' +
+      ':1195-1199 pureChatMode, :1209-1211 the pureChatMode arm of the PHI gate, ' +
+      ':1240-1247 charInfoParts, :1314-1318 char_phi, ' +
       ':1367-1372 greeting trim, :1406-1409 pureChatRemoved rebase',
+    // The card's PHI is SUPPRESSED here, so its counter must not have run:
+    // hoisting `sub(post_history_instructions)` out of the :1209-1211 ternary
+    // emits nothing and is invisible to every prompt golden. char_phi's
+    // suppression is one of three gates on that one ternary — the other two
+    // are pinned by linked-style-active and card-overrides-disabled.
+    counters: ['charSysPrompt'],
+    absentCounters: ['charPhiSub'],
     setup: () => {
       usePromptTemplateStore.setState({
         chatCompanionModeByChatFile: { [GOLDEN_CHAT_FILE]: true },
@@ -1149,7 +1223,11 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'A linked style template is active: the user main prompt beats the ' +
       "card's system_prompt, and char_phi becomes the style reinforcement " +
       "instead of the card's post-history instructions.",
-    pins: ':1189-1191 linkedStyleActive, :1257-1261 mainPrompt, :1314-1318 char_phi',
+    pins:
+      ':1189-1191 linkedStyleActive, :1209-1211 the linkedStyleActive arm of ' +
+      'the PHI gate, :1257-1261 mainPrompt, :1314-1318 char_phi',
+    counters: ['charSysPrompt'],
+    absentCounters: ['charPhiSub'],
     setup: () => {
       usePromptTemplateStore.setState({ mainPromptSnapshot: 'snapshot of the user prompt' });
       useGenerationStore.setState({
@@ -1393,8 +1471,13 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'The only fixture with either flag off. The full card ships both a ' +
       "system_prompt and post_history_instructions; with both flags false the " +
       "user's own main prompt wins the mainPrompt chain instead and char_phi " +
-      'renders empty. Ignoring EITHER flag is green without this.',
+      'renders empty. Ignoring EITHER flag is green without this. Both card ' +
+      'fields carry an {{addvar}} counter and both are declared ABSENT: the ' +
+      'flags gate a ternary, so hoisting either `sub()` out of it — execute ' +
+      'the macro, throw the text away — leaves every prompt golden identical ' +
+      "while still writing the user's chat variables.",
     pins: ':1205-1211 the two flag gates, :1257-1261 the mainPrompt chain',
+    absentCounters: ['charSysPrompt', 'charPhiSub'],
     setup: () => {
       useGenerationStore.setState({
         prompt: {
@@ -1415,14 +1498,18 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     what:
       'Thirty messages with three SYSTEM turns inside the last twelve, ' +
       'tokenAware off with messageCount 12, and a summary covering the first ' +
-      'twenty non-system turns. Two things are pinned that nothing else ' +
-      'reaches. (1) :1350 slices the last twelve RAW messages and only then ' +
-      'filters system turns, so nine reach the prompt — group got a dedicated ' +
-      'fixture for this, solo did not. (2) `windowSkew` is 27-9=18, so the ' +
-      'compaction offset rebases to 2 and keeps seven turns; without the ' +
-      'rebase the offset would be 20, the MIN_RAW_TAIL cap would clamp it to ' +
-      '3, and six would remain. Every other build has windowSkew 0.',
-    pins: ':1345-1350 slice-before-filter, :1359 windowSkew, :1406-1419 cappedOffset',
+      'twenty non-system turns. What it pins that nothing else reaches: ' +
+      '`windowSkew` is 27-9=18, so the compaction offset rebases to 2 and ' +
+      'keeps seven turns; without the rebase the offset would be 20, the ' +
+      'MIN_RAW_TAIL cap would clamp it to 3, and six would remain. Every ' +
+      'other build has windowSkew 0. It does NOT pin :1350\'s ' +
+      'slice-before-filter ordering, however much its shape suggests it: ' +
+      'once a summary is present the offset rebase subtracts windowSkew ' +
+      'again, the window terms cancel, and both orderings emit the same ' +
+      'tail. Swapping them is green here. `token-aware-off` is the fixture ' +
+      'that pins that ordering, and a self-check keeps its input capable of ' +
+      'it.',
+    pins: ':1359 windowSkew, :1406-1419 cappedOffset',
     setup: () => {
       withContext({ tokenAware: false, messageCount: 12 });
       useSummarizeStore.setState({
@@ -1448,6 +1535,123 @@ export const SOLO_FIXTURES: SoloFixture[] = [
         );
       }
       return { messages, character: IVY_MINIMAL };
+    },
+  },
+
+  // --- ROUND 3: the fired-set filters renderFired's docstring claims ------
+
+  {
+    name: 'wi-sections-disabled',
+    matrix: 'R3: the section-enable filter on wiTimerOut.fired',
+    what:
+      "The all-sections state with two WORLD-INFO sections disabled — " +
+      'wi_before_char (which holds two entries, one of them the ' +
+      'persona-linked one) and wi_after_an. Nothing else disables a wi_* ' +
+      'section while entries sit in it, so :1722 — the filter that keeps a ' +
+      'disabled section\'s entries out of the fired set — could be deleted ' +
+      'outright and the whole suite stayed green. The point is legible in ' +
+      '.fired.txt: three of the five scanned entries are gone from `fired` ' +
+      'even though the scan matched all five, and the two blocks are gone ' +
+      'from the prompt. NOTE the deliberately-recorded waste: a disabled ' +
+      "section's entries are still RENDERED (sectionContent is built for " +
+      'every key at :1285-1322, filtered only at :1328), so their macros ' +
+      'still write the chat variables — `wiBeforeCharRuns` still reads 1 in ' +
+      'the variables golden of a build whose section emitted nothing.',
+    pins:
+      ':1285-1322 sectionContent is built before the filter, :1328-1332 ' +
+      'pre-history filter, :1722 the section-enable filter on the fired set',
+    counters: ['wiBeforeCharRuns'],
+    absentCounters: ['extRaw'],
+    setup: () => {
+      // Reuses all-sections' whole state — its four positional entries plus
+      // the persona-linked one — and only turns two sections off.
+      const input = reuseSolo('all-sections');
+      withPromptOrder((order) => {
+        const disabled = new Set<PromptSectionId>(['wi_before_char', 'wi_after_an']);
+        return order.map((e) =>
+          disabled.has(e.id) ? { ...e, enabled: false } : e
+        );
+      });
+      return input;
+    },
+  },
+
+  {
+    name: 'wi-blank-guards',
+    matrix: 'R3: the macro-empty filter on wiTimerOut.fired',
+    what:
+      "Solo's counterpart of group/blank-guards. Four world-info entries " +
+      "whose content renders to '' — one at a NON-depth position and one at " +
+      'each of the three at-depth emission sites (in-loop depth 1, the ' +
+      'depth-0 trailing slot, the depth-9 overflow unshift) — each paired ' +
+      'with a non-blank sibling at the same slot so the slot still emits and ' +
+      'the blank one is the only thing that can disappear. Every blank entry ' +
+      'carries its own {{addvar}} counter, so its macros are proven to have ' +
+      'RUN exactly once while its content reached nothing. The four ' +
+      '`wiRendered` filters (:1512, :1577, :1626 and :1724) were each ' +
+      'deletable with the suite green; .fired.txt is where deleting one now ' +
+      'shows up.',
+    pins:
+      ':1144-1154 wiRendered / joinWi, :1512 in-loop filter, :1577 depth-0 ' +
+      'filter, :1626 overflow filter, :1724 the non-depth filter',
+    counters: [
+      'soloWiBlankNonDepth',
+      'soloWiBlankInLoop',
+      'soloWiBlankZero',
+      'soloWiBlankOverflow',
+    ],
+    setup: () => {
+      withBooks([
+        mkBook('b-wiblank', [
+          mkEntry('e-blank-bc', {
+            content: '{{setvar::wiGuard::before-char}}{{addvar::soloWiBlankNonDepth::1}}',
+            position: 'before_char',
+          }),
+          mkEntry('e-sib-bc', {
+            content: 'Sibling at before_char: the stacks run four floors down.',
+            position: 'before_char',
+          }),
+          // Two messages, so depthFromEnd 1 is the in-loop slot, 0 is the
+          // trailing slot and 9 overflows to the front.
+          mkEntry('e-blank-d1', {
+            content: '{{setvar::wiGuard::depth-1}}{{addvar::soloWiBlankInLoop::1}}',
+            position: 'at_depth',
+            depth: 1,
+          }),
+          mkEntry('e-sib-d1', {
+            content: 'Sibling at depth 1: the lift only stops on even floors.',
+            position: 'at_depth',
+            depth: 1,
+          }),
+          mkEntry('e-blank-d0', {
+            content: '{{setvar::wiGuard::depth-0}}{{addvar::soloWiBlankZero::1}}',
+            position: 'at_depth',
+            depth: 0,
+          }),
+          mkEntry('e-sib-d0', {
+            content: 'Sibling at depth 0: nobody signs the ledger out.',
+            position: 'at_depth',
+            depth: 0,
+          }),
+          mkEntry('e-blank-d9', {
+            content: '{{setvar::wiGuard::depth-9}}{{addvar::soloWiBlankOverflow::1}}',
+            position: 'at_depth',
+            depth: 9,
+          }),
+          mkEntry('e-sib-d9', {
+            content: 'Sibling at depth 9: the catalogue is not alphabetical.',
+            position: 'at_depth',
+            depth: 9,
+          }),
+        ]),
+      ]);
+      return {
+        messages: [
+          mkMsg('wb1', 'First.'),
+          mkMsg('wb2', 'Second.', { isUser: false, name: 'Ivy' }),
+        ],
+        character: IVY_MINIMAL,
+      };
     },
   },
 ];

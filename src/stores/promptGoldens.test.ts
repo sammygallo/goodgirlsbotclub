@@ -51,6 +51,29 @@ vi.mock('../utils/serverSettings', () => ({
   clearLocalTs: vi.fn(),
 }));
 
+/**
+ * Every toast raised during the build currently running.
+ *
+ * The two world-info budget fixtures are the only builds that reach a
+ * `showToastGlobal` call (chatStore.ts:1106 solo, :1892 group — the fail-loud
+ * "constant + critical lore alone busts the WI budget" warning). That branch
+ * emits NOTHING into the context, so without capturing the toast, deleting
+ * both blocks outright left all 132 tests green: the fixtures' `pins` named a
+ * branch they could not see. Rendered into `.fired.txt` — the same golden that
+ * carries the `scanReport` the toast is derived from.
+ *
+ * Mocking the module (rather than reading a real toast queue) follows
+ * worldInfoStore.test.ts: `showToastGlobal` dispatches to a module-level
+ * callback that only ToastProvider ever installs, so in a node test it is a
+ * silent no-op.
+ */
+const capturedToasts: { message: string; variant: string }[] = [];
+vi.mock('../components/ui/Toast', () => ({
+  showToastGlobal: (message: string, variant?: string) => {
+    capturedToasts.push({ message, variant: variant ?? 'info' });
+  },
+}));
+
 // chatStore -> authStore -> lovenseStore -> chatStore is a require cycle, and
 // lovenseStore calls useChatStore.subscribe() at module scope. Importing
 // chatStore first (as this test does) leaves that binding undefined, so stub
@@ -179,9 +202,17 @@ function renderVariables(head: string[], vars: Record<string, string>): string {
  * This is a THIRD golden per fixture, not a decoration. Every production call
  * site passes a real `wiOut`; round 1's fixtures all passed `undefined`, so
  * the ~40-line derivation at chatStore.ts:1704-1743 (which entries actually
- * reached the prompt, after section-disable filtering, macro-empty drops and
- * the history trim) and its group counterpart at :2420-2423 never executed in
- * a single golden build. Everything it derives is now pinned:
+ * reached the prompt) and its group counterpart at :2420-2423 never executed
+ * in a single golden build.
+ *
+ * That derivation applies THREE filters. Round 2's version of this docstring
+ * named all three; only the last was reachable by a mutation. Each now has a
+ * fixture that goes red when its filter is deleted:
+ *   - section-disable (:1722) .................. `solo-wi-sections-disabled`
+ *   - macro-empty (:1512 :1577 :1626 :1724) .... `solo-wi-blank-guards`
+ *   - the history trim (:1725-1728) ............ `solo-trim-bites`
+ *
+ * Everything it derives is pinned:
  *
  *   - `fired`     — the entries the WI telemetry will persist (utils/wiFired).
  *   - `trimmedAtDepth` — at-depth entries the history trim cut after the scan
@@ -257,6 +288,10 @@ interface Run {
    *  self-checks below assert on the DATA and can't be satisfied (or, as an
    *  earlier revision was, defeated) by the golden's own header prose. */
   vars: Record<string, string>;
+  /** Toasts this build raised, and the chat file it raised them against —
+   *  the once-per-chat suppression below is asserted on these, not on prose. */
+  toasts: { message: string; variant: string }[];
+  chatFile: string;
 }
 
 /**
@@ -277,6 +312,22 @@ function mkWiOut(
     timers: { ...(timers ?? {}) },
     activated: new Set<string>(),
   };
+}
+
+/**
+ * The toasts one build raised, as `.fired.txt` header lines.
+ *
+ * The full message text, not just a count: it is the only user-visible output
+ * of the fail-loud branch, and its numbers (`pinnedTokens`, `budget`) are
+ * re-derived from the same `scanReport` printed below it — so a golden where
+ * the two disagree is reporting a real bug.
+ */
+function toastHead(toasts: { message: string; variant: string }[]): string[] {
+  if (toasts.length === 0) return ['# toasts: (none raised by this build)'];
+  return [
+    `# toasts: ${toasts.length}`,
+    ...toasts.map((t) => `# toast[${t.variant}]: ${t.message}`),
+  ];
 }
 
 /** Header lines describing the wiTimerOut this build was HANDED, so the
@@ -305,6 +356,7 @@ function runSolo(fx: SoloFixture): Run {
   resetStores();
   const input = fx.setup();
   const wiOut = mkWiOut(input.messages, input.wiTimers);
+  capturedToasts.length = 0;
   const { context, overBudget } = buildConversationContext(
     input.messages,
     input.character,
@@ -346,10 +398,13 @@ function runSolo(fx: SoloFixture): Run {
             ? `${input.serverMatchedEntries.length} entr(ies) — the local scan is SKIPPED`
             : '(none — the local scan runs)'
         }`,
+        ...toastHead(capturedToasts),
       ],
       wiOut
     ),
     vars,
+    toasts: [...capturedToasts],
+    chatFile,
   };
 }
 
@@ -357,6 +412,7 @@ function runGroup(fx: GroupFixture): Run {
   resetStores();
   const input = fx.setup();
   const wiOut = mkWiOut(input.messages, input.wiTimers);
+  capturedToasts.length = 0;
   const context = buildGroupConversationContext(
     input.messages,
     input.characters,
@@ -391,8 +447,13 @@ function runGroup(fx: GroupFixture): Run {
       [...head, '# A count above 1 here means a macro executed more than once.'],
       vars
     ),
-    fired: renderFired([...head, ...wiOutHead(wiOut, input.wiTimers)], wiOut),
+    fired: renderFired(
+      [...head, ...wiOutHead(wiOut, input.wiTimers), ...toastHead(capturedToasts)],
+      wiOut
+    ),
     vars,
+    toasts: [...capturedToasts],
+    chatFile,
   };
 }
 
@@ -467,6 +528,15 @@ describe('prompt goldens — group', () => {
 // a human runs.
 
 describe('prompt goldens — the harness pins what it claims to', () => {
+  it('the fixture counts the README quotes are the ones that exist', () => {
+    // The README states a count per builder and a total. Those numbers were
+    // wrong (it claimed 17 group fixtures against 16) from the moment round 2
+    // added fixtures without re-counting, and nothing could tell. Update these
+    // when you add a fixture — and update the README in the same commit.
+    expect(SOLO_FIXTURES.length, 'README "Solo (N fixtures)"').toBe(27);
+    expect(GROUP_FIXTURES.length, 'README "Group (N fixtures)"').toBe(16);
+  });
+
   it('every fixture has a unique golden stem', () => {
     const solo = SOLO_FIXTURES.map((f) => f.name);
     const group = GROUP_FIXTURES.map((f) => f.name);
@@ -515,6 +585,7 @@ describe('prompt goldens — the harness pins what it claims to', () => {
     ] as const) {
       for (const fx of fixtures) {
         const vars = runs.get(fx.name)!.vars;
+        let perFixture = 0;
         for (const key of fx.counters ?? []) {
           expect(
             vars[key],
@@ -522,6 +593,7 @@ describe('prompt goldens — the harness pins what it claims to', () => {
               `(got ${JSON.stringify(vars[key])})`
           ).toBe('1');
           asserted++;
+          perFixture++;
         }
         for (const key of fx.absentCounters ?? []) {
           expect(
@@ -529,12 +601,25 @@ describe('prompt goldens — the harness pins what it claims to', () => {
             `${kind}/${fx.name}: counter "${key}" ran for text nothing emitted`
           ).not.toHaveProperty(key);
           asserted++;
+          perFixture++;
+        }
+        // A fixture that declares either key must actually assert something.
+        // `counters: []` is how a declaration silently becomes decorative.
+        if (fx.counters !== undefined || fx.absentCounters !== undefined) {
+          expect(
+            perFixture,
+            `${kind}/${fx.name} declares counters but asserts none`
+          ).toBeGreaterThan(0);
         }
       }
     }
-    // A refactor that dropped `counters` off every fixture would leave this
-    // whole test vacuously green.
-    expect(asserted, 'no macro counters were asserted at all').toBeGreaterThan(50);
+    // EXACT, not a floor. The floor this replaced (`> 50`) carried 16 of
+    // slack, so deleting group/macro-writes-swap's entire ten-counter array
+    // was green — the required-list below only needs each NAME declared
+    // somewhere, and every one of those ten is also declared by
+    // group/macro-writes. An exact count makes any net loss a red test rather
+    // than budget. Raise it deliberately when you add counters.
+    expect(asserted, 'the macro-counter assertion count moved').toBe(81);
   });
 
   it('every macro-executing input in the builders owns a named counter', () => {
@@ -627,5 +712,81 @@ describe('prompt goldens — the harness pins what it claims to', () => {
         );
       }
     }
+  });
+
+  it('the fail-loud world-info budget warning fires once per chat file', () => {
+    // Round 2 gave the two budget fixtures their own chat files so that BOTH
+    // builders would reach their fail-loud branch — `wiPinnedWarnedChats`
+    // (chatStore.ts:962) is module-level and never cleared, so on one shared
+    // file the second build is suppressed. That apparatus pinned nothing
+    // until the toasts were captured: deleting either branch, or both
+    // `withChatFile` calls, left all 132 tests green.
+    //
+    // This is where the fixture-ORDER dependence the apparatus introduces is
+    // pinned too. Two builds fire, on two distinct files; add a third
+    // over-budget fixture on either of those files and it will be silently
+    // suppressed — and this test, not a golden, is what says so.
+    const fired = [
+      ...[...soloRuns].map(([n, r]) => [`solo/${n}`, r] as const),
+      ...[...groupRuns].map(([n, r]) => [`group/${n}`, r] as const),
+    ].filter(([, r]) => r.toasts.length > 0);
+    expect(fired.map(([n]) => n)).toEqual([
+      'solo/wi-budget-eviction',
+      'group/wi-budget-eviction',
+    ]);
+    for (const [name, run] of fired) {
+      expect(run.toasts.length, `${name} raised more than one toast`).toBe(1);
+      expect(run.toasts[0].variant).toBe('warning');
+      expect(run.toasts[0].message).toContain('exceeds the World Info budget');
+    }
+    const files = fired.map(([, r]) => r.chatFile);
+    expect(new Set(files).size, 'the two fail-loud builds share a chat file').toBe(2);
+
+    // The suppression half: build the solo budget fixture AGAIN, against the
+    // same chat file it already warned for. No second toast.
+    const fx = SOLO_FIXTURES.find((f) => f.name === 'wi-budget-eviction')!;
+    resetStores();
+    const input = fx.setup();
+    capturedToasts.length = 0;
+    buildConversationContext(
+      input.messages,
+      input.character,
+      input.availableEmotions,
+      mkWiOut(input.messages, input.wiTimers),
+      input.ragContext,
+      input.serverMatchedEntries
+    );
+    expect(
+      capturedToasts,
+      'the once-per-chat suppression stopped suppressing'
+    ).toEqual([]);
+  });
+
+  it('token-aware-off still holds an input that can tell the two window orders apart', () => {
+    // `solo-fixed-window-summary-skew` used to CLAIM :1350's
+    // slice-before-filter ordering and could not pin it: once a summary is
+    // present, the offset rebase subtracts `windowSkew` again and both
+    // orderings emit the same tail. `token-aware-off` is the only fixture
+    // that pins it, and only because system turns sit inside its raw window.
+    // Edit that fixture's history and the coverage the README now attributes
+    // to it can vacate silently — unless this fails.
+    resetStores();
+    const input = SOLO_FIXTURES.find((f) => f.name === 'token-aware-off')!.setup();
+    const { tokenAware, messageCount } = useGenerationStore.getState().context;
+    expect(tokenAware, 'token-aware-off stopped being token-aware-off').toBe(false);
+    const rawWindow = input.messages.slice(-messageCount);
+    expect(
+      rawWindow.filter((m) => m.isSystem).length,
+      'no system turns inside the raw window — the two orderings now agree'
+    ).toBeGreaterThan(0);
+    const sliceThenFilter = rawWindow.filter((m) => !m.isSystem).map((m) => m.id);
+    const filterThenSlice = input.messages
+      .filter((m) => !m.isSystem)
+      .slice(-messageCount)
+      .map((m) => m.id);
+    expect(
+      sliceThenFilter,
+      'the two orderings produce the same history — the mutation is unobservable'
+    ).not.toEqual(filterThenSlice);
   });
 });

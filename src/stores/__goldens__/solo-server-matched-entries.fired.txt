@@ -11,6 +11,7 @@
 # wiTimerOut.currentTurn (in): 0
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
 # serverMatchedEntries (in): 2 entr(ies) — the local scan is SKIPPED
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = 7b2e4d10-0000-4000-8000-000000000002/3f1c9a20-0000-4000-8000-000000000001, 7b2e4d10-0000-4000-8000-000000000002/3f1c9a20-0000-4000-8000-000000000003
 trimmedAtDepth = (none)

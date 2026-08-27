@@ -6,6 +6,7 @@
 # pins: :2288-2306 loop, :2386-2395 overflow, comment at :2379-2385
 # wiTimerOut.currentTurn (in): 1
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = (none)
 trimmedAtDepth = (none)

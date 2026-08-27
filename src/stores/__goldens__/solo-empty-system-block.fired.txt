@@ -1,14 +1,20 @@
 # solo/empty-system-block   [S4]
 # what: Every pre-history section disabled. The Stage-A push at :1335 is
 #   unconditional, so the prompt still opens with an EMPTY system message.
-#   Also carries a macro-only author's note at DEPTH 0, which renders to ''
-#   and must be swallowed by the depth-0 blank guard — an empty content block
-#   400s Claude.
-# pins: :1327-1338 the unconditional push (audit §4.4), :1556-1562 depth-0 AN
-#   blank guard
+#   Also carries the two DEPTH-0 blank guards: a macro-only author's note
+#   that renders to '' and is swallowed by :1557, and a character note that
+#   renders to WHITESPACE ONLY and is swallowed by :1548, which tests
+#   `.trim()`. The in-loop depth-prompt guard (:1481) tests truthiness and
+#   would have pushed that same whitespace — see
+#   image-only-and-blank-assistant, which pins the in-loop half, and
+#   recall-absent, which pins the overflow half. Neither depth-0 entry may
+#   appear in the prompt golden: an empty content block 400s Claude.
+# pins: :1327-1338 the unconditional push (audit §4.4), :1548 depth-0
+#   depth-prompt .trim() guard, :1556-1562 depth-0 AN blank guard
 # wiTimerOut.currentTurn (in): 0
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
 # serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
 ══════════════════════════════════════════════════════════════════════════
 fired          = (none)
 trimmedAtDepth = (none)

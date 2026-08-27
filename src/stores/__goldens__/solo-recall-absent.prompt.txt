@@ -2,11 +2,17 @@
 # what: Same build with no ragContext — rag_context renders empty and is
 #   filtered out. Also carries a macro-only author's note at an OVERFLOW
 #   depth (5 > 1 message), the third and last of solo's three blank-AN
-#   guards.
-# pins: :1305-1307 / :1330-1332, :1603-1610 overflow AN blank guard
-# entries: 2
+#   guards, and a character note at the SAME overflow depth that renders to
+#   whitespace only. The two disagree: :1605 swallows the note because it
+#   tests `.trim()`, :1593 unshifts the whitespace because it tests
+#   truthiness. That asymmetry against the depth-0 pair (empty-system-block)
+#   is filed as #477 — when it is fixed this golden loses an entry, which is
+#   the point of pinning it.
+# pins: :1305-1307 / :1330-1332, :1591-1600 overflow depth-prompt truthy
+#   guard, :1603-1610 overflow AN blank guard
+# entries: 3
 # overBudget: false
-# lastTokenEstimate: 593
+# lastTokenEstimate: 598
 ══════════════════════════════════════════════════════════════════════════
 [0] system  len=2254
 You are Ivy. Write Ivy's next reply in this ongoing roleplay with User.
@@ -35,6 +41,9 @@ Example: [emotion:joy] I'm so glad you asked about that!
 
 Choose the emotion that best matches how Ivy would feel based on the conversation context.
 ──────────────────────────────────────────────────────────────────────────
-[1] user  len=6
+[1] user  len=4
+∅ (whitespace only: "    ")
+──────────────────────────────────────────────────────────────────────────
+[2] user  len=6
 Hello.
 ──────────────────────────────────────────────────────────────────────────
