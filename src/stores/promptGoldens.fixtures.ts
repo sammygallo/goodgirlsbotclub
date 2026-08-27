@@ -635,7 +635,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'Every pre-history section disabled. The Stage-A push at :1335 is ' +
       'unconditional, so the prompt still opens with an EMPTY system message. ' +
       "Also carries the two DEPTH-0 blank guards: a macro-only author's note " +
-      "that renders to '' and is swallowed by :1557, and a character note " +
+      "that renders to '' and is swallowed by :1556, and a character note " +
       'that renders to WHITESPACE ONLY and is swallowed by :1548, which tests ' +
       '`.trim()`. The in-loop depth-prompt guard (:1481) tests truthiness and ' +
       'would have pushed that same whitespace — see ' +
@@ -1099,14 +1099,14 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       "filtered out. Also carries a macro-only author's note at an OVERFLOW " +
       'depth (5 > 1 message), the third and last of solo\'s three blank-AN ' +
       'guards, and a character note at the SAME overflow depth that renders ' +
-      'to whitespace only. The two disagree: :1605 swallows the note because ' +
+      'to whitespace only. The two disagree: :1603 swallows the note because ' +
       'it tests `.trim()`, :1593 unshifts the whitespace because it tests ' +
       'truthiness. That asymmetry against the depth-0 pair (empty-system-' +
       'block) is filed as #477 — when it is fixed this golden loses an entry, ' +
       'which is the point of pinning it.',
     pins:
       ':1305-1307 / :1330-1332, :1591-1600 overflow depth-prompt truthy guard, ' +
-      ':1603-1610 overflow AN blank guard',
+      ':1601-1609 overflow AN blank guard',
     counters: ['anGuardRuns', 'depthPromptRuns'],
     setup: () => {
       withAuthorNote('{{setvar::anGuard::overflow}}{{addvar::anGuardRuns::1}}', 5);

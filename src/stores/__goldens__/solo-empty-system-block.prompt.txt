@@ -2,7 +2,7 @@
 # what: Every pre-history section disabled. The Stage-A push at :1335 is
 #   unconditional, so the prompt still opens with an EMPTY system message.
 #   Also carries the two DEPTH-0 blank guards: a macro-only author's note
-#   that renders to '' and is swallowed by :1557, and a character note that
+#   that renders to '' and is swallowed by :1556, and a character note that
 #   renders to WHITESPACE ONLY and is swallowed by :1548, which tests
 #   `.trim()`. The in-loop depth-prompt guard (:1481) tests truthiness and
 #   would have pushed that same whitespace — see

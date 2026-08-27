@@ -3,13 +3,13 @@
 #   filtered out. Also carries a macro-only author's note at an OVERFLOW
 #   depth (5 > 1 message), the third and last of solo's three blank-AN
 #   guards, and a character note at the SAME overflow depth that renders to
-#   whitespace only. The two disagree: :1605 swallows the note because it
+#   whitespace only. The two disagree: :1603 swallows the note because it
 #   tests `.trim()`, :1593 unshifts the whitespace because it tests
 #   truthiness. That asymmetry against the depth-0 pair (empty-system-block)
 #   is filed as #477 — when it is fixed this golden loses an entry, which is
 #   the point of pinning it.
 # pins: :1305-1307 / :1330-1332, :1591-1600 overflow depth-prompt truthy
-#   guard, :1603-1610 overflow AN blank guard
+#   guard, :1601-1609 overflow AN blank guard
 # entries: 3
 # overBudget: false
 # lastTokenEstimate: 598
