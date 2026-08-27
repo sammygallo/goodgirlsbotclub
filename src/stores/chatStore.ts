@@ -66,6 +66,7 @@ import {
   createPromptBreakdown,
   recordAttachments,
   recordCallSiteTurn,
+  withHistoryRole,
   type GroupSlotId,
   type PromptBreakdown,
   type SectionKind,
@@ -1973,7 +1974,9 @@ export function finishConversationContext(
       if (kind.stage === 'B' && kind.cls === 'wi_at_depth') {
         wiEmittedTokens += estimateTokens(entry.content, tokenProfile);
       }
-      addSlice(out, kind, tokens, entry.content.length);
+      // The role comes off the entry the builder already pushed, not from a
+      // second read of `msg.isUser` — see `withHistoryRole`.
+      addSlice(out, withHistoryRole(kind, entry.role), tokens, entry.content.length);
     }
     out.totals.stageB = stageB;
   }
@@ -2085,6 +2088,10 @@ export function finishConversationContext(
     // `tokenAware` off it constrained nothing and there is no Reserved slice
     // to draw, exactly as in group.
     out.flags.hasReservedSlice = ctxConfig.tokenAware;
+    // ...and the number behind that flag, so a panel sizing the Reserved
+    // slice never has to re-read the live setting — which the user can change
+    // between this send and that render.
+    out.responseReserve = ctxConfig.tokenAware ? ctxConfig.responseReserve : null;
     out.boundaryId = boundaryId;
   }
 
@@ -2664,12 +2671,22 @@ CONTENT RULES:
    *  as one line under the push it belongs to. */
   const sliceForPushed = (kind: SectionKind) => {
     const entry = context[context.length - 1];
-    addSlice(breakdownOut, kind, estimateMessageTokens(entry, tokenProfile), entry.content.length);
+    addSlice(
+      breakdownOut,
+      withHistoryRole(kind, entry.role),
+      estimateMessageTokens(entry, tokenProfile),
+      entry.content.length
+    );
   };
   /** Same, for the two overflow branches — they splice in at index 1. */
   const sliceForSpliced = (kind: SectionKind) => {
     const entry = context[1];
-    addSlice(breakdownOut, kind, estimateMessageTokens(entry, tokenProfile), entry.content.length);
+    addSlice(
+      breakdownOut,
+      withHistoryRole(kind, entry.role),
+      estimateMessageTokens(entry, tokenProfile),
+      entry.content.length
+    );
   };
 
   // Phase 8.1: Author's Note for group chats
@@ -2921,8 +2938,11 @@ CONTENT RULES:
     breakdownOut.flags.historyTrimmed = false;
     breakdownOut.flags.overBudget = false;
     breakdownOut.flags.droppedFromHistory = 0;
-    // Group never reads `responseReserve` — no trim runs here at all.
+    // Group never reads `responseReserve` — no trim runs here at all. Null,
+    // not 0: 0 is a legal reserve, and the panel must be able to tell "no
+    // reserve was set" from "the reserve was never consulted".
     breakdownOut.flags.hasReservedSlice = false;
+    breakdownOut.responseReserve = null;
   }
 
   return context;

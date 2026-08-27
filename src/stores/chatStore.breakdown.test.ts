@@ -88,11 +88,16 @@ import {
   type SectionKind,
 } from '../utils/promptBreakdown';
 import {
+  MESSAGE_OVERHEAD_TOKENS,
   estimateConversationTokens,
   estimateMessageTokens,
   estimateTokens,
 } from '../utils/tokenizer';
-import type { GoldenWiScanOut } from './promptGoldens.fixtures';
+import type {
+  GoldenWiScanOut,
+  GroupInput,
+  SoloInput,
+} from './promptGoldens.fixtures';
 import type { LucideIcon } from 'lucide-react';
 import type { ContextContribution } from '../extensions/types';
 import type { ChatMessage } from './chatStore';
@@ -137,6 +142,9 @@ function runSolo(name: string): {
   overBudget: boolean;
   breakdown: PromptBreakdown;
   wiOut: GoldenWiScanOut;
+  /** What the fixture fed the builder — so a test can name the expected
+   *  message id from the INPUT rather than from the breakdown it is checking. */
+  input: SoloInput;
 } {
   const fx = SOLO_FIXTURES.find((f) => f.name === name);
   if (!fx) throw new Error(`no solo fixture "${name}"`);
@@ -154,12 +162,13 @@ function runSolo(name: string): {
     input.serverMatchedEntries,
     breakdown
   );
-  return { context, overBudget, breakdown, wiOut };
+  return { context, overBudget, breakdown, wiOut, input };
 }
 
 function runGroup(name: string): {
   context: ContextEntry[];
   breakdown: PromptBreakdown;
+  input: GroupInput;
 } {
   const fx = GROUP_FIXTURES.find((f) => f.name === name);
   if (!fx) throw new Error(`no group fixture "${name}"`);
@@ -178,7 +187,7 @@ function runGroup(name: string): {
     input.attachmentsFolded,
     breakdown
   );
-  return { context, breakdown };
+  return { context, breakdown, input };
 }
 
 /** Stage-B slices, in emission order. */
@@ -207,16 +216,23 @@ function isWiId(id: string): boolean {
 /**
  * The world-info headline, rebuilt from the slices rather than read off
  * `wi.emittedTokens`. Stage A sections are fragments of one message and are
- * billed without the +4 role-marker overhead; Stage B and Stage C entries are
+ * billed without the role-marker overhead; Stage B and Stage C entries are
  * whole messages and carry it, while the world-info total counts CONTENT only
  * — hence the subtraction.
+ *
+ * The overhead comes off `b.messageOverheadPerMessage`, not off a literal 4.
+ * That is deliberate twice over: it is how a render-side consumer is supposed
+ * to do this (the field exists so nobody writes the 4 down again), and it
+ * makes a coherent change to the estimator's constant leave this file green
+ * while the goldens catch the behaviour change.
  */
 function wiFromSlices(b: PromptBreakdown): number {
+  const perMessage = b.messageOverheadPerMessage;
   return b.slices.reduce((n, s) => {
     const k = s.kind;
     if (k.stage === 'A') return isWiId(k.id) ? n + s.tokens : n;
-    if (k.stage === 'C') return isWiId(k.id) ? n + s.tokens - 4 : n;
-    if (k.stage === 'B' && k.cls === 'wi_at_depth') return n + s.tokens - 4;
+    if (k.stage === 'C') return isWiId(k.id) ? n + s.tokens - perMessage : n;
+    if (k.stage === 'B' && k.cls === 'wi_at_depth') return n + s.tokens - perMessage;
     return n;
   }, 0);
 }
@@ -251,7 +267,13 @@ describe('token breakdown — the numbers reconcile', () => {
       breakdown.stageAJoinResidual,
       'a residual pinned at zero means the join was never measured'
     ).not.toBe(0);
-    expect(breakdown.stageAMessageOverhead).toBe(4);
+    // The Stage-A overhead is DERIVED (`estimateMessageTokens(joined) -
+    // estimateTokens(joined)`), never a written-down 4 — and this pins it
+    // against the named constant the rest of the prompt is charged with, so
+    // the two cannot answer differently. That is also why the assertion is not
+    // the literal any more: a coherent change to the estimator's per-message
+    // overhead has to move the goldens, not this file.
+    expect(breakdown.stageAMessageOverhead).toBe(breakdown.messageOverheadPerMessage);
   });
 
   it('every solo fixture reconciles slices + residual + overhead to the assembled total', () => {
@@ -290,6 +312,72 @@ describe('token breakdown — the numbers reconcile', () => {
         `${fx.name}: stageB total disagrees with its slices`
       ).toBe(tokensFor(breakdown, (k) => k.stage === 'B'));
     }
+  });
+
+  it("reconciles Reading A too: content rows plus ONE aggregate overhead line", () => {
+    // AC 5 says the per-message overhead must be shown as its own line rather
+    // than silently absorbed. The collector bakes it into each Stage-B/C slice
+    // (Reading B — the cost belongs to the piece that incurred it, which is
+    // what makes the identity above hold), so a panel that wants the other
+    // presentation has to rebuild the aggregate. This is that arithmetic, done
+    // exactly the way a render-side consumer must do it: content-only rows,
+    // plus messageOverheadPerMessage x (Stage-B slices + Stage-C slices), plus
+    // the Stage-A message's single share. No literal 4 anywhere in it.
+    //
+    // KILLS: a `messageOverheadPerMessage` that lies — a hand-written literal
+    // beside the estimator's constant, or a 0 left over from construction.
+    // Neither is visible to the Reading-B identity above, which never reads
+    // the field, so the panel would draw an overhead line that agrees with
+    // nothing.
+    for (const fx of SOLO_FIXTURES) {
+      const { context, breakdown } = runSolo(fx.name);
+      const p = breakdown.profile;
+      const perMessage = breakdown.messageOverheadPerMessage;
+      const contentOnly = context.reduce((n, m) => n + estimateTokens(m.content, p), 0);
+      const wholeMessages = breakdown.slices.filter(
+        (sl) => sl.kind.stage === 'B' || sl.kind.stage === 'C'
+      ).length;
+      const aggregateOverhead = perMessage * wholeMessages + breakdown.stageAMessageOverhead;
+      expect(
+        contentOnly + aggregateOverhead + breakdown.conversationPriming,
+        `${fx.name}: the aggregate overhead line does not reconcile`
+      ).toBe(breakdown.totals.assembledTotal);
+    }
+    // Group's flat system message is assembled by a different function with
+    // its own copy of the overhead derivation, so it gets the same arithmetic.
+    for (const fx of GROUP_FIXTURES) {
+      const { context, breakdown } = runGroup(fx.name);
+      const p = breakdown.profile;
+      const contentOnly = context.reduce((n, m) => n + estimateTokens(m.content, p), 0);
+      const wholeMessages = breakdown.slices.filter(
+        (sl) => sl.kind.stage === 'B' || sl.kind.stage === 'C'
+      ).length;
+      const aggregateOverhead =
+        breakdown.messageOverheadPerMessage * wholeMessages +
+        breakdown.stageAMessageOverhead;
+      expect(
+        contentOnly + aggregateOverhead + breakdown.conversationPriming,
+        `group/${fx.name}: the aggregate overhead line does not reconcile`
+      ).toBe(breakdown.totals.assembledTotal);
+    }
+  });
+
+  it('reports the per-message overhead the estimator actually charges', () => {
+    // The direct form of the kill above, and the one that survives a future
+    // panel doing its own arithmetic: the field must BE the estimator's
+    // constant, measured rather than asserted. KILLS a second hand-written
+    // copy of the 4 on the collector, which is the same failure the priming
+    // line was fixed for.
+    const { breakdown } = runSolo('minimal');
+    const p = breakdown.profile;
+    expect(breakdown.messageOverheadPerMessage).toBe(
+      estimateMessageTokens({ role: 'user', content: 'probe' }, p) -
+        estimateTokens('probe', p)
+    );
+    expect(breakdown.messageOverheadPerMessage).toBe(MESSAGE_OVERHEAD_TOKENS);
+    expect(runGroup('swap').breakdown.messageOverheadPerMessage).toBe(
+      MESSAGE_OVERHEAD_TOKENS
+    );
   });
 
   it('trimTotal is exactly what the trim charged', () => {
@@ -497,6 +585,78 @@ describe('token breakdown — Stage B is split, not lumped', () => {
       runSolo('trim-overbudget').breakdown.boundaryId,
       'kept[0] there is a pinned critical world-info insertion'
     ).toBe('big');
+  });
+
+  it('carries the emitted role on real turns, so "Your message" needs no join back to the store', () => {
+    // AC 2g's bucket has to be answerable FROM THE BREAKDOWN. Without the
+    // role, isolating the user's own turn means re-reading
+    // `useChatStore.messages` at render time — a list that has already moved
+    // on (the assistant's reply is appended before any panel draws) and that
+    // is not the same list anyway: hidden turns and blank-turn skips mean a
+    // stored message need not be an emitted one.
+    //
+    // KILLS: stamping every history slice 'user'. `at-depth-zero` emits
+    // user -> assistant, so a constant role is wrong for exactly one of them.
+    const { context, breakdown, input } = runSolo('at-depth-zero');
+    const history = stageB(breakdown).filter((k) => k.cls === 'history');
+    expect(history.map((k) => k.role)).toEqual(['user', 'assistant']);
+    expect(history.map((k) => k.messageId)).toEqual(['z1', 'z2']);
+
+    // The bucket itself: newest history slice whose role is 'user'.
+    const yourMessage = [...history].reverse().find((k) => k.role === 'user');
+    const newestUserInput = [...input.messages].reverse().find((m) => m.isUser)!;
+    expect(yourMessage?.messageId).toBe(newestUserInput.id);
+
+    // ...and why reading roles off the EMITTED context instead cannot work.
+    // This fixture puts all five at-depth classes in the depth-0 slot, which
+    // sits AFTER the newest turn, and two of them are role 'user' (the
+    // author's note and the extension block). So the last user-role entry of
+    // the assembled prompt is an injected note, and a panel that found "Your
+    // message" that way would chart the note's tokens under the user's name.
+    const lastUserInContext = [...context].reverse().find((m) => m.role === 'user');
+    expect(
+      lastUserInContext?.content,
+      'this fixture is supposed to bury the user turn under user-role insertions'
+    ).not.toBe(newestUserInput.content);
+  });
+
+  it('stamps the role on real turns and on nothing else', () => {
+    // Same shape as the message-id test above and for a sharper reason: the
+    // insertion classes DO have an emitted role, so "just copy entry.role onto
+    // every Stage-B kind" is the cheapest wrong implementation and it looks
+    // strictly more informative. It is not: it makes
+    // `slices.filter(k => k.role === 'user')` — the query a panel author will
+    // reach for — silently return the author's note as well as the user.
+    for (const fixture of ['at-depth-interleave', 'at-depth-zero', 'at-depth-overflow']) {
+      const { breakdown } = runSolo(fixture);
+      const kinds = stageB(breakdown);
+      expect(
+        kinds.filter((k) => k.cls !== 'history').length,
+        `${fixture}: no insertions to check`
+      ).toBeGreaterThan(0);
+      for (const k of kinds) {
+        if (k.cls === 'history') {
+          expect(k.role, `${fixture}: a real turn lost its role`).toBeTruthy();
+        } else {
+          expect(k.role, `${fixture}: ${k.cls} should carry no role`).toBeUndefined();
+        }
+      }
+    }
+  });
+
+  it('carries the role through group history too', () => {
+    // Group reaches the same field by a different route (`sliceForPushed`
+    // reads the entry it just pushed, there is no prepare/finish split and no
+    // entryClassByMessage map), so it gets its own pin. KILLS: wiring the role
+    // in solo only, which leaves task 3 unable to draw "Your message" for
+    // exactly the mode whose history is never trimmed.
+    const { breakdown, input } = runGroup('swap');
+    const history = stageB(breakdown).filter((k) => k.cls === 'history');
+    expect(history.length).toBeGreaterThan(1);
+    expect(new Set(history.map((k) => k.role))).toEqual(new Set(['user', 'assistant']));
+    const yourMessage = [...history].reverse().find((k) => k.role === 'user');
+    const newestUserInput = [...input.messages].reverse().find((m) => m.isUser)!;
+    expect(yourMessage?.messageId).toBe(newestUserInput.id);
   });
 
   it('measures Stage B on what survived the trim, not on the pre-trim array', () => {
@@ -710,7 +870,9 @@ describe('token breakdown — group tags per emitted slot', () => {
       (s) => s.kind.stage === 'C' && s.kind.id === 'group_wi_after_an'
     );
     expect(afterAn.length).toBe(1);
-    expect(afterAn[0].tokens).toBe(estimateTokens(AFTER_AN, p) + 4);
+    expect(afterAn[0].tokens).toBe(
+      estimateTokens(AFTER_AN, p) + breakdown.messageOverheadPerMessage
+    );
     expect(afterAn[0].chars).toBe(AFTER_AN.length);
   });
 
@@ -851,6 +1013,42 @@ describe('token breakdown — the Reserved slice follows the reserve, not the mo
       'the trim ran and the reserve bound the budget'
     ).toBe(true);
     expect(runGroup('swap').breakdown.flags.hasReservedSlice).toBe(false);
+  });
+
+  it('reports the reserve the trim actually used, not the one live in settings', () => {
+    // `hasReservedSlice` says a Reserved slice belongs on the chart; it does
+    // not say how big. Without the number, a panel has to read
+    // `generationStore.context.responseReserve` at RENDER time — a value the
+    // user can change in Settings between the send and the draw, which would
+    // size a slice of this prompt from a reserve this prompt was never
+    // assembled against. Exactly the staleness `chatFile` / `publishedAt`
+    // exist to defend against, and quieter: the chart would just be wrong.
+    //
+    // KILLS: hardcoding the default 2048 — both trim fixtures deliberately
+    // configure 256.
+    expect(runSolo('trim-bites').breakdown.responseReserve).toBe(256);
+    expect(runSolo('trim-overbudget').breakdown.responseReserve).toBe(256);
+    // ...and a fixture that leaves the default alone, so "always 256" dies too.
+    expect(runSolo('all-sections').breakdown.responseReserve).toBe(2048);
+
+    // KILLS: setting it whenever the field exists. `token-aware-off` still
+    // HAS a responseReserve of 2048 in its config — the trim just never reads
+    // it — so a build that reported 2048 there would tell the user 2048
+    // tokens of budget pressure shaped a prompt that was never budgeted.
+    // Null rather than 0 because 0 is itself a legal reserve.
+    expect(
+      runSolo('token-aware-off').breakdown.responseReserve,
+      'no trim ran, so no reserve was consulted'
+    ).toBeNull();
+    expect(runSolo('fixed-window-summary-skew').breakdown.responseReserve).toBeNull();
+    expect(runGroup('swap').breakdown.responseReserve).toBeNull();
+
+    // The flag and the number never disagree — a Reserved slice with no size,
+    // or a size with no slice, is a panel bug either way.
+    for (const name of ['trim-bites', 'token-aware-off', 'all-sections']) {
+      const b = runSolo(name).breakdown;
+      expect(b.flags.hasReservedSlice, name).toBe(b.responseReserve !== null);
+    }
   });
 });
 

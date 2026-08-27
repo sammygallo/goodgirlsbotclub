@@ -27,7 +27,11 @@
  * (chatStore.ts:1130-1143).
  */
 
-import { CONVERSATION_PRIMING_TOKENS, estimateTokens } from './tokenizer';
+import {
+  CONVERSATION_PRIMING_TOKENS,
+  MESSAGE_OVERHEAD_TOKENS,
+  estimateTokens,
+} from './tokenizer';
 import type { TokenizerProfile } from './tokenizer';
 import type { PromptSectionId } from '../stores/generationStore';
 
@@ -93,6 +97,24 @@ export type SectionKind =
        *  recall boundary has to be defined as "oldest kept entry that HAS
        *  one" rather than "kept[0]". */
       messageId?: string;
+      /**
+       * Set only on `history` entries — the role the turn was EMITTED with,
+       * read off the entry the builder had already pushed. This is what makes
+       * "Your message" answerable from the breakdown alone: the newest
+       * history slice with `role: 'user'`, with no join back to
+       * `useChatStore.messages` (which has moved on by the time a panel
+       * renders, and which is a different list anyway — hidden turns and
+       * blank-turn skips mean not every stored message is an emitted one).
+       *
+       * DELIBERATELY NOT ON THE INSERTION CLASSES, even though they are all
+       * emitted with a role too. An at-depth author's note is routinely
+       * `role: 'user'` and sits AFTER the newest turn (the depth-0 slot), so
+       * "the last user-role entry" over the emitted context is the note, not
+       * the user. Confining the field to the class where it means "who wrote
+       * this turn" makes that wrong query impossible to express rather than
+       * merely wrong.
+       */
+      role?: 'user' | 'assistant' | 'system';
       /** Set only on `ext_at_depth` — which extension contributed it
        *  (registry.ts stamps `sourceExtensionId` on every contribution). */
       extensionId?: string;
@@ -104,11 +126,30 @@ export type SectionKind =
 export interface BreakdownSlice {
   kind: SectionKind;
   /** Tokens this piece costs, by the same estimator the trim budgets with.
-   *  Stage B and Stage C are whole messages and carry the +4 per-message
-   *  overhead; Stage A sections are fragments of one message and do not (the
-   *  single +4 for the joined message is `stageAMessageOverhead`). */
+   *  Stage B and Stage C are whole messages and carry the per-message
+   *  overhead (`messageOverheadPerMessage`); Stage A sections are fragments of
+   *  one message and do not (the single overhead for the joined message is
+   *  `stageAMessageOverhead`). */
   tokens: number;
   chars: number;
+}
+
+/**
+ * Stamp the emitted role onto a history-class Stage-B kind, leaving every
+ * other class untouched.
+ *
+ * Exists so both builders acquire the role the same way — by READING the
+ * entry they just pushed, never by re-deriving it from `msg.isUser` beside a
+ * push that already did. The two would agree today and are exactly the kind of
+ * pair that stops agreeing (group prefixes assistant turns with a speaker
+ * name, solo does not; either could grow a third role first).
+ */
+export function withHistoryRole(
+  kind: SectionKind,
+  role: 'user' | 'assistant' | 'system'
+): SectionKind {
+  if (kind.stage !== 'B' || kind.cls !== 'history') return kind;
+  return { ...kind, role };
 }
 
 // ---------------------------------------------------------------------------
@@ -173,9 +214,27 @@ export interface PromptBreakdown {
    * changes.
    */
   conversationPriming: number;
+  /**
+   * The FOURTH reconciliation quantity: what `estimateMessageTokens` charges
+   * per whole message on top of its content (`MESSAGE_OVERHEAD_TOKENS`).
+   *
+   * Every Stage-B and Stage-C slice already has this baked into its `tokens`
+   * (Reading B: the per-message cost belongs to the piece that incurred it,
+   * which is what makes Σ slices + residual + overhead + priming ===
+   * assembledTotal hold). This field is what lets a panel render Reading A
+   * instead — content-only rows plus ONE aggregate overhead line,
+   * `messageOverheadPerMessage × (Stage-B slices + Stage-C slices) +
+   * stageAMessageOverhead` — without a literal 4 on the render side. AC 5
+   * requires that line to be shown rather than silently absorbed, and a
+   * second copy of the number is how it would stop matching the estimator.
+   *
+   * Copied from the tokenizer's constant, never written as a literal here.
+   */
+  messageOverheadPerMessage: number;
 
   totals: {
-    /** Σ Stage-A section slices — excludes the residual and the +4. */
+    /** Σ Stage-A section slices — excludes the residual and the per-message
+     *  overhead. */
     stageA: number;
     /** Σ Stage-B slices, measured POST-trim (on `keptHistory`). */
     stageB: number;
@@ -226,6 +285,26 @@ export interface PromptBreakdown {
      */
     activationSource: 'server' | 'client';
   };
+
+  /**
+   * The number behind `flags.hasReservedSlice`: the `responseReserve` this
+   * build's trim actually subtracted from `maxTokens`, or null when no trim
+   * consulted it (group, and a solo build with `tokenAware` off).
+   *
+   * WHY IT IS NOT LEFT TO THE RENDER SIDE. `flags.hasReservedSlice` says a
+   * Reserved slice belongs on the chart but not how big it is, so a panel
+   * drawing it would have to read `generationStore.context.responseReserve`
+   * live — a value the user can change in Settings between the send and the
+   * render, which would then size a slice of THIS prompt from a number this
+   * prompt was never assembled against. That is the same staleness `chatFile`
+   * and `publishedAt` exist to defend against, and unlike those two it would
+   * be invisible: the chart would simply be quietly wrong.
+   *
+   * Null rather than 0 on the paths that never read it, for the reason
+   * `hasReservedSlice` is not a mode test: 0 is a legal reserve, and a panel
+   * cannot tell "reserved nothing" from "never asked" if both arrive as 0.
+   */
+  responseReserve: number | null;
 
   flags: {
     /** The trim's verdict — the newest turn alone busted the budget. */
@@ -310,6 +389,7 @@ export function createPromptBreakdown(
     stageAJoinResidual: 0,
     stageAMessageOverhead: 0,
     conversationPriming: CONVERSATION_PRIMING_TOKENS,
+    messageOverheadPerMessage: MESSAGE_OVERHEAD_TOKENS,
     totals: {
       stageA: 0,
       stageB: 0,
@@ -325,6 +405,7 @@ export function createPromptBreakdown(
       droppedIds: [],
       activationSource: 'client',
     },
+    responseReserve: null,
     flags: {
       overBudget: false,
       historyTrimmed: false,
@@ -374,6 +455,12 @@ export function beginBreakdownPass(
   out.wi.budget = 0;
   out.wi.droppedIds = [];
   out.wi.activationSource = 'client';
+  // Per-build, so it has to clear: a re-entered collector whose second pass
+  // ran with `tokenAware` off would otherwise keep pass 1's reserve beside
+  // pass 2's `hasReservedSlice: false`. (`conversationPriming` and
+  // `messageOverheadPerMessage` are NOT cleared here — they are the
+  // tokenizer's constants, identical on every pass.)
+  out.responseReserve = null;
   out.flags.overBudget = false;
   out.flags.historyTrimmed = false;
   out.flags.droppedFromHistory = 0;
@@ -387,8 +474,8 @@ export function beginBreakdownPass(
  * Append one measured piece.
  *
  * `tokens` and `chars` are both passed in rather than derived from a string
- * here: the caller decides whether the +4 per-message overhead applies (Stage
- * A sections are fragments of one message and it does not; Stage B and C
+ * here: the caller decides whether the per-message overhead applies (Stage A
+ * sections are fragments of one message and it does not; Stage B and C
  * entries are whole messages and it does), and the group's chrome slice is a
  * residual with no string of its own at all.
  */
@@ -418,7 +505,7 @@ export function recordCallSiteTurn(
   content: string
 ): void {
   if (!out) return;
-  const tokens = estimateTokens(content, out.profile) + 4;
+  const tokens = estimateTokens(content, out.profile) + MESSAGE_OVERHEAD_TOKENS;
   out.slices.push({
     kind: { stage: 'callSite', turn },
     tokens,
