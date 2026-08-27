@@ -62,6 +62,7 @@ import {
 } from '../utils/tokenizer';
 import {
   addSlice,
+  beginBreakdownPass,
   createPromptBreakdown,
   recordAttachments,
   recordCallSiteTurn,
@@ -1854,6 +1855,10 @@ export function finishConversationContext(
   } = prepared;
   const commit = opts?.commit !== false;
   const out = opts?.breakdownOut;
+  // Clear anything a previous pass left in the collector and stamp this one.
+  // `finish` is designed to run more than once per prepare (task 1b's
+  // uncommitted boundary pass), and every `addSlice` below appends.
+  beginBreakdownPass(out, ctxChatFile);
   const ctxConfig = genState.context;
   const context: ContextEntry[] = [];
 
@@ -2076,6 +2081,10 @@ export function finishConversationContext(
     out.flags.overBudget = overBudget;
     out.flags.historyTrimmed = ctxConfig.tokenAware;
     out.flags.droppedFromHistory = droppedFromHistory;
+    // The reserve is read at one place only — the trim call above — so with
+    // `tokenAware` off it constrained nothing and there is no Reserved slice
+    // to draw, exactly as in group.
+    out.flags.hasReservedSlice = ctxConfig.tokenAware;
     out.boundaryId = boundaryId;
   }
 
@@ -2118,6 +2127,9 @@ export function buildGroupConversationContext(
 
   const groupChatState = useChatStore.getState();
   const groupChatFile = groupChatState.currentChatFile;
+  // Same contract as solo's: a reused collector describes THIS build, not the
+  // union of every build it was passed to.
+  beginBreakdownPass(breakdownOut, groupChatFile);
   const persona = usePersonaStore
     .getState()
     .getPersonaForContext(currentCharacter.avatar);
@@ -2909,6 +2921,8 @@ CONTENT RULES:
     breakdownOut.flags.historyTrimmed = false;
     breakdownOut.flags.overBudget = false;
     breakdownOut.flags.droppedFromHistory = 0;
+    // Group never reads `responseReserve` — no trim runs here at all.
+    breakdownOut.flags.hasReservedSlice = false;
   }
 
   return context;

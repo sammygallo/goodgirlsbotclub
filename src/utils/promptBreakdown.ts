@@ -27,7 +27,7 @@
  * (chatStore.ts:1130-1143).
  */
 
-import { estimateTokens } from './tokenizer';
+import { CONVERSATION_PRIMING_TOKENS, estimateTokens } from './tokenizer';
 import type { TokenizerProfile } from './tokenizer';
 import type { PromptSectionId } from '../stores/generationStore';
 
@@ -120,6 +120,22 @@ export interface PromptBreakdown {
   /** The tokenizer profile every number here was measured with — the REAL
    *  one (`profileForProvider(activeProvider)`), not the `generic` default. */
   profile: TokenizerProfile;
+  /**
+   * WHICH PROMPT THIS IS. `generationStore.lastPromptBreakdown` is one
+   * last-write-wins slot, and a group round overwrites it once per speaker
+   * (`sendGroupMessage` awaits `generateGroupTurn` per member, and each turn
+   * publishes its own build). Without a stamp a consumer holding a breakdown
+   * has no way to tell that it describes a different turn than the message it
+   * is rendered against — the same hazard `FinishedConversation.overBudget`
+   * avoids by returning through the call stack.
+   *
+   * `chatFile` is the chat the build ran against (null when there is no open
+   * chat); `publishedAt` is when the collector was stamped, and is guaranteed
+   * to differ between two builds even inside one millisecond (see
+   * `nextPublishStamp`). Neither is ever emitted into a prompt.
+   */
+  chatFile: string | null;
+  publishedAt: number;
   slices: BreakdownSlice[];
 
   /**
@@ -144,6 +160,19 @@ export interface PromptBreakdown {
    *  (`estimateMessageTokens` adds 4 for role markers, tokenizer.ts:70). Its
    *  own line for the same reason as the residual. */
   stageAMessageOverhead: number;
+  /**
+   * The THIRD reconciliation quantity: the flat priming allowance
+   * `estimateConversationTokens` adds once per conversation
+   * (`CONVERSATION_PRIMING_TOKENS`, tokenizer.ts). Named here for the same
+   * reason as the two above — Σ slices + residual + overhead is
+   * `assembledTotal` MINUS this, in both modes, so a panel that summed only
+   * the documented parts would be short by exactly this much and would either
+   * show the discrepancy AC 5 forbids or absorb it into whichever row it drew
+   * last. Copied from the tokenizer's own constant, never a literal: a second
+   * copy of the number is how the panel silently rots when the estimator
+   * changes.
+   */
+  conversationPriming: number;
 
   totals: {
     /** Σ Stage-A section slices — excludes the residual and the +4. */
@@ -206,8 +235,18 @@ export interface PromptBreakdown {
     historyTrimmed: boolean;
     /** History entries the trim dropped. */
     droppedFromHistory: number;
-    /** Group has no `responseReserve` binding on anything, so the panel omits
-     *  the Reserved slice there (AC 7). */
+    /**
+     * Whether a response reserve actually bound anything on this build, which
+     * is what decides if the panel draws a Reserved slice (AC 7).
+     *
+     * FALSE IS NOT A MODE TEST. `ctxConfig.responseReserve` is read only
+     * inside the token-aware branch (chatStore.ts:1938, ragBoundary.ts:128),
+     * so it constrains nothing in group — which has no history trim at all —
+     * AND nothing on a solo build with `tokenAware` off. Deriving this from
+     * `mode` would tell a solo user with trimming disabled that N tokens of
+     * budget pressure existed when the assembly never consulted the number.
+     * The builders set it; construction only supplies the safe default.
+     */
     hasReservedSlice: boolean;
   };
 
@@ -231,12 +270,30 @@ export interface PromptBreakdown {
 }
 
 /**
+ * A stamp that is a real wall-clock time AND never repeats.
+ *
+ * `Date.now()` alone is not enough: a group round builds one prompt per
+ * speaker back-to-back and synchronously, so two breakdowns routinely land in
+ * the same millisecond — and two identical stamps are exactly as useless for
+ * telling the turns apart as no stamp at all.
+ */
+let lastPublishStamp = 0;
+function nextPublishStamp(): number {
+  const now = Date.now();
+  lastPublishStamp = now > lastPublishStamp ? now : lastPublishStamp + 1;
+  return lastPublishStamp;
+}
+
+/**
  * `profile` is a placeholder: the builder overwrites it with the profile it
  * actually measured against (`profileForProvider(activeProvider)`). Call sites
  * must not guess it — a call site that resolved the provider a different way
  * than the builder did would produce a breakdown whose numbers silently came
  * from two tokenizers. The post-return amendments read it back off the object,
  * by which time it is the real one.
+ *
+ * `chatFile` is left null for the same reason: the builder knows which chat it
+ * is assembling for, and stamps it in `beginBreakdownPass`.
  */
 export function createPromptBreakdown(
   mode: 'solo' | 'group',
@@ -245,9 +302,12 @@ export function createPromptBreakdown(
   return {
     mode,
     profile,
+    chatFile: null,
+    publishedAt: nextPublishStamp(),
     slices: [],
     stageAJoinResidual: 0,
     stageAMessageOverhead: 0,
+    conversationPriming: CONVERSATION_PRIMING_TOKENS,
     totals: {
       stageA: 0,
       stageB: 0,
@@ -267,11 +327,59 @@ export function createPromptBreakdown(
       overBudget: false,
       historyTrimmed: false,
       droppedFromHistory: 0,
-      hasReservedSlice: mode === 'solo',
+      hasReservedSlice: false,
     },
     attachments: { count: 0, bytes: 0 },
     boundaryId: null,
   };
+}
+
+/**
+ * Start a measurement pass: clear whatever a previous pass left behind and
+ * stamp this one's identity. Called by each builder before its first
+ * `addSlice`.
+ *
+ * WHY THE CLEAR. `addSlice` appends, and nothing else empties `slices`, so a
+ * collector handed to two builds accumulates both — in group that doubles
+ * `totals.stageA` (the stage totals are summed from `slices`) while
+ * `assembledTotal` is recomputed from `context`, which breaks AC 5's
+ * reconciliation outright; in solo the totals stay right and the panel simply
+ * renders every section twice. Neither is reachable from today's six call
+ * sites, each of which creates its own collector — this is a trap laid for
+ * task 1b's two-pass finish and for task 3, and it is cheaper to close than to
+ * document. The semantics match `sectionContent.rag_context`, which the second
+ * half of the solo builder also OVERWRITES rather than appends to: a re-entered
+ * collector describes the last pass, not the union of all of them.
+ */
+export function beginBreakdownPass(
+  out: PromptBreakdown | undefined,
+  chatFile: string | null
+): void {
+  if (!out) return;
+  out.chatFile = chatFile;
+  out.publishedAt = nextPublishStamp();
+  out.slices.length = 0;
+  out.stageAJoinResidual = 0;
+  out.stageAMessageOverhead = 0;
+  out.conversationPriming = CONVERSATION_PRIMING_TOKENS;
+  out.totals.stageA = 0;
+  out.totals.stageB = 0;
+  out.totals.stageC = 0;
+  out.totals.trimTotal = 0;
+  out.totals.assembledTotal = 0;
+  out.totals.callSite = 0;
+  out.wi.emittedTokens = 0;
+  out.wi.rawTokens = 0;
+  out.wi.budget = 0;
+  out.wi.droppedIds = [];
+  out.wi.activationSource = 'client';
+  out.flags.overBudget = false;
+  out.flags.historyTrimmed = false;
+  out.flags.droppedFromHistory = 0;
+  out.flags.hasReservedSlice = false;
+  out.attachments.count = 0;
+  out.attachments.bytes = 0;
+  out.boundaryId = null;
 }
 
 /**

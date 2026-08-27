@@ -71,6 +71,15 @@ export function estimateMessageTokens(
   return estimateTokens(message.content, profile) + 4;
 }
 
+/**
+ * The flat priming allowance `estimateConversationTokens` adds on top of the
+ * per-message costs. Named rather than inlined because the token breakdown
+ * reports it as its own reconciliation line (`PromptBreakdown.conversationPriming`)
+ * — a consumer summing the breakdown's sections has to account for it, and
+ * hardcoding a second copy of the number beside this one is how the two drift.
+ */
+export const CONVERSATION_PRIMING_TOKENS = 2;
+
 export function estimateConversationTokens(
   messages: { role: string; content: string }[],
   profile: TokenizerProfile = 'generic'
@@ -80,7 +89,7 @@ export function estimateConversationTokens(
     total += estimateMessageTokens(m, profile);
   }
   // Final priming tokens
-  return total + 2;
+  return total + CONVERSATION_PRIMING_TOKENS;
 }
 
 // Default max context size per provider (in tokens)
