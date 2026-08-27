@@ -14,7 +14,7 @@
 - **Humans keep the two irreversible gates:** Sammy merges, Sammy approves deploys. The team never auto-merges or auto-deploys — same covenant as `build-next-issue`.
 - **v1.1 changes after self-critique:** the **story brief** becomes a first-class pipeline stage (ticket quality is the biggest lever on agent output — same as human teams); S/M non-trigger reviews reuse the **built-in `/code-review` skill** instead of a bespoke workflow (the bespoke org is reserved for trigger-list/L/XL stories where it earned its 11x record); **DoR/DoD** checklists gate entry and exit; and the **thin-agents / fat-skill** principle keeps the process defined in exactly one place.
 - **v1.2 change:** a **`postmortem`** role (§2) closes the loop the pipeline was leaking — capture was one unenforced DoD line, so both pilots' lessons ended up hand-copied into **four** unsynced places apiece (charter prose, executable code in `story-review.js`, a `MEMORY.md` index line, and a memory-file body). It runs at **pipeline exit — deployed *or* blocked** — proposes durable writes anchored to run evidence, and on designated runs audits memory for staleness. It **proposes; the PM applies**, gated on **blast radius** rather than on proposal kind, and its own bar is set against over-production, not under-. *Red-teamed pre-merge under §4.4 (36 findings → 7 confirmed / 3 plausible / 26 refuted); the confirmed defects are fixed in this version — see §10.*
-- **Build cost is small:** 4 agent files + 1 skill + 1 trigger-tier review workflow + this charter committed to docs. Pilot on E1-S1 (review/QA/deploy legs, code already written), then E9-S1 (full pipeline including the dev leg).
+- **Build cost is small:** 4 agent files + 1 skill + 1 trigger-tier review workflow + this charter committed to docs. Pilot on E1-S1 (review/QA/deploy legs, code already written), then a small isolated feature for the full pipeline including the dev leg. (E9-S1 originally held that second slot; see §7 — it had already shipped.)
 
 ---
 
@@ -170,8 +170,9 @@ Estimated build spend: **S–M total** (≤500k). The pipeline reuses `/deploy-g
 ## 7 · Pilot plan — the team's probation period
 
 1. **Pilot 1 — E1-S1** (ship the LP/scene-video provenance gate): exercises **review, QA, PR, merge-gate, deploy** on code that's already written — the fastest safe shakedown, and it's the roadmap's top item anyway.
-2. **Pilot 2 — E9-S1** (swap-vs-join): small, isolated feature — the first **full pipeline** run including plan + dev legs.
-3. **Hire/adjust checkpoint:** both stories deployed with complete evidence bundles, token actuals within band, and your verdict on report quality. Then 10.2 proceeds through the team as standard practice, and we consider the later upgrade path (a scheduled PM loop draining Ready-for-Dev under the WIP limit — the `/sprint-plan` pattern pointed at the roadmap). Not in v1.
+2. ~~**Pilot 2 — E9-S1** (swap-vs-join)~~ — **retired 2026-08-26. E9-S1 could never have served as a pilot: its deliverable shipped 2026-04-11 in PR #59, four and a half months before this plan named it.** The run that discovered that exited blocked at INTAKE for ~55k and is logged in `docs/agent-team-log.md`. Leaving the designation in place was a live trap — §8 tells a fresh session to "run the §7 pilots".
+   **Which story takes this slot, and whether probation is already satisfied, is Sammy's call and is deliberately not recorded here.** Since v1.0 was written, E4-S0 and E9-S6 both completed full pipeline runs (E9-S6's PR carries a build leg of 1.04M across 5 fix rounds, four adversarial passes, QA and deploy), so the evidence Sammy needs may already exist — but the team does not get to declare its own probation over, and §7.3 reserves that verdict for you. Two legs have no artifact proving they ever ran: **PLAN (step 3)** and **step 10c's CURATE mode**.
+3. **Hire/adjust checkpoint:** evidence bundles complete, token actuals reported as the numbers §6.5 mandates **with variance explained** (not "within band" — three of the four runs so far blew their bands for reasons §6.6 now accepts), and your verdict on report quality. Then 10.2 proceeds through the team as standard practice, and we consider the later upgrade path (a scheduled PM loop draining Ready-for-Dev under the WIP limit — the `/sprint-plan` pattern pointed at the roadmap). Not in v1.
 
 ---
 
@@ -229,4 +230,4 @@ Task for that session: review §9 decisions with Sammy → build the §6 manifes
 
 ---
 
-*Approved 2026-08-24; §6 files scaffolded the same day (`.claude/agents/`, `.claude/skills/run-story/`, `.claude/workflows/story-review.js`). Pilot 1 = E1-S1 (review/QA/deploy legs) and E2-S1 both shipped; **§7's Pilot 2 — E9-S1, the first run exercising the plan + dev legs — has not run, so probation is not complete.** v1.2 (2026-08-26) added the `postmortem` role at `run-story` step 10c, red-teamed pre-merge under §4.4.*
+*Approved 2026-08-24; §6 files scaffolded the same day (`.claude/agents/`, `.claude/skills/run-story/`, `.claude/workflows/story-review.js`). Pilot 1 = E1-S1 (review/QA/deploy legs) and E2-S1 both shipped. **§7's "Pilot 2 = E9-S1" was retired 2026-08-26 — that story had already shipped in April; see §7 for what is and is not yet proven.** v1.2 (2026-08-26) added the `postmortem` role at `run-story` step 10c, red-teamed pre-merge under §4.4.*
