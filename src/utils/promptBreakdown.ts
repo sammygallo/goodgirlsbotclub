@@ -455,12 +455,14 @@ export function beginBreakdownPass(
   out.wi.budget = 0;
   out.wi.droppedIds = [];
   out.wi.activationSource = 'client';
-  // Per-build, so it has to clear: a re-entered collector whose second pass
-  // ran with `tokenAware` off would otherwise keep pass 1's reserve beside
-  // pass 2's `hasReservedSlice: false`. (`conversationPriming` and
-  // `messageOverheadPerMessage` are NOT cleared here — they are the
-  // tokenizer's constants, identical on every pass.)
-  out.responseReserve = null;
+  // `responseReserve` is deliberately NOT cleared here: both builder tails
+  // assign it unconditionally on every pass, and the collector-reuse test in
+  // chatStore.breakdown.test.ts is what guards that invariant — a future tail
+  // that assigns conditionally fails it. (The fifth-round review proved the
+  // clear that used to sit here was unobservable and its rationale described
+  // an unreachable ordering — the round's one false claim.) `conversationPriming`
+  // and `messageOverheadPerMessage` are the tokenizer's constants, identical
+  // on every pass.
   out.flags.overBudget = false;
   out.flags.historyTrimmed = false;
   out.flags.droppedFromHistory = 0;

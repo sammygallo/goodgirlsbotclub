@@ -2091,7 +2091,18 @@ export function finishConversationContext(
     // ...and the number behind that flag, so a panel sizing the Reserved
     // slice never has to re-read the live setting — which the user can change
     // between this send and that render.
-    out.responseReserve = ctxConfig.tokenAware ? ctxConfig.responseReserve : null;
+    //
+    // The EFFECTIVE reserve, not the configured one: `trimHistoryToBudget`
+    // floors the budget at 256 (`Math.max(256, maxTokens - responseReserve)`,
+    // tokenizer.ts), so with e.g. maxTokens 1024 / reserve 2048 the trim
+    // subtracts 768, not 2048. Reporting the raw setting there would hand
+    // task 3 a Reserved wedge larger than the whole context window — the
+    // fifth-round review reproduced exactly that with shipped defaults
+    // (reserve defaults to 2048; the Max Context slider goes down to 1024).
+    out.responseReserve = ctxConfig.tokenAware
+      ? ctxConfig.maxTokens -
+        Math.max(256, ctxConfig.maxTokens - ctxConfig.responseReserve)
+      : null;
     out.boundaryId = boundaryId;
   }
 

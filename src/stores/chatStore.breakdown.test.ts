@@ -101,6 +101,8 @@ import type {
 import type { LucideIcon } from 'lucide-react';
 import type { ContextContribution } from '../extensions/types';
 import type { ChatMessage } from './chatStore';
+// Raw source for the source-level guard on the overhead field (house ?raw pattern).
+import promptBreakdownRaw from '../utils/promptBreakdown.ts?raw';
 
 // ---------------------------------------------------------------------------
 // A SECOND registered extension
@@ -365,9 +367,14 @@ describe('token breakdown — the numbers reconcile', () => {
   it('reports the per-message overhead the estimator actually charges', () => {
     // The direct form of the kill above, and the one that survives a future
     // panel doing its own arithmetic: the field must BE the estimator's
-    // constant, measured rather than asserted. KILLS a second hand-written
-    // copy of the 4 on the collector, which is the same failure the priming
-    // line was fixed for.
+    // constant, measured rather than asserted. A VALUE-EQUIVALENT hand-written
+    // `4` on the collector is indistinguishable at runtime (the fifth-round
+    // review proved it passes 1831/1831), so that half of the guard is the
+    // source-level assertion below, in the same style as PINS_ANCHORS.
+    expect(
+      promptBreakdownRaw,
+      'the collector hardcodes the per-message overhead instead of reading the named constant'
+    ).toContain('messageOverheadPerMessage: MESSAGE_OVERHEAD_TOKENS');
     const { breakdown } = runSolo('minimal');
     const p = breakdown.profile;
     expect(breakdown.messageOverheadPerMessage).toBe(
@@ -1013,6 +1020,34 @@ describe('token breakdown — the Reserved slice follows the reserve, not the mo
       'the trim ran and the reserve bound the budget'
     ).toBe(true);
     expect(runGroup('swap').breakdown.flags.hasReservedSlice).toBe(false);
+  });
+
+  it('reports the EFFECTIVE reserve when the 256-token budget floor clamps', () => {
+    // Fifth-round review, reachable with shipped defaults: reserve 2048 and
+    // the Max Context slider dragged to its 1024 minimum. The trim's budget is
+    // Math.max(256, 1024 - 2048) = 256, so it subtracted 768 — not 2048. A
+    // panel sizing the Reserved wedge from the raw setting would draw a slice
+    // larger than the entire context window.
+    resetStores();
+    secondExtContributions = [];
+    const input = SOLO_FIXTURES.find((f) => f.name === 'trim-bites')!.setup();
+    useGenerationStore.setState((st) => ({
+      context: { ...st.context, tokenAware: true, maxTokens: 1024, responseReserve: 2048 },
+    }));
+    const b = createPromptBreakdown('solo');
+    buildConversationContext(
+      input.messages,
+      input.character,
+      input.availableEmotions,
+      mkWiOut(input.messages),
+      input.ragContext,
+      input.serverMatchedEntries,
+      b
+    );
+    expect(
+      b.responseReserve,
+      'the breakdown reports the configured reserve, not the one the trim subtracted'
+    ).toBe(768);
   });
 
   it('reports the reserve the trim actually used, not the one live in settings', () => {
