@@ -577,6 +577,15 @@ describe('prompt goldens — the harness pins what it claims to', () => {
     //   - an anchored construct deleted or renamed out of the builder;
     //   - a fixture citing a line nobody recorded a meaning for;
     //   - an entry left behind after the fixture that cited it was removed.
+    //
+    // The first of those needs the OCCURRENCE COUNT, not just presence: a
+    // substring test over the whole file is satisfied by any copy, so a
+    // fingerprint that exists twice proves only that at least one of the two
+    // survives. Sixteen entries were in that state, and two of them shared one
+    // fingerprint outright — deleting the group builder's hidden-message strip
+    // left both green against the solo builder's identical line. Entries are
+    // unique by default; `[fingerprint, n]` is how a construct that genuinely
+    // exists n times (once per builder) declares it, and n is asserted.
     const sources: Record<string, string> = {
       'chatStore.ts': chatStoreRaw,
       'worldInfoStore.ts': worldInfoStoreRaw,
@@ -588,11 +597,14 @@ describe('prompt goldens — the harness pins what it claims to', () => {
       for (const m of (f.pins ?? '').matchAll(/:(\d{3,4})/g)) {
         const ln = Number(m[1]);
         cited.add(ln);
-        const declared = PINS_ANCHORS[ln];
-        if (!declared) {
+        const entry = PINS_ANCHORS[ln];
+        if (!entry) {
           bad.push(`${f.name} pins :${ln} — no PINS_ANCHORS entry says what it names`);
           continue;
         }
+        const [declared, expected]: [string, number] = Array.isArray(entry)
+          ? entry
+          : [entry, 1];
         // Only a leading `<name>.ts|` is a file prefix — fingerprints contain
         // `|` of their own (`||`, `string | null`), so a bare indexOf would
         // shred them.
@@ -609,8 +621,14 @@ describe('prompt goldens — the harness pins what it claims to', () => {
           bad.push(`${f.name} pins :${ln} — unknown source file ${JSON.stringify(file)}`);
           continue;
         }
-        if (!sources[file].includes(text)) {
+        const found = sources[file].split(text).length - 1;
+        if (found === 0) {
           bad.push(`${f.name} pins :${ln} — ${file} no longer contains ${JSON.stringify(text.slice(0, 60))}`);
+        } else if (found !== expected) {
+          bad.push(
+            `${f.name} pins :${ln} — ${JSON.stringify(text.slice(0, 60))} occurs ${found}x in ${file}, not ${expected}x, ` +
+              `so it cannot prove the construct this anchor names still exists (lengthen the fingerprint, or declare the count)`
+          );
         }
       }
     }
