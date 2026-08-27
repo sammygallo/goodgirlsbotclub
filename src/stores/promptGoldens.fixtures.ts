@@ -698,14 +698,30 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     matrix: 'S7',
     what:
       'tokenAware off: history is a fixed message-count window and the token ' +
-      'estimate comes from the NON-token-aware path, which counts Stage C.',
-    pins: ':1678-1680 else-branch, :1694-1696 estimateConversationTokens',
+      'estimate comes from the NON-token-aware path, which counts Stage C. ' +
+      'TWO of the last five raw messages are SYSTEM turns, and :1350 slices ' +
+      'the raw list BEFORE filtering them out — so a five-message window ' +
+      'emits three turns. Group got a dedicated fixture for that ordering; ' +
+      'solo had none, and filtering before slicing was green. (It cannot be ' +
+      'folded into fixed-window-summary-skew: once a summary is present the ' +
+      'offset rebase makes the KEPT COUNT algebraically independent of the ' +
+      'window size, so the two orderings produce the same tail.)',
+    pins: ':1345-1350 slice-before-filter, :1678-1680 else-branch, :1694-1696 estimateConversationTokens',
     setup: () => {
-      withContext({ tokenAware: false, messageCount: 3 });
+      withContext({ tokenAware: false, messageCount: 5 });
       useGenerationStore.setState({
         prompt: { ...DEFAULT_PROMPT_CONFIG, postHistoryInstructions: '[User PHI: stay in the room.]' },
       });
-      return { messages: bulkHistory(9, 6), character: IVY_FULL };
+      const messages = bulkHistory(9, 6);
+      // Indices 6 and 8 — both inside the last five raw slots (4..8).
+      for (const i of [6, 8]) {
+        messages[i] = mkMsg(`b${i}`, `[system marker ${i}]`, {
+          isUser: false,
+          isSystem: true,
+          name: 'System',
+        });
+      }
+      return { messages, character: IVY_FULL };
     },
   },
 
@@ -1217,7 +1233,12 @@ export const SOLO_FIXTURES: SoloFixture[] = [
             content: 'Lore: this should NOT fire — its keyword is out of range.',
             constant: false,
             keys: ['thurible'],
-            // Only the newest message is scanned; 'thurible' is three turns back.
+            // The store-wide scanDepth is 4, and 'thurible' IS inside that
+            // window (three turns back). This entry overrides it down to 1,
+            // so only the newest turn is scanned and the keyword falls
+            // outside. Ignoring the per-entry override makes it fire —
+            // which is the point: a fixture whose keyword sits outside BOTH
+            // windows would pin nothing about the override at all.
             scanDepth: 1,
           }),
           mkEntry('e-cooldown', {
@@ -1254,10 +1275,12 @@ export const SOLO_FIXTURES: SoloFixture[] = [
         // 2 with sticky 4, so it carries to turn 6.
         wiTimers: { 'e-cooldown': 3, 'e-sticky': 2 },
         messages: [
-          mkMsg('sc1', 'Is there a thurible in the reliquary case?'),
+          mkMsg('sc1', 'Is there a reliquary case?'),
           mkMsg('sc2', 'There was.', { isUser: false, name: 'Ivy' }),
           mkMsg('sc3', 'And the grille?'),
-          mkMsg('sc4', 'Locked.', { isUser: false, name: 'Ivy' }),
+          // 'thurible' sits here — three turns from the end, inside the
+          // store-wide scanDepth of 4 and outside e-key-too-deep's own 1.
+          mkMsg('sc4', 'Locked. The thurible went with it.', { isUser: false, name: 'Ivy' }),
           mkMsg('sc5', 'Open the grille, then.'),
           mkMsg('sc6', '*sighs*', { isUser: false, name: 'Ivy' }),
         ],
