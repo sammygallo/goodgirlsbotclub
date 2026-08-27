@@ -1,9 +1,9 @@
 # solo/promptorder-reordered-two-disabled   [S3]
 # what: The all-sections state with emotion_instruction hoisted to the top
 #   and two sections disabled — one pre-history (jailbreak), one Stage C
-#   (char_phi). all-sections now sets a non-default jailbreakPrompt, so
-#   disabling it is actually observable here; before that it was a no-op and
-#   this fixture only ever pinned the Stage-C half of the filter.
+#   (char_phi). The disabled jailbreak is now all-sections' padded custom one
+#   rather than DEFAULT_JAILBREAK_PROMPT; both are non-empty, so the
+#   pre-history half of the filter was and remains observable.
 # pins: :1328-1332 pre-history filter, :1684-1688 Stage-C filter
 # entries: 5
 # overBudget: false
