@@ -1,7 +1,7 @@
 # group/blank-user-turn-not-last-dropped   [G7]
 # what: attachmentsFolded true but the blank image-carrying turn is NOT at
 #   lastUserIndexInRecent — the fold cannot land on it, so it is dropped.
-# pins: :2280-2287 lastUserIndexInRecent, :2337-2341
+# pins: :2283-2287 lastUserIndexInRecent, :2353-2356 keepForAttachment
 # entries: 3
 # lastTokenEstimate: -1
 ══════════════════════════════════════════════════════════════════════════

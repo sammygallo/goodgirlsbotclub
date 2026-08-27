@@ -51,7 +51,7 @@ Five parts of a diff deserve a deliberate look before you accept it:
   in the context, so before round 3 both blocks could be deleted with the
   whole suite green. Exactly two builds raise one, on two different chat
   files — the warning is suppressed after the first time it fires for a chat
-  (`wiPinnedWarnedChats`, `:962`), which is why those two fixtures call
+  (`wiPinnedWarnedChats`, `:963`), which is why those two fixtures call
   `withChatFile()`.
 - **`# entries:` / `# overBudget:` / `# lastTokenEstimate:`** — the trim's own
   verdict. `lastTokenEstimate` has **two definitions** today: the token-aware
@@ -115,7 +115,8 @@ round 2's harness:
 
 | # | Mutation | Must fail |
 |---|---|---|
-| M10 | Delete either pinned-over-budget `showToastGlobal` block (`:1101-1110` solo, `:1884-1895` group), or either `withChatFile()` call in the fixtures | that builder's `*-wi-budget-eviction.fired.txt`, and `the fail-loud world-info budget warning fires once per chat file` by name |
+| M10a | Delete either pinned-over-budget `showToastGlobal` block (`:1100-1110` solo, `:1886-1896` group) | that builder's `*-wi-budget-eviction.fired.txt` (the `# toasts:` line), and `the fail-loud world-info budget warning fires once per chat file` by name |
+| M10b | Delete **either** `withChatFile()` call in the fixtures | `the fail-loud …` test by name — the round-3 review proved each single deletion was GREEN until the test gained its `not.toBe(GOLDEN_CHAT_FILE)` assertion per fired run; that assertion is what makes this row true, so do not remove it without re-running this drill |
 | M11 | Delete `if (!enabledSections.has(sectionId)) continue;` (`:1722`) | `solo-wi-sections-disabled.fired.txt` |
 | M12 | Drop any one of the four `wiRendered` filters (`:1512`, `:1577`, `:1626`, `:1724`) | `solo-wi-blank-guards.fired.txt` |
 | M13 | Iterate `wiAtDepthByMessage` instead of `keptHistory` at `:1725-1728` (ignore the trim) | `solo-trim-bites.fired.txt` + `solo-at-depth-overflow.fired.txt` — this third claim in `renderFired`'s docstring was already true; M11 and M12 are the two that were not |
@@ -223,9 +224,10 @@ counter, and the fixture that owns it lists the counter in `counters`:
 
 | Block | Counters | Fixture |
 |---|---|---|
-| in-loop insertions (`:1481`-`:1523`) | `depthPromptRuns` `note` `wiDepthInLoop` `soloWiBlankInLoop` | `solo-at-depth-interleave`, `solo-wi-blank-guards` |
-| depth-0 trailing (`:1548`-`:1588`) | `depthPromptRuns` `anDepthZero` `wiDepthZero` `anGuardRuns` `soloWiBlankZero` | `solo-at-depth-zero`, `solo-empty-system-block`, `solo-wi-blank-guards` |
-| overflow unshifts (`:1591`-`:1641`) | `depthPromptRuns` `anOverflow` `wiDepthOverflow` `wiDepthOverflowB` `soloWiBlankOverflow` | `solo-at-depth-overflow`, `solo-recall-absent`, `solo-wi-blank-guards` |
+| in-loop insertions (`:1481`-`:1523`) | `note` `wiDepthInLoop` `soloWiBlankInLoop` | `solo-at-depth-interleave`, `solo-wi-blank-guards` |
+| depth-0 trailing (`:1548`-`:1588`) | `anDepthZero` `wiDepthZero` `anGuardRuns` `soloWiBlankZero` | `solo-at-depth-zero`, `solo-empty-system-block`, `solo-wi-blank-guards` |
+| overflow unshifts (`:1591`-`:1641`) | `anOverflow` `anGuardRuns` `wiDepthOverflow` `wiDepthOverflowB` `soloWiBlankOverflow` | `solo-at-depth-overflow`, `solo-recall-absent`, `solo-wi-blank-guards` |
+| *(prepare half — NOT a split defence)* | `depthPromptRuns` | counts the single `sub(depthPrompt.prompt)` at `:1425`, **above** the planned boundary; the round-3 review proved re-running any block below the boundary cannot move it. It defends against a split drawn above `:1425`, nothing later — the three rows above are what defend the planned seam |
 | group in-loop / depth-0 / overflow | `gWiDepthInLoop` `gWiDepthZero` `gWiDepthOverflow` `anCount` `gAnOverflow` | `group-wi-attribution`, `group-hidden-and-overflow-note` |
 
 Re-running any of those blocks flips its counters to `"2"` and fails a named

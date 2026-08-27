@@ -9,8 +9,8 @@
 #   of any stage shows up twice — as a changed number in the prompt golden
 #   and as a changed count in the variables golden. `stage` records execution
 #   ORDER: card fields, world info, the note, history.
-# pins: :1131 wrapWiContent, :1183-1216 card + generation-settings fields,
-#   :1425 depth prompt, :1490-1497 author note, :1524 history turns
+# pins: :1131 wrapWiContent, :1184-1216 card + generation-settings fields,
+#   :1425 depth prompt, :1490-1497 author note, :1531 history turns
 # entries: 7
 # overBudget: false
 # lastTokenEstimate: 223

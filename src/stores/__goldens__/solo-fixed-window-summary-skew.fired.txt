@@ -11,7 +11,7 @@
 #   orderings emit the same tail. Swapping them is green here.
 #   `token-aware-off` is the fixture that pins that ordering, and a
 #   self-check keeps its input capable of it.
-# pins: :1359 windowSkew, :1406-1419 cappedOffset
+# pins: :1359 windowSkew, :1412-1419 cappedOffset
 # wiTimerOut.currentTurn (in): 15
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)
 # serverMatchedEntries (in): (none — the local scan runs)

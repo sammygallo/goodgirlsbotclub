@@ -2,7 +2,7 @@
 # what: A critical at-depth entry (pinned, never evictable) plus an oversized
 #   newest turn against a 256-token floor: remaining goes negative and
 #   overBudget comes back true.
-# pins: :1648-1665 pinnedMessages, :1676 overBudget, tokenizer.ts:180
+# pins: :1654-1665 pinnedMessages, :1676 overBudget, tokenizer.ts:180
 # entries: 3
 # overBudget: true
 # lastTokenEstimate: 1332

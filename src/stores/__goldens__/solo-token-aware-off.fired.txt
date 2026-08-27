@@ -8,7 +8,7 @@
 #   fixed-window-summary-skew: once a summary is present the offset rebase
 #   makes the KEPT COUNT algebraically independent of the window size, so the
 #   two orderings produce the same tail.)
-# pins: :1345-1350 slice-before-filter, :1678-1680 else-branch, :1694-1696
+# pins: :1346-1350 slice-before-filter, :1678-1680 else-branch, :1694-1696
 #   estimateConversationTokens
 # wiTimerOut.currentTurn (in): 4
 # wiTimerOut.timers (in): (fresh chat — no seeded timers)

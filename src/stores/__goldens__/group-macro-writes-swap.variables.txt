@@ -4,10 +4,10 @@
 #   mes_example counters must be ABSENT — except the SPEAKER's, which reach
 #   the prompt by two different routes swap alone exercises: the `Current
 #   scenario:` fallback through speakerScenario() and the swap-only
-#   `mesExample = subSpeaker(...)` at :2170-2173, which join forces to ''.
+#   `mesExample = subSpeaker(...)` at :2171-2174, which join forces to ''.
 #   cardMode is mutually exclusive with the join fixture, so this is one of
 #   the few genuinely new builds round 2 adds.
-# pins: :2076-2086 swap card block, :2036-2044 speakerScenario, :2170-2174
+# pins: :2076-2086 swap card block, :2036-2044 speakerScenario, :2171-2174
 #   swap mesExample
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════

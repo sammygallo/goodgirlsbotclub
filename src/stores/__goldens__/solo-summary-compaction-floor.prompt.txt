@@ -1,7 +1,7 @@
 # solo/summary-compaction-floor   [SHOULD: summary compaction at MIN_RAW_TAIL]
 # what: A summary that claims to cover the whole chat: compaction is clamped
 #   by the MIN_RAW_TAIL=6 floor rather than emptying history.
-# pins: :1406-1419 cappedOffset / MIN_RAW_TAIL
+# pins: :1412-1419 cappedOffset / MIN_RAW_TAIL
 # entries: 7
 # overBudget: false
 # lastTokenEstimate: 677

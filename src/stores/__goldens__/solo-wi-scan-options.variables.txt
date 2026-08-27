@@ -10,7 +10,7 @@
 #   outcome is legible, including that the sticky carry-over does NOT appear
 #   in `activated`.
 # pins: :1082-1093 the option bag, worldInfoStore.ts:1420-1427
-#   timedEffectsAllow, :1441-1446 per-entry scanDepth, :1494-1506 sticky
+#   timedEffectsAllow, :1443-1446 per-entry scanDepth, :1494-1506 sticky
 #   carry-over
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════

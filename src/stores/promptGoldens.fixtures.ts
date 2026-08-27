@@ -713,7 +713,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'A critical at-depth entry (pinned, never evictable) plus an oversized ' +
       'newest turn against a 256-token floor: remaining goes negative and ' +
       'overBudget comes back true.',
-    pins: ':1648-1665 pinnedMessages, :1676 overBudget, tokenizer.ts:180',
+    pins: ':1654-1665 pinnedMessages, :1676 overBudget, tokenizer.ts:180',
     setup: () => {
       withContext({ maxTokens: 512, responseReserve: 256, tokenAware: true });
       withBooks([
@@ -747,7 +747,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'folded into fixed-window-summary-skew: once a summary is present the ' +
       'offset rebase makes the KEPT COUNT algebraically independent of the ' +
       'window size, so the two orderings produce the same tail.)',
-    pins: ':1345-1350 slice-before-filter, :1678-1680 else-branch, :1694-1696 estimateConversationTokens',
+    pins: ':1346-1350 slice-before-filter, :1678-1680 else-branch, :1694-1696 estimateConversationTokens',
     setup: () => {
       withContext({ tokenAware: false, messageCount: 5 });
       useGenerationStore.setState({
@@ -776,7 +776,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       "(CharacterEdit's depth_prompt role, AuthorNote's ROLE_OPTIONS, the " +
       "persona's descriptionRole, the extension's own role) and no two " +
       'classes share one, so rewriting any of them to a literal shows up here.',
-    pins: ':1480-1523 in-loop insertion order and roles',
+    pins: ':1481-1523 in-loop insertion order and roles',
     counters: ['depthPromptRuns', 'note', 'wiDepthInLoop'],
     // Extension at-depth content is pushed RAW at :1520 while world info at
     // the same depth is substituted — this is the pin on that asymmetry.
@@ -1000,8 +1000,8 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'prompt golden and as a changed count in the variables golden. `stage` ' +
       'records execution ORDER: card fields, world info, the note, history.',
     pins:
-      ':1131 wrapWiContent, :1183-1216 card + generation-settings fields, ' +
-      ':1425 depth prompt, :1490-1497 author note, :1524 history turns',
+      ':1131 wrapWiContent, :1184-1216 card + generation-settings fields, ' +
+      ':1425 depth prompt, :1490-1497 author note, :1531 history turns',
     counters: [
       'day',
       'shelf',
@@ -1179,8 +1179,8 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'offset 10-2=8 keeps 12 turns, and dropping the rebase would keep 10.',
     pins:
       ':1195-1199 pureChatMode, :1209-1211 the pureChatMode arm of the PHI gate, ' +
-      ':1240-1247 charInfoParts, :1314-1318 char_phi, ' +
-      ':1367-1372 greeting trim, :1406-1409 pureChatRemoved rebase',
+      ':1242-1247 charInfoParts, :1314-1318 char_phi, ' +
+      ':1368-1372 greeting trim, :1395-1397 pureChatRemoved rebase',
     // The card's PHI is SUPPRESSED here, so its counter must not have run:
     // hoisting `sub(post_history_instructions)` out of the :1209-1211 ternary
     // emits nothing and is invisible to every prompt golden. char_phi's
@@ -1224,7 +1224,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       "card's system_prompt, and char_phi becomes the style reinforcement " +
       "instead of the card's post-history instructions.",
     pins:
-      ':1189-1191 linkedStyleActive, :1209-1211 the linkedStyleActive arm of ' +
+      ':1195-1196 linkedStyleActive, :1209-1211 the linkedStyleActive arm of ' +
       'the PHI gate, :1257-1261 mainPrompt, :1314-1318 char_phi',
     counters: ['charSysPrompt'],
     absentCounters: ['charPhiSub'],
@@ -1243,7 +1243,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     what:
       'A summary that claims to cover the whole chat: compaction is clamped ' +
       'by the MIN_RAW_TAIL=6 floor rather than emptying history.',
-    pins: ':1406-1419 cappedOffset / MIN_RAW_TAIL',
+    pins: ':1412-1419 cappedOffset / MIN_RAW_TAIL',
     setup: () => {
       useSummarizeStore.setState({
         compactWhenSummarized: true,
@@ -1265,7 +1265,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     what:
       'A hidden turn reaches neither the history nor the {{lastusermessage}} ' +
       'macro, and does not consume a fixed-window slot.',
-    pins: ':993-997 visibleMessages, :1345-1350 historyPool',
+    pins: ':998 visibleMessages, :1346-1350 historyPool',
     setup: () => {
       withAuthorNote('[Last user message was: {{lastusermessage}}]', 1);
       return {
@@ -1297,7 +1297,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'appear in `activated`.',
     pins:
       ':1082-1093 the option bag, worldInfoStore.ts:1420-1427 timedEffectsAllow, ' +
-      ':1441-1446 per-entry scanDepth, :1494-1506 sticky carry-over',
+      ':1443-1446 per-entry scanDepth, :1494-1506 sticky carry-over',
     setup: () => {
       // currentTurn is derived from the history below: 3 assistant turns -> 3.
       withBooks([
@@ -1509,7 +1509,7 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'tail. Swapping them is green here. `token-aware-off` is the fixture ' +
       'that pins that ordering, and a self-check keeps its input capable of ' +
       'it.',
-    pins: ':1359 windowSkew, :1406-1419 cappedOffset',
+    pins: ':1359 windowSkew, :1412-1419 cappedOffset',
     setup: () => {
       withContext({ tokenAware: false, messageCount: 12 });
       useSummarizeStore.setState({
@@ -1795,7 +1795,7 @@ export const GROUP_FIXTURES: GroupFixture[] = [
     what:
       'attachmentsFolded true but the blank image-carrying turn is NOT at ' +
       'lastUserIndexInRecent — the fold cannot land on it, so it is dropped.',
-    pins: ':2280-2287 lastUserIndexInRecent, :2337-2341',
+    pins: ':2283-2287 lastUserIndexInRecent, :2353-2356 keepForAttachment',
     setup: () =>
       groupBase({
         attachmentsFolded: true,
@@ -1818,7 +1818,7 @@ export const GROUP_FIXTURES: GroupFixture[] = [
       'RUN COUNT observable — setvar alone is idempotent, so a setvar-only ' +
       'version of this fixture could not tell one execution from two, which ' +
       'is precisely what its placement implies it guards.',
-    pins: ':2298-2306 in-loop AN guard, :2308-2313 wi at-depth guard',
+    pins: ':2298-2306 in-loop AN guard, :2309-2313 wi at-depth guard',
     counters: ['gAnGuardRuns', 'gWiGuardRuns'],
     setup: () => {
       withAuthorNote('{{setvar::anGuard::inloop}}{{addvar::gAnGuardRuns::1}}', 1);
@@ -1897,7 +1897,7 @@ export const GROUP_FIXTURES: GroupFixture[] = [
       "the author's note carries a non-system role.",
     pins:
       ':1975-1976 subMember, :2054-2074 join card block, :2143-2156 override, ' +
-      ':2298-2306 author note, :2323-2326 history substitution, :2411-2413 persist',
+      ':2298-2306 author note, :2324-2326 history substitution, :2412-2413 persist',
     counters: [
       'cardSeraphina',
       'cardMarcus',
@@ -1968,10 +1968,10 @@ export const GROUP_FIXTURES: GroupFixture[] = [
       'mes_example counters must be ABSENT — except the SPEAKER\'s, which ' +
       'reach the prompt by two different routes swap alone exercises: the ' +
       '`Current scenario:` fallback through speakerScenario() and the ' +
-      'swap-only `mesExample = subSpeaker(...)` at :2170-2173, which join ' +
+      'swap-only `mesExample = subSpeaker(...)` at :2171-2174, which join ' +
       'forces to \'\'. cardMode is mutually exclusive with the join fixture, ' +
       'so this is one of the few genuinely new builds round 2 adds.',
-    pins: ':2076-2086 swap card block, :2036-2044 speakerScenario, :2170-2174 swap mesExample',
+    pins: ':2076-2086 swap card block, :2036-2044 speakerScenario, :2171-2174 swap mesExample',
     counters: [
       'cardSeraphina',
       'cardMarcus',
@@ -2001,7 +2001,7 @@ export const GROUP_FIXTURES: GroupFixture[] = [
       'reaches depthFromEnd >= 1, the overflow test is strictly >) and is ' +
       'dropped. Solo emits it. Pinned deliberately so the future fix arrives as ' +
       'a golden diff, not a surprise.',
-    pins: ':2288-2306 loop, :2386-2395 overflow, comment at :2379-2385',
+    pins: ':2288-2306 loop, :2386-2395 overflow (rationale in the comment block just above it)',
     setup: () => {
       withAuthorNote("[Author's note at depth 0 — solo would emit this.]", 0);
       return groupBase();
@@ -2023,7 +2023,7 @@ export const GROUP_FIXTURES: GroupFixture[] = [
       'interpolation, or the depth-0 trailing push, was green before this.',
     pins:
       ':1978-1984 memberByOwnedBookId, :1986-2043 wrapWiContent, ' +
-      ':2213-2218 the four template slots, :2308-2313 / :2371-2376 / :2400-2408 at-depth',
+      ':2213-2218 the four template slots, :2309-2313 / :2371-2376 / :2400-2408 at-depth',
     counters: ['wiCount', 'gWiDepthInLoop', 'gWiDepthZero', 'gWiDepthOverflow'],
     setup: () => {
       withPersona({

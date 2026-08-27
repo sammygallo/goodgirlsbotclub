@@ -38,6 +38,11 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+// Raw-source imports (the house `?raw` pattern — tsconfig.app types only
+// vite/client, so node:fs is unavailable in src and would break the
+// Dockerfile's `tsc -b`, which — unlike PR CI — typechecks test files).
+import goldensReadmeRaw from './__goldens__/README.md?raw';
+import chatStoreRaw from './chatStore.ts?raw';
 
 // chatStore pulls serverSettings (and through it the api layer) at module
 // load — neutralize before importing, per the worldInfoStore.test.ts pattern.
@@ -535,6 +540,39 @@ describe('prompt goldens — the harness pins what it claims to', () => {
     // when you add a fixture — and update the README in the same commit.
     expect(SOLO_FIXTURES.length, 'README "Solo (N fixtures)"').toBe(27);
     expect(GROUP_FIXTURES.length, 'README "Group (N fixtures)"').toBe(16);
+    // Round-3 review: the literals above alone let the README's prose drift —
+    // a dev bumps toBe(N) per the failure message and never opens the README.
+    // So the README itself is part of the assertion.
+    const readme = goldensReadmeRaw;
+    expect(readme, 'README solo count is out of sync with SOLO_FIXTURES').toContain(
+      `Solo (${SOLO_FIXTURES.length} fixtures)`
+    );
+    expect(readme, 'README group count is out of sync with GROUP_FIXTURES').toContain(
+      `Group (${GROUP_FIXTURES.length} fixtures)`
+    );
+  });
+
+  it('every :NNNN anchor in a fixture pins line lands on real code, not a blank or comment', () => {
+    // Round-3 review: anchors drifted one-to-three lines off the guards they
+    // name in every round so far (three fixed by hand in e7f83463, four more
+    // found after). This cannot verify an anchor points at the RIGHT code,
+    // but it catches the drift signature — an anchor sitting on a blank line
+    // or a comment — which is what every observed drift produced. Line
+    // numbers shift when chatStore.ts changes: if this fails after an
+    // unrelated chatStore edit, the anchors are stale — re-resolve them, do
+    // not delete the check.
+    const store = chatStoreRaw.split('\n');
+    const bad: string[] = [];
+    for (const f of [...SOLO_FIXTURES, ...GROUP_FIXTURES]) {
+      for (const m of (f.pins ?? '').matchAll(/:(\d{3,4})/g)) {
+        const ln = Number(m[1]);
+        const text = (store[ln - 1] ?? '').trim();
+        if (text === '' || text.startsWith('//') || text.startsWith('*') || text.startsWith('/*')) {
+          bad.push(`${f.name} pins :${ln} -> ${text === '' ? '(blank)' : JSON.stringify(text.slice(0, 40))}`);
+        }
+      }
+    }
+    expect(bad, `stale pins anchors:\n${bad.join('\n')}`).toEqual([]);
   });
 
   it('every fixture has a unique golden stem', () => {
@@ -717,15 +755,24 @@ describe('prompt goldens — the harness pins what it claims to', () => {
   it('the fail-loud world-info budget warning fires once per chat file', () => {
     // Round 2 gave the two budget fixtures their own chat files so that BOTH
     // builders would reach their fail-loud branch — `wiPinnedWarnedChats`
-    // (chatStore.ts:962) is module-level and never cleared, so on one shared
+    // (chatStore.ts:963) is module-level and never cleared, so on one shared
     // file the second build is suppressed. That apparatus pinned nothing
     // until the toasts were captured: deleting either branch, or both
     // `withChatFile` calls, left all 132 tests green.
     //
-    // This is where the fixture-ORDER dependence the apparatus introduces is
-    // pinned too. Two builds fire, on two distinct files; add a third
-    // over-budget fixture on either of those files and it will be silently
-    // suppressed — and this test, not a golden, is what says so.
+    // Three invariants, each with its own kill:
+    //  1. Exactly the two budget fixtures toast (the hardcoded list) — kills
+    //     a NEW fixture toasting unexpectedly.
+    //  2. Every run whose scanReport went pinnedOverBudget raised exactly one
+    //     toast — kills SUPPRESSION: a future over-budget fixture landing on
+    //     an already-warned chat file reports pinnedOverBudget with zero
+    //     toasts and fails here BY NAME. (The round-3 review proved the
+    //     hardcoded list alone cannot see that case — a suppressed build
+    //     contributes nothing to `fired`, so the list stays equal.)
+    //  3. Neither fail-loud build runs on GOLDEN_CHAT_FILE — kills deleting
+    //     EITHER withChatFile() call (round-3 review: each single deletion
+    //     was green before this assertion, because the two builds still sat
+    //     on two distinct files).
     const fired = [
       ...[...soloRuns].map(([n, r]) => [`solo/${n}`, r] as const),
       ...[...groupRuns].map(([n, r]) => [`group/${n}`, r] as const),
@@ -741,6 +788,30 @@ describe('prompt goldens — the harness pins what it claims to', () => {
     }
     const files = fired.map(([, r]) => r.chatFile);
     expect(new Set(files).size, 'the two fail-loud builds share a chat file').toBe(2);
+    for (const [name, r] of fired) {
+      // Kill for deleting either withChatFile() alone: that build falls back
+      // to the shared golden file, which this rejects by name.
+      expect(r.chatFile, `${name} warns on the shared golden chat file`).not.toBe(
+        GOLDEN_CHAT_FILE
+      );
+    }
+    // The suppression invariant (2): pinnedOverBudget without a toast means a
+    // warning the user never saw. Derived from the runs, not hardcoded, so it
+    // fires for any FUTURE over-budget fixture too.
+    for (const [kind, runs] of [
+      ['solo', soloRuns],
+      ['group', groupRuns],
+    ] as const) {
+      for (const [name, run] of runs) {
+        if (run.fired.includes('scanReport.pinnedOverBudget = true')) {
+          expect(
+            run.toasts.length,
+            `${kind}/${name} went pinned-over-budget but raised ${run.toasts.length} toasts — ` +
+              'a fail-loud warning was suppressed (same chat file as an earlier build?) or doubled'
+          ).toBe(1);
+        }
+      }
+    }
 
     // The suppression half: build the solo budget fixture AGAIN, against the
     // same chat file it already warned for. No second toast.

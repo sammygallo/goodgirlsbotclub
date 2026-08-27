@@ -7,8 +7,8 @@
 #   {{char}} resolves to Marcus, not the speaker — and the author's note
 #   carries a non-system role.
 # pins: :1975-1976 subMember, :2054-2074 join card block, :2143-2156
-#   override, :2298-2306 author note, :2323-2326 history substitution,
-#   :2411-2413 persist
+#   override, :2298-2306 author note, :2324-2326 history substitution,
+#   :2412-2413 persist
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
 anCount = "1"

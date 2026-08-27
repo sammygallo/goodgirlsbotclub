@@ -6,7 +6,7 @@
 #   COUNT observable — setvar alone is idempotent, so a setvar-only version
 #   of this fixture could not tell one execution from two, which is precisely
 #   what its placement implies it guards.
-# pins: :2298-2306 in-loop AN guard, :2308-2313 wi at-depth guard
+# pins: :2298-2306 in-loop AN guard, :2309-2313 wi at-depth guard
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
 anGuard = "inloop"

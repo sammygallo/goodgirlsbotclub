@@ -9,8 +9,8 @@
 #   are chosen so the MIN_RAW_TAIL cap does NOT bind: offset 10-2=8 keeps 12
 #   turns, and dropping the rebase would keep 10.
 # pins: :1195-1199 pureChatMode, :1209-1211 the pureChatMode arm of the PHI
-#   gate, :1240-1247 charInfoParts, :1314-1318 char_phi, :1367-1372 greeting
-#   trim, :1406-1409 pureChatRemoved rebase
+#   gate, :1242-1247 charInfoParts, :1314-1318 char_phi, :1368-1372 greeting
+#   trim, :1395-1397 pureChatRemoved rebase
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
 charSysPrompt = "1"

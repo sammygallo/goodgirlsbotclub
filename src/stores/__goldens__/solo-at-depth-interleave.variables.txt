@@ -5,7 +5,7 @@
 #   depth_prompt role, AuthorNote's ROLE_OPTIONS, the persona's
 #   descriptionRole, the extension's own role) and no two classes share one,
 #   so rewriting any of them to a literal shows up here.
-# pins: :1480-1523 in-loop insertion order and roles
+# pins: :1481-1523 in-loop insertion order and roles
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
 depthPromptRuns = "1"
