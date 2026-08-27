@@ -1,0 +1,10 @@
+# solo/all-sections   [S2]
+# what: Every pre-history section non-empty EXCEPT persona_after_char (see
+#   persona-after-char — the two persona slots are mutually exclusive), plus
+#   all four Stage-C sections.
+# pins: :1285-1322 all 18 keys, :1337 the join, :1684-1690 Stage C
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

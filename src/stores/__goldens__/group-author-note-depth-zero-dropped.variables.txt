@@ -1,0 +1,11 @@
+# group/author-note-depth-zero-dropped   [SHOULD: pins the known #466 bug]
+# what: A group author's note at depth 0 matches NEITHER branch (the loop
+#   only reaches depthFromEnd >= 1, the overflow test is strictly >) and is
+#   dropped. Solo emits it. Pinned deliberately so the future fix arrives as
+#   a golden diff, not a surprise.
+# pins: :2288-2306 loop, :2386-2395 overflow, comment at :2379-2385
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+scenarioRuns = "1"
+══════════════════════════════════════════════════════════════════════════
+1 key(s)

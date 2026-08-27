@@ -1,0 +1,10 @@
+# group/join-scenario-override   [G4]
+# what: Join + scenarioOverride: the override wins the `Current scenario:`
+#   slot while the speaker's own card block still renders their scenario, so
+#   `scenarioRuns` reads exactly 1.
+# pins: :2054-2074 + :2141-2155
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+scenarioRuns = "1"
+══════════════════════════════════════════════════════════════════════════
+1 key(s)

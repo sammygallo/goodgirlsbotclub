@@ -1,0 +1,9 @@
+# solo/at-depth-zero   [S9]
+# what: All five at-depth classes at depth 0 — the trailing slot after the
+#   newest turn.
+# pins: :1548-1588 depth-0 branches
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

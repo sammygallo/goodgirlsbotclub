@@ -1,0 +1,9 @@
+# solo/at-depth-interleave   [S8]
+# what: All five at-depth classes at ONE depth: character note, author note,
+#   persona, world info, extension — in the documented order.
+# pins: :1480-1523 in-loop insertion order
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

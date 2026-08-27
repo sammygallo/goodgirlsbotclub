@@ -1,0 +1,11 @@
+# group/wi-attribution   [SHOULD: persona-book + owned-book attribution]
+# what: Three books in one build: one owned by a non-speaking member (gets
+#   the "another character" header AND resolves its macros against that
+#   owner), one persona-linked (gets the user header), one room-shared
+#   (unlabelled).
+# pins: :1978-1984 memberByOwnedBookId, :1986-2043 wrapWiContent
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+scenarioRuns = "1"
+══════════════════════════════════════════════════════════════════════════
+1 key(s)

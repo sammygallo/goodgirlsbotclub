@@ -1,0 +1,9 @@
+# solo/token-aware-off   [S7]
+# what: tokenAware off: history is a fixed message-count window and the token
+#   estimate comes from the NON-token-aware path, which counts Stage C.
+# pins: :1678-1680 else-branch, :1694-1696 estimateConversationTokens
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

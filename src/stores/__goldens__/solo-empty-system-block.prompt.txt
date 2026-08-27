@@ -1,0 +1,14 @@
+# solo/empty-system-block   [S4]
+# what: Every pre-history section disabled. The Stage-A push at :1335 is
+#   unconditional, so the prompt still opens with an EMPTY system message.
+# pins: :1327-1338 — the unconditional push (audit §4.4)
+# entries: 2
+# overBudget: false
+# lastTokenEstimate: 12
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=0
+∅ (empty content)
+──────────────────────────────────────────────────────────────────────────
+[1] user  len=6
+Hello.
+──────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,9 @@
+# solo/recall-absent   [S13]
+# what: Same build with no ragContext — rag_context renders empty and is
+#   filtered out.
+# pins: :1305-1307 / :1330-1332
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

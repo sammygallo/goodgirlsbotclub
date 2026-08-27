@@ -1,0 +1,9 @@
+# solo/empty-system-block   [S4]
+# what: Every pre-history section disabled. The Stage-A push at :1335 is
+#   unconditional, so the prompt still opens with an EMPTY system message.
+# pins: :1327-1338 — the unconditional push (audit §4.4)
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

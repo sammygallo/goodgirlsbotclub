@@ -1,0 +1,8 @@
+# solo/minimal   [S1]
+# what: The baseline: default promptOrder, no lore, no persona, one turn.
+# pins: :1285-1322 sectionContent, :1327-1338 Stage A
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

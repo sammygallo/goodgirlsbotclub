@@ -1,0 +1,10 @@
+# solo/persona-after-char   [SHOULD: persona positions]
+# what: The 14th pre-history section, unreachable from all-sections: persona
+#   position after_char fills persona_after_char and leaves
+#   persona_before_char empty.
+# pins: :1287-1290 / :1295-1298
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

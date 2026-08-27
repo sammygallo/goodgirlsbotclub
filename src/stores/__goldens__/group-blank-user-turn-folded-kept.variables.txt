@@ -1,0 +1,9 @@
+# group/blank-user-turn-folded-kept   [G5]
+# what: attachmentsFolded true and the blank image-carrying turn IS the last
+#   user turn: kept, shipping empty content for client.ts to fold into.
+# pins: :2353-2354 keepForAttachment
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+scenarioRuns = "1"
+══════════════════════════════════════════════════════════════════════════
+1 key(s)

@@ -1,0 +1,9 @@
+# solo/image-only-and-blank-assistant   [S11]
+# what: An image-only user turn (kept, and it ships EMPTY content) next to a
+#   blank assistant turn (dropped).
+# pins: :1531-1540 the image-only keep exemption
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

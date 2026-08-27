@@ -1,0 +1,10 @@
+# solo/promptorder-reordered-two-disabled   [S3]
+# what: The all-sections state with emotion_instruction hoisted to the top
+#   and two sections disabled — one pre-history (jailbreak), one Stage C
+#   (char_phi).
+# pins: :1328-1332 pre-history filter, :1684-1688 Stage-C filter
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

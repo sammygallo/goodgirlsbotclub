@@ -1,0 +1,9 @@
+# solo/summary-compaction-floor   [SHOULD: summary compaction at MIN_RAW_TAIL]
+# what: A summary that claims to cover the whole chat: compaction is clamped
+#   by the MIN_RAW_TAIL=6 floor rather than emptying history.
+# pins: :1406-1419 cappedOffset / MIN_RAW_TAIL
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

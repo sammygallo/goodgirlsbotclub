@@ -1,0 +1,12 @@
+# group/blank-guards-in-loop   [G8 (a)]
+# what: A macro-only author's note at the IN-LOOP depth and a world-info
+#   at-depth entry that renders to '': both write their variables and neither
+#   pushes a blank context entry.
+# pins: :2300 in-loop AN guard, :2312 wi at-depth guard
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+anGuard = "inloop"
+scenarioRuns = "1"
+wiGuard = "rendered-empty"
+══════════════════════════════════════════════════════════════════════════
+3 key(s)

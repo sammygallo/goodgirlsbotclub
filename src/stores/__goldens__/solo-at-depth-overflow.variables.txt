@@ -1,0 +1,9 @@
+# solo/at-depth-overflow   [S10]
+# what: Every at-depth class configured deeper than the history, including
+#   TWO world-info depths, so the unshift order is pinned.
+# pins: :1591-1641 overflow unshifts
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

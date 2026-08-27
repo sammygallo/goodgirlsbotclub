@@ -1,0 +1,18 @@
+# solo/macro-writes   [S12]
+# what: THE DOUBLE-EXECUTION CANARY. {{setvar}} in a card field, a world-info
+#   entry and the author's note, plus {{incvar}} counters whose RETURNED
+#   value is emitted into the prompt. A second execution of any stage shows
+#   up twice: as a changed number in the prompt golden, and as a changed
+#   count in the variables golden. `stage` records execution ORDER — card
+#   fields, then world info, then the author's note.
+# pins: :1130-1143 wrapWiContent, :1205-1215 card fields, :1487-1497 author
+#   note
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+day = "1"
+ledger = "1"
+note = "1"
+shelf = "1"
+stage = "authornote"
+══════════════════════════════════════════════════════════════════════════
+5 key(s)
