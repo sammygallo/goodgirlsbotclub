@@ -361,7 +361,6 @@ export function beginBreakdownPass(
   out.slices.length = 0;
   out.stageAJoinResidual = 0;
   out.stageAMessageOverhead = 0;
-  out.conversationPriming = CONVERSATION_PRIMING_TOKENS;
   out.totals.stageA = 0;
   out.totals.stageB = 0;
   out.totals.stageC = 0;

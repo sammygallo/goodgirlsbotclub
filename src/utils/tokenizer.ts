@@ -140,7 +140,12 @@ export function trimHistoryToBudget<
     (acc, m) => acc + estimateMessageTokens(m, profile),
     0
   );
-  let remaining = budget - systemCost - 2;
+  // The same priming allowance `estimateConversationTokens` charges — this is
+  // what makes `usedTokens` comparable with it, and the token breakdown's
+  // `trimTotal + stageC === assembledTotal` identity hold. Was a second copy
+  // of the literal, which the identity would have silently lost if either
+  // moved.
+  let remaining = budget - systemCost - CONVERSATION_PRIMING_TOKENS;
 
   const keepFlags = new Array<boolean>(history.length).fill(false);
   let keptCount = 0;
