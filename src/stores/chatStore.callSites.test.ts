@@ -1,5 +1,5 @@
 /**
- * The SIX generation call sites (E2-S2 task 1b, review round 2).
+ * The SIX generation call sites (E2-S2 task 1b, review round 3).
  *
  * WHAT THIS FILE EXISTS FOR. `chatStore.ragBoundary.test.ts` covers the two
  * ENDS of the boundary wire — `finishConversationContext` returns the right
@@ -13,17 +13,32 @@
  *   M8  the five committing passes flipped to `{ commit: false }`
  *   M9  the five probes run WITH a recall block instead of `undefined`
  *
- * Two more, found while writing this file and green until it landed:
+ * Three more, found while writing this file and green until it landed:
  *
  *   the PROBE flipped to `{ commit: true }` — every turn's macro writes,
  *     token estimate and WI fired state persisted twice
  *   `prepare` called twice — the side-effecting half re-run per turn
+ *   the recall QUERY taken from the wrong array — `resolveRagContext` derives
+ *     it as the newest visible user turn of whatever it is handed, and the
+ *     five sites hand it three DIFFERENT locals (`contextMessages`,
+ *     `messages`, `updatedMessages`), so a `messages`/`updatedMessages` slip
+ *     retrieves against the PREVIOUS turn's question forever, with a correct
+ *     boundary and a well-formed 200 to hide it
  *
  * i.e. the entire deliverable of task 1b could be absent from the build the
  * suite certifies. Every test below therefore drives a REAL store action —
  * `swipeRight`, `continueMessage`, `impersonate`, `sendMessage`,
  * `editMessageAndRegenerate`, `forceGroupMemberTalk` — with `api` stubbed at
  * the network edge only, and asserts on what the call site actually sent.
+ *
+ * EVERY SOLO CLAIM IS PER-SITE. Round 3 found the file's coverage was
+ * swipeRight-shaped while its claims were five-site-shaped: the boundary rows
+ * were parameterised over `SOLO_SITES` but the commit and purity rows drove
+ * swipeRight alone, so M8 and the probe flip were pinned at ONE of the five.
+ * Measured then: flipping sendMessage's committing pass by itself left the
+ * whole suite green at 1847/1847. Both describes below are therefore driven
+ * from the same table as the boundary rows — if a claim in this header says
+ * "five sites", the loop that backs it iterates five sites.
  *
  * `regenerateMessage` is deliberately absent: it is `await
  * get().swipeRight(lastAiMsg.id, ...)` and shares swipeRight's call site, so a
@@ -41,9 +56,24 @@
  *     real head, so the turn just older than it IS in the prompt — which is
  *     the duplication direction the swipeRight comment calls "unreachable by
  *     construction" while nothing but a literal `undefined` enforces it.
+ *
+ * NO LINE NUMBERS. The rows used to name their call site as `chatStore.ts:NNNN`
+ * and all six were stale in the commit that wrote them — computed against a
+ * pre-round checkout, off by exactly the +10 the round's own first commit
+ * added above them, so `sendMessage — chatStore.ts:5193` pointed at a
+ * `tryServerRetrieval` statement. In a 5,700-line file with five near-identical
+ * three-line blocks a wrong anchor is worse than none. Rows are named by their
+ * store action, and the location hint is a `construct` fingerprint checked
+ * against the source — the convention `PINS_ANCHORS` established, which cannot
+ * rot silently because a test resolves it.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+// Raw-source import (the house `?raw` pattern — tsconfig.app types only
+// vite/client, so node:fs is unavailable in src and would break the
+// Dockerfile's `tsc -b`, which — unlike PR CI — typechecks test files).
+// Read only by the `construct` guard at the bottom of this file.
+import chatStoreRaw from './chatStore.ts?raw';
 
 // Same prelude as promptGoldens.test.ts / chatStore.ragBoundary.test.ts —
 // chatStore pulls serverSettings (and the api layer) at module load, and
@@ -211,6 +241,35 @@ function boundarySent(edges: Edges): string | null {
   return edges.recall.mock.calls[0][4] as string | null;
 }
 
+/**
+ * THE OTHER call-site argument: `resolveRagContext(messages, chatFile,
+ * boundaryId)` derives the retrieval QUERY from the array it is handed —
+ * `[...messages.filter(m => !m.hidden)].reverse().find(m => m.isUser &&
+ * !m.isSystem)` (chatStore.ts, inside `resolveRagContext`) — and the five solo
+ * sites hand it three different locals. Nothing pinned which one, so
+ * `resolveRagContext(updatedMessages.slice(0, -1), ...)` at sendMessage left
+ * the whole suite green while every send retrieved against the question the
+ * user asked one turn AGO: the boundary comes from the probe, which is built
+ * on the untouched array, so every other assertion here is satisfied and the
+ * server answers a well-formed 200 with `reason: null`.
+ *
+ * `history` is the array that site hands the builder, so the expected query is
+ * read off the same list the row already reports.
+ */
+function expectRecallQueryIsLatestUserTurn(history: ChatMessage[], edges: Edges): void {
+  const expected = [...history.filter((m) => !m.hidden)]
+    .reverse()
+    .find((m) => m.isUser && !m.isSystem);
+  expect(expected, 'this fixture has no visible user turn — the row proves nothing').toBeDefined();
+  expect(edges.recall, 'the call site never asked the server for recall at all').toHaveBeenCalledTimes(
+    1
+  );
+  expect(
+    edges.recall.mock.calls[0][2],
+    'the call site retrieved against a DIFFERENT turn than the newest one in the build it shipped — recall is answering a stale question'
+  ).toBe(expected!.content);
+}
+
 /** The prompt the call site handed `api.generateMessage`, flattened. */
 function promptSent(edges: Edges): string {
   expect(edges.generate, 'the call site never dispatched a generation').toHaveBeenCalledTimes(1);
@@ -310,46 +369,66 @@ function arrangeSolo(): ChatMessage[] {
  * One row per solo call site. `history` is the message array THAT site hands
  * the builder — swipeRight excludes the message being re-swiped, sendMessage
  * appends the user's new turn — so each row reports its own.
+ *
+ * `character` is a parameter rather than a closed-over `IVY` because every
+ * describe below drives the SAME five rows against a different arrangement:
+ * the boundary rows need a chat long enough for the trim to bite, the commit
+ * rows need the macro/lore canary card.
  */
 interface SoloSite {
   name: string;
-  /** chatStore.ts anchor, so a reader can map row -> call site. */
-  site: string;
-  run: (messages: ChatMessage[]) => Promise<{ history: ChatMessage[] }>;
+  /**
+   * A verbatim, unique slice of chatStore.ts inside the action this row
+   * drives, so a reader can map row -> call site. Checked by the guard at the
+   * bottom of the file; see it, and the header's NO LINE NUMBERS note, for why
+   * this is a source fingerprint rather than a `:NNNN`.
+   *
+   * Deliberately a NEIGHBOUR of the two-pass block rather than the block
+   * itself: naming `{ commit: true }` or `probe.boundaryId` here would make
+   * the guard a second, source-level detector for mutations the behavioural
+   * rows already own, and every such mutation would then redden two rows
+   * instead of the one that actually reports the defect.
+   */
+  construct: string;
+  run: (
+    messages: ChatMessage[],
+    character: CharacterInfo
+  ) => Promise<{ history: ChatMessage[] }>;
 }
 
 const SOLO_SITES: SoloSite[] = [
   {
     name: 'swipeRight',
-    site: 'chatStore.ts:4654 (the canonical two-pass site; regenerateMessage delegates here)',
-    run: async (messages) => {
+    // The canonical two-pass site; regenerateMessage delegates here.
+    construct: 'const contextMessages = messages.slice(0, msgIndex);',
+    run: async (messages, character) => {
       const lastAi = [...messages].reverse().find((m) => !m.isUser && !m.isSystem)!;
-      await useChatStore.getState().swipeRight(lastAi.id, IVY);
+      await useChatStore.getState().swipeRight(lastAi.id, character);
       // swipeRight builds from everything BEFORE the message being re-swiped.
       return { history: messages.slice(0, messages.indexOf(lastAi)) };
     },
   },
   {
     name: 'continueMessage',
-    site: 'chatStore.ts:4815',
-    run: async (messages) => {
-      await useChatStore.getState().continueMessage(IVY);
+    construct: "recordCallSiteTurn(breakdown, 'continue', context[context.length - 1].content);",
+    run: async (messages, character) => {
+      await useChatStore.getState().continueMessage(character);
       return { history: messages };
     },
   },
   {
     name: 'impersonate',
-    site: 'chatStore.ts:4951',
-    run: async (messages) => {
-      await useChatStore.getState().impersonate(IVY);
+    construct: "recordCallSiteTurn(breakdown, 'impersonate', context[context.length - 1].content);",
+    run: async (messages, character) => {
+      await useChatStore.getState().impersonate(character);
       return { history: messages };
     },
   },
   {
     name: 'sendMessage',
-    site: 'chatStore.ts:5193',
-    run: async () => {
-      await useChatStore.getState().sendMessage('And the thurible?', IVY);
+    construct: 'const sendImages = resolveImagesForSend(attachedImages);',
+    run: async (_messages, character) => {
+      await useChatStore.getState().sendMessage('And the thurible?', character);
       // The user's turn is appended and persisted before the build runs, so
       // the builder saw one more message than the arrangement installed.
       return { history: useChatStore.getState().messages };
@@ -357,12 +436,12 @@ const SOLO_SITES: SoloSite[] = [
   },
   {
     name: 'editMessageAndRegenerate',
-    site: 'chatStore.ts:5603',
-    run: async (messages) => {
+    construct: 'const regenImages = imagesFromLastUserMessage(updatedMessages, provider, model);',
+    run: async (messages, character) => {
       const last = messages[messages.length - 1];
       await useChatStore
         .getState()
-        .editMessageAndRegenerate(last.id, `${last.content} (revised)`, IVY);
+        .editMessageAndRegenerate(last.id, `${last.content} (revised)`, character);
       return { history: useChatStore.getState().messages };
     },
   },
@@ -378,7 +457,7 @@ describe('every solo call site sends the boundary of the build it is about to sh
   });
 
   for (const siteRow of SOLO_SITES) {
-    it(`${siteRow.name} — ${siteRow.site}`, async () => {
+    it(siteRow.name, async () => {
       // KILLS, per site: `resolveRagContext(messages, file, null)` (M6) — the
       // one-token edit a merge resolution or a sixth generation path lands
       // silently, because `boundaryId` is typed `string | null` so null
@@ -390,9 +469,12 @@ describe('every solo call site sends the boundary of the build it is about to sh
       const messages = arrangeSolo();
       const edges = stubEdges();
 
-      const { history } = await siteRow.run(messages);
+      const { history } = await siteRow.run(messages, IVY);
 
       expectBoundaryDelimitsPrompt(history, edges);
+      // The FIRST argument of the same call, which nothing read until round 3:
+      // the boundary can be perfect while the query is a turn stale.
+      expectRecallQueryIsLatestUserTurn(history, edges);
       // The other half of the two-pass shape: `finish` is pure and runs twice,
       // `prepare` is the side-effecting half and must run ONCE.
       expect(
@@ -483,95 +565,112 @@ function arrangeCommitCanary(): { chatFile: string; messages: ChatMessage[]; ent
   return { chatFile, messages, entryId };
 }
 
-describe('the committing pass really commits', () => {
+describe('the committing pass really commits, at every solo call site', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('persists the turn\'s macro writes, the token estimate and the WI fired state', async () => {
-    // KILLS M8: flipping the five hand-written `{ commit: true }` sites to
-    // `{ commit: false }` (they sit three lines from the probe and differ only
-    // in the options object, so a copy-paste lands it). `commit` gates three
-    // writes and for the solo path each is the ONLY writer:
-    //   setChatVariables  — every {{setvar}}/{{incvar}}/{{addvar}} this turn
-    //                       executed is discarded, so variable-driven lorebooks
-    //                       silently stop advancing;
-    //   setLastTokenEstimate — the token badge freezes on its last value;
-    //   wiTimerOut.fired  — captureWiFired early-returns when it is unset, so
-    //                       sticky/cooldown/delay entries never record a firing.
-    // Nothing before this file could see any of it: the goldens go through
-    // `buildConversationContext`, whose wrapper DEFAULTS commit and therefore
-    // never routes through a call site's flag.
-    //
-    // NOT what `commitCanary === '1'` kills: a discarded second `prepare`.
-    // That reads '1' too — see the `prepareCalls` counter's note for why, and
-    // for the assertion that does catch it. What the '1' DOES pin is a build
-    // whose macro writes are persisted twice, i.e. a probe that commits.
-    const { chatFile, entryId } = arrangeCommitCanary();
-    const edges = stubEdges({ stream: sseOnce('[emotion:neutral] It is here.') });
+  // PARAMETERISED OVER `SOLO_SITES`, and that is the whole point of round 3.
+  // Both rows below used to drive swipeRight alone while the header claimed
+  // "the five committing passes" — measured at the time: flipping sendMessage's
+  // committing pass by itself, or all four non-swipeRight passes together, left
+  // the full suite green at 1847/1847; only swipeRight's flip reddened anything.
+  // A copy-paste lands at ONE site, so a one-site guard covers 20% of the
+  // threat model it names.
+  for (const siteRow of SOLO_SITES) {
+    it(`${siteRow.name} persists the turn's macro writes, token estimate and WI fired state`, async () => {
+      // KILLS M8 at this site: `{ commit: true }` -> `{ commit: false }` (the
+      // two `finish` calls sit three lines apart and differ only in the options
+      // object, so a copy-paste or a merge resolution lands it). `commit` gates
+      // three writes and for the solo path each is the ONLY writer:
+      //   setChatVariables  — every {{setvar}}/{{incvar}}/{{addvar}} this turn
+      //                       executed is discarded, so variable-driven lorebooks
+      //                       silently stop advancing;
+      //   setLastTokenEstimate — the token badge freezes on its last value;
+      //   wiTimerOut.fired  — captureWiFired early-returns when it is unset, so
+      //                       sticky/cooldown/delay entries never record a firing.
+      // Nothing before this file could see any of it: the goldens go through
+      // `buildConversationContext`, whose wrapper DEFAULTS commit and therefore
+      // never routes through a call site's flag.
+      //
+      // NOT what `commitCanary === '1'` kills: a discarded second `prepare`.
+      // That reads '1' too — see the `prepareCalls` counter's note for why, and
+      // for the assertion that does catch it. What the '1' DOES pin is a build
+      // whose macro writes are persisted twice, i.e. a probe that commits.
+      const { chatFile, messages, entryId } = arrangeCommitCanary();
+      // A real stream, because `captureWiFired` sits past `if (!stream) return`
+      // at all five sites.
+      const edges = stubEdges({ stream: sseOnce('[emotion:neutral] It is here.') });
 
-    await useChatStore.getState().swipeRight('c2', CANARY_IVY);
+      await siteRow.run(messages, CANARY_IVY);
 
-    expect(edges.generate, 'the turn never dispatched').toHaveBeenCalledTimes(1);
-    expect(
-      prepareCalls,
-      'the side-effecting half ran a number of times other than once for this turn'
-    ).toBe(1);
-    expect(
-      useChatStore.getState().getChatVariables(chatFile).commitCanary,
-      'the macro writes this turn executed were not persisted'
-    ).toBe('1');
-    expect(
-      useGenerationStore.getState().lastTokenEstimate,
-      'the token estimate never advanced past the reset sentinel'
-    ).toBeGreaterThan(0);
-    expect(useGenerationStore.getState().lastTokenEstimate).not.toBe(NOT_WRITTEN);
+      expect(edges.generate, 'the turn never dispatched').toHaveBeenCalledTimes(1);
+      expect(
+        prepareCalls,
+        'the side-effecting half ran a number of times other than once for this turn'
+      ).toBe(1);
+      expect(
+        useChatStore.getState().getChatVariables(chatFile).commitCanary,
+        'the macro writes this turn executed were not persisted'
+      ).toBe('1');
+      // `NOT_WRITTEN` is -1, so `> 0` rejects both the reset sentinel and a
+      // build that estimated nothing.
+      expect(
+        useGenerationStore.getState().lastTokenEstimate,
+        'the token estimate never advanced past the reset sentinel'
+      ).toBeGreaterThan(0);
 
-    // Keyed `bookId:entryId` by wiFired.ts — the composite is what the
-    // story-bible replay looks entries up by.
-    const fired = getWiFiredForChat(chatFile);
-    expect(fired, 'no WI fired-state was recorded for this turn').toBeDefined();
-    expect(Object.keys(fired ?? {}), 'the injected entry did not record a firing').toContain(
-      `b-commit-canary:${entryId}`
-    );
-  });
-
-  it('has written NOTHING by the time the probe pass is done', async () => {
-    // The purity half — the reverse mutation, and the one no builder-level
-    // test can see: flipping the PROBE to `{ commit: true }` would double the
-    // persisted state of every turn while leaving the committing pass intact,
-    // so every assertion in the test above still passes.
-    //
-    // The recall call is the seam: `resolveRagContext` is awaited strictly
-    // between the two `finish` passes, so a snapshot taken inside its stub is
-    // a snapshot of "after the probe, before the commit".
-    const { chatFile } = arrangeCommitCanary();
-    let atProbeTime: { canary: string | undefined; tokenEstimate: number } | null = null;
-    vi.spyOn(api, 'getRetrievalMessages').mockImplementation(async () => {
-      atProbeTime = {
-        canary: useChatStore.getState().getChatVariables(chatFile).commitCanary,
-        tokenEstimate: useGenerationStore.getState().lastTokenEstimate,
-      };
-      return { chunks: [], reason: null };
+      // Keyed `bookId:entryId` by wiFired.ts — the composite is what the
+      // story-bible replay looks entries up by.
+      const fired = getWiFiredForChat(chatFile);
+      expect(fired, 'no WI fired-state was recorded for this turn').toBeDefined();
+      expect(Object.keys(fired ?? {}), 'the injected entry did not record a firing').toContain(
+        `b-commit-canary:${entryId}`
+      );
     });
-    vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
-    vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+  }
 
-    await useChatStore.getState().swipeRight('c2', CANARY_IVY);
+  for (const siteRow of SOLO_SITES) {
+    it(`${siteRow.name} has written NOTHING by the time the probe pass is done`, async () => {
+      // The purity half — the reverse mutation, and the one no builder-level
+      // test can see: flipping the PROBE to `{ commit: true }` would double the
+      // persisted state of every turn while leaving the committing pass intact,
+      // so every assertion in the row above still passes.
+      //
+      // The recall call is the seam, and it is the same seam at all five sites:
+      // `resolveRagContext` is awaited strictly between the two `finish`
+      // passes, so a snapshot taken inside its stub is a snapshot of "after the
+      // probe, before the commit".
+      const { chatFile, messages } = arrangeCommitCanary();
+      let atProbeTime: { canary: string | undefined; tokenEstimate: number } | null = null;
+      vi.spyOn(api, 'getRetrievalMessages').mockImplementation(async () => {
+        atProbeTime = {
+          canary: useChatStore.getState().getChatVariables(chatFile).commitCanary,
+          tokenEstimate: useGenerationStore.getState().lastTokenEstimate,
+        };
+        return { chunks: [], reason: null };
+      });
+      vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
+      vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
 
-    expect(atProbeTime, 'the probe/commit seam was never reached').not.toBeNull();
-    expect(
-      atProbeTime!.canary,
-      'the PROBE pass persisted the macro writes — every turn now double-counts them'
-    ).toBeUndefined();
-    expect(
-      atProbeTime!.tokenEstimate,
-      'the PROBE pass wrote the token estimate — the badge reports a build that was never sent'
-    ).toBe(NOT_WRITTEN);
-    // And the commit still happened afterwards, so this row cannot be
-    // satisfied by a build that simply never commits.
-    expect(useChatStore.getState().getChatVariables(chatFile).commitCanary).toBe('1');
-  });
+      await siteRow.run(messages, CANARY_IVY);
+
+      expect(atProbeTime, 'the probe/commit seam was never reached').not.toBeNull();
+      expect(
+        atProbeTime!.canary,
+        'the PROBE pass persisted the macro writes — every turn now double-counts them'
+      ).toBeUndefined();
+      expect(
+        atProbeTime!.tokenEstimate,
+        'the PROBE pass wrote the token estimate — the badge reports a build that was never sent'
+      ).toBe(NOT_WRITTEN);
+      // And the commit still happened afterwards, so this row cannot be
+      // satisfied by a build that simply never commits. It runs with a null
+      // stream on purpose: the commit precedes `api.generateMessage`, so this
+      // holds without the dispatch the row above needs.
+      expect(useChatStore.getState().getChatVariables(chatFile).commitCanary).toBe('1');
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -602,12 +701,18 @@ function mkGroupChat(avatars: string[], names: string[]): GroupChatInfo {
   };
 }
 
+/** The group's one row, in the same shape the solo table uses. */
+const GROUP_SITE = {
+  name: 'forceGroupMemberTalk -> generateGroupTurn',
+  construct: 'async function generateGroupTurn(',
+};
+
 describe('the group call site sends the head of the window the builder emits', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('forceGroupMemberTalk -> generateGroupTurn — chatStore.ts:3056', async () => {
+  it(GROUP_SITE.name, async () => {
     // KILLS M7: `groupRecallBoundary(updatedMessages)` -> `null`, which the
     // full suite tolerated. Same silent consequence as the solo mutation — the
     // server falls back to excluding a fixed COUNT of newest messages and
@@ -654,5 +759,52 @@ describe('the group call site sends the head of the window the builder emits', (
       prompt,
       'the group prompt carries a turn older than the boundary sent'
     ).not.toContain(input.messages[idx - 1].content);
+
+    // The query argument, per the solo rows. WEAKER HERE, deliberately stated:
+    // group hands `resolveRagContext` the FULL `updatedMessages` while the
+    // boundary comes from the window, and the window is a tail slice of the
+    // same array — so substituting the window for it would not move the query
+    // and this cannot see that particular slip. What it does see is a tail
+    // that drops the newest visible user turn (`.slice(0, -2)` on this
+    // fixture, whose last message is Seraphina's), i.e. the same
+    // stale-question defect the solo rows pin.
+    expectRecallQueryIsLatestUserTurn(input.messages, edges);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The rows still name real call sites
+// ---------------------------------------------------------------------------
+
+describe('every row names a call site that exists exactly once', () => {
+  it('resolves each construct fingerprint against chatStore.ts', () => {
+    // WHY THIS EXISTS. The rows used to carry `chatStore.ts:NNNN` anchors, and
+    // all six were stale in the commit that wrote them — nothing resolved
+    // them, so `sendMessage — chatStore.ts:5193` shipped pointing at an
+    // unrelated statement and would have rotted again on the next insertion
+    // above it. Same fix as `PINS_ANCHORS`: the hint is a source substring, and
+    // a test resolves it.
+    //
+    // EXACTLY ONCE, not merely present: the six generation call sites are
+    // near-identical, so a fingerprint that matches twice is satisfied by
+    // either copy and stops witnessing the site it names. The 12-character
+    // floor is PINS_ANCHORS' too — `{` or `} else {` survives anything.
+    const bad: string[] = [];
+    for (const row of [...SOLO_SITES, GROUP_SITE]) {
+      if (row.construct.length < 12) {
+        bad.push(`${row.name}: fingerprint ${JSON.stringify(row.construct)} is too generic to prove anything`);
+        continue;
+      }
+      const found = chatStoreRaw.split(row.construct).length - 1;
+      if (found !== 1) {
+        bad.push(
+          `${row.name}: fingerprint ${JSON.stringify(row.construct)} occurs ${found} times in chatStore.ts, not once`
+        );
+      }
+    }
+    expect(
+      bad,
+      'a row names a construct that no longer exists, or that is no longer unique — re-read the call site and update the row'
+    ).toEqual([]);
   });
 });
