@@ -89,6 +89,8 @@ Consequence for F3 below: **neither** timer/sticky ordering bug is client-engine
 
 The same sentence planted in a WI entry and in the recall fixture appears **twice** in the assembled prompt, in both solo and group (harness marker count = 2). There is no cross-pipeline dedup, suppression, or shared ranking anywhere on the client.
 
+> **SUPERSEDED (2026-08-27, E2-S2 task 1b):** everything below describes machinery that no longer exists. `ragBoundary.ts` was **deleted**; the real trim boundary is threaded out of the builder via an uncommitted probe pass (`prepareConversationContext` → `finishConversationContext({commit:false})`) and sent to the server, and the group window lives in one shared `groupHistoryWindow()` used by builder and recall path alike. Both defect bullets were resolved: the tokenizer-profile under-exclusion died with the re-simulation, and the server fail-open now reports `reason: "boundary_not_found"` (ggbc-backend#81), which the client warns on. The residual is under-recall proportional to recall's budget share — the safe direction. Kept for the historical record:
+
 The one overlap control is **recall vs. raw history**: `computeRagBoundary` (`ragBoundary.ts:93-137`) reproduces the builder's post-trim kept set so the server can exclude messages already in the prompt (group branch = last 30). Its known divergences:
 
 - Hand-synced constant pairs with the real builder (`MIN_RAW_TAIL` 6, `GROUP_WINDOW` 30) — no compile-time link.
@@ -97,7 +99,7 @@ The one overlap control is **recall vs. raw history**: `computeRagBoundary` (`ra
 - **Not safe:** the tokenizer profile is omitted (`:125-130`), defaulting to `generic` at 3.8 chars/token, while the real trim uses `profileForProvider` (4.0 for GPT and Gemini families, `chatStore.ts:1665-1672`). The simulation prices messages ~5% high, keeps fewer, and returns a **newer** boundary — **under-exclusion**, meaning recall can return a message that is also present verbatim in raw history.
 - **Server-side fail-open:** if `boundary_id` does not match a live message in the persisted chat row, the backend logs and falls back to excluding only the newest `_TAIL_SKIP = 4` embeddable messages (`retrieval.py:391`, `:405-453`). The client sees a normal 200 and cannot tell.
 
-Its docstring's stated long-term fix — thread the real kept-history boundary out of `buildConversationContext` instead of re-simulating it — is work E2-S2 is already touching that seam for; do both together.
+Its docstring's stated long-term fix — thread the real kept-history boundary out of the builder instead of re-simulating it — **was done** (E2-S2 task 1b, 2026-08-27; see the supersession note above).
 
 ---
 
@@ -153,7 +155,7 @@ Mirror the emission structure, then group for display.
 
 **Group chats:** reduced taxonomy — flat system · WI · recall · history · **author's note** (it is a separate context entry with a user-selectable role, `:2049-2056`). Omit the "Reserved" slice in group: `responseReserve` genuinely does not bind there. Badge the history slice "not trimmed", not the whole view "un-budgeted" — the WI slice *is* budgeted.
 
-**Implementation notes:** instrument at the `sectionContent` / `historyWithInsertions` seams; decide pre- vs post-transform measurement explicitly (§2); seed golden-prompt tests from the saved E2-S1 harness; decide the builder test seam (permanent export vs test-only accessor) — the harness needed a worktree-local `export`; and thread the real kept-history boundary out to `ragBoundary` while at that seam (§5).
+**Implementation notes:** instrument at the `sectionContent` / `historyWithInsertions` seams; decide pre- vs post-transform measurement explicitly (§2); seed golden-prompt tests from the saved E2-S1 harness; decide the builder test seam (permanent export vs test-only accessor) — the harness needed a worktree-local `export`; and thread the real kept-history boundary out to the recall call while at that seam (§5 — **done**, task 1b: `ragBoundary` is deleted, not patched).
 
 ---
 

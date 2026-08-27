@@ -1137,13 +1137,18 @@ export interface FinishedConversation {
    *  call's own stream resolves. */
   overBudget: boolean;
   /** `ChatMessage.id` of the oldest KEPT entry that is a real chat turn, or
-   *  null. Task 1b's consumer — nothing reads it yet. */
+   *  null. Read by all five solo generation call sites (task 1b): the probe
+   *  pass's value is what `resolveRagContext` sends the server. */
   boundaryId: string | null;
 }
 
 // Build conversation context for AI. Thin wrapper over the prepare/finish
-// pair: one prepare, one committing finish. Signature unchanged apart from the
-// trailing optional collector, so every existing caller and test is untouched.
+// pair: one prepare, one committing finish. PRODUCTION NO LONGER CALLS THIS —
+// since task 1b the five solo call sites use prepare/finish directly (they need
+// the uncommitted probe). It remains the exported seam the golden-prompt
+// harness and E8-S4's byte-equivalence check are defined against; the goldens
+// pin THIS function's output, and chatStore.callSites.test.ts is what pins the
+// call sites' two-pass arrangement.
 export function buildConversationContext(
   messages: ChatMessage[],
   character: CharacterInfo,
@@ -4651,9 +4656,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // history. So pass 2 has strictly less budget left for turns than pass 1
       // did: it keeps a subset, and its boundary is therefore the same message
       // or a NEWER one (boundary₂ >= boundary₁, never older). The failure mode
-      // that leaves is under-recall — a thin band of messages that pass 2
+      // that leaves is under-recall — a band of messages that pass 2
       // actually dropped from the prompt but that we asked the server to treat
-      // as still present, so they simply are not recalled. The opposite error
+      // as still present, so they simply are not recalled. The band is NOT
+      // fixed-size: it grows with the share of budget recall consumes (QA
+      // measured 0→17 of 24 turns as recall went 0→400 words on a tight
+      // budget). The opposite error
       // — recalling a message the prompt also carries, i.e. duplication — is
       // unreachable by construction. That is the safe direction, and it is why
       // the probe deliberately runs WITHOUT recall rather than with a guess.

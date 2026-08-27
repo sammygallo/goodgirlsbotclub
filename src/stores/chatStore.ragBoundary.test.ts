@@ -350,6 +350,9 @@ describe('resolveRagContext — the server degradation reason', () => {
   });
 
   it('is silent and non-fatal on a reason this build does not know', async () => {
+    // E9-S7 (#455): when you add `case 'no_key':` to the switch, THIS row's
+    // no-warning expectation must change with it — it currently pins no_key
+    // falling through to the silent default.
     // Forward compatibility with a newer server, and the seam E9-S7 (#455)
     // extends: it adds a `case 'no_key'` to the same switch rather than
     // rewriting the read. KILLS: an if/else that treats "not undefined" as
