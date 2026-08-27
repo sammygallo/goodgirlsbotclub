@@ -192,6 +192,35 @@ function tokensFor(b: PromptBreakdown, pred: (k: SectionKind) => boolean): numbe
   return b.slices.filter((s) => pred(s.kind)).reduce((n, s) => n + s.tokens, 0);
 }
 
+function charsFor(b: PromptBreakdown, pred: (k: SectionKind) => boolean): number {
+  return b.slices.filter((s) => pred(s.kind)).reduce((n, s) => n + s.chars, 0);
+}
+
+/** Every section id that carries world info, in both taxonomies: solo's four
+ *  positional sections are `wi_*`, and group's four emitted slots are the same
+ *  four names under `group_`. Matched by prefix rather than by a second copy
+ *  of the list, so a fifth position cannot quietly escape the cross-check. */
+function isWiId(id: string): boolean {
+  return id.startsWith('wi_') || id.startsWith('group_wi_');
+}
+
+/**
+ * The world-info headline, rebuilt from the slices rather than read off
+ * `wi.emittedTokens`. Stage A sections are fragments of one message and are
+ * billed without the +4 role-marker overhead; Stage B and Stage C entries are
+ * whole messages and carry it, while the world-info total counts CONTENT only
+ * — hence the subtraction.
+ */
+function wiFromSlices(b: PromptBreakdown): number {
+  return b.slices.reduce((n, s) => {
+    const k = s.kind;
+    if (k.stage === 'A') return isWiId(k.id) ? n + s.tokens : n;
+    if (k.stage === 'C') return isWiId(k.id) ? n + s.tokens - 4 : n;
+    if (k.stage === 'B' && k.cls === 'wi_at_depth') return n + s.tokens - 4;
+    return n;
+  }, 0);
+}
+
 // ---------------------------------------------------------------------------
 // Reconciliation — AC 5
 // ---------------------------------------------------------------------------
@@ -239,7 +268,11 @@ describe('token breakdown — the numbers reconcile', () => {
         breakdown.stageAMessageOverhead +
         breakdown.totals.stageB +
         breakdown.totals.stageC +
-        2; // estimateConversationTokens' final priming tokens
+        // NOT the literal 2: reading the collector's own field is what makes
+        // this test the guard on it. A panel summing the documented parts is
+        // short by exactly this much, so the number has to be ON the type —
+        // and a second copy of a tokenizer constant is how the two drift.
+        breakdown.conversationPriming;
       expect(
         breakdown.totals.assembledTotal,
         `${fx.name}: assembledTotal disagrees with its own slices`
@@ -286,11 +319,119 @@ describe('token breakdown — the numbers reconcile', () => {
         breakdown.stageAMessageOverhead +
         breakdown.totals.stageB +
         breakdown.totals.stageC +
-        2;
+        breakdown.conversationPriming;
       expect(
         breakdown.totals.assembledTotal,
         `${fx.name}: group slices do not sum to the assembled total`
       ).toBe(reconstructed);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage A — every section on its OWN row
+// ---------------------------------------------------------------------------
+
+/**
+ * A substring that appears in exactly one of `all-sections`' Stage-A sections,
+ * in emission order. Read off the fixture's own configured content (and its
+ * golden), never off the collector — the point is to have a second, independent
+ * statement of which text belongs to which section id.
+ */
+const STAGE_A_MARKERS: Array<[string, string]> = [
+  ['main_prompt', 'keeper of the closed stacks'],
+  ['persona_before_char', 'night-shift cataloguer'],
+  ['wi_before_char', 'the stacks run four floors down'],
+  ['ext_before_char', '[ext] before_char contribution'],
+  ['char_info_block', 'A quiet archivist who never throws anything away'],
+  ['wi_after_char', 'the catalogue is not alphabetical'],
+  ['ext_after_char', '[ext] after_char contribution'],
+  ['wi_before_an', 'the lift only stops on even floors'],
+  ['ext_before_an', '[ext] before_an contribution'],
+  ['jailbreak', 'the padding spaces are deliberate'],
+  ['emotion_instruction', 'Begin each response with an emotion tag'],
+  ['selfie_instruction', 'can send a real photo of themselves'],
+  ['rag_context', 'I asked about the closed stacks'],
+];
+
+/** The same idea for Stage C, whose sections are whole messages. */
+const STAGE_C_MARKERS: Array<[string, string]> = [
+  ['char_phi', 'Keep replies under four sentences'],
+  ['user_phi', 'end on an image, not a question'],
+  ['wi_after_an', 'nobody signs the ledger out'],
+  ['ext_after_an', '[ext] after_an contribution'],
+];
+
+describe('token breakdown — per-section attribution', () => {
+  it('bills every Stage-A section its own recomputed cost, under its own id', () => {
+    // KILLS: any drift between `systemPartIds[i]` and `systemParts[i]`. The
+    // sum identity, the POST_HISTORY membership test and all 142 goldens are
+    // invariant under a permutation of those ids — reversing every one of them
+    // leaves the whole suite green while every number in the panel sits on the
+    // wrong row, telling a user tuning spend that their selfie instruction is
+    // their persona. Per-section attribution is the entire product here, so it
+    // gets asserted three ways: the id ORDER, an independently recomputed cost
+    // per slice, and a distinctive piece of content per id.
+    const { context, breakdown } = runSolo('all-sections');
+    const p = breakdown.profile;
+    const stageA = breakdown.slices.filter((s) => s.kind.stage === 'A');
+    expect(
+      stageA.map((s) => (s.kind as { id: string }).id),
+      'the Stage-A sections are not the ones this fixture emits, in order'
+    ).toEqual(STAGE_A_MARKERS.map(([id]) => id));
+
+    // The parts were joined with '\n\n' in this order, so the slices have to
+    // TILE the emitted system message: walking it by the recorded `chars`
+    // recovers each section's exact text, and the walk only lands back on the
+    // end of the string if every length is right.
+    const joined = context[0].content;
+    let offset = 0;
+    for (let i = 0; i < stageA.length; i++) {
+      const [id, marker] = STAGE_A_MARKERS[i];
+      const part = joined.slice(offset, offset + stageA[i].chars);
+      expect(
+        estimateTokens(part, p),
+        `${id}: billed a cost that is not this section's own`
+      ).toBe(stageA[i].tokens);
+      expect(
+        joined.split(marker).length - 1,
+        `${marker} no longer identifies exactly one section`
+      ).toBe(1);
+      expect(part, `${id}'s slice is covering another section's content`).toContain(marker);
+      offset += stageA[i].chars + 2;
+    }
+    expect(
+      offset - 2,
+      'the Stage-A slices do not tile the system message they were joined into'
+    ).toBe(joined.length);
+  });
+
+  it('bills every Stage-C section its own message, under its own id', () => {
+    // Stage C is one message per section, so there is no join to hide behind:
+    // KILLS `id: entry.id` -> a hardcoded member of POST_HISTORY_SECTIONS,
+    // which satisfies both halves of the membership test, and any permutation
+    // of the four. Under the hardcode a group of post-history sections — the
+    // after-AN world info included — all bill to one label, and the user
+    // cannot find their lore spend at all.
+    const { context, breakdown } = runSolo('all-sections');
+    const p = breakdown.profile;
+    const stageC = breakdown.slices.filter((s) => s.kind.stage === 'C');
+    expect(stageC.map((s) => (s.kind as { id: string }).id)).toEqual(
+      STAGE_C_MARKERS.map(([id]) => id)
+    );
+    // Stage C is the tail of `context`, in the same order it was measured.
+    const tail = context.slice(context.length - stageC.length);
+    for (let i = 0; i < stageC.length; i++) {
+      const [id, marker] = STAGE_C_MARKERS[i];
+      expect(tail[i].content, `${id}'s slice is covering another section's content`).toContain(
+        marker
+      );
+      expect(stageC[i].chars, `${id}: chars are not this section's own`).toBe(
+        tail[i].content.length
+      );
+      expect(stageC[i].tokens, `${id}: cost is not this section's own`).toBe(
+        estimateMessageTokens(tail[i], p)
+      );
     }
   });
 });
@@ -341,6 +482,21 @@ describe('token breakdown — Stage B is split, not lumped', () => {
       else expect(k.messageId, `${k.cls} should carry no message id`).toBeUndefined();
     }
     expect(breakdown.boundaryId).toBe('d1');
+
+    // ...but 'd1' is also what the naive `kept[0]` gives on THIS fixture: its
+    // insertions all sit at depth 2, so the head of kept history is a real
+    // turn either way. These two are where the implementations diverge — the
+    // head is an unshifted overflow insertion in the first and a pinned
+    // critical world-info entry in the second, and `kept[0]` yields null for
+    // both, which client.ts:1272 would drop from the request entirely.
+    expect(
+      runSolo('at-depth-overflow').breakdown.boundaryId,
+      'kept[0] there is an unshifted at-depth insertion, not a turn'
+    ).toBe('o1');
+    expect(
+      runSolo('trim-overbudget').breakdown.boundaryId,
+      'kept[0] there is a pinned critical world-info insertion'
+    ).toBe('big');
   });
 
   it('measures Stage B on what survived the trim, not on the pre-trim array', () => {
@@ -381,7 +537,19 @@ describe('token breakdown — Stage B is split, not lumped', () => {
     resetStores();
     const char = mkChar({ name: 'Ivy', avatar: 'ivy.png' });
     secondExtContributions = [
-      { content: '[second ext] at depth 1', role: 'system', position: 'at_depth', depth: 1 },
+      {
+        content: '[second ext] at depth 1',
+        role: 'system',
+        position: 'at_depth',
+        depth: 1,
+        // A contribution declaring someone ELSE's id. types.ts promises the
+        // registry stamp "cannot be spoofed", and the production code keeps
+        // that promise only because `sourceExtensionId: ext.id` sits AFTER
+        // `...item` in registry.ts — a tidy-up that hoisted the key to the top
+        // of the literal was green across the whole 1815-test suite. This is
+        // the only place that override path is exercised.
+        sourceExtensionId: 'summarize',
+      },
     ];
     const messages = [mkMsg('x1', 'First.'), mkMsg('x2', 'Second.', { isUser: false, name: 'Ivy' })];
     const breakdown = createPromptBreakdown('solo');
@@ -391,7 +559,10 @@ describe('token breakdown — Stage B is split, not lumped', () => {
     const extIds = stageB(breakdown)
       .filter((k) => k.cls === 'ext_at_depth')
       .map((k) => k.extensionId);
-    expect(extIds).toEqual(['__breakdown_second__']);
+    expect(
+      extIds,
+      'a contribution overrode the registry stamp — the id can be spoofed'
+    ).toEqual(['__breakdown_second__']);
 
     // Now BOTH sources contribute at the same depth: two blocks, two distinct
     // ids. A single hardcoded id cannot produce this.
@@ -464,6 +635,85 @@ describe('token breakdown — group tags per emitted slot', () => {
     expect(recall).toBeGreaterThan(estimateTokens(raw, join.breakdown.profile));
   });
 
+  it('prices the scenario and every world-info slot off its own emitted fragment', () => {
+    // KILLS: understating any named slot. `group_system_chrome` is a RESIDUAL
+    // (`tk(systemPrompt) - named`), so a slot that reports zero silently moves
+    // its whole cost into "Template chrome" and every reconciliation identity
+    // still holds — while `wi.emittedTokens` keeps reporting the real number,
+    // so the panel's world-info rows and its own world-info headline disagree.
+    // Only `group_cards` and `group_examples` were pinned; the scenario and all
+    // four world-info slots could be zeroed with the suite green.
+    //
+    // Built here rather than off a fixture because the expected fragment has to
+    // be computed independently: these entries are unowned, non-persona and
+    // macro-free, so `wrapWiContent` returns them verbatim and the template's
+    // own wrappers are the whole of the difference.
+    resetStores();
+    secondExtContributions = [];
+    const BEFORE_CHAR = 'SLOT before_char: the vault door sticks in the cold.';
+    const AFTER_CHAR = 'SLOT after_char: the deck is short a nine.';
+    const BEFORE_AN = 'SLOT before_an: the pot is never counted aloud.';
+    const AFTER_AN = 'SLOT after_an: losers leave by the stairs.';
+    const SCENARIO = 'The back room, an hour before the game.';
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-slots', [
+          mkEntry('e-bc', { content: BEFORE_CHAR, position: 'before_char' }),
+          mkEntry('e-ac', { content: AFTER_CHAR, position: 'after_char' }),
+          mkEntry('e-ba', { content: BEFORE_AN, position: 'before_an' }),
+          mkEntry('e-aa', { content: AFTER_AN, position: 'after_an' }),
+        ]),
+      ],
+      activeBookIds: ['b-slots'],
+    });
+    const messages = [mkMsg('g1', 'Who deals?')];
+    const seraphina = mkChar({ name: 'Seraphina', avatar: 'ser.png' });
+    const marcus = mkChar({ name: 'Marcus', avatar: 'mar.png' });
+    const breakdown = createPromptBreakdown('group');
+    const context = buildGroupConversationContext(
+      messages,
+      [seraphina, marcus],
+      seraphina,
+      SCENARIO,
+      undefined,
+      undefined,
+      mkWiOut(messages),
+      true,
+      breakdown
+    );
+    const p = breakdown.profile;
+    const stageASlot = (id: string) =>
+      tokensFor(breakdown, (k) => k.stage === 'A' && k.id === id);
+    // The fragment each slot contributes to the flat template, wrappers and all.
+    for (const [id, fragment] of [
+      ['group_wi_before_char', `\n${BEFORE_CHAR}\n`],
+      ['group_wi_after_char', `\n${AFTER_CHAR}\n`],
+      ['group_wi_before_an', `${BEFORE_AN}\n\n`],
+      ['group_scenario', `Current scenario: ${SCENARIO}\n`],
+    ] as Array<[string, string]>) {
+      expect(
+        context[0].content,
+        `${id}: this build did not emit the fragment the test assumes`
+      ).toContain(fragment);
+      expect(stageASlot(id), `${id} is not priced as its own fragment`).toBe(
+        estimateTokens(fragment, p)
+      );
+      expect(
+        charsFor(breakdown, (k) => k.stage === 'A' && k.id === id),
+        `${id}: chars are not its own fragment's`
+      ).toBe(fragment.length);
+      expect(stageASlot(id), `${id} measured nothing at all`).toBeGreaterThan(0);
+    }
+    // The fourth world-info slot is post-history and therefore a whole message
+    // of its own — same obligation, different overhead.
+    const afterAn = breakdown.slices.filter(
+      (s) => s.kind.stage === 'C' && s.kind.id === 'group_wi_after_an'
+    );
+    expect(afterAn.length).toBe(1);
+    expect(afterAn[0].tokens).toBe(estimateTokens(AFTER_AN, p) + 4);
+    expect(afterAn[0].chars).toBe(AFTER_AN.length);
+  });
+
   it('badges the history slice not-trimmed and omits the Reserved slice', () => {
     // AC 7. Group DOES enforce the world-info budget, so the flag has to be
     // per-slice, not a blanket "un-budgeted" on the whole view.
@@ -495,12 +745,209 @@ describe('token breakdown — world info', () => {
     ).not.toBe(breakdown.wi.rawTokens);
   });
 
+  it('reports the solo budget the entries were measured against, and what it evicted', () => {
+    // The group half of this is pinned below; solo had nothing, though it has
+    // its own copy of the propagation and its own dedicated fixture. KILLS:
+    // `budget = 0` / `droppedIds = []`. Both are silent — the goldens pin
+    // `scanReport` upstream of the breakdown — and both LIE in the same
+    // direction: worldInfoStore treats a budget of 0 as unlimited, so the panel
+    // would tell a user whose lore was evicted that no budget applied and
+    // nothing was dropped. AC 6 / AC 9 make these two fields the whole
+    // eviction story.
+    const { breakdown } = runSolo('wi-budget-eviction');
+    expect(breakdown.wi.budget).toBe(40);
+    expect(breakdown.wi.droppedIds).toEqual(['e-evicted']);
+  });
+
+  it('counts lore placed after the author\'s note toward the world-info total', () => {
+    // The Stage-C half of `wi.emittedTokens`. `after_an` is a first-class
+    // world-info position, but the only fixture asserting emittedTokens keeps
+    // all its lore at `before_char`, so deleting the Stage-C accumulation
+    // entirely was green. The panel would then show a `wi_after_an` row whose
+    // tokens are missing from its own World Info headline.
+    resetStores();
+    secondExtContributions = [];
+    const LORE = 'AFTER-AN lore: the ledger is signed at the door.';
+    useWorldInfoStore.setState({
+      books: [mkBook('b-aa', [mkEntry('e-aa', { content: LORE, position: 'after_an' })])],
+      activeBookIds: ['b-aa'],
+    });
+    const messages = [mkMsg('m1', 'Who signs it?')];
+    const breakdown = createPromptBreakdown('solo');
+    const { context } = buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    // It really did land post-history: its own trailing system message, and no
+    // Stage-A world-info slice anywhere.
+    expect(context[context.length - 1].content).toBe(LORE);
+    expect(
+      breakdown.slices.filter((s) => s.kind.stage === 'A' && isWiId(s.kind.id)).length
+    ).toBe(0);
+    expect(
+      breakdown.slices.filter((s) => s.kind.stage === 'C' && s.kind.id === 'wi_after_an').length
+    ).toBe(1);
+    expect(breakdown.wi.emittedTokens).toBe(estimateTokens(LORE, breakdown.profile));
+    expect(breakdown.wi.emittedTokens).toBeGreaterThan(0);
+  });
+
+  it('adds the world-info headline up from the same slices the panel renders', () => {
+    // The cross-check promoted into the suite, across every fixture in both
+    // modes: `wi.emittedTokens` is accumulated at FOUR sites (solo Stage A,
+    // solo Stage B at-depth, solo Stage C, and group's own counter), and each
+    // one of them can be dropped without moving a single other number. A panel
+    // whose World Info headline disagrees with its own world-info rows is the
+    // failure this makes impossible.
+    for (const fx of SOLO_FIXTURES) {
+      const { breakdown } = runSolo(fx.name);
+      expect(
+        breakdown.wi.emittedTokens,
+        `${fx.name}: the world-info headline disagrees with the world-info slices`
+      ).toBe(wiFromSlices(breakdown));
+    }
+    for (const fx of GROUP_FIXTURES) {
+      const { breakdown } = runGroup(fx.name);
+      expect(
+        breakdown.wi.emittedTokens,
+        `group/${fx.name}: the world-info headline disagrees with the world-info slices`
+      ).toBe(wiFromSlices(breakdown));
+    }
+  });
+
   it('records where the activation decision came from', () => {
     // AC 9's data. KILLS: hardcoding 'client', which is right for every
     // fixture except the one that hands the builder a server result.
     expect(runSolo('server-matched-entries').breakdown.wi.activationSource).toBe('server');
     expect(runSolo('all-sections').breakdown.wi.activationSource).toBe('client');
     expect(runGroup('swap').breakdown.wi.activationSource).toBe('client');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Flags, identity, and re-entry
+// ---------------------------------------------------------------------------
+
+describe('token breakdown — the Reserved slice follows the reserve, not the mode', () => {
+  it('is absent on every build where no trim consulted responseReserve', () => {
+    // AC 7. KILLS: `hasReservedSlice = mode === 'solo'` at construction, which
+    // is the only thing that ever set this field. `responseReserve` is read
+    // inside the token-aware branch and nowhere else, so with the (shipped,
+    // user-reachable) token-aware toggle off it constrains nothing — and a
+    // panel following this field's contract would still render "Reserved for
+    // response: N tokens" as a slice of a prompt whose assembly never looked
+    // at N. Group was pinned; solo was not.
+    expect(
+      runSolo('token-aware-off').breakdown.flags.hasReservedSlice,
+      'no trim ran, so nothing was reserved'
+    ).toBe(false);
+    expect(runSolo('fixed-window-summary-skew').breakdown.flags.hasReservedSlice).toBe(false);
+    expect(
+      runSolo('all-sections').breakdown.flags.hasReservedSlice,
+      'the trim ran and the reserve bound the budget'
+    ).toBe(true);
+    expect(runGroup('swap').breakdown.flags.hasReservedSlice).toBe(false);
+  });
+});
+
+describe('token breakdown — which prompt a breakdown describes', () => {
+  it('stamps the chat and a distinct publish time on every build', () => {
+    // `generationStore.lastPromptBreakdown` is one last-write-wins slot, and a
+    // group round overwrites it once per speaker (sendGroupMessage awaits
+    // generateGroupTurn per member, each publishing its own build before
+    // dispatch). Without a stamp, a consumer holding a breakdown has no field
+    // with which to notice it belongs to a different turn than the message it
+    // is rendered against.
+    //
+    // PRESENCE AND DISTINCTNESS ONLY — never the value. A wall-clock number in
+    // an assertion is a flake, and nothing here may reach a golden.
+    const first = runGroup('swap').breakdown;
+    const second = runGroup('swap').breakdown;
+    expect(first.chatFile).toBe(GOLDEN_CHAT_FILE);
+    expect(second.chatFile).toBe(GOLDEN_CHAT_FILE);
+    expect(first.publishedAt).toBeGreaterThan(0);
+    expect(
+      second.publishedAt,
+      'two back-to-back group builds carry the same stamp'
+    ).not.toBe(first.publishedAt);
+    const solo = runSolo('minimal').breakdown;
+    expect(solo.chatFile).toBe(GOLDEN_CHAT_FILE);
+    expect(solo.publishedAt).not.toBe(second.publishedAt);
+  });
+});
+
+describe('token breakdown — a collector describes one pass, not their union', () => {
+  it('group: a second build through the same collector replaces the first', () => {
+    // KILLS: `addSlice` appending with nothing ever clearing `slices`. Group
+    // derives its stage totals by SUMMING the accumulated slices while
+    // `assembledTotal` is recomputed from `context`, so a reused collector
+    // reports a prompt twice the size the model was sent and AC 5's
+    // reconciliation breaks outright. Not reachable from today's six call
+    // sites — each makes its own collector — but task 1b's two-pass finish and
+    // task 3 are exactly the shapes that would reuse one.
+    resetStores();
+    secondExtContributions = [];
+    const input = GROUP_FIXTURES.find((f) => f.name === 'swap')!.setup();
+    const b = createPromptBreakdown('group');
+    const build = () =>
+      buildGroupConversationContext(
+        input.messages,
+        input.characters,
+        input.currentCharacter,
+        input.scenarioOverride,
+        input.ragContext,
+        input.cardMode,
+        mkWiOut(input.messages),
+        input.attachmentsFolded,
+        b
+      );
+    build();
+    const afterOne = b.slices.length;
+    const stageAAfterOne = b.totals.stageA;
+    build();
+    expect(b.slices.length, 'the second build appended to the first').toBe(afterOne);
+    expect(b.totals.stageA).toBe(stageAAfterOne);
+    expect(
+      b.totals.stageA +
+        b.stageAMessageOverhead +
+        b.totals.stageB +
+        b.totals.stageC +
+        b.conversationPriming,
+      'a re-entered collector no longer reconciles'
+    ).toBe(b.totals.assembledTotal);
+  });
+
+  it('solo: an uncommitted pass and the committing one leave one set of slices', () => {
+    // The documented task-1b shape: prepare once, finish twice — the first
+    // uncommitted purely to learn the boundary. Solo assigns its totals from
+    // local accumulators, so every total still looks right while the panel
+    // renders each section twice; nothing but this test can see it.
+    resetStores();
+    secondExtContributions = [];
+    const input = SOLO_FIXTURES.find((f) => f.name === 'minimal')!.setup();
+    const prepared = prepareConversationContext(
+      input.messages,
+      input.character,
+      input.availableEmotions,
+      mkWiOut(input.messages),
+      input.serverMatchedEntries
+    );
+    const b = createPromptBreakdown('solo');
+    finishConversationContext(prepared, undefined, { commit: false, breakdownOut: b });
+    const { context } = finishConversationContext(prepared, undefined, {
+      commit: true,
+      breakdownOut: b,
+    });
+    const key = (s: { kind: SectionKind }) => JSON.stringify(s.kind);
+    expect(
+      new Set(b.slices.map(key)).size,
+      'the collector kept both passes — every section is billed twice'
+    ).toBe(b.slices.length);
+    expect(b.totals.assembledTotal).toBe(estimateConversationTokens(context, b.profile));
   });
 });
 
@@ -763,6 +1210,16 @@ describe('E2-S2 task 2 — the Stage-A / Stage-C membership boundary', () => {
     }
     // And the two sets are disjoint — a section cannot be billed twice.
     expect(stageAIds.filter((id) => stageCIds.includes(id))).toEqual([]);
+    // Membership alone is satisfied by hardcoding any ONE member, which would
+    // bill all four post-history sections under a single label. `all-sections`
+    // emits every one of them, so the set is exactly this.
+    expect(
+      new Set(stageCIds).size,
+      'two post-history sections were billed under one id'
+    ).toBe(stageCIds.length);
+    expect(new Set(stageCIds)).toEqual(
+      new Set(['char_phi', 'user_phi', 'wi_after_an', 'ext_after_an'])
+    );
   });
 
   it('the post-history sections are the ones the trim never charged for', () => {
