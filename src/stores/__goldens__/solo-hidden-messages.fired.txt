@@ -1,0 +1,17 @@
+# solo/hidden-messages   [SHOULD: hidden-message filter]
+# what: A hidden turn reaches neither the history nor the {{lastusermessage}}
+#   macro, and does not consume a fixed-window slot.
+# pins: :993-997 visibleMessages, :1345-1350 historyPool
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

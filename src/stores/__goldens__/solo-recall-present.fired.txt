@@ -1,0 +1,16 @@
+# solo/recall-present   [S13]
+# what: ragContext supplied — the rag_context section renders its wrapper.
+# pins: :1305-1307 rag_context (the phase boundary task 1b splits at)
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

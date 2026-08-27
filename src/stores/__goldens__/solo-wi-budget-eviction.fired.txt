@@ -1,0 +1,22 @@
+# solo/wi-budget-eviction   [R2: C3 — the world-info token budget]
+# what: A non-zero `worldInfoStore.tokenBudget`, which every other fixture
+#   leaves at 0 (applyTokenBudget returns early on 0 and evicts nothing). Two
+#   constant entries are pinned and alone exceed the budget, so
+#   `pinnedOverBudget` comes back true — the fail-loud signal solo raises at
+#   :1101-1110 and group at :1884-1895. A third, budgetable entry with the
+#   worst priority is evicted and lands in `scanReport.dropped`.
+# pins: :1084 tokenBudget, worldInfoStore.ts:1319-1358 applyTokenBudget,
+#   :1101-1110 fail-loud
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-budget/e-pinned-a, b-budget/e-pinned-b
+trimmedAtDepth = (none)
+activated      = e-pinned-a, e-pinned-b
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 40
+scanReport.pinnedTokens     = 58
+scanReport.totalTokens      = 58
+scanReport.pinnedOverBudget = true
+scanReport.dropped          = b-budget/e-evicted

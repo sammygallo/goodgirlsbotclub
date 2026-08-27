@@ -1,7 +1,10 @@
 # solo/trim-bites   [S5]
 # what: A long chat against a small budget: the token-aware trim drops older
-#   turns.
-# pins: :1644-1681 trimHistoryToBudget, kept-set object identity
+#   turns. A NON-critical world-info entry sits at a deep at-depth slot so
+#   the trim cuts it after the scan passed it — the only fixture that puts
+#   anything in `wiTimerOut.trimmedAtDepth`.
+# pins: :1644-1681 trimHistoryToBudget, kept-set object identity, :1737-1743
+#   trimmedAtDepth
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
 (no variables written by this build)

@@ -1,13 +1,15 @@
 # solo/promptorder-reordered-two-disabled   [S3]
 # what: The all-sections state with emotion_instruction hoisted to the top
 #   and two sections disabled — one pre-history (jailbreak), one Stage C
-#   (char_phi).
+#   (char_phi). all-sections now sets a non-default jailbreakPrompt, so
+#   disabling it is actually observable here; before that it was a no-op and
+#   this fixture only ever pinned the Stage-C half of the filter.
 # pins: :1328-1332 pre-history filter, :1684-1688 Stage-C filter
 # entries: 5
 # overBudget: false
-# lastTokenEstimate: 427
+# lastTokenEstimate: 461
 ══════════════════════════════════════════════════════════════════════════
-[0] system  len=1611
+[0] system  len=1742
 IMPORTANT: Begin each response with an emotion tag that reflects your current emotional state. Use this exact format: [emotion:TAG]
 
 Available emotions for this character: joy, sadness, curiosity
@@ -22,7 +24,12 @@ You are Ivy, keeper of the closed stacks.
 
 Lore: the stacks run four floors down.
 
-[ext] before_char contribution
+
+
+[Information about Wren, the user you're talking to]
+Wren keeps the night key on a bootlace.
+
+[ext] before_char contribution — {{incvar::extRaw}} stays literal
 
 Description: A quiet archivist who never throws anything away.
 
@@ -54,8 +61,9 @@ I asked about the closed stacks.
 [1] user  len=6
 Hello.
 ──────────────────────────────────────────────────────────────────────────
-[2] system  len=44
+[2] system  len=45
 [User PHI: end on an image, not a question.]
+
 ──────────────────────────────────────────────────────────────────────────
 [3] system  len=34
 Lore: nobody signs the ledger out.

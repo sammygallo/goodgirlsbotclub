@@ -1,0 +1,19 @@
+# solo/linked-style-active   [SHOULD: linked-style + char_phi branch 2]
+# what: A linked style template is active: the user main prompt beats the
+#   card's system_prompt, and char_phi becomes the style reinforcement
+#   instead of the card's post-history instructions.
+# pins: :1189-1191 linkedStyleActive, :1257-1261 mainPrompt, :1314-1318
+#   char_phi
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

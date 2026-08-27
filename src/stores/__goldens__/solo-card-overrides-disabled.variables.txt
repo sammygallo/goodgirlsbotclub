@@ -1,0 +1,11 @@
+# solo/card-overrides-disabled   [R2: C21 — respectCharacterOverride / respectCharacterPHI]
+# what: The only fixture with either flag off. The full card ships both a
+#   system_prompt and post_history_instructions; with both flags false the
+#   user's own main prompt wins the mainPrompt chain instead and char_phi
+#   renders empty. Ignoring EITHER flag is green without this.
+# pins: :1205-1211 the two flag gates, :1257-1261 the mainPrompt chain
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

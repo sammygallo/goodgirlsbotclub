@@ -1,8 +1,14 @@
 # solo/all-sections   [S2]
 # what: Every pre-history section non-empty EXCEPT persona_after_char (see
 #   persona-after-char — the two persona slots are mutually exclusive), plus
-#   all four Stage-C sections.
-# pins: :1285-1322 all 18 keys, :1337 the join, :1684-1690 Stage C
+#   all four Stage-C sections. Also carries three deliberate details: a
+#   persona-LINKED book that is not globally active (so only the persona-book
+#   union can pull it in, and its entry gets the user-context wrapper), a
+#   world-info entry ending in a blank line and a jailbreak padded with
+#   spaces (both stages push content UNTRIMMED), and a macro inside an
+#   extension contribution (extension text is NOT substituted).
+# pins: :1046 persona-book union, :1133-1136 persona wrapper, :1285-1322 all
+#   18 keys, :1336-1338 the untrimmed push + join, :1684-1690 Stage C
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
 (no variables written by this build)

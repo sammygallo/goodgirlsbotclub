@@ -1,0 +1,27 @@
+# solo/wi-scan-options   [R2: C10 — the world-info scan option bag]
+# what: The only fixture whose entries are NOT all `constant: true`. Six
+#   entries exercise the option bag handed to scanMessagesForEntries: a
+#   keyword entry that matches; the same keyword with a narrow per-entry
+#   scanDepth so the match falls outside its window; an entry blocked by its
+#   cooldown against a seeded timer; a sticky carry-over that matches nothing
+#   this turn and rides in on its timer anyway; an entry still inside its
+#   delay; and a probability-gated entry at 0% (deterministic —
+#   Math.random()*100 < 0 is never true). The .fired.txt golden is where the
+#   outcome is legible, including that the sticky carry-over does NOT appear
+#   in `activated`.
+# pins: :1082-1093 the option bag, worldInfoStore.ts:1420-1427
+#   timedEffectsAllow, :1441-1446 per-entry scanDepth, :1494-1506 sticky
+#   carry-over
+# wiTimerOut.currentTurn (in): 3
+# wiTimerOut.timers (in): e-cooldown=3, e-sticky=2
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-scan/e-key-hit, b-scan/e-sticky
+trimmedAtDepth = (none)
+activated      = e-key-hit
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 26
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

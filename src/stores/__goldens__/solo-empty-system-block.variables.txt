@@ -1,9 +1,14 @@
 # solo/empty-system-block   [S4]
 # what: Every pre-history section disabled. The Stage-A push at :1335 is
 #   unconditional, so the prompt still opens with an EMPTY system message.
-# pins: :1327-1338 — the unconditional push (audit §4.4)
+#   Also carries a macro-only author's note at DEPTH 0, which renders to ''
+#   and must be swallowed by the depth-0 blank guard — an empty content block
+#   400s Claude.
+# pins: :1327-1338 the unconditional push (audit §4.4), :1556-1562 depth-0 AN
+#   blank guard
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
-(no variables written by this build)
+anGuard = "depth-0"
+anGuardRuns = "1"
 ══════════════════════════════════════════════════════════════════════════
-0 key(s)
+2 key(s)

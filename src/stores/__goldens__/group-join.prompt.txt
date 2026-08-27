@@ -1,11 +1,15 @@
 # group/join   [G2]
 # what: Join mode: a full section per member, [SPEAKING NOW] on the speaker,
-#   joined by \n\n---\n\n.
-# pins: :2054-2074 join card block
+#   joined by \n\n---\n\n. This is also the group RECALL-PRESENT case: a
+#   ragContext is supplied, so the `[Relevant background information]` tail
+#   at :2233-2235 is appended to the flat system message. Every other group
+#   fixture is the recall-ABSENT case, so replacing that ternary with `const
+#   finalSystemPrompt = systemPrompt;` was green before this.
+# pins: :2054-2074 join card block, :2233-2237 the RAG concat
 # entries: 3
 # lastTokenEstimate: -1
 ══════════════════════════════════════════════════════════════════════════
-[0] system  len=1180
+[0] system  len=1329
 This is a roleplay group chat. You are playing Seraphina — write ONLY Seraphina's turn.
 
 Characters in this conversation:
@@ -44,6 +48,15 @@ FORMATTING RULES (follow exactly):
 CONTENT RULES:
 - Stay in character as Seraphina only — do NOT write lines for other characters
 - React naturally to what other characters and the user say
+
+[Relevant background information]
+[Earlier in chat — User]
+Who else is at the table?
+
+---
+
+[Earlier in chat — Character]
+Only the ones who can pay.
 ──────────────────────────────────────────────────────────────────────────
 [1] user  len=11
 Deal me in.

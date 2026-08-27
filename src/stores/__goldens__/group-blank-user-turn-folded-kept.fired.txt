@@ -1,0 +1,16 @@
+# group/blank-user-turn-folded-kept   [G5]
+# what: attachmentsFolded true and the blank image-carrying turn IS the last
+#   user turn: kept, shipping empty content for client.ts to fold into.
+# pins: :2353-2354 keepForAttachment
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

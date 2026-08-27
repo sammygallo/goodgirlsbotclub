@@ -1,0 +1,17 @@
+# group/swap-scenario-override   [G3]
+# what: Swap + scenarioOverride. NEITHER site renders the speaker's scenario,
+#   so `scenarioRuns` must be ABSENT from the variables golden — that absence
+#   is the phantom-execution guard.
+# pins: :2036-2044 lazy speakerScenario, :2141-2155 override branch
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

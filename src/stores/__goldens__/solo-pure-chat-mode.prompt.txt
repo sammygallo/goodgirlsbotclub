@@ -1,12 +1,18 @@
 # solo/pure-chat-mode   [SHOULD: pure-chat-mode + char_phi branch 1]
 # what: Companion mode: scenario and example dialogue withheld from the card
-#   block, the greeting trimmed off the front of history, and char_phi
-#   replaced by the no-narration style note.
+#   block, the TWO leading assistant turns trimmed off the front of history,
+#   and char_phi replaced by the no-narration style note. A summary covering
+#   the first 10 turns is present, so `pureChatRemoved` is non-zero AND is
+#   actually subtracted from the compaction offset — the rebase at :1409 that
+#   a ~25-line comment attributes to a bug that shipped
+#   zero-conversation-message requests and got 400s from Anthropic. Numbers
+#   are chosen so the MIN_RAW_TAIL cap does NOT bind: offset 10-2=8 keeps 12
+#   turns, and dropping the rebase would keep 10.
 # pins: :1195-1199 pureChatMode, :1240-1247 charInfoParts, :1314-1318
-#   char_phi, :1360-1372 greeting trim
-# entries: 4
+#   char_phi, :1367-1372 greeting trim, :1406-1409 pureChatRemoved rebase
+# entries: 14
 # overBudget: false
-# lastTokenEstimate: 329
+# lastTokenEstimate: 388
 ══════════════════════════════════════════════════════════════════════════
 [0] system  len=1204
 You are Ivy, keeper of the closed stacks.
@@ -26,11 +32,41 @@ Example: [emotion:joy] I'm so glad you asked about that!
 Choose the emotion that best matches how Ivy would feel based on the conversation context.
 ──────────────────────────────────────────────────────────────────────────
 [1] user  len=7
-Hi Ivy.
+Line 8.
 ──────────────────────────────────────────────────────────────────────────
-[2] assistant  len=11
-Late again?
+[2] assistant  len=7
+Line 9.
 ──────────────────────────────────────────────────────────────────────────
-[3] system  len=246
+[3] user  len=8
+Line 10.
+──────────────────────────────────────────────────────────────────────────
+[4] assistant  len=8
+Line 11.
+──────────────────────────────────────────────────────────────────────────
+[5] user  len=8
+Line 12.
+──────────────────────────────────────────────────────────────────────────
+[6] assistant  len=8
+Line 13.
+──────────────────────────────────────────────────────────────────────────
+[7] user  len=8
+Line 14.
+──────────────────────────────────────────────────────────────────────────
+[8] assistant  len=8
+Line 15.
+──────────────────────────────────────────────────────────────────────────
+[9] user  len=8
+Line 16.
+──────────────────────────────────────────────────────────────────────────
+[10] assistant  len=8
+Line 17.
+──────────────────────────────────────────────────────────────────────────
+[11] user  len=8
+Line 18.
+──────────────────────────────────────────────────────────────────────────
+[12] assistant  len=8
+Line 19.
+──────────────────────────────────────────────────────────────────────────
+[13] system  len=246
 [Style note: reply as plain chat messages in Ivy's voice — no narration, no describing actions or inner thoughts, no scene-setting. Follow the reply length defined in the system prompt, even if earlier replies were longer or written differently.]
 ──────────────────────────────────────────────────────────────────────────

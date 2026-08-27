@@ -1,19 +1,28 @@
 # group/macro-writes   [G10]
-# what: THE GROUP DOUBLE-EXECUTION CANARY: counters in both member cards, the
-#   scenarioOverride, a world-info entry, the author's note, a USER turn and
-#   an ASSISTANT turn. Every count must read 1. The assistant turn also pins
-#   authorOfTurn — its {{char}} resolves to Marcus, not the speaker.
-# pins: :1975-1976 subMember, :2324-2326 history substitution, :2411-2413
-#   persist
+# what: THE GROUP DOUBLE-EXECUTION CANARY (join mode). A DISTINCT counter at
+#   every macro-executed input the join path has: description, personality,
+#   scenario and mes_example on BOTH members, the scenarioOverride, a
+#   world-info entry, the author's note, a USER turn and an ASSISTANT turn.
+#   Every count must read 1. The assistant turn also pins authorOfTurn — its
+#   {{char}} resolves to Marcus, not the speaker — and the author's note
+#   carries a non-system role.
+# pins: :1975-1976 subMember, :2054-2074 join card block, :2143-2156
+#   override, :2298-2306 author note, :2323-2326 history substitution,
+#   :2411-2413 persist
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
 anCount = "1"
 asstTurn = "1"
 cardMarcus = "1"
 cardSeraphina = "1"
+exMarcus = "1"
+exSeraphina = "1"
 overrideCount = "1"
+persMarcus = "1"
+persSeraphina = "1"
+scenarioMarcus = "1"
 scenarioRuns = "1"
 userTurn = "1"
 wiCount = "1"
 ══════════════════════════════════════════════════════════════════════════
-8 key(s)
+13 key(s)

@@ -1,13 +1,19 @@
-# group/wi-attribution   [SHOULD: persona-book + owned-book attribution]
-# what: Three books in one build: one owned by a non-speaking member (gets
-#   the "another character" header AND resolves its macros against that
-#   owner), one persona-linked (gets the user header), one room-shared
-#   (unlabelled).
-# pins: :1978-1984 memberByOwnedBookId, :1986-2043 wrapWiContent
-# entries: 3
+# group/wi-attribution   [SHOULD: persona-book + owned-book attribution; R2: C11/C19/C12]
+# what: The every-world-info-slot fixture. Attribution: one book owned by a
+#   non-speaking member (gets the "another character" header AND resolves its
+#   macros against that owner), one persona-linked (gets the user header),
+#   one room-shared (unlabelled). Placement: a fourth book puts an entry at
+#   EVERY remaining slot — after_char, before_an, after_an, at_depth in-loop,
+#   at_depth 0, and at_depth beyond the history — so all four flat-template
+#   interpolations and all three at-depth emission sites are pinned. Deleting
+#   the wiAfterChar or wiBeforeAn interpolation, or the depth-0 trailing
+#   push, was green before this.
+# pins: :1978-1984 memberByOwnedBookId, :1986-2043 wrapWiContent, :2213-2218
+#   the four template slots, :2308-2313 / :2371-2376 / :2400-2408 at-depth
+# entries: 7
 # lastTokenEstimate: -1
 ══════════════════════════════════════════════════════════════════════════
-[0] system  len=1263
+[0] system  len=1365
 This is a roleplay group chat. You are playing Seraphina — write ONLY Seraphina's turn.
 
 [Information about Marcus, another character in this conversation]
@@ -16,16 +22,20 @@ Marcus never blinks at a raise.
 [Information about Wren, the user you're talking to]
 Carries a losing streak and a good coat.
 
-The back room has no clock.
+The back room has no clock, count 1.
 
 Characters in this conversation:
 - Seraphina: Description: The room's host, always mid-sentence. Personality: Warm, relentless.
 - Marcus: Description: Counts cards and denies it. Personality: Quiet, watchful.
 
+Slot after_char: the deck is short a nine.
+
 Current scenario: A back-room card game, hour 1.
 Example dialogue for Seraphina:
 <START>
 Seraphina: *deals* Ante up.
+
+Slot before_an: the pot is never counted aloud.
 
 FORMATTING RULES (follow exactly):
 - Wrap ALL actions, movements, and narration in *single asterisks*: *He glances toward the door*
@@ -38,9 +48,21 @@ CONTENT RULES:
 - Stay in character as Seraphina only — do NOT write lines for other characters
 - React naturally to what other characters and the user say
 ──────────────────────────────────────────────────────────────────────────
-[1] user  len=11
+[1] system  len=35
+Slot at_depth 9 (overflow), pass 1.
+──────────────────────────────────────────────────────────────────────────
+[2] user  len=11
 Deal me in.
 ──────────────────────────────────────────────────────────────────────────
-[2] assistant  len=38
+[3] system  len=24
+Slot at_depth 1, pass 1.
+──────────────────────────────────────────────────────────────────────────
+[4] assistant  len=38
 [Seraphina]: *shuffles* Sit down then.
+──────────────────────────────────────────────────────────────────────────
+[5] system  len=24
+Slot at_depth 0, pass 1.
+──────────────────────────────────────────────────────────────────────────
+[6] system  len=42
+Slot after_an: losers leave by the stairs.
 ──────────────────────────────────────────────────────────────────────────

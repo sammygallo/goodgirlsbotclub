@@ -28,7 +28,12 @@ import type { LucideIcon } from 'lucide-react';
 import type { CharacterInfo } from '../api/client';
 import type { ContextContribution } from '../extensions/types';
 import type { ChatMessage, GroupCardMode } from './chatStore';
-import type { WorldInfoBook, WorldInfoEntry } from './worldInfoStore';
+import type {
+  MatchedEntry,
+  WorldInfoBook,
+  WorldInfoEntry,
+  WorldInfoScanReport,
+} from './worldInfoStore';
 
 import { extensionRegistry } from '../extensions/registry';
 import { useAuthStore } from './authStore';
@@ -66,6 +71,42 @@ export const GOLDEN_CHAT_FILE = 'prompt-goldens.jsonl';
  * from the last solo send). When that is fixed, these goldens change.
  */
 export const NOT_WRITTEN = -1;
+
+/**
+ * Structural twin of chatStore's module-private `WiScanOut`.
+ *
+ * Declared here rather than imported because the production diff for this task
+ * is exactly ONE word (the `export` on chatStore.ts:966) — exporting a second
+ * symbol to satisfy a test would break that. TypeScript is structural, so a
+ * value of this type is accepted wherever `WiScanOut` is expected, and `tsc -b`
+ * still fails loudly if the real interface gains a required field or changes a
+ * type under us.
+ *
+ * WHY EVERY FIXTURE PASSES ONE: all six production call sites
+ * (chatStore.ts:4019, :4168, :4291, :4523, :4923 solo; :2474 group) pass a real
+ * `wiOut`. Round 1's fixtures all passed `undefined`, which meant the goldens
+ * pinned a parameterization the app never executes and the ~40-line
+ * fired/trimmedAtDepth derivation at :1704-1743 never ran once.
+ */
+export interface GoldenWiScanOut {
+  currentTurn: number;
+  timers: Record<string, number>;
+  activated: Set<string>;
+  fired?: MatchedEntry[];
+  scanReport?: WorldInfoScanReport;
+  trimmedAtDepth?: MatchedEntry[];
+}
+
+/**
+ * `currentTurn` exactly as every production call site computes it — the count
+ * of non-user, non-system messages in the array being handed to the builder
+ * (chatStore.ts:2465-2467 and the five solo sites). Derived rather than
+ * hand-written per fixture so a fixture cannot drift into a turn number the
+ * app could never produce for that history.
+ */
+export function productionCurrentTurn(messages: ChatMessage[]): number {
+  return messages.filter((m) => !m.isUser && !m.isSystem).length;
+}
 
 // ---------------------------------------------------------------------------
 // Builders for the raw shapes the stores hold
@@ -233,8 +274,13 @@ export function resetStores(): void {
 // Small state helpers used by the fixtures below
 // ---------------------------------------------------------------------------
 
-function withBooks(books: WorldInfoBook[]): void {
-  useWorldInfoStore.setState({ books, activeBookIds: books.map((b) => b.id) });
+/** Install books. `activeIds` defaults to "all of them"; pass a narrower list
+ *  to leave a book inactive so only a persona/character link can pull it in. */
+function withBooks(books: WorldInfoBook[], activeIds?: string[]): void {
+  useWorldInfoStore.setState({
+    books,
+    activeBookIds: activeIds ?? books.map((b) => b.id),
+  });
 }
 
 function withPersona(over: {
@@ -270,6 +316,23 @@ function withAuthorNote(
   useChatStore.setState({
     authorNotes: { [GOLDEN_CHAT_FILE]: { content, depth, role } },
   });
+}
+
+/**
+ * Build against a chat file other than the shared one.
+ *
+ * Needed by exactly the two fail-loud world-info budget fixtures: the
+ * pinned-over-budget warning is suppressed after the first time it fires for a
+ * chat (`wiPinnedWarnedChats`, chatStore.ts:962), and that Set is module-level
+ * and never cleared — so with every fixture on one chat file, the FIRST
+ * over-budget build would be the only one to reach the branch and the second
+ * builder's copy of it (:1884-1895) would never execute at all.
+ *
+ * The harness reads the persisted variables back off `currentChatFile`, not
+ * off the constant, so this stays transparent to the goldens.
+ */
+function withChatFile(fileName: string): void {
+  useChatStore.setState({ currentChatFile: fileName });
 }
 
 function withContext(over: Partial<typeof DEFAULT_CONTEXT_CONFIG>): void {
@@ -330,9 +393,40 @@ export interface SoloInput {
   character: CharacterInfo;
   availableEmotions?: string[];
   ragContext?: string;
+  /**
+   * Seeded WI timer state (entry id -> the turn it last activated on), handed
+   * to the builder inside the `wiTimerOut` the harness always constructs.
+   * Production loads this from `loadWiTimers(chatFile)`.
+   */
+  wiTimers?: Record<string, number>;
+  /**
+   * Pre-resolved activation result from the server retrieval path. When set,
+   * chatStore.ts:1080 takes the `serverMatchedEntries ??` branch and the local
+   * `scanMessagesForEntries` call never runs.
+   */
+  serverMatchedEntries?: MatchedEntry[];
 }
 
-export interface SoloFixture {
+/**
+ * Macro counters a fixture declares, asserted by name in the harness.
+ *
+ * `counters` must each read exactly `'1'` after the build; `absentCounters`
+ * must not exist in the persisted map at all (text nothing emitted must not
+ * have executed).
+ *
+ * WHY `{{incvar}}`/`{{addvar}}` AND NEVER `{{setvar}}`: setvar is IDEMPOTENT.
+ * Writing the same literal twice is byte-identical to writing it once, so a
+ * setvar canary is structurally incapable of detecting double execution — the
+ * exact thing these fixtures exist to detect. `{{incvar::k}}` counts AND emits
+ * its new value into the prompt; `{{addvar::k::1}}` counts and renders to ''
+ * (macros.ts:442-453), which is what the blank-content guards need.
+ */
+export interface MacroCounters {
+  counters?: string[];
+  absentCounters?: string[];
+}
+
+export interface SoloFixture extends MacroCounters {
   /** Golden file stem. */
   name: string;
   /** Matrix id from the task-0 spec, so a reviewer can map the two. */
@@ -352,9 +446,10 @@ export interface GroupInput {
   ragContext?: string;
   cardMode?: GroupCardMode;
   attachmentsFolded?: boolean;
+  wiTimers?: Record<string, number>;
 }
 
-export interface GroupFixture {
+export interface GroupFixture extends MacroCounters {
   name: string;
   matrix: string;
   what: string;
@@ -422,29 +517,64 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     what:
       'Every pre-history section non-empty EXCEPT persona_after_char (see ' +
       'persona-after-char — the two persona slots are mutually exclusive), ' +
-      'plus all four Stage-C sections.',
-    pins: ':1285-1322 all 18 keys, :1337 the join, :1684-1690 Stage C',
+      'plus all four Stage-C sections. Also carries three deliberate details: ' +
+      'a persona-LINKED book that is not globally active (so only the ' +
+      'persona-book union can pull it in, and its entry gets the user-context ' +
+      'wrapper), a world-info entry ending in a blank line and a jailbreak ' +
+      'padded with spaces (both stages push content UNTRIMMED), and a macro ' +
+      'inside an extension contribution (extension text is NOT substituted).',
+    pins:
+      ':1046 persona-book union, :1133-1136 persona wrapper, :1285-1322 all 18 keys, ' +
+      ':1336-1338 the untrimmed push + join, :1684-1690 Stage C',
+    counters: [],
+    // joinExt emits `c.content` verbatim (:1178-1181) — an extension is a
+    // third-party contributor, and running its text through the chat's macro
+    // engine would let it write the user's chat variables. Absent here is the
+    // pin on that; the literal survives in the prompt golden.
+    absentCounters: ['extRaw'],
     setup: () => {
       withPersona({
         description: 'A night-shift cataloguer with ink on both cuffs.',
         descriptionPosition: 'before_char',
+        linkedBookIds: ['b-persona-linked'],
       });
-      withBooks([
-        mkBook('b-pos', [
-          mkEntry('e-bc', { content: 'Lore: the stacks run four floors down.', position: 'before_char' }),
-          mkEntry('e-ac', { content: 'Lore: the catalogue is not alphabetical.', position: 'after_char' }),
-          mkEntry('e-ba', { content: 'Lore: the lift only stops on even floors.', position: 'before_an' }),
-          mkEntry('e-aa', { content: 'Lore: nobody signs the ledger out.', position: 'after_an' }),
-        ]),
-      ]);
+      withBooks(
+        [
+          mkBook('b-pos', [
+            // Trailing blank line is deliberate: wrapWiContent returns the
+            // substituted content untrimmed, joinWi joins it untrimmed, and
+            // :1336 pushes the section untrimmed. `.trim()` anywhere along
+            // that path shows up here.
+            mkEntry('e-bc', { content: 'Lore: the stacks run four floors down.\n\n', position: 'before_char' }),
+            mkEntry('e-ac', { content: 'Lore: the catalogue is not alphabetical.', position: 'after_char' }),
+            mkEntry('e-ba', { content: 'Lore: the lift only stops on even floors.', position: 'before_an' }),
+            mkEntry('e-aa', { content: 'Lore: nobody signs the ledger out.', position: 'after_an' }),
+          ]),
+          mkBook('b-persona-linked', [
+            mkEntry('e-persona-linked', {
+              content: 'Wren keeps the night key on a bootlace.',
+              position: 'before_char',
+            }),
+          ]),
+        ],
+        // b-persona-linked is deliberately NOT active. It reaches the scan
+        // only through `personaBookIds` (:1046), and its entry only gets the
+        // "[Information about …, the user you're talking to]" header because
+        // `personaBookIdSet` recognises it (:1133-1136).
+        ['b-pos']
+      );
       withExtensions(
-        { content: '[ext] before_char contribution', role: 'system', position: 'before_char' },
+        { content: '[ext] before_char contribution — {{incvar::extRaw}} stays literal', role: 'system', position: 'before_char' },
         { content: '[ext] after_char contribution', role: 'system', position: 'after_char' },
         { content: '[ext] before_an contribution', role: 'system', position: 'before_an' },
         { content: '[ext] after_an contribution', role: 'system', position: 'after_an' }
       );
       useGenerationStore.setState({
-        prompt: { ...DEFAULT_PROMPT_CONFIG, postHistoryInstructions: '[User PHI: end on an image, not a question.]' },
+        prompt: {
+          ...DEFAULT_PROMPT_CONFIG,
+          postHistoryInstructions: '[User PHI: end on an image, not a question.]\n',
+          jailbreakPrompt: '  [Jailbreak: the padding spaces are deliberate.]  ',
+        },
       });
       withSelfieEligible(IVY_FULL);
       return {
@@ -461,9 +591,14 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     matrix: 'S3',
     what:
       'The all-sections state with emotion_instruction hoisted to the top and ' +
-      'two sections disabled — one pre-history (jailbreak), one Stage C (char_phi).',
+      'two sections disabled — one pre-history (jailbreak), one Stage C ' +
+      '(char_phi). all-sections now sets a non-default jailbreakPrompt, so ' +
+      'disabling it is actually observable here; before that it was a no-op ' +
+      'and this fixture only ever pinned the Stage-C half of the filter.',
     pins: ':1328-1332 pre-history filter, :1684-1688 Stage-C filter',
+    absentCounters: ['extRaw'],
     setup: () => {
+      // Reuses all-sections' whole state, jailbreak included.
       const input = reuseSolo('all-sections');
       withPromptOrder((order) => {
         const disabled = new Set<PromptSectionId>(['jailbreak', 'char_phi']);
@@ -482,8 +617,12 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     matrix: 'S4',
     what:
       'Every pre-history section disabled. The Stage-A push at :1335 is ' +
-      'unconditional, so the prompt still opens with an EMPTY system message.',
-    pins: ':1327-1338 — the unconditional push (audit §4.4)',
+      'unconditional, so the prompt still opens with an EMPTY system message. ' +
+      "Also carries a macro-only author's note at DEPTH 0, which renders to " +
+      "'' and must be swallowed by the depth-0 blank guard — an empty content " +
+      'block 400s Claude.',
+    pins: ':1327-1338 the unconditional push (audit §4.4), :1556-1562 depth-0 AN blank guard',
+    counters: ['anGuardRuns'],
     setup: () => {
       withPromptOrder((order) =>
         order.map((e) =>
@@ -492,6 +631,12 @@ export const SOLO_FIXTURES: SoloFixture[] = [
             : { ...e, enabled: false }
         )
       );
+      // {{addvar}} rather than {{incvar}}: addvar returns '' (macros.ts:453),
+      // so the note still renders blank and still exercises the guard, while
+      // the counter makes the RUN COUNT observable. A pure {{setvar}} could
+      // not: writing the same literal twice is byte-identical to writing it
+      // once, so a setvar-only guard fixture cannot detect double execution.
+      withAuthorNote('{{setvar::anGuard::depth-0}}{{addvar::anGuardRuns::1}}', 0);
       return { messages: HELLO, character: IVY_MINIMAL };
     },
   },
@@ -499,10 +644,23 @@ export const SOLO_FIXTURES: SoloFixture[] = [
   {
     name: 'trim-bites',
     matrix: 'S5',
-    what: 'A long chat against a small budget: the token-aware trim drops older turns.',
-    pins: ':1644-1681 trimHistoryToBudget, kept-set object identity',
+    what:
+      'A long chat against a small budget: the token-aware trim drops older ' +
+      'turns. A NON-critical world-info entry sits at a deep at-depth slot so ' +
+      'the trim cuts it after the scan passed it — the only fixture that puts ' +
+      'anything in `wiTimerOut.trimmedAtDepth`.',
+    pins: ':1644-1681 trimHistoryToBudget, kept-set object identity, :1737-1743 trimmedAtDepth',
     setup: () => {
       withContext({ maxTokens: 1600, responseReserve: 256, tokenAware: true });
+      withBooks([
+        mkBook('b-trim', [
+          mkEntry('e-trim-deep', {
+            content: 'Lore at depth 20 — old enough that the trim reaches it.',
+            position: 'at_depth',
+            depth: 20,
+          }),
+        ]),
+      ]);
       return { messages: bulkHistory(24, 20), character: IVY_MINIMAL };
     },
   },
@@ -556,27 +714,52 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     matrix: 'S8',
     what:
       'All five at-depth classes at ONE depth: character note, author note, ' +
-      'persona, world info, extension — in the documented order.',
-    pins: ':1480-1523 in-loop insertion order',
+      'persona, world info, extension — in the documented order. Every ' +
+      'insertion carries a NON-system role from a user-settable field ' +
+      "(CharacterEdit's depth_prompt role, AuthorNote's ROLE_OPTIONS, the " +
+      "persona's descriptionRole, the extension's own role) and no two " +
+      'classes share one, so rewriting any of them to a literal shows up here.',
+    pins: ':1480-1523 in-loop insertion order and roles',
+    counters: ['depthPromptRuns', 'note', 'wiDepthInLoop'],
+    // Extension at-depth content is pushed RAW at :1520 while world info at
+    // the same depth is substituted — this is the pin on that asymmetry.
+    absentCounters: ['extRawAtDepth'],
     setup: () => {
       const char = mkChar({
         ...IVY_MINIMAL,
-        data: { extensions: { depth_prompt: { prompt: '[Character note at depth 2.]', depth: 2, role: 'system' } } },
+        data: {
+          extensions: {
+            depth_prompt: {
+              prompt: '[Character note at depth 2, pass {{incvar::depthPromptRuns}}.]',
+              depth: 2,
+              role: 'user',
+            },
+          },
+        },
       });
-      withAuthorNote("[Author's note at depth 2.]", 2);
+      withAuthorNote("[Author's note at depth 2, pass {{incvar::note}}.]", 2, 'assistant');
       withPersona({
         description: 'A night-shift cataloguer.',
         descriptionPosition: 'at_depth',
         descriptionDepth: 2,
+        descriptionRole: 'user',
       });
       withBooks([
         mkBook('b-depth', [
-          mkEntry('e-d2', { content: 'Lore at depth 2.', position: 'at_depth', depth: 2 }),
+          mkEntry('e-d2', {
+            content: 'Lore at depth 2, pass {{incvar::wiDepthInLoop}}.',
+            position: 'at_depth',
+            depth: 2,
+          }),
         ]),
       ]);
+      // `ContextContribution.role` is 'system' | 'user' — an extension
+      // contribution can never be an assistant turn (extensions/types.ts:19),
+      // so the four `{ role: c.role }` sites rotate between those two across
+      // the three at-depth fixtures instead of all three roles.
       withExtensions({
-        content: '[ext] at depth 2',
-        role: 'system',
+        content: '[ext] at depth 2 — {{incvar::extRawAtDepth}} stays literal',
+        role: 'user',
         position: 'at_depth',
         depth: 2,
       });
@@ -590,27 +773,45 @@ export const SOLO_FIXTURES: SoloFixture[] = [
   {
     name: 'at-depth-zero',
     matrix: 'S9',
-    what: 'All five at-depth classes at depth 0 — the trailing slot after the newest turn.',
-    pins: ':1548-1588 depth-0 branches',
+    what:
+      'All five at-depth classes at depth 0 — the trailing slot after the ' +
+      'newest turn. Roles are rotated against at-depth-interleave (depth ' +
+      "prompt system, author's note user, persona assistant, extension user) " +
+      'so no single literal role satisfies both fixtures.',
+    pins: ':1548-1588 depth-0 branches and roles',
+    counters: ['depthPromptRuns', 'anDepthZero', 'wiDepthZero'],
     setup: () => {
       const char = mkChar({
         ...IVY_MINIMAL,
-        data: { extensions: { depth_prompt: { prompt: '[Character note at depth 0.]', depth: 0, role: 'system' } } },
+        data: {
+          extensions: {
+            depth_prompt: {
+              prompt: '[Character note at depth 0, pass {{incvar::depthPromptRuns}}.]',
+              depth: 0,
+              role: 'system',
+            },
+          },
+        },
       });
-      withAuthorNote("[Author's note at depth 0.]", 0);
+      withAuthorNote("[Author's note at depth 0, pass {{incvar::anDepthZero}}.]", 0, 'user');
       withPersona({
         description: 'A night-shift cataloguer.',
         descriptionPosition: 'at_depth',
         descriptionDepth: 0,
+        descriptionRole: 'assistant',
       });
       withBooks([
         mkBook('b-depth0', [
-          mkEntry('e-d0', { content: 'Lore at depth 0.', position: 'at_depth', depth: 0 }),
+          mkEntry('e-d0', {
+            content: 'Lore at depth 0, pass {{incvar::wiDepthZero}}.',
+            position: 'at_depth',
+            depth: 0,
+          }),
         ]),
       ]);
       withExtensions({
         content: '[ext] at depth 0',
-        role: 'system',
+        role: 'user',
         position: 'at_depth',
         depth: 0,
       });
@@ -626,23 +827,48 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     matrix: 'S10',
     what:
       'Every at-depth class configured deeper than the history, including TWO ' +
-      'world-info depths, so the unshift order is pinned.',
-    pins: ':1591-1641 overflow unshifts',
+      'world-info depths, so the unshift order is pinned. Roles rotate again ' +
+      "(depth prompt assistant, author's note system, persona user, extension " +
+      'system — extension roles are system|user only): across the three ' +
+      'at-depth fixtures every one of the twelve role-carrying sites is ' +
+      'checked, and no uniform rewrite to a single literal survives.',
+    pins: ':1591-1641 overflow unshifts and roles',
+    counters: ['depthPromptRuns', 'anOverflow', 'wiDepthOverflow', 'wiDepthOverflowB'],
     setup: () => {
       const char = mkChar({
         ...IVY_MINIMAL,
-        data: { extensions: { depth_prompt: { prompt: '[Character note, depth 9.]', depth: 9, role: 'system' } } },
+        data: {
+          extensions: {
+            depth_prompt: {
+              prompt: '[Character note, depth 9, pass {{incvar::depthPromptRuns}}.]',
+              depth: 9,
+              role: 'assistant',
+            },
+          },
+        },
       });
-      withAuthorNote("[Author's note, depth 8.]", 8);
+      withAuthorNote("[Author's note, depth 8, pass {{incvar::anOverflow}}.]", 8, 'system');
       withPersona({
         description: 'A night-shift cataloguer.',
         descriptionPosition: 'at_depth',
         descriptionDepth: 7,
+        descriptionRole: 'user',
       });
       withBooks([
         mkBook('b-of', [
-          mkEntry('e-d10', { content: 'Lore at depth 10.', position: 'at_depth', depth: 10 }),
-          mkEntry('e-d11', { content: 'Lore at depth 11.', position: 'at_depth', depth: 11 }),
+          // One counter per DEPTH, not one shared: the overflow loop calls
+          // joinWi once per depth key (:1616), so a shared counter would read
+          // '2' on a correct build and hide the very thing it checks for.
+          mkEntry('e-d10', {
+            content: 'Lore at depth 10, pass {{incvar::wiDepthOverflow}}.',
+            position: 'at_depth',
+            depth: 10,
+          }),
+          mkEntry('e-d11', {
+            content: 'Lore at depth 11, pass {{incvar::wiDepthOverflowB}}.',
+            position: 'at_depth',
+            depth: 11,
+          }),
         ]),
       ]);
       withExtensions({
@@ -662,30 +888,75 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     name: 'image-only-and-blank-assistant',
     matrix: 'S11',
     what:
-      'An image-only user turn (kept, and it ships EMPTY content) next to a ' +
-      'blank assistant turn (dropped).',
-    pins: ':1531-1540 the image-only keep exemption',
-    setup: () => ({
-      messages: [
-        mkMsg('i1', 'Look at this.'),
-        mkMsg('i2', '', { isUser: false, name: 'Ivy' }),
-        mkMsg('i3', '', { isUser: true, images: ['data:image/png;base64,iVBORw0KGgo='] }),
-      ],
-      character: IVY_MINIMAL,
-    }),
+      'The blank-content fixture. An image-only user turn (kept, and it ships ' +
+      'EMPTY content) next to a blank assistant turn (dropped); a character ' +
+      "note that renders to WHITESPACE ONLY (pushed anyway — the in-loop " +
+      'guard at :1481 tests `depthPromptContent`, not `.trim()`); and a ' +
+      "macro-only author's note at the same depth that renders to '' and IS " +
+      'swallowed by its own guard, which tests `.trim()`. The two guards ' +
+      'disagree on purpose and both are pinned here.',
+    pins: ':1481 depth-prompt guard, :1490-1497 in-loop AN blank guard, :1531-1540 image-only keep',
+    counters: ['depthPromptRuns', 'anGuardRuns'],
+    setup: () => {
+      const char = mkChar({
+        ...IVY_MINIMAL,
+        data: {
+          extensions: {
+            depth_prompt: {
+              // Renders to '    ' — truthy, so :1481 pushes it. Tightening
+              // that guard to `.trim()` drops a whole context entry.
+              prompt: '  {{addvar::depthPromptRuns::1}}  ',
+              depth: 2,
+              role: 'system',
+            },
+          },
+        },
+      });
+      withAuthorNote('{{setvar::anGuard::in-loop}}{{addvar::anGuardRuns::1}}', 2);
+      return {
+        messages: [
+          mkMsg('i1', 'Look at this.'),
+          mkMsg('i2', '', { isUser: false, name: 'Ivy' }),
+          mkMsg('i3', '', { isUser: true, images: ['data:image/png;base64,iVBORw0KGgo='] }),
+        ],
+        character: char,
+      };
+    },
   },
 
   {
     name: 'macro-writes',
     matrix: 'S12',
     what:
-      'THE DOUBLE-EXECUTION CANARY. {{setvar}} in a card field, a world-info ' +
-      'entry and the author\'s note, plus {{incvar}} counters whose RETURNED ' +
-      'value is emitted into the prompt. A second execution of any stage shows ' +
-      'up twice: as a changed number in the prompt golden, and as a changed ' +
-      'count in the variables golden. `stage` records execution ORDER — card ' +
-      'fields, then world info, then the author\'s note.',
-    pins: ':1130-1143 wrapWiContent, :1205-1215 card fields, :1487-1497 author note',
+      'THE DOUBLE-EXECUTION CANARY. A DISTINCT {{incvar}} counter at every ' +
+      'macro-executed input the solo builder has outside the at-depth stages ' +
+      '(which the three at-depth fixtures cover): all four card fields, the ' +
+      "card's system_prompt and post_history_instructions, all three " +
+      "generation-settings prompts, the character note, a world-info entry, " +
+      "the author's note, and BOTH a user and an assistant history turn. Each " +
+      'counter emits its returned value into the prompt, so a second ' +
+      'execution of any stage shows up twice — as a changed number in the ' +
+      'prompt golden and as a changed count in the variables golden. `stage` ' +
+      'records execution ORDER: card fields, world info, the note, history.',
+    pins:
+      ':1131 wrapWiContent, :1183-1216 card + generation-settings fields, ' +
+      ':1425 depth prompt, :1490-1497 author note, :1524 history turns',
+    counters: [
+      'day',
+      'shelf',
+      'scenarioSub',
+      'mesExampleSub',
+      'charSysPrompt',
+      'charPhiSub',
+      'userMainPrompt',
+      'userPhiSub',
+      'userJailbreak',
+      'depthPromptRuns',
+      'ledger',
+      'note',
+      'soloUserTurn',
+      'soloAsstTurn',
+    ],
     setup: () => {
       const char = mkChar({
         name: 'Ivy',
@@ -693,6 +964,32 @@ export const SOLO_FIXTURES: SoloFixture[] = [
         description:
           'A quiet archivist. Day {{incvar::day}} of the audit.{{setvar::stage::card}}',
         personality: 'Dry. Shelf {{incvar::shelf}}.',
+        scenario: 'The reading room, pass {{incvar::scenarioSub}}.',
+        mes_example: '<START>\n{{user}}: Late?\n{{char}}: Always. Take {{incvar::mesExampleSub}}.',
+        system_prompt: 'You are Ivy, keeper of the closed stacks. Draft {{incvar::charSysPrompt}}.',
+        post_history_instructions: '[Keep replies short. Reminder {{incvar::charPhiSub}}.]',
+        data: {
+          extensions: {
+            depth_prompt: {
+              prompt: '[Character note, pass {{incvar::depthPromptRuns}}.]',
+              depth: 2,
+              role: 'system',
+            },
+          },
+        },
+      });
+      // `userMainPrompt` is substituted unconditionally at :1214 and then
+      // LOSES the mainPrompt precedence chain to the card's system_prompt
+      // (:1257-1261). Its counter still reads 1 — that is the point: a macro
+      // that executes for text the prompt never shows still writes the user's
+      // chat variables, and only a counter makes it visible.
+      useGenerationStore.setState({
+        prompt: {
+          ...DEFAULT_PROMPT_CONFIG,
+          mainPrompt: 'You are {{char}}. Main prompt render {{incvar::userMainPrompt}}.',
+          postHistoryInstructions: '[User PHI render {{incvar::userPhiSub}}.]',
+          jailbreakPrompt: '[Jailbreak render {{incvar::userJailbreak}}.]',
+        },
       });
       withBooks([
         mkBook('b-macro', [
@@ -707,7 +1004,16 @@ export const SOLO_FIXTURES: SoloFixture[] = [
         "[Author's note: day {{getvar::day}}, ledger {{getvar::ledger}}, note {{incvar::note}}.{{setvar::stage::authornote}}]",
         1
       );
-      return { messages: [mkMsg('mw1', 'Hello.')], character: char };
+      return {
+        messages: [
+          mkMsg('mw1', 'Hello — user turn {{incvar::soloUserTurn}}.'),
+          mkMsg('mw2', '*looks up* Assistant turn {{incvar::soloAsstTurn}}.{{setvar::stage::history}}', {
+            isUser: false,
+            name: 'Ivy',
+          }),
+        ],
+        character: char,
+      };
     },
   },
 
@@ -727,9 +1033,17 @@ export const SOLO_FIXTURES: SoloFixture[] = [
   {
     name: 'recall-absent',
     matrix: 'S13',
-    what: 'Same build with no ragContext — rag_context renders empty and is filtered out.',
-    pins: ':1305-1307 / :1330-1332',
-    setup: () => ({ messages: HELLO, character: IVY_MINIMAL }),
+    what:
+      'Same build with no ragContext — rag_context renders empty and is ' +
+      "filtered out. Also carries a macro-only author's note at an OVERFLOW " +
+      'depth (5 > 1 message), the third and last of solo\'s three blank-AN ' +
+      'guards.',
+    pins: ':1305-1307 / :1330-1332, :1603-1610 overflow AN blank guard',
+    counters: ['anGuardRuns'],
+    setup: () => {
+      withAuthorNote('{{setvar::anGuard::overflow}}{{addvar::anGuardRuns::1}}', 5);
+      return { messages: HELLO, character: IVY_MINIMAL };
+    },
   },
 
   // --- SHOULD tier -------------------------------------------------------
@@ -773,21 +1087,42 @@ export const SOLO_FIXTURES: SoloFixture[] = [
     matrix: 'SHOULD: pure-chat-mode + char_phi branch 1',
     what:
       'Companion mode: scenario and example dialogue withheld from the card ' +
-      'block, the greeting trimmed off the front of history, and char_phi ' +
-      'replaced by the no-narration style note.',
-    pins: ':1195-1199 pureChatMode, :1240-1247 charInfoParts, :1314-1318 char_phi, :1360-1372 greeting trim',
+      'block, the TWO leading assistant turns trimmed off the front of ' +
+      'history, and char_phi replaced by the no-narration style note. A ' +
+      'summary covering the first 10 turns is present, so `pureChatRemoved` ' +
+      'is non-zero AND is actually subtracted from the compaction offset — ' +
+      'the rebase at :1409 that a ~25-line comment attributes to a bug that ' +
+      'shipped zero-conversation-message requests and got 400s from ' +
+      'Anthropic. Numbers are chosen so the MIN_RAW_TAIL cap does NOT bind: ' +
+      'offset 10-2=8 keeps 12 turns, and dropping the rebase would keep 10.',
+    pins:
+      ':1195-1199 pureChatMode, :1240-1247 charInfoParts, :1314-1318 char_phi, ' +
+      ':1367-1372 greeting trim, :1406-1409 pureChatRemoved rebase',
     setup: () => {
       usePromptTemplateStore.setState({
         chatCompanionModeByChatFile: { [GOLDEN_CHAT_FILE]: true },
       });
-      return {
-        messages: [
-          mkMsg('g1', '*The reading room is dark but for one lamp.*', { isUser: false, name: 'Ivy' }),
-          mkMsg('g2', 'Hi Ivy.'),
-          mkMsg('g3', 'Late again?', { isUser: false, name: 'Ivy' }),
-        ],
-        character: IVY_FULL,
-      };
+      useSummarizeStore.setState({
+        compactWhenSummarized: true,
+        summaries: {
+          [GOLDEN_CHAT_FILE]: {
+            text: 'Ivy and the user talked past closing.',
+            generatedAt: 0,
+            messageCount: 10,
+          },
+        },
+      });
+      const messages: ChatMessage[] = [
+        mkMsg('g0', '*The reading room is dark but for one lamp.*', { isUser: false, name: 'Ivy' }),
+        mkMsg('g1', '*She does not look up.*', { isUser: false, name: 'Ivy' }),
+      ];
+      for (let i = 0; i < 20; i++) {
+        const isUser = i % 2 === 0;
+        messages.push(
+          mkMsg(`g${i + 2}`, `Line ${i}.`, { isUser, name: isUser ? 'User' : 'Ivy' })
+        );
+      }
+      return { messages, character: IVY_FULL };
     },
   },
 
@@ -849,6 +1184,249 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       };
     },
   },
+
+  // --- ROUND 2: gaps a 68-agent adversarial review proved -----------------
+
+  {
+    name: 'wi-scan-options',
+    matrix: 'R2: C10 — the world-info scan option bag',
+    what:
+      'The only fixture whose entries are NOT all `constant: true`. Six ' +
+      'entries exercise the option bag handed to scanMessagesForEntries: a ' +
+      'keyword entry that matches; the same keyword with a narrow per-entry ' +
+      'scanDepth so the match falls outside its window; an entry blocked by ' +
+      'its cooldown against a seeded timer; a sticky carry-over that matches ' +
+      'nothing this turn and rides in on its timer anyway; an entry still ' +
+      'inside its delay; and a probability-gated entry at 0% (deterministic — ' +
+      'Math.random()*100 < 0 is never true). The .fired.txt golden is where ' +
+      'the outcome is legible, including that the sticky carry-over does NOT ' +
+      'appear in `activated`.',
+    pins:
+      ':1082-1093 the option bag, worldInfoStore.ts:1420-1427 timedEffectsAllow, ' +
+      ':1441-1446 per-entry scanDepth, :1494-1506 sticky carry-over',
+    setup: () => {
+      // currentTurn is derived from the history below: 3 assistant turns -> 3.
+      withBooks([
+        mkBook('b-scan', [
+          mkEntry('e-key-hit', {
+            content: 'Lore: the grille key hangs behind the desk.',
+            constant: false,
+            keys: ['grille'],
+          }),
+          mkEntry('e-key-too-deep', {
+            content: 'Lore: this should NOT fire — its keyword is out of range.',
+            constant: false,
+            keys: ['thurible'],
+            // Only the newest message is scanned; 'thurible' is three turns back.
+            scanDepth: 1,
+          }),
+          mkEntry('e-cooldown', {
+            content: 'Lore: this should NOT fire — cooling down until turn 5.',
+            constant: false,
+            keys: ['grille'],
+            cooldown: 2,
+          }),
+          mkEntry('e-sticky', {
+            content: 'Lore: carried over on its sticky window, not on a keyword.',
+            constant: false,
+            keys: ['nothing-in-this-chat'],
+            sticky: 4,
+          }),
+          mkEntry('e-delayed', {
+            content: 'Lore: this should NOT fire — delayed until turn 9.',
+            constant: false,
+            keys: ['grille'],
+            delay: 9,
+          }),
+          mkEntry('e-never', {
+            content: 'Lore: this should NOT fire — probability 0.',
+            constant: false,
+            keys: ['grille'],
+            useProbability: true,
+            probability: 0,
+          }),
+        ]),
+      ]);
+      return {
+        // Seeded the way loadWiTimers would return it: the turn each entry
+        // last activated on. e-cooldown activated on turn 3 with cooldown 2,
+        // so it is blocked while currentTurn <= 5; e-sticky activated on turn
+        // 2 with sticky 4, so it carries to turn 6.
+        wiTimers: { 'e-cooldown': 3, 'e-sticky': 2 },
+        messages: [
+          mkMsg('sc1', 'Is there a thurible in the reliquary case?'),
+          mkMsg('sc2', 'There was.', { isUser: false, name: 'Ivy' }),
+          mkMsg('sc3', 'And the grille?'),
+          mkMsg('sc4', 'Locked.', { isUser: false, name: 'Ivy' }),
+          mkMsg('sc5', 'Open the grille, then.'),
+          mkMsg('sc6', '*sighs*', { isUser: false, name: 'Ivy' }),
+        ],
+        character: IVY_MINIMAL,
+      };
+    },
+  },
+
+  {
+    name: 'wi-budget-eviction',
+    matrix: 'R2: C3 — the world-info token budget',
+    what:
+      'A non-zero `worldInfoStore.tokenBudget`, which every other fixture ' +
+      'leaves at 0 (applyTokenBudget returns early on 0 and evicts nothing). ' +
+      'Two constant entries are pinned and alone exceed the budget, so ' +
+      '`pinnedOverBudget` comes back true — the fail-loud signal solo raises ' +
+      'at :1101-1110 and group at :1884-1895. A third, budgetable entry with ' +
+      'the worst priority is evicted and lands in `scanReport.dropped`.',
+    pins: ':1084 tokenBudget, worldInfoStore.ts:1319-1358 applyTokenBudget, :1101-1110 fail-loud',
+    setup: () => {
+      withChatFile('prompt-goldens-solo-budget.jsonl');
+      useWorldInfoStore.setState({ tokenBudget: 40 });
+      withBooks([
+        mkBook('b-budget', [
+          mkEntry('e-pinned-a', {
+            content:
+              'PINNED A: the reading room closes at six, the stacks at seven, ' +
+              'and the grille is locked by whoever leaves last.',
+            constant: true,
+            order: 10,
+          }),
+          mkEntry('e-pinned-b', {
+            content:
+              'PINNED B: the catalogue cards are ordered by acquisition, never ' +
+              'by title, and nobody has ever agreed to change that.',
+            critical: true,
+            constant: false,
+            keys: ['catalogue'],
+            order: 20,
+          }),
+          mkEntry('e-evicted', {
+            content:
+              'EVICTED: a low-priority note about the lift that the budget ' +
+              'cannot afford once the pinned pair is counted.',
+            constant: false,
+            keys: ['catalogue'],
+            order: 900,
+          }),
+        ]),
+      ]);
+      return {
+        messages: [mkMsg('bd1', 'Where is the catalogue kept?')],
+        character: IVY_MINIMAL,
+      };
+    },
+  },
+
+  {
+    name: 'server-matched-entries',
+    matrix: 'R2: C3 — the server-retrieval branch of :1080',
+    what:
+      'The other half of `serverMatchedEntries ?? scanMessagesForEntries(...)`, ' +
+      'which three of the five production solo call sites take (:4291, :4523, ' +
+      ':4923). A local book holds a constant entry that WOULD have matched; ' +
+      'it must be absent from the prompt, because the local scan never runs. ' +
+      'The server entries carry backend-scheme UUID ids, so `fired` reports ' +
+      'ids the local store cannot resolve — exactly the case captureWiFired ' +
+      'filters at :2795-2801 — and `scanReport` stays at its zeroed default ' +
+      'because the server returns no eviction list.',
+    pins: ':1080 the ?? branch, :1094-1110 the skipped scan report',
+    setup: () => {
+      withBooks([
+        mkBook('b-local', [
+          mkEntry('e-local', {
+            content: 'LOCAL SCAN RAN — this text must never reach the prompt.',
+            position: 'before_char',
+          }),
+        ]),
+      ]);
+      return {
+        messages: [mkMsg('sm1', 'What does the server know?')],
+        character: IVY_MINIMAL,
+        serverMatchedEntries: [
+          {
+            entry: mkEntry('3f1c9a20-0000-4000-8000-000000000001', {
+              content: 'Server lore: the annex was sealed in 1974.',
+              position: 'before_char',
+            }),
+            bookId: '7b2e4d10-0000-4000-8000-000000000002',
+            bookName: 'Server-side lorebook',
+          },
+          {
+            entry: mkEntry('3f1c9a20-0000-4000-8000-000000000003', {
+              content: 'Server lore at depth 1: the annex key is not on the ring.',
+              position: 'at_depth',
+              depth: 1,
+            }),
+            bookId: '7b2e4d10-0000-4000-8000-000000000002',
+            bookName: 'Server-side lorebook',
+          },
+        ],
+      };
+    },
+  },
+
+  {
+    name: 'card-overrides-disabled',
+    matrix: 'R2: C21 — respectCharacterOverride / respectCharacterPHI',
+    what:
+      'The only fixture with either flag off. The full card ships both a ' +
+      "system_prompt and post_history_instructions; with both flags false the " +
+      "user's own main prompt wins the mainPrompt chain instead and char_phi " +
+      'renders empty. Ignoring EITHER flag is green without this.',
+    pins: ':1205-1211 the two flag gates, :1257-1261 the mainPrompt chain',
+    setup: () => {
+      useGenerationStore.setState({
+        prompt: {
+          ...DEFAULT_PROMPT_CONFIG,
+          respectCharacterOverride: false,
+          respectCharacterPHI: false,
+          mainPrompt: "You are {{char}}. The user's own main prompt is in force.",
+          postHistoryInstructions: '[User PHI: the only post-history text here.]',
+        },
+      });
+      return { messages: HELLO, character: IVY_FULL };
+    },
+  },
+
+  {
+    name: 'fixed-window-summary-skew',
+    matrix: 'R2: C15 + C4 — the non-token-aware window',
+    what:
+      'Thirty messages with three SYSTEM turns inside the last twelve, ' +
+      'tokenAware off with messageCount 12, and a summary covering the first ' +
+      'twenty non-system turns. Two things are pinned that nothing else ' +
+      'reaches. (1) :1350 slices the last twelve RAW messages and only then ' +
+      'filters system turns, so nine reach the prompt — group got a dedicated ' +
+      'fixture for this, solo did not. (2) `windowSkew` is 27-9=18, so the ' +
+      'compaction offset rebases to 2 and keeps seven turns; without the ' +
+      'rebase the offset would be 20, the MIN_RAW_TAIL cap would clamp it to ' +
+      '3, and six would remain. Every other build has windowSkew 0.',
+    pins: ':1345-1350 slice-before-filter, :1359 windowSkew, :1406-1419 cappedOffset',
+    setup: () => {
+      withContext({ tokenAware: false, messageCount: 12 });
+      useSummarizeStore.setState({
+        compactWhenSummarized: true,
+        summaries: {
+          [GOLDEN_CHAT_FILE]: {
+            text: 'The first twenty turns are already summarized.',
+            generatedAt: 0,
+            messageCount: 20,
+          },
+        },
+      });
+      const messages: ChatMessage[] = [];
+      for (let i = 0; i < 30; i++) {
+        // 20, 24, 28 — all inside the last twelve raw slots (18..29).
+        const isSystem = i >= 20 && i % 4 === 0;
+        messages.push(
+          mkMsg(`fw${i}`, isSystem ? `[system marker ${i}]` : `Turn ${i}.`, {
+            isUser: !isSystem && i % 2 === 0,
+            isSystem,
+            name: isSystem ? 'System' : i % 2 === 0 ? 'User' : 'Ivy',
+          })
+        );
+      }
+      return { messages, character: IVY_MINIMAL };
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -908,9 +1486,21 @@ export const GROUP_FIXTURES: GroupFixture[] = [
   {
     name: 'join',
     matrix: 'G2',
-    what: 'Join mode: a full section per member, [SPEAKING NOW] on the speaker, joined by \\n\\n---\\n\\n.',
-    pins: ':2054-2074 join card block',
-    setup: () => groupBase({ cardMode: 'join' }),
+    what:
+      'Join mode: a full section per member, [SPEAKING NOW] on the speaker, ' +
+      'joined by \\n\\n---\\n\\n. This is also the group RECALL-PRESENT case: ' +
+      'a ragContext is supplied, so the `[Relevant background information]` ' +
+      'tail at :2233-2235 is appended to the flat system message. Every other ' +
+      'group fixture is the recall-ABSENT case, so replacing that ternary with ' +
+      '`const finalSystemPrompt = systemPrompt;` was green before this.',
+    pins: ':2054-2074 join card block, :2233-2237 the RAG concat',
+    setup: () =>
+      groupBase({
+        cardMode: 'join',
+        ragContext:
+          '[Earlier in chat — User]\nWho else is at the table?\n\n---\n\n' +
+          '[Earlier in chat — Character]\nOnly the ones who can pay.',
+      }),
   },
 
   {
@@ -996,14 +1586,19 @@ export const GROUP_FIXTURES: GroupFixture[] = [
     what:
       'A macro-only author\'s note at the IN-LOOP depth and a world-info ' +
       'at-depth entry that renders to \'\': both write their variables and ' +
-      'neither pushes a blank context entry.',
-    pins: ':2300 in-loop AN guard, :2312 wi at-depth guard',
+      'neither pushes a blank context entry. The {{setvar}} is what drives ' +
+      'the blank-content branch; the {{addvar}} beside it is what makes the ' +
+      'RUN COUNT observable — setvar alone is idempotent, so a setvar-only ' +
+      'version of this fixture could not tell one execution from two, which ' +
+      'is precisely what its placement implies it guards.',
+    pins: ':2298-2306 in-loop AN guard, :2308-2313 wi at-depth guard',
+    counters: ['gAnGuardRuns', 'gWiGuardRuns'],
     setup: () => {
-      withAuthorNote('{{setvar::anGuard::inloop}}', 1);
+      withAuthorNote('{{setvar::anGuard::inloop}}{{addvar::gAnGuardRuns::1}}', 1);
       withBooks([
         mkBook('b-blank', [
           mkEntry('e-blank', {
-            content: '{{setvar::wiGuard::rendered-empty}}',
+            content: '{{setvar::wiGuard::rendered-empty}}{{addvar::gWiGuardRuns::1}}',
             position: 'at_depth',
             depth: 2,
           }),
@@ -1018,14 +1613,16 @@ export const GROUP_FIXTURES: GroupFixture[] = [
     matrix: 'G8 (b)',
     what:
       'The same two guards on their OVERFLOW branches — the author\'s note ' +
-      'and the world-info entry both configured deeper than the history.',
-    pins: ':2388 overflow AN guard, :2404-2408 wi overflow',
+      'and the world-info entry both configured deeper than the history — ' +
+      'with the same {{addvar}} run counters.',
+    pins: ':2386-2395 overflow AN guard, :2400-2408 wi overflow',
+    counters: ['gAnGuardRuns', 'gWiGuardRuns'],
     setup: () => {
-      withAuthorNote('{{setvar::anGuard::overflow}}', 5);
+      withAuthorNote('{{setvar::anGuard::overflow}}{{addvar::gAnGuardRuns::1}}', 5);
       withBooks([
         mkBook('b-blank-of', [
           mkEntry('e-blank-of', {
-            content: '{{setvar::wiGuard::rendered-empty}}',
+            content: '{{setvar::wiGuard::rendered-empty}}{{addvar::gWiGuardRuns::1}}',
             position: 'at_depth',
             depth: 9,
           }),
@@ -1064,25 +1661,50 @@ export const GROUP_FIXTURES: GroupFixture[] = [
     name: 'macro-writes',
     matrix: 'G10',
     what:
-      'THE GROUP DOUBLE-EXECUTION CANARY: counters in both member cards, the ' +
-      'scenarioOverride, a world-info entry, the author\'s note, a USER turn ' +
-      'and an ASSISTANT turn. Every count must read 1. The assistant turn also ' +
-      'pins authorOfTurn — its {{char}} resolves to Marcus, not the speaker.',
-    pins: ':1975-1976 subMember, :2324-2326 history substitution, :2411-2413 persist',
+      'THE GROUP DOUBLE-EXECUTION CANARY (join mode). A DISTINCT counter at ' +
+      'every macro-executed input the join path has: description, personality, ' +
+      'scenario and mes_example on BOTH members, the scenarioOverride, a ' +
+      "world-info entry, the author's note, a USER turn and an ASSISTANT " +
+      'turn. Every count must read 1. The assistant turn also pins ' +
+      "authorOfTurn — its {{char}} resolves to Marcus, not the speaker — and " +
+      "the author's note carries a non-system role.",
+    pins:
+      ':1975-1976 subMember, :2054-2074 join card block, :2143-2156 override, ' +
+      ':2298-2306 author note, :2323-2326 history substitution, :2411-2413 persist',
+    counters: [
+      'cardSeraphina',
+      'cardMarcus',
+      'persSeraphina',
+      'persMarcus',
+      'scenarioRuns',
+      'scenarioMarcus',
+      'exSeraphina',
+      'exMarcus',
+      'wiCount',
+      'anCount',
+      'overrideCount',
+      'userTurn',
+      'asstTurn',
+    ],
     setup: () => {
       const sera = mkChar({
         name: 'Seraphina',
         avatar: 'seraphina.png',
         description: 'Host. Deal {{incvar::cardSeraphina}}.',
-        personality: 'Warm.',
+        personality: 'Warm, take {{incvar::persSeraphina}}.',
         scenario: 'A back-room card game, hour {{incvar::scenarioRuns}}.',
+        mes_example: '<START>\n{{char}}: *deals* Ante up, round {{incvar::exSeraphina}}.',
       });
       const marc = mkChar({
         name: 'Marcus',
         avatar: 'marcus.png',
         description: 'Counter. Deal {{incvar::cardMarcus}}.',
-        personality: 'Quiet.',
-        scenario: 'Marcus never sets the scene.',
+        personality: 'Quiet, take {{incvar::persMarcus}}.',
+        // Only join mode renders a NON-speaker's scenario and examples
+        // (:2060, :2062); swap emits description and personality only. The
+        // swap counterpart fixture declares these two absent.
+        scenario: 'Marcus never sets the scene, watch {{incvar::scenarioMarcus}}.',
+        mes_example: '<START>\n{{char}}: *says nothing*, beat {{incvar::exMarcus}}.',
       });
       withBooks([
         mkBook('b-gmacro', [
@@ -1092,7 +1714,7 @@ export const GROUP_FIXTURES: GroupFixture[] = [
           }),
         ]),
       ]);
-      withAuthorNote("[Author's note {{incvar::anCount}}.]", 1);
+      withAuthorNote("[Author's note {{incvar::anCount}}.]", 1, 'user');
       return {
         characters: [sera, marc],
         currentCharacter: sera,
@@ -1107,6 +1729,38 @@ export const GROUP_FIXTURES: GroupFixture[] = [
           }),
         ],
       };
+    },
+  },
+
+  {
+    name: 'macro-writes-swap',
+    matrix: 'R2: C2 — the swap-mode macro sites',
+    what:
+      'The swap-mode counterpart of macro-writes. Swap emits description and ' +
+      'personality only (:2078-2084), so the two members\' scenario and ' +
+      'mes_example counters must be ABSENT — except the SPEAKER\'s, which ' +
+      'reach the prompt by two different routes swap alone exercises: the ' +
+      '`Current scenario:` fallback through speakerScenario() and the ' +
+      'swap-only `mesExample = subSpeaker(...)` at :2170-2173, which join ' +
+      'forces to \'\'. cardMode is mutually exclusive with the join fixture, ' +
+      'so this is one of the few genuinely new builds round 2 adds.',
+    pins: ':2076-2086 swap card block, :2036-2044 speakerScenario, :2170-2174 swap mesExample',
+    counters: [
+      'cardSeraphina',
+      'cardMarcus',
+      'persSeraphina',
+      'persMarcus',
+      'scenarioRuns',
+      'exSeraphina',
+      'wiCount',
+      'anCount',
+      'userTurn',
+      'asstTurn',
+    ],
+    absentCounters: ['scenarioMarcus', 'exMarcus', 'overrideCount'],
+    setup: () => {
+      const base = reuseGroup('macro-writes');
+      return { ...base, cardMode: 'swap', scenarioOverride: undefined };
     },
   },
 
@@ -1129,12 +1783,21 @@ export const GROUP_FIXTURES: GroupFixture[] = [
 
   {
     name: 'wi-attribution',
-    matrix: 'SHOULD: persona-book + owned-book attribution',
+    matrix: 'SHOULD: persona-book + owned-book attribution; R2: C11/C19/C12',
     what:
-      'Three books in one build: one owned by a non-speaking member (gets the ' +
-      '"another character" header AND resolves its macros against that owner), ' +
-      'one persona-linked (gets the user header), one room-shared (unlabelled).',
-    pins: ':1978-1984 memberByOwnedBookId, :1986-2043 wrapWiContent',
+      'The every-world-info-slot fixture. Attribution: one book owned by a ' +
+      'non-speaking member (gets the "another character" header AND resolves ' +
+      'its macros against that owner), one persona-linked (gets the user ' +
+      'header), one room-shared (unlabelled). Placement: a fourth book puts ' +
+      'an entry at EVERY remaining slot — after_char, before_an, after_an, ' +
+      'at_depth in-loop, at_depth 0, and at_depth beyond the history — so all ' +
+      'four flat-template interpolations and all three at-depth emission ' +
+      'sites are pinned. Deleting the wiAfterChar or wiBeforeAn ' +
+      'interpolation, or the depth-0 trailing push, was green before this.',
+    pins:
+      ':1978-1984 memberByOwnedBookId, :1986-2043 wrapWiContent, ' +
+      ':2213-2218 the four template slots, :2308-2313 / :2371-2376 / :2400-2408 at-depth',
+    counters: ['wiCount', 'gWiDepthInLoop', 'gWiDepthZero', 'gWiDepthOverflow'],
     setup: () => {
       withPersona({
         description: 'A stranger who wandered in.',
@@ -1152,13 +1815,126 @@ export const GROUP_FIXTURES: GroupFixture[] = [
             mkEntry('e-persona', { content: 'Carries a losing streak and a good coat.', position: 'before_char' }),
           ]),
           mkBook('b-shared', [
-            mkEntry('e-shared', { content: 'The back room has no clock.', position: 'before_char' }),
+            mkEntry('e-shared', {
+              content: 'The back room has no clock, count {{incvar::wiCount}}.',
+              position: 'before_char',
+            }),
+          ]),
+          mkBook('b-slots', [
+            mkEntry('e-after-char', { content: 'Slot after_char: the deck is short a nine.', position: 'after_char' }),
+            mkEntry('e-before-an', { content: 'Slot before_an: the pot is never counted aloud.', position: 'before_an' }),
+            mkEntry('e-after-an', { content: 'Slot after_an: losers leave by the stairs.', position: 'after_an' }),
+            // GROUP_HELLO is two turns, so depth 1 lands in the loop, depth 0
+            // in the trailing slot, and depth 9 in the overflow splice.
+            mkEntry('e-depth-1', {
+              content: 'Slot at_depth 1, pass {{incvar::gWiDepthInLoop}}.',
+              position: 'at_depth',
+              depth: 1,
+            }),
+            mkEntry('e-depth-0', {
+              content: 'Slot at_depth 0, pass {{incvar::gWiDepthZero}}.',
+              position: 'at_depth',
+              depth: 0,
+            }),
+            mkEntry('e-depth-9', {
+              content: 'Slot at_depth 9 (overflow), pass {{incvar::gWiDepthOverflow}}.',
+              position: 'at_depth',
+              depth: 9,
+            }),
           ]),
         ],
-        activeBookIds: ['b-marcus', 'b-persona', 'b-shared'],
+        activeBookIds: ['b-marcus', 'b-persona', 'b-shared', 'b-slots'],
       });
       useCharacterStore.setState({ characters: GROUP_ROSTER });
       return groupBase();
+    },
+  },
+
+  // --- ROUND 2 ------------------------------------------------------------
+
+  {
+    name: 'hidden-and-overflow-note',
+    matrix: 'R2: C13 + C1',
+    what:
+      'A HIDDEN turn plus an overflow-depth author\'s note with role ' +
+      "'assistant'. Three things at once: the note's role is not 'system', so " +
+      'a literal rewrite at :2391 fails here; the note interpolates ' +
+      '{{lastusermessage}}, which must resolve to the visible turn and never ' +
+      'to the hidden one (:1770); and a keyword entry whose key appears ONLY ' +
+      'in the hidden turn must not fire. The hidden turn is also the newest, ' +
+      'so dropping the :2275 filter would change both the emitted history and ' +
+      'every depthFromEnd in the loop.',
+    pins: ':1770 visibleMessages, :2275 the hidden filter, :2386-2395 overflow AN',
+    counters: ['gAnOverflow'],
+    setup: () => {
+      withAuthorNote(
+        "[Last user message was: {{lastusermessage}} — pass {{incvar::gAnOverflow}}.]",
+        9,
+        'assistant'
+      );
+      withBooks([
+        mkBook('b-hidden', [
+          mkEntry('e-hidden-key', {
+            content: 'LEAK: a hidden turn reached the world-info scan.',
+            constant: false,
+            keys: ['classified'],
+          }),
+        ]),
+      ]);
+      return groupBase({
+        messages: [
+          mkMsg('gh1', 'Deal me in.'),
+          mkMsg('gh2', '*shuffles*', { isUser: false, name: 'Seraphina', characterAvatar: 'seraphina.png' }),
+          mkMsg('gh3', 'SECRET — classified, hidden from the model.', { hidden: true }),
+        ],
+      });
+    },
+  },
+
+  {
+    name: 'wi-budget-eviction',
+    matrix: 'R2: C3 — the group world-info token budget',
+    what:
+      'The group half of the world-info budget. Group has no history trim, so ' +
+      'the WI budget is the ONLY budget it enforces — and round 1 covered ' +
+      'neither the eviction nor the fail-loud branch at :1884-1895. Builds ' +
+      'against its own chat file, because the once-per-chat warning is ' +
+      'suppressed after the solo fixture fires it.',
+    pins: ':1866-1895 group WI budget + fail-loud, worldInfoStore.ts:1319-1358',
+    setup: () => {
+      withChatFile('prompt-goldens-group-budget.jsonl');
+      useWorldInfoStore.setState({ tokenBudget: 40 });
+      withBooks([
+        mkBook('b-gbudget', [
+          mkEntry('e-gpinned', {
+            content:
+              'PINNED: the house takes five percent of every pot, and has ' +
+              'since before any of the current players were dealt in.',
+            constant: true,
+            order: 10,
+          }),
+          mkEntry('e-gcritical', {
+            content:
+              'CRITICAL: nobody at this table is allowed to name the man who ' +
+              'owns the building, however far the conversation drifts.',
+            critical: true,
+            constant: false,
+            keys: ['building'],
+            order: 20,
+          }),
+          mkEntry('e-gevicted', {
+            content:
+              'EVICTED: a low-priority note about the stairwell that the ' +
+              'budget cannot afford once the pinned pair is counted.',
+            constant: false,
+            keys: ['building'],
+            order: 900,
+          }),
+        ]),
+      ]);
+      return groupBase({
+        messages: [mkMsg('gbd1', 'Who owns the building?')],
+      });
     },
   },
 ];

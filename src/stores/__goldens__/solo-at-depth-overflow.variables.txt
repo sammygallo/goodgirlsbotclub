@@ -1,9 +1,16 @@
 # solo/at-depth-overflow   [S10]
 # what: Every at-depth class configured deeper than the history, including
-#   TWO world-info depths, so the unshift order is pinned.
-# pins: :1591-1641 overflow unshifts
+#   TWO world-info depths, so the unshift order is pinned. Roles rotate again
+#   (depth prompt assistant, author's note system, persona user, extension
+#   system — extension roles are system|user only): across the three at-depth
+#   fixtures every one of the twelve role-carrying sites is checked, and no
+#   uniform rewrite to a single literal survives.
+# pins: :1591-1641 overflow unshifts and roles
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
-(no variables written by this build)
+anOverflow = "1"
+depthPromptRuns = "1"
+wiDepthOverflow = "1"
+wiDepthOverflowB = "1"
 ══════════════════════════════════════════════════════════════════════════
-0 key(s)
+4 key(s)

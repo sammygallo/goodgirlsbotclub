@@ -1,10 +1,14 @@
 # solo/at-depth-interleave   [S8]
 # what: All five at-depth classes at ONE depth: character note, author note,
-#   persona, world info, extension — in the documented order.
-# pins: :1480-1523 in-loop insertion order
+#   persona, world info, extension — in the documented order. Every insertion
+#   carries a NON-system role from a user-settable field (CharacterEdit's
+#   depth_prompt role, AuthorNote's ROLE_OPTIONS, the persona's
+#   descriptionRole, the extension's own role) and no two classes share one,
+#   so rewriting any of them to a literal shows up here.
+# pins: :1480-1523 in-loop insertion order and roles
 # entries: 9
 # overBudget: false
-# lastTokenEstimate: 663
+# lastTokenEstimate: 680
 ══════════════════════════════════════════════════════════════════════════
 [0] system  len=2254
 You are Ivy. Write Ivy's next reply in this ongoing roleplay with Wren.
@@ -36,20 +40,20 @@ Choose the emotion that best matches how Ivy would feel based on the conversatio
 [1] user  len=6
 First.
 ──────────────────────────────────────────────────────────────────────────
-[2] system  len=28
-[Character note at depth 2.]
+[2] user  len=36
+[Character note at depth 2, pass 1.]
 ──────────────────────────────────────────────────────────────────────────
-[3] system  len=27
-[Author's note at depth 2.]
+[3] assistant  len=35
+[Author's note at depth 2, pass 1.]
 ──────────────────────────────────────────────────────────────────────────
-[4] system  len=63
+[4] user  len=63
 [The user you're talking to is Wren. A night-shift cataloguer.]
 ──────────────────────────────────────────────────────────────────────────
-[5] system  len=16
-Lore at depth 2.
+[5] system  len=24
+Lore at depth 2, pass 1.
 ──────────────────────────────────────────────────────────────────────────
-[6] system  len=16
-[ext] at depth 2
+[6] user  len=58
+[ext] at depth 2 — {{incvar::extRawAtDepth}} stays literal
 ──────────────────────────────────────────────────────────────────────────
 [7] assistant  len=7
 Second.

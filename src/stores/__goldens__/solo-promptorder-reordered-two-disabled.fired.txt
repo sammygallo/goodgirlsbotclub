@@ -1,0 +1,20 @@
+# solo/promptorder-reordered-two-disabled   [S3]
+# what: The all-sections state with emotion_instruction hoisted to the top
+#   and two sections disabled — one pre-history (jailbreak), one Stage C
+#   (char_phi). all-sections now sets a non-default jailbreakPrompt, so
+#   disabling it is actually observable here; before that it was a no-op and
+#   this fixture only ever pinned the Stage-C half of the filter.
+# pins: :1328-1332 pre-history filter, :1684-1688 Stage-C filter
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-pos/e-bc, b-persona-linked/e-persona-linked, b-pos/e-ac, b-pos/e-ba, b-pos/e-aa
+trimmedAtDepth = (none)
+activated      = e-aa, e-ac, e-ba, e-bc, e-persona-linked
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 50
+scanReport.totalTokens      = 50
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

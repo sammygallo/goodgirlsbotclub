@@ -1,0 +1,20 @@
+# solo/trim-bites   [S5]
+# what: A long chat against a small budget: the token-aware trim drops older
+#   turns. A NON-critical world-info entry sits at a deep at-depth slot so
+#   the trim cuts it after the scan passed it — the only fixture that puts
+#   anything in `wiTimerOut.trimmedAtDepth`.
+# pins: :1644-1681 trimHistoryToBudget, kept-set object identity, :1737-1743
+#   trimmedAtDepth
+# wiTimerOut.currentTurn (in): 12
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = b-trim/e-trim-deep
+activated      = e-trim-deep
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 14
+scanReport.totalTokens      = 14
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

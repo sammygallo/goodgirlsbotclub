@@ -1,0 +1,23 @@
+# group/macro-writes-swap   [R2: C2 — the swap-mode macro sites]
+# what: The swap-mode counterpart of macro-writes. Swap emits description and
+#   personality only (:2078-2084), so the two members' scenario and
+#   mes_example counters must be ABSENT — except the SPEAKER's, which reach
+#   the prompt by two different routes swap alone exercises: the `Current
+#   scenario:` fallback through speakerScenario() and the swap-only
+#   `mesExample = subSpeaker(...)` at :2170-2173, which join forces to ''.
+#   cardMode is mutually exclusive with the join fixture, so this is one of
+#   the few genuinely new builds round 2 adds.
+# pins: :2076-2086 swap card block, :2036-2044 speakerScenario, :2170-2174
+#   swap mesExample
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-gmacro/e-gmacro
+trimmedAtDepth = (none)
+activated      = e-gmacro
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 15
+scanReport.totalTokens      = 15
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

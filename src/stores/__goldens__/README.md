@@ -14,6 +14,7 @@ nothing about what the instrumentation changed.
 | `../promptGoldens.test.ts` | The harness: serializer, one build per fixture, structural self-checks. |
 | `solo-*.prompt.txt` / `group-*.prompt.txt` | Every context entry the build emitted, in order, raw. |
 | `solo-*.variables.txt` / `group-*.variables.txt` | The chat variables that build persisted. |
+| `solo-*.fired.txt` / `group-*.fired.txt` | What the build reported back through its `wiTimerOut` — `fired`, `trimmedAtDepth`, the freshly-`activated` set, and the WI budget's `scanReport`. |
 
 ## Regenerating
 
@@ -26,7 +27,7 @@ list of everything your change altered about what the model is sent. An update
 committed without reading it throws away the only thing this harness does.
 Never blind-accept `-u`.
 
-Three parts of a diff deserve a deliberate look before you accept it:
+Four parts of a diff deserve a deliberate look before you accept it:
 
 - **`.variables.txt`** — a count that went from `"1"` to `"2"` means a macro
   now executes **twice**. `{{setvar}}`/`{{incvar}}` writes are persisted into
@@ -38,6 +39,12 @@ Three parts of a diff deserve a deliberate look before you accept it:
   block 400s providers like Claude (`text content blocks must be non-empty`),
   and it is *invisible* as blank space, which is why it is rendered as a
   marker.
+- **`.fired.txt`** — the world-info telemetry the build hands back. `fired`
+  is what gets persisted into `header.wi_fired` and replayed by the
+  story-bible ingest, so an entry appearing or disappearing here changes what
+  a future replay believes fired. `activated` is what stamps the sticky /
+  cooldown clock: a **sticky carry-over must never appear in it**
+  (`worldInfoStore.ts:1541-1546`) or the carry-over becomes permanent.
 - **`# entries:` / `# overBudget:` / `# lastTokenEstimate:`** — the trim's own
   verdict. `lastTokenEstimate` has **two definitions** today: the token-aware
   path (`chatStore.ts:1676`) reports the trim's `usedTokens`, which excludes
@@ -79,6 +86,17 @@ git worktree remove --force /tmp/ggbc-mutate
 | M2 | `join('\n\n')` → `join('\n')` at `chatStore.ts:1337` | ≥ 2 prompt goldens |
 | M3 | Remove the `export` on `buildConversationContext` (`chatStore.ts:966`) | the suite must fail to **compile** (`npm run build`) and fail at runtime — never silently skip |
 
+Round 2 added five more, each one an adversarial reviewer's *proven-green*
+mutation against round 1's harness:
+
+| # | Mutation | Must fail |
+|---|---|---|
+| M4 | Replace every at-depth `role:` expression with the literal `'system'` (14 sites: `:1483 :1494 :1501 :1520 :1550 :1558 :1565 :1585 :1597 :1605 :1612 :1637 :2302 :2391`) | the three `solo-at-depth-*` goldens plus `group-macro-writes` and `group-hidden-and-overflow-note` |
+| M5 | Rewrite any single macro-executed input as `(sub(x), sub(x))` | that site's counter reads `"2"`, and `the macro canaries record every write exactly once` fails by name |
+| M6 | Delete the `${wiAfterChar …}` or `${wiBeforeAn …}` interpolation from the group flat template (`:2217`/`:2218`) | `group-wi-attribution` |
+| M7 | `const finalSystemPrompt = systemPrompt;` (drop the RAG concat, `:2233-2235`) | `group-join` |
+| M8 | Drop `- windowSkew` from `summarySliceOffset` (`:1359`), or filter before slicing at `:1350` | `solo-fixed-window-summary-skew` |
+
 Recorded results at the time this directory was created are in the task-0
 build report; re-run them, do not trust the record.
 
@@ -107,18 +125,20 @@ on every run):
 
 ## Coverage
 
-Solo (20 fixtures): baseline · all sections · reordered + disabled promptOrder
+Solo (25 fixtures): baseline · all sections · reordered + disabled promptOrder
 · empty system block · trim bites · trim over budget · token-aware off ·
 at-depth interleave · at-depth 0 · at-depth overflow · image-only + blank
 assistant turn · macro writes · recall present/absent · persona after_char ·
 persona in_prompt · pure chat mode · linked style · summary compaction floor ·
-hidden messages.
+hidden messages · world-info scan options · world-info budget eviction ·
+server-matched entries · card overrides disabled · fixed window + summary skew.
 
-Group (13 fixtures): swap · join · swap + scenario override · join + scenario
-override · blank user turn kept (folded) / dropped (unfolded) / dropped (not
-last) · blank guards in-loop · blank guards overflow · 30-message window slice
-before the system filter · macro writes · author's note at depth 0 · world-info
-attribution.
+Group (17 fixtures): swap · join (+ recall) · swap + scenario override · join +
+scenario override · blank user turn kept (folded) / dropped (unfolded) /
+dropped (not last) · blank guards in-loop · blank guards overflow · 30-message
+window slice before the system filter · macro writes (join) · macro writes
+(swap) · author's note at depth 0 · world-info attribution + every slot ·
+hidden turn + overflow note · world-info budget eviction.
 
 Known gap: **no fixture makes all 14 pre-history sections non-empty at once**,
 because `persona_before_char` and `persona_after_char` both read the single
@@ -128,3 +148,60 @@ the 14th.
 
 Deferred (per the task-0 spec): empty roster · single-member group ·
 promptOrder permutations beyond the one reordering.
+
+## Two rules a future change must not quietly break
+
+### 1. Counters are `{{incvar}}` / `{{addvar}}`, never `{{setvar}}`
+
+`{{setvar::k::v}}` is **idempotent**. Writing the same literal twice is
+byte-identical to writing it once, so a setvar-only fixture is *structurally
+incapable* of detecting a double execution — the exact failure these files
+exist to catch. Round 1's group blank-guard fixtures had this shape: their
+placement implied they guarded double execution and they could not have.
+
+Use:
+
+- `{{incvar::k}}` where the value may be emitted — it returns the new count,
+  so a second execution shows up in the **prompt** golden as well as the
+  variables golden;
+- `{{addvar::k::1}}` where the text must still render blank — it counts and
+  returns `''` (`utils/macros.ts:442-453`), which is what the blank-content
+  guards need.
+
+`setvar` is still right for recording *which stage ran last* (the `stage`
+variable in `solo-macro-writes`); it is never right for a run count.
+
+### 2. Task 1b's split boundary is defended by the at-depth counters
+
+Task 1b splits `buildConversationContext` into a "prepare" half and a "finish"
+half and **runs the finish half twice** (a two-pass fixed point: recall is an
+input to the builder and also consumes the trim budget that decides the
+boundary). The planned seam is after the at-depth overflow unshifts, at
+`chatStore.ts:1641/1642`.
+
+A review of round 1 proved that applying that design one block **higher** — at
+the natural-looking seam after the history loop (`:1547`), so that the finish
+half re-runs the depth-0 trailing slot and the four overflow unshifts —
+re-executed `sub()` at `:1555`/`:1602` and `joinWi()` at `:1571`/`:1616`, and
+**not one golden changed**. Nothing in the harness defended the seam.
+
+It does now. Every macro-executed input in those blocks carries its own
+counter, and the fixture that owns it lists the counter in `counters`:
+
+| Block | Counters | Fixture |
+|---|---|---|
+| in-loop insertions (`:1481`-`:1523`) | `depthPromptRuns` `note` `wiDepthInLoop` | `solo-at-depth-interleave` |
+| depth-0 trailing (`:1548`-`:1588`) | `depthPromptRuns` `anDepthZero` `wiDepthZero` | `solo-at-depth-zero` |
+| overflow unshifts (`:1591`-`:1641`) | `depthPromptRuns` `anOverflow` `wiDepthOverflow` `wiDepthOverflowB` | `solo-at-depth-overflow` |
+| group in-loop / depth-0 / overflow | `gWiDepthInLoop` `gWiDepthZero` `gWiDepthOverflow` `anCount` `gAnOverflow` | `group-wi-attribution`, `group-hidden-and-overflow-note` |
+
+Re-running any of those blocks flips its counters to `"2"` and fails a named
+test (`the macro canaries record every write exactly once`), not just an
+anonymous file diff. **Do not move the seam without re-reading this table**,
+and do not delete a counter to make a diff go away.
+
+The companion test `every macro-executing input in the builders owns a named
+counter` holds the hand-maintained map from "a place either builder calls
+`sub()` / `processMacros()`" to "the fixture that would notice if it ran
+twice". Adding a macro-executed input to either builder means adding a counter
+there too.

@@ -1,0 +1,17 @@
+# group/join-scenario-override   [G4]
+# what: Join + scenarioOverride: the override wins the `Current scenario:`
+#   slot while the speaker's own card block still renders their scenario, so
+#   `scenarioRuns` reads exactly 1.
+# pins: :2054-2074 + :2141-2155
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

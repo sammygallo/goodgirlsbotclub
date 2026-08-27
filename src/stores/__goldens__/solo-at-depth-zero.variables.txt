@@ -1,9 +1,13 @@
 # solo/at-depth-zero   [S9]
 # what: All five at-depth classes at depth 0 — the trailing slot after the
-#   newest turn.
-# pins: :1548-1588 depth-0 branches
+#   newest turn. Roles are rotated against at-depth-interleave (depth prompt
+#   system, author's note user, persona assistant, extension user) so no
+#   single literal role satisfies both fixtures.
+# pins: :1548-1588 depth-0 branches and roles
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
-(no variables written by this build)
+anDepthZero = "1"
+depthPromptRuns = "1"
+wiDepthZero = "1"
 ══════════════════════════════════════════════════════════════════════════
-0 key(s)
+3 key(s)

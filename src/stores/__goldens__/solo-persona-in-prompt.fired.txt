@@ -1,0 +1,18 @@
+# solo/persona-in-prompt   [SHOULD: persona positions]
+# what: Position in_prompt. personaBlock IS computed at :1266 but no section
+#   key emits it, so the description reaches nothing. This golden pins that
+#   drop deliberately — when it is fixed, this file changes.
+# pins: :1263-1271 personaBlock vs :1287-1290 persona_before_char
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

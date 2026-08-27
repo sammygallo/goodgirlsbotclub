@@ -1,0 +1,17 @@
+# group/window-slice-before-filter   [G9]
+# what: Forty messages, five of them system turns inside the last thirty.
+#   .slice(-30) runs BEFORE the isSystem filter, so fewer than thirty turns
+#   reach the prompt.
+# pins: :2275 slice-before-filter
+# wiTimerOut.currentTurn (in): 20
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

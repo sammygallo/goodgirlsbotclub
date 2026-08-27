@@ -1,10 +1,12 @@
 # solo/at-depth-zero   [S9]
 # what: All five at-depth classes at depth 0 — the trailing slot after the
-#   newest turn.
-# pins: :1548-1588 depth-0 branches
+#   newest turn. Roles are rotated against at-depth-interleave (depth prompt
+#   system, author's note user, persona assistant, extension user) so no
+#   single literal role satisfies both fixtures.
+# pins: :1548-1588 depth-0 branches and roles
 # entries: 8
 # overBudget: false
-# lastTokenEstimate: 657
+# lastTokenEstimate: 663
 ══════════════════════════════════════════════════════════════════════════
 [0] system  len=2254
 You are Ivy. Write Ivy's next reply in this ongoing roleplay with Wren.
@@ -39,18 +41,18 @@ First.
 [2] assistant  len=7
 Second.
 ──────────────────────────────────────────────────────────────────────────
-[3] system  len=28
-[Character note at depth 0.]
+[3] system  len=36
+[Character note at depth 0, pass 1.]
 ──────────────────────────────────────────────────────────────────────────
-[4] system  len=27
-[Author's note at depth 0.]
+[4] user  len=35
+[Author's note at depth 0, pass 1.]
 ──────────────────────────────────────────────────────────────────────────
-[5] system  len=63
+[5] assistant  len=63
 [The user you're talking to is Wren. A night-shift cataloguer.]
 ──────────────────────────────────────────────────────────────────────────
-[6] system  len=16
-Lore at depth 0.
+[6] system  len=24
+Lore at depth 0, pass 1.
 ──────────────────────────────────────────────────────────────────────────
-[7] system  len=16
+[7] user  len=16
 [ext] at depth 0
 ──────────────────────────────────────────────────────────────────────────

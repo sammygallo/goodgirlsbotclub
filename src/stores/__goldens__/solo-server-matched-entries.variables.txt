@@ -1,0 +1,15 @@
+# solo/server-matched-entries   [R2: C3 — the server-retrieval branch of :1080]
+# what: The other half of `serverMatchedEntries ??
+#   scanMessagesForEntries(...)`, which three of the five production solo
+#   call sites take (:4291, :4523, :4923). A local book holds a constant
+#   entry that WOULD have matched; it must be absent from the prompt, because
+#   the local scan never runs. The server entries carry backend-scheme UUID
+#   ids, so `fired` reports ids the local store cannot resolve — exactly the
+#   case captureWiFired filters at :2795-2801 — and `scanReport` stays at its
+#   zeroed default because the server returns no eviction list.
+# pins: :1080 the ?? branch, :1094-1110 the skipped scan report
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

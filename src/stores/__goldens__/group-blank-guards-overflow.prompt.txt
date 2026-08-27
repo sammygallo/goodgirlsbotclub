@@ -1,7 +1,8 @@
 # group/blank-guards-overflow   [G8 (b)]
 # what: The same two guards on their OVERFLOW branches — the author's note
-#   and the world-info entry both configured deeper than the history.
-# pins: :2388 overflow AN guard, :2404-2408 wi overflow
+#   and the world-info entry both configured deeper than the history — with
+#   the same {{addvar}} run counters.
+# pins: :2386-2395 overflow AN guard, :2400-2408 wi overflow
 # entries: 2
 # lastTokenEstimate: -1
 ══════════════════════════════════════════════════════════════════════════

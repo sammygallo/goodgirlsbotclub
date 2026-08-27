@@ -1,0 +1,19 @@
+# solo/recall-absent   [S13]
+# what: Same build with no ragContext — rag_context renders empty and is
+#   filtered out. Also carries a macro-only author's note at an OVERFLOW
+#   depth (5 > 1 message), the third and last of solo's three blank-AN
+#   guards.
+# pins: :1305-1307 / :1330-1332, :1603-1610 overflow AN blank guard
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

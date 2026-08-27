@@ -1,12 +1,18 @@
 # group/blank-guards-in-loop   [G8 (a)]
 # what: A macro-only author's note at the IN-LOOP depth and a world-info
 #   at-depth entry that renders to '': both write their variables and neither
-#   pushes a blank context entry.
-# pins: :2300 in-loop AN guard, :2312 wi at-depth guard
+#   pushes a blank context entry. The {{setvar}} is what drives the
+#   blank-content branch; the {{addvar}} beside it is what makes the RUN
+#   COUNT observable — setvar alone is idempotent, so a setvar-only version
+#   of this fixture could not tell one execution from two, which is precisely
+#   what its placement implies it guards.
+# pins: :2298-2306 in-loop AN guard, :2308-2313 wi at-depth guard
 # A count above 1 here means a macro executed more than once.
 ══════════════════════════════════════════════════════════════════════════
 anGuard = "inloop"
+gAnGuardRuns = "1"
+gWiGuardRuns = "1"
 scenarioRuns = "1"
 wiGuard = "rendered-empty"
 ══════════════════════════════════════════════════════════════════════════
-3 key(s)
+5 key(s)

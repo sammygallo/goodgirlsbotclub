@@ -1,0 +1,19 @@
+# solo/at-depth-zero   [S9]
+# what: All five at-depth classes at depth 0 — the trailing slot after the
+#   newest turn. Roles are rotated against at-depth-interleave (depth prompt
+#   system, author's note user, persona assistant, extension user) so no
+#   single literal role satisfies both fixtures.
+# pins: :1548-1588 depth-0 branches and roles
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-depth0/e-d0
+trimmedAtDepth = (none)
+activated      = e-d0
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 12
+scanReport.totalTokens      = 12
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

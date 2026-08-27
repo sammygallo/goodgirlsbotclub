@@ -1,0 +1,17 @@
+# solo/token-aware-off   [S7]
+# what: tokenAware off: history is a fixed message-count window and the token
+#   estimate comes from the NON-token-aware path, which counts Stage C.
+# pins: :1678-1680 else-branch, :1694-1696 estimateConversationTokens
+# wiTimerOut.currentTurn (in): 4
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

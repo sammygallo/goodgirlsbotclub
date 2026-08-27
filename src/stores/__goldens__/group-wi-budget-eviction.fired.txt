@@ -1,0 +1,19 @@
+# group/wi-budget-eviction   [R2: C3 — the group world-info token budget]
+# what: The group half of the world-info budget. Group has no history trim,
+#   so the WI budget is the ONLY budget it enforces — and round 1 covered
+#   neither the eviction nor the fail-loud branch at :1884-1895. Builds
+#   against its own chat file, because the once-per-chat warning is
+#   suppressed after the solo fixture fires it.
+# pins: :1866-1895 group WI budget + fail-loud, worldInfoStore.ts:1319-1358
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-gbudget/e-gpinned, b-gbudget/e-gcritical
+trimmedAtDepth = (none)
+activated      = e-gcritical, e-gpinned
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 40
+scanReport.pinnedTokens     = 60
+scanReport.totalTokens      = 60
+scanReport.pinnedOverBudget = true
+scanReport.dropped          = b-gbudget/e-gevicted

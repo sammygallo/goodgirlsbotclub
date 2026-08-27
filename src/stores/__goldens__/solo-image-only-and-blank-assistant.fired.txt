@@ -1,0 +1,23 @@
+# solo/image-only-and-blank-assistant   [S11]
+# what: The blank-content fixture. An image-only user turn (kept, and it
+#   ships EMPTY content) next to a blank assistant turn (dropped); a
+#   character note that renders to WHITESPACE ONLY (pushed anyway — the
+#   in-loop guard at :1481 tests `depthPromptContent`, not `.trim()`); and a
+#   macro-only author's note at the same depth that renders to '' and IS
+#   swallowed by its own guard, which tests `.trim()`. The two guards
+#   disagree on purpose and both are pinned here.
+# pins: :1481 depth-prompt guard, :1490-1497 in-loop AN blank guard,
+#   :1531-1540 image-only keep
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

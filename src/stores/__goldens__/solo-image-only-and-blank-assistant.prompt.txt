@@ -1,10 +1,16 @@
 # solo/image-only-and-blank-assistant   [S11]
-# what: An image-only user turn (kept, and it ships EMPTY content) next to a
-#   blank assistant turn (dropped).
-# pins: :1531-1540 the image-only keep exemption
-# entries: 3
+# what: The blank-content fixture. An image-only user turn (kept, and it
+#   ships EMPTY content) next to a blank assistant turn (dropped); a
+#   character note that renders to WHITESPACE ONLY (pushed anyway — the
+#   in-loop guard at :1481 tests `depthPromptContent`, not `.trim()`); and a
+#   macro-only author's note at the same depth that renders to '' and IS
+#   swallowed by its own guard, which tests `.trim()`. The two guards
+#   disagree on purpose and both are pinned here.
+# pins: :1481 depth-prompt guard, :1490-1497 in-loop AN blank guard,
+#   :1531-1540 image-only keep
+# entries: 4
 # overBudget: false
-# lastTokenEstimate: 599
+# lastTokenEstimate: 604
 ══════════════════════════════════════════════════════════════════════════
 [0] system  len=2254
 You are Ivy. Write Ivy's next reply in this ongoing roleplay with User.
@@ -36,6 +42,9 @@ Choose the emotion that best matches how Ivy would feel based on the conversatio
 [1] user  len=13
 Look at this.
 ──────────────────────────────────────────────────────────────────────────
-[2] user  len=0
+[2] system  len=4
+∅ (whitespace only: "    ")
+──────────────────────────────────────────────────────────────────────────
+[3] user  len=0
 ∅ (empty content)
 ──────────────────────────────────────────────────────────────────────────
