@@ -1,0 +1,11 @@
+# solo/linked-style-active   [SHOULD: linked-style + char_phi branch 2]
+# what: A linked style template is active: the user main prompt beats the
+#   card's system_prompt, and char_phi becomes the style reinforcement
+#   instead of the card's post-history instructions.
+# pins: :1195-1196 linkedStyleActive, :1209-1211 the linkedStyleActive arm of
+#   the PHI gate, :1257-1261 mainPrompt, :1314-1318 char_phi
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+charSysPrompt = "1"
+══════════════════════════════════════════════════════════════════════════
+1 key(s)

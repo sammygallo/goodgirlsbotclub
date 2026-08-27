@@ -1,0 +1,25 @@
+# solo/all-sections   [S2]
+# what: Every pre-history section non-empty EXCEPT persona_after_char (see
+#   persona-after-char — the two persona slots are mutually exclusive), plus
+#   all four Stage-C sections. Also carries three deliberate details: a
+#   persona-LINKED book that is not globally active (so only the persona-book
+#   union can pull it in, and its entry gets the user-context wrapper), a
+#   world-info entry ending in a blank line and a jailbreak padded with
+#   spaces (both stages push content UNTRIMMED), and a macro inside an
+#   extension contribution (extension text is NOT substituted).
+# pins: :1046 persona-book union, :1133-1136 persona wrapper, :1285-1322 all
+#   18 keys, :1336-1338 the untrimmed push + join, :1684-1690 Stage C
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-pos/e-bc, b-persona-linked/e-persona-linked, b-pos/e-ac, b-pos/e-ba, b-pos/e-aa
+trimmedAtDepth = (none)
+activated      = e-aa, e-ac, e-ba, e-bc, e-persona-linked
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 58
+scanReport.totalTokens      = 58
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

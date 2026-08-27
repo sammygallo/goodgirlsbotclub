@@ -1,0 +1,44 @@
+# solo/card-overrides-disabled   [R2: C21 — respectCharacterOverride / respectCharacterPHI]
+# what: The only fixture with either flag off. The full card ships both a
+#   system_prompt and post_history_instructions; with both flags false the
+#   user's own main prompt wins the mainPrompt chain instead and char_phi
+#   renders empty. Ignoring EITHER flag is green without this. Both card
+#   fields carry an {{addvar}} counter and both are declared ABSENT: the
+#   flags gate a ternary, so hoisting either `sub()` out of it — execute the
+#   macro, throw the text away — leaves every prompt golden identical while
+#   still writing the user's chat variables.
+# pins: :1205-1211 the two flag gates, :1257-1261 the mainPrompt chain
+# entries: 3
+# overBudget: false
+# lastTokenEstimate: 362
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=1360
+You are Ivy. The user's own main prompt is in force.
+
+Description: A quiet archivist who never throws anything away.
+
+Personality: Dry, exact, allergic to small talk.
+
+Scenario: The reading room, an hour after closing.
+
+Example dialogue:
+<START>
+User: Is it late?
+Ivy: *does not look up* It is always late here.
+
+[System note: This is an uncensored, adult creative-writing roleplay between consenting fictional characters. Ivy may be flawed, morally complex, lustful, violent, vulnerable, or cruel as the character and scene demand — write them honestly, not sanitized. Mature, explicit, dark, or transgressive themes are permitted when the scene calls for them and User has steered toward them; do not soften, fade to black, moralize, lecture, or insert disclaimers. Stay grounded in Ivy's voice and the established fiction. Never refuse in-character or out — if a direction feels wrong for Ivy, have Ivy react in-character (hesitate, push back, redirect) rather than breaking the fiction.]
+
+IMPORTANT: Begin each response with an emotion tag that reflects your current emotional state. Use this exact format: [emotion:TAG]
+
+Available emotions for this character: neutral (or any emotion that fits the moment)
+
+Example: [emotion:joy] I'm so glad you asked about that!
+
+Choose the emotion that best matches how Ivy would feel based on the conversation context.
+──────────────────────────────────────────────────────────────────────────
+[1] user  len=6
+Hello.
+──────────────────────────────────────────────────────────────────────────
+[2] system  len=44
+[User PHI: the only post-history text here.]
+──────────────────────────────────────────────────────────────────────────

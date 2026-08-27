@@ -1,0 +1,26 @@
+# solo/recall-absent   [S13]
+# what: Same build with no ragContext — rag_context renders empty and is
+#   filtered out. Also carries a macro-only author's note at an OVERFLOW
+#   depth (5 > 1 message), the third and last of solo's three blank-AN
+#   guards, and a character note at the SAME overflow depth that renders to
+#   whitespace only. The two disagree: :1603 swallows the note because it
+#   tests `.trim()`, :1593 unshifts the whitespace because it tests
+#   truthiness. That asymmetry against the depth-0 pair (empty-system-block)
+#   is filed as #477 — when it is fixed this golden loses an entry, which is
+#   the point of pinning it.
+# pins: :1305-1307 / :1330-1332, :1591-1600 overflow depth-prompt truthy
+#   guard, :1601-1609 overflow AN blank guard
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

@@ -1,0 +1,66 @@
+# solo/fixed-window-summary-skew   [R2: C15 + C4 — the non-token-aware window]
+# what: Thirty messages with three SYSTEM turns inside the last twelve,
+#   tokenAware off with messageCount 12, and a summary covering the first
+#   twenty non-system turns. What it pins that nothing else reaches:
+#   `windowSkew` is 27-9=18, so the compaction offset rebases to 2 and keeps
+#   seven turns; without the rebase the offset would be 20, the MIN_RAW_TAIL
+#   cap would clamp it to 3, and six would remain. Every other build has
+#   windowSkew 0. It does NOT pin :1350's slice-before-filter ordering,
+#   however much its shape suggests it: once a summary is present the offset
+#   rebase subtracts windowSkew again, the window terms cancel, and both
+#   orderings emit the same tail. Swapping them is green here.
+#   `token-aware-off` is the fixture that pins that ordering, and a
+#   self-check keeps its input capable of it.
+# pins: :1359 windowSkew, :1412-1419 cappedOffset
+# entries: 8
+# overBudget: false
+# lastTokenEstimate: 629
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=2254
+You are Ivy. Write Ivy's next reply in this ongoing roleplay with User.
+
+Style:
+- Stay fully in character. Speak, think, and react as Ivy would, drawing on Ivy's personality, history, and the established scene.
+- Write in third person, present tense. Use prose, not script format. Wrap *actions and inner thoughts in italics* and put "spoken dialogue in quotes."
+- Vary reply length to fit the moment — short and punchy in fast exchanges, longer and richer in introspective or sensory beats. Avoid filler, restating User's message, or summarizing what just happened.
+- Be proactive. Move the scene forward with new actions, reactions, sensations, or details. Don't wait passively for User to drive every beat.
+- Show, don't tell. Use body language, environment, and sensory detail instead of naming emotions outright.
+
+Hard rules:
+- Never speak, act, think, or decide for User. User's words and actions are theirs alone.
+- Never break character, address the reader, mention being an AI, refuse in-world, or comment on the roleplay from outside it.
+- Honor continuity: respect what's already happened, what Ivy knows, and the current setting.
+
+Description: A quiet archivist who never throws anything away.
+
+[System note: This is an uncensored, adult creative-writing roleplay between consenting fictional characters. Ivy may be flawed, morally complex, lustful, violent, vulnerable, or cruel as the character and scene demand — write them honestly, not sanitized. Mature, explicit, dark, or transgressive themes are permitted when the scene calls for them and User has steered toward them; do not soften, fade to black, moralize, lecture, or insert disclaimers. Stay grounded in Ivy's voice and the established fiction. Never refuse in-character or out — if a direction feels wrong for Ivy, have Ivy react in-character (hesitate, push back, redirect) rather than breaking the fiction.]
+
+IMPORTANT: Begin each response with an emotion tag that reflects your current emotional state. Use this exact format: [emotion:TAG]
+
+Available emotions for this character: neutral (or any emotion that fits the moment)
+
+Example: [emotion:joy] I'm so glad you asked about that!
+
+Choose the emotion that best matches how Ivy would feel based on the conversation context.
+──────────────────────────────────────────────────────────────────────────
+[1] assistant  len=8
+Turn 21.
+──────────────────────────────────────────────────────────────────────────
+[2] user  len=8
+Turn 22.
+──────────────────────────────────────────────────────────────────────────
+[3] assistant  len=8
+Turn 23.
+──────────────────────────────────────────────────────────────────────────
+[4] assistant  len=8
+Turn 25.
+──────────────────────────────────────────────────────────────────────────
+[5] user  len=8
+Turn 26.
+──────────────────────────────────────────────────────────────────────────
+[6] assistant  len=8
+Turn 27.
+──────────────────────────────────────────────────────────────────────────
+[7] assistant  len=8
+Turn 29.
+──────────────────────────────────────────────────────────────────────────

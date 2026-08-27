@@ -1,0 +1,22 @@
+# solo/at-depth-overflow   [S10]
+# what: Every at-depth class configured deeper than the history, including
+#   TWO world-info depths, so the unshift order is pinned. Roles rotate again
+#   (depth prompt assistant, author's note system, persona user, extension
+#   system — extension roles are system|user only): across the three at-depth
+#   fixtures every one of the twelve role-carrying sites is checked, and no
+#   uniform rewrite to a single literal survives.
+# pins: :1591-1641 overflow unshifts and roles
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-of/e-d11, b-of/e-d10
+trimmedAtDepth = (none)
+activated      = e-d10, e-d11
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 26
+scanReport.totalTokens      = 26
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

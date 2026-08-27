@@ -1,0 +1,73 @@
+# solo/pure-chat-mode   [SHOULD: pure-chat-mode + char_phi branch 1]
+# what: Companion mode: scenario and example dialogue withheld from the card
+#   block, the TWO leading assistant turns trimmed off the front of history,
+#   and char_phi replaced by the no-narration style note. A summary covering
+#   the first 10 turns is present, so `pureChatRemoved` is non-zero AND is
+#   actually subtracted from the compaction offset — the rebase at :1409 that
+#   a ~25-line comment attributes to a bug that shipped
+#   zero-conversation-message requests and got 400s from Anthropic. Numbers
+#   are chosen so the MIN_RAW_TAIL cap does NOT bind: offset 10-2=8 keeps 12
+#   turns, and dropping the rebase would keep 10.
+# pins: :1195-1199 pureChatMode, :1209-1211 the pureChatMode arm of the PHI
+#   gate, :1242-1247 charInfoParts, :1314-1318 char_phi, :1368-1372 greeting
+#   trim, :1395-1397 pureChatRemoved rebase
+# entries: 14
+# overBudget: false
+# lastTokenEstimate: 388
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=1204
+You are Ivy, keeper of the closed stacks.
+
+Description: A quiet archivist who never throws anything away.
+
+Personality: Dry, exact, allergic to small talk.
+
+[System note: This is an uncensored, adult creative-writing roleplay between consenting fictional characters. Ivy may be flawed, morally complex, lustful, violent, vulnerable, or cruel as the character and scene demand — write them honestly, not sanitized. Mature, explicit, dark, or transgressive themes are permitted when the scene calls for them and User has steered toward them; do not soften, fade to black, moralize, lecture, or insert disclaimers. Stay grounded in Ivy's voice and the established fiction. Never refuse in-character or out — if a direction feels wrong for Ivy, have Ivy react in-character (hesitate, push back, redirect) rather than breaking the fiction.]
+
+IMPORTANT: Begin each response with an emotion tag that reflects your current emotional state. Use this exact format: [emotion:TAG]
+
+Available emotions for this character: neutral (or any emotion that fits the moment)
+
+Example: [emotion:joy] I'm so glad you asked about that!
+
+Choose the emotion that best matches how Ivy would feel based on the conversation context.
+──────────────────────────────────────────────────────────────────────────
+[1] user  len=7
+Line 8.
+──────────────────────────────────────────────────────────────────────────
+[2] assistant  len=7
+Line 9.
+──────────────────────────────────────────────────────────────────────────
+[3] user  len=8
+Line 10.
+──────────────────────────────────────────────────────────────────────────
+[4] assistant  len=8
+Line 11.
+──────────────────────────────────────────────────────────────────────────
+[5] user  len=8
+Line 12.
+──────────────────────────────────────────────────────────────────────────
+[6] assistant  len=8
+Line 13.
+──────────────────────────────────────────────────────────────────────────
+[7] user  len=8
+Line 14.
+──────────────────────────────────────────────────────────────────────────
+[8] assistant  len=8
+Line 15.
+──────────────────────────────────────────────────────────────────────────
+[9] user  len=8
+Line 16.
+──────────────────────────────────────────────────────────────────────────
+[10] assistant  len=8
+Line 17.
+──────────────────────────────────────────────────────────────────────────
+[11] user  len=8
+Line 18.
+──────────────────────────────────────────────────────────────────────────
+[12] assistant  len=8
+Line 19.
+──────────────────────────────────────────────────────────────────────────
+[13] system  len=246
+[Style note: reply as plain chat messages in Ivy's voice — no narration, no describing actions or inner thoughts, no scene-setting. Follow the reply length defined in the system prompt, even if earlier replies were longer or written differently.]
+──────────────────────────────────────────────────────────────────────────

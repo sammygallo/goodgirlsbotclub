@@ -1,0 +1,46 @@
+# group/hidden-and-overflow-note   [R2: C13 + C1]
+# what: A HIDDEN turn plus an overflow-depth author's note with role
+#   'assistant'. Three things at once: the note's role is not 'system', so a
+#   literal rewrite at :2391 fails here; the note interpolates
+#   {{lastusermessage}}, which must resolve to the visible turn and never to
+#   the hidden one (:1770); and a keyword entry whose key appears ONLY in the
+#   hidden turn must not fire. The hidden turn is also the newest, so
+#   dropping the :2275 filter would change both the emitted history and every
+#   depthFromEnd in the loop.
+# pins: :1770 visibleMessages, :2275 the hidden filter, :2386-2395 overflow
+#   AN
+# entries: 4
+# lastTokenEstimate: -1
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=1039
+This is a roleplay group chat. You are playing Seraphina — write ONLY Seraphina's turn.
+
+Characters in this conversation:
+- Seraphina: Description: The room's host, always mid-sentence. Personality: Warm, relentless.
+- Marcus: Description: Counts cards and denies it. Personality: Quiet, watchful.
+
+Current scenario: A back-room card game, hour 1.
+Example dialogue for Seraphina:
+<START>
+Seraphina: *deals* Ante up.
+
+FORMATTING RULES (follow exactly):
+- Wrap ALL actions, movements, and narration in *single asterisks*: *He glances toward the door*
+- Write spoken dialogue as plain text or in "quotes": "Hello there!"
+- Alternate freely between *action* and "dialogue" throughout your response
+- Begin your response with an emotion tag: [emotion:TAG]
+- Available emotions: neutral, joy, sadness, anger, surprise, fear, love, excitement, confusion, embarrassment, curiosity, amusement
+
+CONTENT RULES:
+- Stay in character as Seraphina only — do NOT write lines for other characters
+- React naturally to what other characters and the user say
+──────────────────────────────────────────────────────────────────────────
+[1] assistant  len=46
+[Last user message was: Deal me in. — pass 1.]
+──────────────────────────────────────────────────────────────────────────
+[2] user  len=11
+Deal me in.
+──────────────────────────────────────────────────────────────────────────
+[3] assistant  len=23
+[Seraphina]: *shuffles*
+──────────────────────────────────────────────────────────────────────────

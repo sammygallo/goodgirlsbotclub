@@ -1,0 +1,48 @@
+# group/macro-writes-swap   [R2: C2 — the swap-mode macro sites]
+# what: The swap-mode counterpart of macro-writes. Swap emits description and
+#   personality only (:2078-2084), so the two members' scenario and
+#   mes_example counters must be ABSENT — except the SPEAKER's, which reach
+#   the prompt by two different routes swap alone exercises: the `Current
+#   scenario:` fallback through speakerScenario() and the swap-only
+#   `mesExample = subSpeaker(...)` at :2171-2174, which join forces to ''.
+#   cardMode is mutually exclusive with the join fixture, so this is one of
+#   the few genuinely new builds round 2 adds.
+# pins: :2076-2086 swap card block, :2036-2044 speakerScenario, :2171-2174
+#   swap mesExample
+# entries: 4
+# lastTokenEstimate: -1
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=1049
+This is a roleplay group chat. You are playing Seraphina — write ONLY Seraphina's turn.
+
+House rule 1: no talking about the game.
+
+Characters in this conversation:
+- Seraphina: Description: Host. Deal 1. Personality: Warm, take 1.
+- Marcus: Description: Counter. Deal 1. Personality: Quiet, take 1.
+
+Current scenario: A back-room card game, hour 1.
+Example dialogue for Seraphina:
+<START>
+Seraphina: *deals* Ante up, round 1.
+
+FORMATTING RULES (follow exactly):
+- Wrap ALL actions, movements, and narration in *single asterisks*: *He glances toward the door*
+- Write spoken dialogue as plain text or in "quotes": "Hello there!"
+- Alternate freely between *action* and "dialogue" throughout your response
+- Begin your response with an emotion tag: [emotion:TAG]
+- Available emotions: neutral, joy, sadness, anger, surprise, fear, love, excitement, confusion, embarrassment, curiosity, amusement
+
+CONTENT RULES:
+- Stay in character as Seraphina only — do NOT write lines for other characters
+- React naturally to what other characters and the user say
+──────────────────────────────────────────────────────────────────────────
+[1] user  len=16
+My turn — bet 1.
+──────────────────────────────────────────────────────────────────────────
+[2] user  len=18
+[Author's note 1.]
+──────────────────────────────────────────────────────────────────────────
+[3] assistant  len=32
+[Marcus]: *Marcus folds, hand 1*
+──────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,8 @@
+# solo/recall-present   [S13]
+# what: ragContext supplied — the rag_context section renders its wrapper.
+# pins: :1305-1307 rag_context (the phase boundary task 1b splits at)
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

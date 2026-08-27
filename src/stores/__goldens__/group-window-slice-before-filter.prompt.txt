@@ -1,0 +1,106 @@
+# group/window-slice-before-filter   [G9]
+# what: Forty messages, five of them system turns inside the last thirty.
+#   .slice(-30) runs BEFORE the isSystem filter, so fewer than thirty turns
+#   reach the prompt.
+# pins: :2275 slice-before-filter
+# entries: 26
+# lastTokenEstimate: -1
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=1039
+This is a roleplay group chat. You are playing Seraphina — write ONLY Seraphina's turn.
+
+Characters in this conversation:
+- Seraphina: Description: The room's host, always mid-sentence. Personality: Warm, relentless.
+- Marcus: Description: Counts cards and denies it. Personality: Quiet, watchful.
+
+Current scenario: A back-room card game, hour 1.
+Example dialogue for Seraphina:
+<START>
+Seraphina: *deals* Ante up.
+
+FORMATTING RULES (follow exactly):
+- Wrap ALL actions, movements, and narration in *single asterisks*: *He glances toward the door*
+- Write spoken dialogue as plain text or in "quotes": "Hello there!"
+- Alternate freely between *action* and "dialogue" throughout your response
+- Begin your response with an emotion tag: [emotion:TAG]
+- Available emotions: neutral, joy, sadness, anger, surprise, fear, love, excitement, confusion, embarrassment, curiosity, amusement
+
+CONTENT RULES:
+- Stay in character as Seraphina only — do NOT write lines for other characters
+- React naturally to what other characters and the user say
+──────────────────────────────────────────────────────────────────────────
+[1] user  len=8
+Turn 10.
+──────────────────────────────────────────────────────────────────────────
+[2] assistant  len=21
+[Seraphina]: Turn 11.
+──────────────────────────────────────────────────────────────────────────
+[3] assistant  len=21
+[Seraphina]: Turn 13.
+──────────────────────────────────────────────────────────────────────────
+[4] user  len=8
+Turn 14.
+──────────────────────────────────────────────────────────────────────────
+[5] assistant  len=21
+[Seraphina]: Turn 15.
+──────────────────────────────────────────────────────────────────────────
+[6] user  len=8
+Turn 16.
+──────────────────────────────────────────────────────────────────────────
+[7] assistant  len=21
+[Seraphina]: Turn 17.
+──────────────────────────────────────────────────────────────────────────
+[8] assistant  len=21
+[Seraphina]: Turn 19.
+──────────────────────────────────────────────────────────────────────────
+[9] user  len=8
+Turn 20.
+──────────────────────────────────────────────────────────────────────────
+[10] assistant  len=21
+[Seraphina]: Turn 21.
+──────────────────────────────────────────────────────────────────────────
+[11] user  len=8
+Turn 22.
+──────────────────────────────────────────────────────────────────────────
+[12] assistant  len=21
+[Seraphina]: Turn 23.
+──────────────────────────────────────────────────────────────────────────
+[13] assistant  len=21
+[Seraphina]: Turn 25.
+──────────────────────────────────────────────────────────────────────────
+[14] user  len=8
+Turn 26.
+──────────────────────────────────────────────────────────────────────────
+[15] assistant  len=21
+[Seraphina]: Turn 27.
+──────────────────────────────────────────────────────────────────────────
+[16] user  len=8
+Turn 28.
+──────────────────────────────────────────────────────────────────────────
+[17] assistant  len=21
+[Seraphina]: Turn 29.
+──────────────────────────────────────────────────────────────────────────
+[18] assistant  len=21
+[Seraphina]: Turn 31.
+──────────────────────────────────────────────────────────────────────────
+[19] user  len=8
+Turn 32.
+──────────────────────────────────────────────────────────────────────────
+[20] assistant  len=21
+[Seraphina]: Turn 33.
+──────────────────────────────────────────────────────────────────────────
+[21] user  len=8
+Turn 34.
+──────────────────────────────────────────────────────────────────────────
+[22] assistant  len=21
+[Seraphina]: Turn 35.
+──────────────────────────────────────────────────────────────────────────
+[23] assistant  len=21
+[Seraphina]: Turn 37.
+──────────────────────────────────────────────────────────────────────────
+[24] user  len=8
+Turn 38.
+──────────────────────────────────────────────────────────────────────────
+[25] assistant  len=21
+[Seraphina]: Turn 39.
+──────────────────────────────────────────────────────────────────────────

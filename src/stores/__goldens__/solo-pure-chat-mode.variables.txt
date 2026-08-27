@@ -1,0 +1,18 @@
+# solo/pure-chat-mode   [SHOULD: pure-chat-mode + char_phi branch 1]
+# what: Companion mode: scenario and example dialogue withheld from the card
+#   block, the TWO leading assistant turns trimmed off the front of history,
+#   and char_phi replaced by the no-narration style note. A summary covering
+#   the first 10 turns is present, so `pureChatRemoved` is non-zero AND is
+#   actually subtracted from the compaction offset — the rebase at :1409 that
+#   a ~25-line comment attributes to a bug that shipped
+#   zero-conversation-message requests and got 400s from Anthropic. Numbers
+#   are chosen so the MIN_RAW_TAIL cap does NOT bind: offset 10-2=8 keeps 12
+#   turns, and dropping the rebase would keep 10.
+# pins: :1195-1199 pureChatMode, :1209-1211 the pureChatMode arm of the PHI
+#   gate, :1242-1247 charInfoParts, :1314-1318 char_phi, :1368-1372 greeting
+#   trim, :1395-1397 pureChatRemoved rebase
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+charSysPrompt = "1"
+══════════════════════════════════════════════════════════════════════════
+1 key(s)

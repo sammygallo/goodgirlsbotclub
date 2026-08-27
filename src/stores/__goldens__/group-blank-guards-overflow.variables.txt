@@ -1,0 +1,14 @@
+# group/blank-guards-overflow   [G8 (b)]
+# what: The same two guards on their OVERFLOW branches — the author's note
+#   and the world-info entry both configured deeper than the history — with
+#   the same {{addvar}} run counters.
+# pins: :2386-2395 overflow AN guard, :2400-2408 wi overflow
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+anGuard = "overflow"
+gAnGuardRuns = "1"
+gWiGuardRuns = "1"
+scenarioRuns = "1"
+wiGuard = "rendered-empty"
+══════════════════════════════════════════════════════════════════════════
+5 key(s)

@@ -963,7 +963,7 @@ interface WiScanOut {
 const wiPinnedWarnedChats = new Set<string>();
 
 // Build conversation context for AI
-function buildConversationContext(
+export function buildConversationContext(
   messages: ChatMessage[],
   character: CharacterInfo,
   availableEmotions?: string[],

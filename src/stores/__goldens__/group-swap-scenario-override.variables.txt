@@ -1,0 +1,10 @@
+# group/swap-scenario-override   [G3]
+# what: Swap + scenarioOverride. NEITHER site renders the speaker's scenario,
+#   so `scenarioRuns` must be ABSENT from the variables golden — that absence
+#   is the phantom-execution guard.
+# pins: :2036-2044 lazy speakerScenario, :2141-2155 override branch
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

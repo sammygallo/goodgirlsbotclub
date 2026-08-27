@@ -1,0 +1,25 @@
+# group/macro-writes-swap   [R2: C2 — the swap-mode macro sites]
+# what: The swap-mode counterpart of macro-writes. Swap emits description and
+#   personality only (:2078-2084), so the two members' scenario and
+#   mes_example counters must be ABSENT — except the SPEAKER's, which reach
+#   the prompt by two different routes swap alone exercises: the `Current
+#   scenario:` fallback through speakerScenario() and the swap-only
+#   `mesExample = subSpeaker(...)` at :2171-2174, which join forces to ''.
+#   cardMode is mutually exclusive with the join fixture, so this is one of
+#   the few genuinely new builds round 2 adds.
+# pins: :2076-2086 swap card block, :2036-2044 speakerScenario, :2171-2174
+#   swap mesExample
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+anCount = "1"
+asstTurn = "1"
+cardMarcus = "1"
+cardSeraphina = "1"
+exSeraphina = "1"
+persMarcus = "1"
+persSeraphina = "1"
+scenarioRuns = "1"
+userTurn = "1"
+wiCount = "1"
+══════════════════════════════════════════════════════════════════════════
+10 key(s)

@@ -1,0 +1,18 @@
+# group/blank-guards-overflow   [G8 (b)]
+# what: The same two guards on their OVERFLOW branches — the author's note
+#   and the world-info entry both configured deeper than the history — with
+#   the same {{addvar}} run counters.
+# pins: :2386-2395 overflow AN guard, :2400-2408 wi overflow
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = e-blank-of
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 16
+scanReport.totalTokens      = 16
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

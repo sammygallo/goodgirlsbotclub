@@ -1,0 +1,17 @@
+# group/hidden-and-overflow-note   [R2: C13 + C1]
+# what: A HIDDEN turn plus an overflow-depth author's note with role
+#   'assistant'. Three things at once: the note's role is not 'system', so a
+#   literal rewrite at :2391 fails here; the note interpolates
+#   {{lastusermessage}}, which must resolve to the visible turn and never to
+#   the hidden one (:1770); and a keyword entry whose key appears ONLY in the
+#   hidden turn must not fire. The hidden turn is also the newest, so
+#   dropping the :2275 filter would change both the emitted history and every
+#   depthFromEnd in the loop.
+# pins: :1770 visibleMessages, :2275 the hidden filter, :2386-2395 overflow
+#   AN
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+gAnOverflow = "1"
+scenarioRuns = "1"
+══════════════════════════════════════════════════════════════════════════
+2 key(s)

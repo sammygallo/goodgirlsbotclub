@@ -1,0 +1,32 @@
+# solo/macro-writes   [S12]
+# what: THE DOUBLE-EXECUTION CANARY. A DISTINCT {{incvar}} counter at every
+#   macro-executed input the solo builder has outside the at-depth stages
+#   (which the three at-depth fixtures cover): all four card fields, the
+#   card's system_prompt and post_history_instructions, all three
+#   generation-settings prompts, the character note, a world-info entry, the
+#   author's note, and BOTH a user and an assistant history turn. Each
+#   counter emits its returned value into the prompt, so a second execution
+#   of any stage shows up twice — as a changed number in the prompt golden
+#   and as a changed count in the variables golden. `stage` records execution
+#   ORDER: card fields, world info, the note, history.
+# pins: :1131 wrapWiContent, :1184-1216 card + generation-settings fields,
+#   :1425 depth prompt, :1490-1497 author note, :1531 history turns
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+charPhiSub = "1"
+charSysPrompt = "1"
+day = "1"
+depthPromptRuns = "1"
+ledger = "1"
+mesExampleSub = "1"
+note = "1"
+scenarioSub = "1"
+shelf = "1"
+soloAsstTurn = "1"
+soloUserTurn = "1"
+stage = "history"
+userJailbreak = "1"
+userMainPrompt = "1"
+userPhiSub = "1"
+══════════════════════════════════════════════════════════════════════════
+15 key(s)

@@ -1,0 +1,9 @@
+# solo/hidden-messages   [SHOULD: hidden-message filter]
+# what: A hidden turn reaches neither the history nor the {{lastusermessage}}
+#   macro, and does not consume a fixed-window slot.
+# pins: :998 visibleMessages, :1346-1350 historyPool
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

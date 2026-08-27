@@ -1,0 +1,22 @@
+# solo/at-depth-interleave   [S8]
+# what: All five at-depth classes at ONE depth: character note, author note,
+#   persona, world info, extension — in the documented order. Every insertion
+#   carries a NON-system role from a user-settable field (CharacterEdit's
+#   depth_prompt role, AuthorNote's ROLE_OPTIONS, the persona's
+#   descriptionRole, the extension's own role) and no two classes share one,
+#   so rewriting any of them to a literal shows up here.
+# pins: :1481-1523 in-loop insertion order and roles
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-depth/e-d2
+trimmedAtDepth = (none)
+activated      = e-d2
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 12
+scanReport.totalTokens      = 12
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

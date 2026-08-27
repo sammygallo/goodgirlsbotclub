@@ -1,0 +1,9 @@
+# group/blank-user-turn-not-last-dropped   [G7]
+# what: attachmentsFolded true but the blank image-carrying turn is NOT at
+#   lastUserIndexInRecent — the fold cannot land on it, so it is dropped.
+# pins: :2283-2287 lastUserIndexInRecent, :2353-2356 keepForAttachment
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+scenarioRuns = "1"
+══════════════════════════════════════════════════════════════════════════
+1 key(s)

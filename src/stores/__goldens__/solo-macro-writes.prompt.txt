@@ -1,0 +1,61 @@
+# solo/macro-writes   [S12]
+# what: THE DOUBLE-EXECUTION CANARY. A DISTINCT {{incvar}} counter at every
+#   macro-executed input the solo builder has outside the at-depth stages
+#   (which the three at-depth fixtures cover): all four card fields, the
+#   card's system_prompt and post_history_instructions, all three
+#   generation-settings prompts, the character note, a world-info entry, the
+#   author's note, and BOTH a user and an assistant history turn. Each
+#   counter emits its returned value into the prompt, so a second execution
+#   of any stage shows up twice — as a changed number in the prompt golden
+#   and as a changed count in the variables golden. `stage` records execution
+#   ORDER: card fields, world info, the note, history.
+# pins: :1131 wrapWiContent, :1184-1216 card + generation-settings fields,
+#   :1425 depth prompt, :1490-1497 author note, :1531 history turns
+# entries: 7
+# overBudget: false
+# lastTokenEstimate: 223
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=662
+You are Ivy, keeper of the closed stacks. Draft 1.
+
+The stacks smell of dust. Ledger line 1.
+
+Description: A quiet archivist. Day 1 of the audit.
+
+Personality: Dry. Shelf 1.
+
+Scenario: The reading room, pass 1.
+
+Example dialogue:
+<START>
+User: Late?
+Ivy: Always. Take 1.
+
+[Jailbreak render 1.]
+
+IMPORTANT: Begin each response with an emotion tag that reflects your current emotional state. Use this exact format: [emotion:TAG]
+
+Available emotions for this character: neutral (or any emotion that fits the moment)
+
+Example: [emotion:joy] I'm so glad you asked about that!
+
+Choose the emotion that best matches how Ivy would feel based on the conversation context.
+──────────────────────────────────────────────────────────────────────────
+[1] system  len=25
+[Character note, pass 1.]
+──────────────────────────────────────────────────────────────────────────
+[2] user  len=20
+Hello — user turn 1.
+──────────────────────────────────────────────────────────────────────────
+[3] system  len=41
+[Author's note: day 1, ledger 1, note 1.]
+──────────────────────────────────────────────────────────────────────────
+[4] assistant  len=28
+*looks up* Assistant turn 1.
+──────────────────────────────────────────────────────────────────────────
+[5] system  len=33
+[Keep replies short. Reminder 1.]
+──────────────────────────────────────────────────────────────────────────
+[6] system  len=20
+[User PHI render 1.]
+──────────────────────────────────────────────────────────────────────────

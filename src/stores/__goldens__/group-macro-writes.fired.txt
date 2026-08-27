@@ -1,0 +1,24 @@
+# group/macro-writes   [G10]
+# what: THE GROUP DOUBLE-EXECUTION CANARY (join mode). A DISTINCT counter at
+#   every macro-executed input the join path has: description, personality,
+#   scenario and mes_example on BOTH members, the scenarioOverride, a
+#   world-info entry, the author's note, a USER turn and an ASSISTANT turn.
+#   Every count must read 1. The assistant turn also pins authorOfTurn — its
+#   {{char}} resolves to Marcus, not the speaker — and the author's note
+#   carries a non-system role.
+# pins: :1975-1976 subMember, :2054-2074 join card block, :2143-2156
+#   override, :2298-2306 author note, :2324-2326 history substitution,
+#   :2412-2413 persist
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-gmacro/e-gmacro
+trimmedAtDepth = (none)
+activated      = e-gmacro
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 15
+scanReport.totalTokens      = 15
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

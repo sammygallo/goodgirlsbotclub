@@ -1,0 +1,65 @@
+# group/macro-writes   [G10]
+# what: THE GROUP DOUBLE-EXECUTION CANARY (join mode). A DISTINCT counter at
+#   every macro-executed input the join path has: description, personality,
+#   scenario and mes_example on BOTH members, the scenarioOverride, a
+#   world-info entry, the author's note, a USER turn and an ASSISTANT turn.
+#   Every count must read 1. The assistant turn also pins authorOfTurn — its
+#   {{char}} resolves to Marcus, not the speaker — and the author's note
+#   carries a non-system role.
+# pins: :1975-1976 subMember, :2054-2074 join card block, :2143-2156
+#   override, :2298-2306 author note, :2324-2326 history substitution,
+#   :2412-2413 persist
+# entries: 4
+# lastTokenEstimate: -1
+══════════════════════════════════════════════════════════════════════════
+[0] system  len=1198
+This is a roleplay group chat. You are playing Seraphina — write ONLY Seraphina's turn.
+
+House rule 1: no talking about the game.
+
+Characters in this conversation:
+## [SPEAKING NOW] Seraphina
+Description: Host. Deal 1.
+
+Personality: Warm, take 1.
+
+Scenario: A back-room card game, hour 1.
+
+Example dialogue:
+<START>
+Seraphina: *deals* Ante up, round 1.
+
+---
+
+## Marcus
+Description: Counter. Deal 1.
+
+Personality: Quiet, take 1.
+
+Scenario: Marcus never sets the scene, watch 1.
+
+Example dialogue:
+<START>
+Marcus: *says nothing*, beat 1.
+
+Current scenario: Round 1 on the roof.
+FORMATTING RULES (follow exactly):
+- Wrap ALL actions, movements, and narration in *single asterisks*: *He glances toward the door*
+- Write spoken dialogue as plain text or in "quotes": "Hello there!"
+- Alternate freely between *action* and "dialogue" throughout your response
+- Begin your response with an emotion tag: [emotion:TAG]
+- Available emotions: neutral, joy, sadness, anger, surprise, fear, love, excitement, confusion, embarrassment, curiosity, amusement
+
+CONTENT RULES:
+- Stay in character as Seraphina only — do NOT write lines for other characters
+- React naturally to what other characters and the user say
+──────────────────────────────────────────────────────────────────────────
+[1] user  len=16
+My turn — bet 1.
+──────────────────────────────────────────────────────────────────────────
+[2] user  len=18
+[Author's note 1.]
+──────────────────────────────────────────────────────────────────────────
+[3] assistant  len=32
+[Marcus]: *Marcus folds, hand 1*
+──────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,17 @@
+# group/blank-user-turn-unfolded-dropped   [G6]
+# what: Identical history, attachmentsFolded FALSE: nothing will be folded,
+#   so the blank turn is dropped.
+# pins: :2353-2354 attachmentsFolded half of the test
+# wiTimerOut.currentTurn (in): 1
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = (none)
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

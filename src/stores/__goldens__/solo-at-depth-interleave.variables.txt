@@ -1,0 +1,15 @@
+# solo/at-depth-interleave   [S8]
+# what: All five at-depth classes at ONE depth: character note, author note,
+#   persona, world info, extension — in the documented order. Every insertion
+#   carries a NON-system role from a user-settable field (CharacterEdit's
+#   depth_prompt role, AuthorNote's ROLE_OPTIONS, the persona's
+#   descriptionRole, the extension's own role) and no two classes share one,
+#   so rewriting any of them to a literal shows up here.
+# pins: :1481-1523 in-loop insertion order and roles
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+depthPromptRuns = "1"
+note = "1"
+wiDepthInLoop = "1"
+══════════════════════════════════════════════════════════════════════════
+3 key(s)

@@ -1,0 +1,21 @@
+# solo/promptorder-reordered-two-disabled   [S3]
+# what: The all-sections state with emotion_instruction hoisted to the top
+#   and two sections disabled — one pre-history (jailbreak), one Stage C
+#   (char_phi). The disabled jailbreak is now all-sections' padded custom one
+#   rather than DEFAULT_JAILBREAK_PROMPT; both are non-empty, so the
+#   pre-history half of the filter was and remains observable.
+# pins: :1328-1332 pre-history filter, :1684-1688 Stage-C filter
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): (none — the local scan runs)
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = b-pos/e-bc, b-persona-linked/e-persona-linked, b-pos/e-ac, b-pos/e-ba, b-pos/e-aa
+trimmedAtDepth = (none)
+activated      = e-aa, e-ac, e-ba, e-bc, e-persona-linked
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 58
+scanReport.totalTokens      = 58
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

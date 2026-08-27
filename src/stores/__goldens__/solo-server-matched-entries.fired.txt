@@ -1,0 +1,24 @@
+# solo/server-matched-entries   [R2: C3 — the server-retrieval branch of :1080]
+# what: The other half of `serverMatchedEntries ??
+#   scanMessagesForEntries(...)`, which three of the five production solo
+#   call sites take (:4291, :4523, :4923). A local book holds a constant
+#   entry that WOULD have matched; it must be absent from the prompt, because
+#   the local scan never runs. The server entries carry backend-scheme UUID
+#   ids, so `fired` reports ids the local store cannot resolve — exactly the
+#   case captureWiFired filters at :2795-2801 — and `scanReport` stays at its
+#   zeroed default because the server returns no eviction list.
+# pins: :1080 the ?? branch, :1094-1110 the skipped scan report
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): 2 entr(ies) — the local scan is SKIPPED
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = 7b2e4d10-0000-4000-8000-000000000002/3f1c9a20-0000-4000-8000-000000000001, 7b2e4d10-0000-4000-8000-000000000002/3f1c9a20-0000-4000-8000-000000000003
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

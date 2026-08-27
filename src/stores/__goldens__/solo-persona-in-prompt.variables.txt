@@ -1,0 +1,10 @@
+# solo/persona-in-prompt   [SHOULD: persona positions]
+# what: Position in_prompt. personaBlock IS computed at :1266 but no section
+#   key emits it, so the description reaches nothing. This golden pins that
+#   drop deliberately — when it is fixed, this file changes.
+# pins: :1263-1271 personaBlock vs :1287-1290 persona_before_char
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)
