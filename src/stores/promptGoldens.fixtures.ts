@@ -2165,3 +2165,163 @@ export const GROUP_FIXTURES: GroupFixture[] = [
     },
   },
 ];
+
+// ---------------------------------------------------------------------------
+// What each `pins` anchor NAMES
+// ---------------------------------------------------------------------------
+
+/**
+ * The construct behind every `:NNNN` a fixture's `pins` cites.
+ *
+ * WHY THIS EXISTS. Task 0 checked anchors by resolving the number against
+ * `chatStore.ts` and asserting the line was code rather than a blank or a
+ * comment. That check cannot survive E2-S2 itself: instrumenting the builders
+ * moves hundreds of lines, and re-resolving the numbers means editing `pins` —
+ * which every golden header renders verbatim. Keeping the anchors honest that
+ * way would rewrite all 129 golden files for a documentation edit, in the one
+ * story whose acceptance criterion is that those files do not change.
+ *
+ * So the number is now a stable KEY, and this map records what it names. That
+ * is what the old check said it could not do ("this cannot verify an anchor
+ * points at the RIGHT code"), and it fixes a second flaw with it: three
+ * anchors are cited against other files — `worldInfoStore.ts:1319`, `:1420`,
+ * `tokenizer.ts:180` — and were being validated against `chatStore.ts`
+ * regardless, where they happened to land on unrelated code and passed.
+ *
+ * Values are source substrings, prefixed with `file|` when the anchor is not
+ * in `chatStore.ts`. They must not be so generic (`{`, `} else {`, `);`) that
+ * their survival proves nothing — the test rejects a fingerprint under 12
+ * characters — and they must occur EXACTLY ONCE, unless the entry says
+ * otherwise as `[fingerprint, occurrences]`.
+ *
+ * WHY THE COUNT. The check is a substring test over the whole file, so a
+ * fingerprint that appears twice is satisfied by EITHER copy: deleting the
+ * construct an anchor names leaves it green, resolving against the other
+ * builder's identical line, and the anchor silently goes on naming something
+ * that no longer exists. Two entries once shared one fingerprint outright
+ * (`998`/`1770`, the #414 hidden-message strip in each builder), which made
+ * each of them vacuous as a witness for its own builder — both now carry a
+ * neighbouring line from the builder they belong to. Where the two copies are
+ * byte-identical over too long a stretch to disambiguate locally, the entry
+ * declares its count instead, which still fails when any one copy goes.
+ *
+ * ADDING A FIXTURE: cite the line number you actually read, and add its
+ * construct here in the same commit. The test fails on an anchor with no entry
+ * and on an entry no fixture cites.
+ */
+export const PINS_ANCHORS: Record<number, string | [string, number]> = {
+  // --- other files ---------------------------------------------------------
+  180: 'tokenizer.ts|return { kept, dropped, usedTokens, overBudget: remaining < 0 };',
+  1319: 'worldInfoStore.ts|function applyTokenBudget(',
+  1420: 'worldInfoStore.ts|function timedEffectsAllow(entry: WorldInfoEntry): boolean {',
+
+  // --- solo builder: inputs, world info, card fields -----------------------
+  998:
+    'not just via the literal prompt turns.\n' +
+    '  const visibleMessages = messages.filter((m) => !m.hidden);',
+  1046: 'getActiveBookIdsForCharacter(character.avatar',
+  1080: 'const matchedEntries = serverMatchedEntries ?? scanMessagesForEntries(',
+  // The two builders' scan-option objects are byte-identical for six lines,
+  // so these two name a construct that genuinely exists once per builder.
+  1082: ['scanDepth: wiState.scanDepth,', 2],
+  1084: ['tokenBudget: wiState.tokenBudget,', 2],
+  1094:
+    'if (wiTimerOut) wiTimerOut.scanReport = wiScanReport;\n' +
+    '  // Fail-loud instead of silently degrading:',
+  1101: 'wiScanReport.pinnedOverBudget &&\n    ctxChatFile &&',
+  1131: 'const content = sub(m.entry.content);',
+  1133: 'if (personaBookIdSet.has(m.bookId)) {',
+  1144:
+    'must not be recorded as fired.\n' +
+    '  const wiRendered = new Set<MatchedEntry>();',
+  1184: 'const description = sub(getCharacterField(character,',
+  1195: 'const linkedStyleActive =',
+  1205: 'const charSystemPromptOverride = genState.prompt.respectCharacterOverride',
+  1209: 'genState.prompt.respectCharacterPHI && !linkedStyleActive && !pureChatMode',
+  1242: 'const charInfoParts = [',
+  1257: '(linkedStyleActive && userMainPrompt) ||',
+  1263: 'let personaBlock =',
+
+  // --- solo builder: the section map and Stage A ---------------------------
+  1285: 'const sectionContent: Partial<Record<PromptSectionId, string>> = {',
+  1287: 'persona_before_char:',
+  1295: 'ext_after_char: extAfterChar,',
+  // Moved below the prepare/finish boundary by E2-S2 — it is the ONE section
+  // whose content the second half builds.
+  1305: 'sectionContent.rag_context = ragContext',
+  1314: 'char_phi: pureChatMode',
+  1327: 'const systemParts: string[] = [];',
+  1328:
+    'for (const entry of promptOrder) {\n' +
+    '    if (!entry.enabled) continue;\n' +
+    '    if (POST_HISTORY_SECTIONS.has(entry.id)) continue;',
+  1330: 'if (POST_HISTORY_SECTIONS.has(entry.id)) continue;',
+  1336: 'systemParts.filter(Boolean)',
+
+  // --- solo builder: the history window ------------------------------------
+  1346:
+    'const ctxConfig = genState.context;\n' +
+    '  const allNonSystemMessages = visibleMessages.filter((m) => !m.isSystem);',
+  1359: 'const windowSkew = allNonSystemMessages.length - historyPool.length;',
+  1368: 'let pureChatRemoved = 0;',
+  1395: 'const summarySliceOffset = sumForChat',
+  1412: 'const MIN_RAW_TAIL = 6;',
+  1425: 'const depthPromptContent = depthPrompt ? sub(depthPrompt.prompt)',
+  1443: 'const historyWithInsertions: {',
+
+  // --- solo builder: at-depth insertions -----------------------------------
+  1481: 'if (depthPrompt && depthFromEnd === depthPrompt.depth && depthPromptContent) {',
+  1490: 'if (authorNote && depthFromEnd === authorNote.depth) {',
+  1494: 'role: authorNote.role,\n          content: anContent,',
+  1512: 'wiAtDepthByMessage.set(insertion, wiHere.filter((m) => wiRendered.has(m)));',
+  1531: 'const subbed = sub(msg.content);',
+  1548: 'if (depthPrompt && depthPrompt.depth === 0 && depthPromptContent.trim()) {',
+  1556: 'if (authorNote && authorNote.depth === 0) {',
+  1577: 'wiTrailing.filter((m) => wiRendered.has(m))',
+  1591: 'depthPrompt.depth > recentMessages.length',
+  1601: 'if (authorNote && authorNote.depth > recentMessages.length) {',
+  1626: 'wiAtDepthByDepth[d].filter((m) => wiRendered.has(m))',
+
+  // --- solo builder: the trim, Stage C, and the fired derivation -----------
+  1644: 'let overBudget = false;',
+  1654: 'const pinnedMessages = new Set<ContextEntry>();',
+  1676: 'overBudget = trimmed.overBudget;',
+  1678: 'context.push(...historyWithInsertions);',
+  1684: 'if (!POST_HISTORY_SECTIONS.has(entry.id)) continue;',
+  1694:
+    'if (!ctxConfig.tokenAware && commit) {\n' +
+    '    genState.setLastTokenEstimate(',
+  1722: 'if (!enabledSections.has(sectionId)) continue;',
+  1724: 'if (wiRendered.has(m)) injectedWi.push(m);',
+  1737: 'if (!keptSet.has(msg)) trimmedAtDepth.push(...atDepth);',
+
+  // --- group builder -------------------------------------------------------
+  1770:
+    'macro context and world-info scan below (recentMessages filters separately).\n' +
+    '  const visibleMessages = messages.filter((m) => !m.hidden);',
+  1866: '!wiPinnedWarnedChats.has(groupChatFile)',
+  1975: '? subMember(owner, m.entry.content)',
+  1978: 'if (isPersonaBook) {',
+  1986: 'if (owner && owner.avatar !== currentCharacter.avatar) {',
+  2036: 'let speakerScenarioMemo: string | null = null;',
+  2054: 'const isCurrent = char.avatar === currentCharacter.avatar;',
+  2076: 'A character in the conversation',
+  2141: 'if (scenarioOverride && scenarioOverride.trim()) {',
+  2143: 'scenarioText = processMacros(scenarioOverride, {',
+  2171: 'const mesExample =\n    cardMode ===',
+  2213: 'FORMATTING RULES (follow exactly):',
+  2233: 'const finalSystemPrompt = ragContext',
+  2275: '.slice(-30).filter((m) => !m.isSystem);',
+  2283: 'const lastUserIndexInRecent = (() => {',
+  2288: ['for (let i = 0; i < recentMessages.length; i++) {', 2],
+  2298: 'if (groupAuthorNote && depthFromEnd === groupAuthorNote.depth) {',
+  2309: ['const wiHere = wiAtDepthByDepth[depthFromEnd];', 2],
+  2324: 'const subbedContent = msg.isUser',
+  2353: 'const keepForAttachment =',
+  2371: ['if (wiTrailing && wiTrailing.length > 0) {', 2],
+  2386: 'if (groupAuthorNote && groupAuthorNote.depth > recentMessages.length) {',
+  // Solo's world-info overflow, solo's extension overflow, and group's
+  // world-info overflow all walk their depth map the same way.
+  2400: ['const d = parseInt(depthKey, 10);', 3],
+  2412: 'groupChatState.setChatVariables(groupChatFile, variables);',
+};

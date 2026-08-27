@@ -1,5 +1,8 @@
 import { create } from 'zustand';
 import { getDefaultContextSize } from '../utils/tokenizer';
+// Type-only — promptBreakdown.ts imports PromptSectionId back out of this
+// module, and a value import either way would make that a runtime cycle.
+import type { PromptBreakdown } from '../utils/promptBreakdown';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
 // Sampler parameters supported across providers. Not every provider uses
@@ -239,6 +242,15 @@ interface GenerationState {
 
   // Cached last-used token estimate for the UI badge
   lastTokenEstimate: number;
+  /**
+   * E2-S2: the per-section token accounting for the last prompt this app
+   * assembled. Sits beside `lastTokenEstimate` because it is the same kind of
+   * value — a dispatch-time measurement cached purely for display — and, like
+   * it, is deliberately NOT persisted: it describes one generation, and a
+   * breakdown restored from localStorage would be describing a prompt from a
+   * previous session.
+   */
+  lastPromptBreakdown: PromptBreakdown | null;
 
   // Actions
   setSampler: (sampler: Partial<SamplerParams>) => void;
@@ -275,6 +287,7 @@ interface GenerationState {
   resetPromptOrder: () => void;
 
   setLastTokenEstimate: (n: number) => void;
+  setLastPromptBreakdown: (b: PromptBreakdown | null) => void;
 
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
@@ -389,6 +402,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   instruct: { ...DEFAULT_INSTRUCT_CONFIG, ...(initial.instruct ?? {}) },
   promptOrder: mergePromptOrder(initial.promptOrder),
   lastTokenEstimate: 0,
+  lastPromptBreakdown: null,
 
   setSampler: (patch) => {
     set((state) => {
@@ -735,6 +749,10 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     set({ lastTokenEstimate: n });
   },
 
+  setLastPromptBreakdown: (b) => {
+    set({ lastPromptBreakdown: b });
+  },
+
   resetUser: () => {
     set({
       sampler: { ...DEFAULT_SAMPLER },
@@ -749,6 +767,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       instruct: { ...DEFAULT_INSTRUCT_CONFIG },
       promptOrder: mergePromptOrder(undefined),
       lastTokenEstimate: 0,
+      lastPromptBreakdown: null,
     });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);

@@ -17,6 +17,7 @@ import { usePersonaStore } from './personaStore';
 import {
   useGenerationStore,
   POST_HISTORY_SECTIONS,
+  type PromptSectionEntry,
   type PromptSectionId,
 } from './generationStore';
 import { useCharacterStore } from './characterStore';
@@ -53,10 +54,23 @@ import {
 } from '../utils/messageIdentity';
 import {
   estimateConversationTokens,
+  estimateMessageTokens,
   estimateTokens,
   profileForProvider,
   trimHistoryToBudget,
+  type TokenizerProfile,
 } from '../utils/tokenizer';
+import {
+  addSlice,
+  beginBreakdownPass,
+  createPromptBreakdown,
+  recordAttachments,
+  recordCallSiteTurn,
+  withHistoryRole,
+  type GroupSlotId,
+  type PromptBreakdown,
+  type SectionKind,
+} from '../utils/promptBreakdown';
 import { useUsageStore } from './usageStore';
 import { usePromptTemplateStore } from './promptTemplateStore';
 import { getInstructTemplate, formatInstructPrompt } from '../utils/instructTemplates';
@@ -962,13 +976,138 @@ interface WiScanOut {
 // session — the toast fires once per chat, not on every generation.
 const wiPinnedWarnedChats = new Set<string>();
 
-// Build conversation context for AI
+/** The four promptOrder sections that carry world-info content. Used only by
+ *  the token breakdown, to keep the "what the model was actually charged for
+ *  lore" number separable from the rest of the system block. */
+const WI_SECTION_IDS: ReadonlySet<PromptSectionId> = new Set<PromptSectionId>([
+  'wi_before_char',
+  'wi_after_char',
+  'wi_before_an',
+  'wi_after_an',
+]);
+
+/** One entry of an assembled prompt — what the builders push and what the API
+ *  layer sends. Spelled out inline at ~30 sites before E2-S2; named now
+ *  because the prepare/finish split has to carry arrays of them across a
+ *  function boundary. */
+type ContextEntry = { role: 'user' | 'assistant' | 'system'; content: string };
+
+/**
+ * Everything `prepareConversationContext` resolved that
+ * `finishConversationContext` still needs.
+ *
+ * WHY THE SPLIT EXISTS: recall (`ragContext`) is both an INPUT to the builder
+ * — it is one of the fourteen Stage-A sections — and a consumer of the very
+ * trim budget that decides which messages survive, so the boundary it should
+ * be retrieved against is only knowable after a build. E2-S2 task 1b resolves
+ * that as a two-pass fixed point: prepare ONCE, finish twice (the first pass
+ * uncommitted, to learn the boundary; the second with the recall it produced).
+ *
+ * WHY THE BOUNDARY IS WHERE IT IS: everything above it executes macros —
+ * `sub()` / `processMacros()`, whose `{{setvar}}`/`{{incvar}}` writes are
+ * PERSISTED into the chat — and everything below it executes none. Running the
+ * second half twice is therefore free; running one block more would silently
+ * double-count a macro write forever. The goldens' at-depth macro counters
+ * (`src/stores/__goldens__/README.md`, "Task 1b's split boundary is defended
+ * by the at-depth counters") exist to fail the moment that boundary moves.
+ *
+ * The one section that moves ACROSS the boundary is `rag_context`: it is pure
+ * template interpolation with no macro call, so `finish` builds it.
+ */
+export interface PreparedConversation {
+  promptOrder: PromptSectionEntry[];
+  /** Every reorderable section's resolved content EXCEPT `rag_context`, which
+   *  `finish` fills in from its own argument. */
+  sectionContent: Partial<Record<PromptSectionId, string>>;
+  historyWithInsertions: ContextEntry[];
+  newestTurnMsg: ContextEntry | null;
+  wiAtDepthByMessage: Map<object, MatchedEntry[]>;
+  /** What each `historyWithInsertions` entry IS — a real turn, or which class
+   *  of at-depth insertion. Keyed by object identity (which the trim
+   *  preserves), never by a property on the entry: entries are serialized
+   *  straight into the network payload (client.ts:1483), so a tag written onto
+   *  one would be an emitted-byte change. Separate from `wiAtDepthByMessage`
+   *  on purpose — that map feeds the persisted `wi_fired` telemetry and must
+   *  not gain non-world-info members. */
+  entryClassByMessage: Map<object, SectionKind>;
+  wiByPosition: Record<WorldInfoPosition, MatchedEntry[]>;
+  wiRendered: Set<MatchedEntry>;
+  wiScanReport: WorldInfoScanReport;
+  /** Which activation engine produced this turn's entries. AC 9's data: the
+   *  drill-down says "reason unavailable (server-path turn)" off THIS, and
+   *  never infers it from a missing `matchedKeyCount`. */
+  activationSource: 'server' | 'client';
+  tokenProfile: TokenizerProfile;
+  genState: ReturnType<typeof useGenerationStore.getState>;
+  chatStoreState: ReturnType<typeof useChatStore.getState>;
+  ctxChatFile: string | null;
+  /** The macro variable map the prepare half wrote into. `finish` persists it
+   *  — once, on the committing pass only. */
+  variables: Record<string, string>;
+  wiTimerOut?: WiScanOut;
+}
+
+export interface FinishConversationOptions {
+  /**
+   * Whether this pass is the real one. `false` makes `finish` a pure
+   * function: no `setLastTokenEstimate`, no `setChatVariables`, no
+   * `wiTimerOut` mutation. Task 1b's first pass runs uncommitted purely to
+   * learn the recall boundary, and a store write from a throwaway pass would
+   * be a real, persisted corruption of the user's chat.
+   */
+  commit?: boolean;
+  breakdownOut?: PromptBreakdown;
+}
+
+export interface FinishedConversation {
+  context: ContextEntry[];
+  /** True when the newest message alone exceeded the configured token
+   *  budget and had to be force-included anyway. Captured here (dispatch
+   *  time) rather than round-tripped through generationStore, since a
+   *  concurrent send/swipe can overwrite a shared store field before this
+   *  call's own stream resolves. */
+  overBudget: boolean;
+  /** `ChatMessage.id` of the oldest KEPT entry that is a real chat turn, or
+   *  null. Task 1b's consumer — nothing reads it yet. */
+  boundaryId: string | null;
+}
+
+// Build conversation context for AI. Thin wrapper over the prepare/finish
+// pair: one prepare, one committing finish. Signature unchanged apart from the
+// trailing optional collector, so every existing caller and test is untouched.
 export function buildConversationContext(
   messages: ChatMessage[],
   character: CharacterInfo,
   availableEmotions?: string[],
   wiTimerOut?: WiScanOut,
   ragContext?: string,
+  serverMatchedEntries?: MatchedEntry[],
+  breakdownOut?: PromptBreakdown
+): { context: ContextEntry[]; overBudget: boolean } {
+  const prepared = prepareConversationContext(
+    messages,
+    character,
+    availableEmotions,
+    wiTimerOut,
+    serverMatchedEntries
+  );
+  const { context, overBudget } = finishConversationContext(prepared, ragContext, {
+    breakdownOut,
+  });
+  return { context, overBudget };
+}
+
+/**
+ * The side-effecting half: macro substitution, the world-info scan, extension
+ * hooks, and the history array with every at-depth insertion already placed.
+ * Runs EXACTLY ONCE per generation. Calling it twice re-rolls `{{random}}`,
+ * re-registers world-info activations and double-executes every `{{setvar}}`.
+ */
+export function prepareConversationContext(
+  messages: ChatMessage[],
+  character: CharacterInfo,
+  availableEmotions?: string[],
+  wiTimerOut?: WiScanOut,
   /**
    * When provided (by a call site that awaited tryServerRetrieval and got a
    * non-null result), used in place of the local scanMessagesForEntries
@@ -979,16 +1118,7 @@ export function buildConversationContext(
    * scan locally.
    */
   serverMatchedEntries?: MatchedEntry[]
-): {
-  context: { role: 'user' | 'assistant' | 'system'; content: string }[];
-  /** True when the newest message alone exceeded the configured token
-   *  budget and had to be force-included anyway. Captured here (dispatch
-   *  time) rather than round-tripped through generationStore, since a
-   *  concurrent send/swipe can overwrite a shared store field before this
-   *  call's own stream resolves. */
-  overBudget: boolean;
-} {
-  const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
+): PreparedConversation {
 
   // #414: hidden messages stay in the UI but must never reach the model.
   // Strip them once here and use `visibleMessages` for every model-facing read
@@ -1302,10 +1432,12 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     jailbreak: userJailbreak,
     emotion_instruction: emotionInstruction,
     selfie_instruction: selfieInstruction,
-    rag_context: ragContext
-      ? `[Relevant background information]\n${ragContext}`
-      : '',
-    // With a linked style (or pure chat mode) active the card PHI is
+    // rag_context is DELIBERATELY absent here: it is the one section whose
+    // content crosses the prepare/finish boundary, because task 1b's second
+    // pass is what supplies it. Nothing is lost by deferring it — it is a
+    // template interpolation with no macro call — and `finish` writes the
+    // identical string into this same map before the Stage-A loop reads it.
+    // With linked style (or pure chat mode) active the card PHI is
     // suppressed (see above); the slot instead carries a style
     // reinforcement. Post-history placement is what makes this work: in an
     // established chat the history itself anchors the old style (pages of
@@ -1323,19 +1455,10 @@ Choose the emotion that best matches how ${character.name} would feel based on t
 
   const promptOrder = genState.promptOrder;
 
-  // Pre-history stage: everything that lives in the leading system block.
-  const systemParts: string[] = [];
-  for (const entry of promptOrder) {
-    if (!entry.enabled) continue;
-    if (POST_HISTORY_SECTIONS.has(entry.id)) continue;
-    const content = sectionContent[entry.id];
-    if (content && content.trim()) systemParts.push(content);
-  }
-
-  context.push({
-    role: 'system',
-    content: systemParts.filter(Boolean).join('\n\n'),
-  });
+  // The Stage-A system message is assembled in `finishConversationContext`,
+  // not here — `rag_context` is one of its sections and only exists there.
+  // The loop that joins it runs no macros, so moving it below the boundary
+  // costs nothing and re-running it is free.
 
   // Decide how many messages to consider for history.
   // #414: build the pool from visibleMessages (hidden already stripped) so a
@@ -1456,6 +1579,23 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   // trimHistoryToBudget preserves) to the entries it carries, so the
   // fired-state telemetry can tell which at-depth entries survived trimming.
   const wiAtDepthByMessage = new Map<object, MatchedEntry[]>();
+  // E2-S2: what each entry below IS. Same object-identity trick as the map
+  // above, for the same reason (the trim preserves identity, and a property
+  // written onto the entry would ship in the request body). Deliberately a
+  // SECOND map rather than an extra field on the first: that one is the
+  // persisted world-info telemetry's input and must stay world-info-only.
+  const entryClassByMessage = new Map<object, SectionKind>();
+  // Tag whatever was just pushed onto / unshifted into historyWithInsertions.
+  // Positional on purpose: it reads as one line directly beneath the push it
+  // belongs to, which is what keeps all sixteen insertion sites and their
+  // classes visibly in lockstep.
+  const tagPushed = (kind: SectionKind) =>
+    entryClassByMessage.set(
+      historyWithInsertions[historyWithInsertions.length - 1],
+      kind
+    );
+  const tagUnshifted = (kind: SectionKind) =>
+    entryClassByMessage.set(historyWithInsertions[0], kind);
 
   // Group WI at-depth entries by their depth value for interleaved injection.
   const wiAtDepthByDepth: Record<number, MatchedEntry[]> = {};
@@ -1483,6 +1623,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
         role: depthPrompt.role,
         content: depthPromptContent,
       });
+      tagPushed({ stage: 'B', cls: 'characters_note' });
     }
     // Phase 8.1: Author's Note injection at depth. Guard the post-macro
     // result: a macro-only note (e.g. {{setvar::…}}) renders to '', and an
@@ -1494,6 +1635,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
           role: authorNote.role,
           content: anContent,
         });
+        tagPushed({ stage: 'B', cls: 'authors_note' });
       }
     }
     if (personaAtDepth && depthFromEnd === personaAtDepth.depth) {
@@ -1501,6 +1643,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
         role: personaAtDepth.role,
         content: personaAtDepth.content,
       });
+      tagPushed({ stage: 'B', cls: 'persona_at_depth' });
     }
     // WI at-depth entries: inject as system messages at the matching depth
     const wiHere = wiAtDepthByDepth[depthFromEnd];
@@ -1510,6 +1653,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
         const insertion = { role: 'system' as const, content };
         historyWithInsertions.push(insertion);
         wiAtDepthByMessage.set(insertion, wiHere.filter((m) => wiRendered.has(m)));
+        entryClassByMessage.set(insertion, { stage: 'B', cls: 'wi_at_depth' });
       }
     }
     // Phase 7.1: Extension at-depth contributions
@@ -1518,6 +1662,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       for (const c of extHere) {
         if (c.content.trim()) {
           historyWithInsertions.push({ role: c.role, content: c.content });
+          tagPushed({ stage: 'B', cls: 'ext_at_depth', extensionId: c.sourceExtensionId });
         }
       }
     }
@@ -1536,6 +1681,11 @@ Choose the emotion that best matches how ${character.name} would feel based on t
         content: subbed,
       };
       historyWithInsertions.push(turn);
+      entryClassByMessage.set(turn, {
+        stage: 'B',
+        cls: 'history',
+        messageId: msg.id,
+      });
       newestTurnMsg = turn;
     }
   }
@@ -1550,6 +1700,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       role: depthPrompt.role,
       content: depthPromptContent,
     });
+    tagPushed({ stage: 'B', cls: 'characters_note' });
   }
   if (authorNote && authorNote.depth === 0) {
     const anContent = sub(authorNote.content);
@@ -1558,6 +1709,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
         role: authorNote.role,
         content: anContent,
       });
+      tagPushed({ stage: 'B', cls: 'authors_note' });
     }
   }
   if (personaAtDepth && personaAtDepth.depth === 0 && personaAtDepth.content.trim()) {
@@ -1565,6 +1717,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       role: personaAtDepth.role,
       content: personaAtDepth.content,
     });
+    tagPushed({ stage: 'B', cls: 'persona_at_depth' });
   }
   const wiTrailing = wiAtDepthByDepth[0];
   if (wiTrailing && wiTrailing.length > 0) {
@@ -1576,6 +1729,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
         insertion,
         wiTrailing.filter((m) => wiRendered.has(m))
       );
+      entryClassByMessage.set(insertion, { stage: 'B', cls: 'wi_at_depth' });
     }
   }
   const extTrailing = extAtDepthByDepth[0];
@@ -1583,6 +1737,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     for (const c of extTrailing) {
       if (c.content.trim()) {
         historyWithInsertions.push({ role: c.role, content: c.content });
+        tagPushed({ stage: 'B', cls: 'ext_at_depth', extensionId: c.sourceExtensionId });
       }
     }
   }
@@ -1597,6 +1752,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       role: depthPrompt.role,
       content: depthPromptContent,
     });
+    tagUnshifted({ stage: 'B', cls: 'characters_note' });
   }
   if (authorNote && authorNote.depth > recentMessages.length) {
     const anContent = sub(authorNote.content);
@@ -1605,6 +1761,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
         role: authorNote.role,
         content: anContent,
       });
+      tagUnshifted({ stage: 'B', cls: 'authors_note' });
     }
   }
   if (personaAtDepth && personaAtDepth.depth > recentMessages.length) {
@@ -1612,6 +1769,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       role: personaAtDepth.role,
       content: personaAtDepth.content,
     });
+    tagUnshifted({ stage: 'B', cls: 'persona_at_depth' });
   }
   // WI at-depth: any entries whose depth exceeds history length prepend.
   for (const depthKey of Object.keys(wiAtDepthByDepth)) {
@@ -1625,6 +1783,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
           insertion,
           wiAtDepthByDepth[d].filter((m) => wiRendered.has(m))
         );
+        entryClassByMessage.set(insertion, { stage: 'B', cls: 'wi_at_depth' });
       }
     }
   }
@@ -1635,14 +1794,135 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       for (const c of extAtDepthByDepth[d]) {
         if (c.content.trim()) {
           historyWithInsertions.unshift({ role: c.role, content: c.content });
+          tagUnshifted({ stage: 'B', cls: 'ext_at_depth', extensionId: c.sourceExtensionId });
         }
       }
     }
   }
 
+  return {
+    promptOrder,
+    sectionContent,
+    historyWithInsertions,
+    newestTurnMsg,
+    wiAtDepthByMessage,
+    entryClassByMessage,
+    wiByPosition,
+    wiRendered,
+    wiScanReport,
+    // AC 9's data. `serverMatchedEntries !== undefined` is the same test the
+    // scan above branches on, so the two can never disagree.
+    activationSource: serverMatchedEntries !== undefined ? 'server' : 'client',
+    tokenProfile,
+    genState,
+    chatStoreState,
+    ctxChatFile,
+    variables,
+    wiTimerOut,
+  };
+}
+
+/**
+ * The pure half: assemble the Stage-A system block (recall included), run the
+ * token-aware history trim, emit Stage C, and — only when `commit` is set —
+ * write the two store fields this build owns.
+ *
+ * Executes NO macros. That is not an incidental property, it is the contract
+ * that makes task 1b's fixed point safe, and it is checked by the goldens'
+ * at-depth macro counters rather than left to a comment.
+ */
+export function finishConversationContext(
+  prepared: PreparedConversation,
+  ragContext?: string,
+  opts?: FinishConversationOptions
+): FinishedConversation {
+  const {
+    promptOrder,
+    sectionContent,
+    historyWithInsertions,
+    newestTurnMsg,
+    wiAtDepthByMessage,
+    entryClassByMessage,
+    wiByPosition,
+    wiRendered,
+    wiScanReport,
+    activationSource,
+    tokenProfile,
+    genState,
+    chatStoreState,
+    ctxChatFile,
+    variables,
+    wiTimerOut,
+  } = prepared;
+  const commit = opts?.commit !== false;
+  const out = opts?.breakdownOut;
+  // Clear anything a previous pass left in the collector and stamp this one.
+  // `finish` is designed to run more than once per prepare (task 1b's
+  // uncommitted boundary pass), and every `addSlice` below appends.
+  beginBreakdownPass(out, ctxChatFile);
+  const ctxConfig = genState.context;
+  const context: ContextEntry[] = [];
+
+  // The one section whose content lives on this side of the boundary — pure
+  // interpolation, no macro call, byte-for-byte what prepare used to build.
+  sectionContent.rag_context = ragContext
+    ? `[Relevant background information]\n${ragContext}`
+    : '';
+
+  // Pre-history stage: everything that lives in the leading system block.
+  // `systemPartIds` runs in lockstep with `systemParts` — once the fourteen
+  // sections are joined into one message their individual costs are gone, and
+  // no amount of parsing `context` afterwards brings them back.
+  const systemParts: string[] = [];
+  const systemPartIds: PromptSectionId[] = [];
+  for (const entry of promptOrder) {
+    if (!entry.enabled) continue;
+    if (POST_HISTORY_SECTIONS.has(entry.id)) continue;
+    const content = sectionContent[entry.id];
+    if (content && content.trim()) {
+      systemParts.push(content);
+      systemPartIds.push(entry.id);
+    }
+  }
+
+  context.push({
+    role: 'system',
+    content: systemParts.filter(Boolean).join('\n\n'),
+  });
+
+  // World-info tokens as EMITTED (post-macro, post-wrapWiContent). Summed off
+  // strings that already exist — re-rendering an entry to measure it would
+  // execute its {{setvar}} writes a second time.
+  let wiEmittedTokens = 0;
+  const stageAMessage = context[0];
+  if (out) {
+    // The profile the numbers were actually measured with — the call site
+    // passes a placeholder rather than re-deriving the provider itself.
+    out.profile = tokenProfile;
+    let sectionSum = 0;
+    for (let i = 0; i < systemParts.length; i++) {
+      const tokens = estimateTokens(systemParts[i], tokenProfile);
+      sectionSum += tokens;
+      if (WI_SECTION_IDS.has(systemPartIds[i])) wiEmittedTokens += tokens;
+      addSlice(out, { stage: 'A', id: systemPartIds[i] }, tokens, systemParts[i].length);
+    }
+    out.totals.stageA = sectionSum;
+    // DEFINITIONAL, not derived from separator lengths: estimateTokens is
+    // non-additive, and a '\n\n' join merges the whitespace run at each part's
+    // edge instead of adding one. See PromptBreakdown.stageAJoinResidual.
+    const stageAContentTokens = estimateTokens(stageAMessage.content, tokenProfile);
+    out.stageAJoinResidual = stageAContentTokens - sectionSum;
+    out.stageAMessageOverhead =
+      estimateMessageTokens(stageAMessage, tokenProfile) - stageAContentTokens;
+  }
+
   // Token-aware trimming: keep system prompts, drop oldest history that exceeds budget
   let overBudget = false;
   let keptHistory = historyWithInsertions;
+  let droppedFromHistory = 0;
+  // What the trim charged. Identical to trimmed.usedTokens, and to
+  // estimateConversationTokens(systemPrompts ++ kept) — see the identity tests.
+  let trimTotal = 0;
   if (ctxConfig.tokenAware) {
     const systemPrompts = context.slice(); // system prompt we already pushed
     // Two kinds of messages must survive the history trim: critical
@@ -1651,16 +1931,11 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     // newest real chat turn (trailing depth-0 insertions sit after it, so
     // the trimmer's own newest-first fallback can't identify it by
     // position or role).
-    const pinnedMessages = new Set<{
-      role: 'user' | 'assistant' | 'system';
-      content: string;
-    }>();
+    const pinnedMessages = new Set<ContextEntry>();
     if (newestTurnMsg) pinnedMessages.add(newestTurnMsg);
     for (const [msg, entries] of wiAtDepthByMessage) {
       if (entries.some((m) => m.entry.critical)) {
-        pinnedMessages.add(
-          msg as { role: 'user' | 'assistant' | 'system'; content: string }
-        );
+        pinnedMessages.add(msg as ContextEntry);
       }
     }
     const trimmed = trimHistoryToBudget(
@@ -1672,25 +1947,73 @@ Choose the emotion that best matches how ${character.name} would feel based on t
       pinnedMessages
     );
     context.push(...trimmed.kept);
-    genState.setLastTokenEstimate(trimmed.usedTokens);
+    if (commit) genState.setLastTokenEstimate(trimmed.usedTokens);
     overBudget = trimmed.overBudget;
     keptHistory = trimmed.kept;
+    droppedFromHistory = trimmed.dropped;
+    trimTotal = trimmed.usedTokens;
   } else {
     context.push(...historyWithInsertions);
+    // No trim ran, so there is no usedTokens to read. The same identity —
+    // system block + kept history, Stage C excluded — computed directly.
+    trimTotal = estimateConversationTokens(context, tokenProfile);
+  }
+
+  // Stage B, measured on what SURVIVED. Measuring historyWithInsertions here
+  // instead would report tokens for messages the model is never sent.
+  // Untagged entries cannot happen (all sixteen insertion sites tag), but a
+  // future seventeenth would land in raw history rather than throw.
+  let boundaryId: string | null = null;
+  if (out) {
+    let stageB = 0;
+    for (const entry of keptHistory) {
+      const kind: SectionKind =
+        entryClassByMessage.get(entry) ?? { stage: 'B', cls: 'history' };
+      const tokens = estimateMessageTokens(entry, tokenProfile);
+      stageB += tokens;
+      if (kind.stage === 'B' && kind.cls === 'wi_at_depth') {
+        wiEmittedTokens += estimateTokens(entry.content, tokenProfile);
+      }
+      // The role comes off the entry the builder already pushed, not from a
+      // second read of `msg.isUser` — see `withHistoryRole`.
+      addSlice(out, withHistoryRole(kind, entry.role), tokens, entry.content.length);
+    }
+    out.totals.stageB = stageB;
+  }
+  // The recall boundary task 1b needs: the OLDEST kept entry that is a real
+  // chat turn. Not `keptHistory[0]` — that can be an injected note, which has
+  // no message id and would hand the server a boundary it cannot resolve.
+  for (const entry of keptHistory) {
+    const kind = entryClassByMessage.get(entry);
+    if (kind && kind.stage === 'B' && kind.cls === 'history' && kind.messageId) {
+      boundaryId = kind.messageId;
+      break;
+    }
   }
 
   // Phase 9.1: Post-history stage — char PHI, user PHI, wi_after_an, ext_after_an
   // emit in user-defined order (same map computed above).
+  let stageCTotal = 0;
   for (const entry of promptOrder) {
     if (!entry.enabled) continue;
     if (!POST_HISTORY_SECTIONS.has(entry.id)) continue;
     const content = sectionContent[entry.id];
     if (!content || !content.trim()) continue;
     context.push({ role: 'system', content });
+    if (out) {
+      // Stage C is one message per section, so attribution is free here —
+      // no join, no residual.
+      const tokens = estimateMessageTokens({ role: 'system', content }, tokenProfile);
+      stageCTotal += tokens;
+      if (WI_SECTION_IDS.has(entry.id)) {
+        wiEmittedTokens += estimateTokens(content, tokenProfile);
+      }
+      addSlice(out, { stage: 'C', id: entry.id }, tokens, content.length);
+    }
   }
 
   // If not token-aware, still estimate tokens for the UI badge
-  if (!ctxConfig.tokenAware) {
+  if (!ctxConfig.tokenAware && commit) {
     genState.setLastTokenEstimate(
       estimateConversationTokens(context, tokenProfile)
     );
@@ -1698,7 +2021,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
 
   // Phase 9.3: persist any `{{setvar}}`/`{{addvar}}`/`{{incvar}}`/`{{decvar}}`
   // writes that happened during macro processing back to the chat's store.
-  if (ctxChatFile) {
+  if (commit && ctxChatFile) {
     chatStoreState.setChatVariables(ctxChatFile, variables);
   }
 
@@ -1707,39 +2030,83 @@ Choose the emotion that best matches how ${character.name} would feel based on t
   // sections can be disabled (or absent) in promptOrder, macro-empty content
   // is dropped at render (wiRendered), and at-depth insertions can be
   // trimmed away by the token budget (wiAtDepthByMessage ∩ keptHistory).
-  if (wiTimerOut) {
-    const injected: MatchedEntry[] = [];
-    const enabledSections = new Set(
-      promptOrder.filter((e) => e.enabled).map((e) => e.id)
-    );
-    const positionBySection: Array<[PromptSectionId, WorldInfoPosition]> = [
-      ['wi_before_char', 'before_char'],
-      ['wi_after_char', 'after_char'],
-      ['wi_before_an', 'before_an'],
-      ['wi_after_an', 'after_an'],
-    ];
-    for (const [sectionId, position] of positionBySection) {
-      if (!enabledSections.has(sectionId)) continue;
-      for (const m of wiByPosition[position]) {
-        if (wiRendered.has(m)) injected.push(m);
-      }
+  //
+  // Derived unconditionally (it is pure, and cheap) because the fired-state
+  // telemetry and the token breakdown need the same set; only the WRITE is
+  // gated, on both `wiTimerOut` and `commit`.
+  const injectedWi: MatchedEntry[] = [];
+  const enabledSections = new Set(
+    promptOrder.filter((e) => e.enabled).map((e) => e.id)
+  );
+  const positionBySection: Array<[PromptSectionId, WorldInfoPosition]> = [
+    ['wi_before_char', 'before_char'],
+    ['wi_after_char', 'after_char'],
+    ['wi_before_an', 'before_an'],
+    ['wi_after_an', 'after_an'],
+  ];
+  for (const [sectionId, position] of positionBySection) {
+    if (!enabledSections.has(sectionId)) continue;
+    for (const m of wiByPosition[position]) {
+      if (wiRendered.has(m)) injectedWi.push(m);
     }
-    for (const msg of keptHistory) {
-      const atDepth = wiAtDepthByMessage.get(msg);
-      if (atDepth) injected.push(...atDepth);
-    }
-    wiTimerOut.fired = injected;
-    // At-depth entries the history trim cut after the scan passed them —
-    // never critical ones (those are pinned above), but part of the audit.
-    const keptSet = new Set<object>(keptHistory);
-    const trimmedAtDepth: MatchedEntry[] = [];
-    for (const [msg, atDepth] of wiAtDepthByMessage) {
-      if (!keptSet.has(msg)) trimmedAtDepth.push(...atDepth);
-    }
+  }
+  for (const msg of keptHistory) {
+    const atDepth = wiAtDepthByMessage.get(msg);
+    if (atDepth) injectedWi.push(...atDepth);
+  }
+  // At-depth entries the history trim cut after the scan passed them —
+  // never critical ones (those are pinned above), but part of the audit.
+  const keptSet = new Set<object>(keptHistory);
+  const trimmedAtDepth: MatchedEntry[] = [];
+  for (const [msg, atDepth] of wiAtDepthByMessage) {
+    if (!keptSet.has(msg)) trimmedAtDepth.push(...atDepth);
+  }
+  if (commit && wiTimerOut) {
+    wiTimerOut.fired = injectedWi;
     wiTimerOut.trimmedAtDepth = trimmedAtDepth;
   }
 
-  return { context, overBudget };
+  if (out) {
+    out.totals.stageC = stageCTotal;
+    out.totals.trimTotal = trimTotal;
+    out.totals.assembledTotal = estimateConversationTokens(context, tokenProfile);
+    out.wi.emittedTokens = wiEmittedTokens;
+    // The WI budget's own cost function (worldInfoStore.ts:1325) — RAW entry
+    // content, before macros and before the persona attribution wrapper. AC 6
+    // wants both numbers precisely because they differ.
+    out.wi.rawTokens = injectedWi.reduce(
+      (sum, m) => sum + estimateTokens(m.entry.content, tokenProfile),
+      0
+    );
+    out.wi.budget = wiScanReport.budget;
+    out.wi.droppedIds = wiScanReport.dropped.map((m) => m.entry.id);
+    out.wi.activationSource = activationSource;
+    out.flags.overBudget = overBudget;
+    out.flags.historyTrimmed = ctxConfig.tokenAware;
+    out.flags.droppedFromHistory = droppedFromHistory;
+    // The reserve is read at one place only — the trim call above — so with
+    // `tokenAware` off it constrained nothing and there is no Reserved slice
+    // to draw, exactly as in group.
+    out.flags.hasReservedSlice = ctxConfig.tokenAware;
+    // ...and the number behind that flag, so a panel sizing the Reserved
+    // slice never has to re-read the live setting — which the user can change
+    // between this send and that render.
+    //
+    // The EFFECTIVE reserve, not the configured one: `trimHistoryToBudget`
+    // floors the budget at 256 (`Math.max(256, maxTokens - responseReserve)`,
+    // tokenizer.ts), so with e.g. maxTokens 1024 / reserve 2048 the trim
+    // subtracts 768, not 2048. Reporting the raw setting there would hand
+    // task 3 a Reserved wedge larger than the whole context window — the
+    // fifth-round review reproduced exactly that with shipped defaults
+    // (reserve defaults to 2048; the Max Context slider goes down to 1024).
+    out.responseReserve = ctxConfig.tokenAware
+      ? ctxConfig.maxTokens -
+        Math.max(256, ctxConfig.maxTokens - ctxConfig.responseReserve)
+      : null;
+    out.boundaryId = boundaryId;
+  }
+
+  return { context, overBudget, boundaryId };
 }
 
 // Build conversation context for group chat AI.
@@ -1761,7 +2128,14 @@ export function buildGroupConversationContext(
    * solo can always assume, so existing callers and tests are unaffected;
    * `generateGroupTurn` passes the real value for the turn it is building.
    */
-  attachmentsFolded: boolean = true
+  attachmentsFolded: boolean = true,
+  /**
+   * E2-S2: optional token-breakdown collector. Trailing and optional so the
+   * ~30 existing assertions on this function's bare-array return, and every
+   * existing call, are untouched — group's return type deliberately does NOT
+   * change to carry it.
+   */
+  breakdownOut?: PromptBreakdown
 ): { role: 'user' | 'assistant' | 'system'; content: string }[] {
   const context: { role: 'user' | 'assistant' | 'system'; content: string }[] = [];
 
@@ -1771,6 +2145,9 @@ export function buildGroupConversationContext(
 
   const groupChatState = useChatStore.getState();
   const groupChatFile = groupChatState.currentChatFile;
+  // Same contract as solo's: a reused collector describes THIS build, not the
+  // union of every build it was passed to.
+  beginBreakdownPass(breakdownOut, groupChatFile);
   const persona = usePersonaStore
     .getState()
     .getPersonaForContext(currentCharacter.avatar);
@@ -2210,12 +2587,25 @@ export function buildGroupConversationContext(
   // before/after the character block, and — for the author's-note pair —
   // the tail of the system message and a post-history message respectively,
   // matching where solo chat's pre- and post-history stages put them.
+  // E2-S2: each conditional interpolation lifted to a named const, so the
+  // token breakdown can measure the EMITTED fragment — wrapper newlines
+  // included — instead of re-deriving the template's shape beside it and
+  // drifting. Byte-for-byte the same expressions, in the same order; the group
+  // goldens are what proves it.
+  const wiBeforeCharSlot = wiBeforeChar ? `\n${wiBeforeChar}\n` : '';
+  const wiAfterCharSlot = wiAfterChar ? `\n${wiAfterChar}\n` : '';
+  const scenarioSlot = scenarioText ? `Current scenario: ${scenarioText}\n` : '';
+  const mesExampleSlot = mesExample
+    ? `Example dialogue for ${currentCharacter.name}:\n${mesExample}\n\n`
+    : '';
+  const wiBeforeAnSlot = wiBeforeAn ? `${wiBeforeAn}\n\n` : '';
+
   const systemPrompt = `This is a roleplay group chat. You are playing ${currentCharacter.name} — write ONLY ${currentCharacter.name}'s turn.
-${wiBeforeChar ? `\n${wiBeforeChar}\n` : ''}
+${wiBeforeCharSlot}
 Characters in this conversation:
 ${cardBlock}
-${wiAfterChar ? `\n${wiAfterChar}\n` : ''}
-${scenarioText ? `Current scenario: ${scenarioText}\n` : ''}${mesExample ? `Example dialogue for ${currentCharacter.name}:\n${mesExample}\n\n` : ''}${wiBeforeAn ? `${wiBeforeAn}\n\n` : ''}FORMATTING RULES (follow exactly):
+${wiAfterCharSlot}
+${scenarioSlot}${mesExampleSlot}${wiBeforeAnSlot}FORMATTING RULES (follow exactly):
 - Wrap ALL actions, movements, and narration in *single asterisks*: *He glances toward the door*
 - Write spoken dialogue as plain text or in "quotes": "Hello there!"
 - Alternate freely between *action* and "dialogue" throughout your response
@@ -2235,6 +2625,80 @@ CONTENT RULES:
     : systemPrompt;
 
   context.push({ role: 'system', content: finalSystemPrompt });
+
+  // E2-S2: the flat system message, per EMITTED SLOT. Tagging a conceptual
+  // "character info" instead would move tokens between slices whenever the
+  // user flips Card mode — swap emits description + personality in the cards
+  // and routes scenario/examples through their own slots, join emits all four
+  // inside the block — with zero change to what the model is sent.
+  const tk = (s: string) => estimateTokens(s, tokenProfile);
+  let groupWiEmitted = 0;
+  if (breakdownOut) {
+    breakdownOut.profile = tokenProfile;
+    const wiSlots: Array<[GroupSlotId, string]> = [
+      ['group_wi_before_char', wiBeforeCharSlot],
+      ['group_wi_after_char', wiAfterCharSlot],
+      ['group_wi_before_an', wiBeforeAnSlot],
+    ];
+    let named = tk(cardBlock) + tk(scenarioSlot) + tk(mesExampleSlot);
+    addSlice(breakdownOut, { stage: 'A', id: 'group_cards' }, tk(cardBlock), cardBlock.length);
+    addSlice(breakdownOut, { stage: 'A', id: 'group_scenario' }, tk(scenarioSlot), scenarioSlot.length);
+    addSlice(breakdownOut, { stage: 'A', id: 'group_examples' }, tk(mesExampleSlot), mesExampleSlot.length);
+    for (const [id, text] of wiSlots) {
+      const tokens = tk(text);
+      named += tokens;
+      groupWiEmitted += tokens;
+      addSlice(breakdownOut, { stage: 'A', id }, tokens, text.length);
+    }
+    // Chrome is the DIFFERENCE, never a measured constant: the fixed template
+    // text plus every rounding effect the non-additive estimator introduces at
+    // the seams. Solo calls the same quantity its Stage-A join residual; group
+    // has real chrome to carry too, so the two are one line here.
+    const chromeChars =
+      systemPrompt.length -
+      cardBlock.length -
+      scenarioSlot.length -
+      mesExampleSlot.length -
+      wiSlots.reduce((n, [, text]) => n + text.length, 0);
+    addSlice(
+      breakdownOut,
+      { stage: 'A', id: 'group_system_chrome' },
+      tk(systemPrompt) - named,
+      chromeChars
+    );
+    // Recall is a STRING CONCAT onto the system prompt, not a message of its
+    // own, so its cost is the concat DELTA — not estimateTokens(ragContext),
+    // which would miss the header and the joining blank line.
+    addSlice(
+      breakdownOut,
+      { stage: 'A', id: 'group_rag_context' },
+      tk(finalSystemPrompt) - tk(systemPrompt),
+      finalSystemPrompt.length - systemPrompt.length
+    );
+    breakdownOut.stageAMessageOverhead =
+      estimateMessageTokens(context[0], tokenProfile) - tk(finalSystemPrompt);
+  }
+  /** Measure whatever was just pushed onto `context`. Positional so it reads
+   *  as one line under the push it belongs to. */
+  const sliceForPushed = (kind: SectionKind) => {
+    const entry = context[context.length - 1];
+    addSlice(
+      breakdownOut,
+      withHistoryRole(kind, entry.role),
+      estimateMessageTokens(entry, tokenProfile),
+      entry.content.length
+    );
+  };
+  /** Same, for the two overflow branches — they splice in at index 1. */
+  const sliceForSpliced = (kind: SectionKind) => {
+    const entry = context[1];
+    addSlice(
+      breakdownOut,
+      withHistoryRole(kind, entry.role),
+      estimateMessageTokens(entry, tokenProfile),
+      entry.content.length
+    );
+  };
 
   // Phase 8.1: Author's Note for group chats
   const groupAuthorNote = groupChatFile
@@ -2302,6 +2766,7 @@ CONTENT RULES:
           role: groupAuthorNote.role,
           content: anContent,
         });
+        sliceForPushed({ stage: 'B', cls: 'authors_note' });
       }
     }
 
@@ -2309,7 +2774,11 @@ CONTENT RULES:
     const wiHere = wiAtDepthByDepth[depthFromEnd];
     if (wiHere && wiHere.length > 0) {
       const content = joinWi(wiHere);
-      if (content) context.push({ role: 'system', content });
+      if (content) {
+        context.push({ role: 'system', content });
+        groupWiEmitted += tk(content);
+        sliceForPushed({ stage: 'B', cls: 'wi_at_depth' });
+      }
     }
 
     // E9-S6/AC5+AC6: substitute FIRST, then apply the `[Name]: ` prefix for
@@ -2362,6 +2831,12 @@ CONTENT RULES:
         role: msg.isUser ? 'user' : 'assistant',
         content: contentWithName,
       });
+      // Group has no separate "Your message" bucket: `generateGroupTurn` hands
+      // the builder the user's own turn already inside `messages`, so it is
+      // just the last entry of this loop. Extracting it by index would be
+      // possible (`lastUserIndexInRecent` is right there) but would give group
+      // a slice solo derives from a different mechanism — 8 buckets, not 10.
+      sliceForPushed({ stage: 'B', cls: 'history', messageId: msg.id });
     }
   }
 
@@ -2370,7 +2845,11 @@ CONTENT RULES:
   const wiTrailing = wiAtDepthByDepth[0];
   if (wiTrailing && wiTrailing.length > 0) {
     const content = joinWi(wiTrailing);
-    if (content) context.push({ role: 'system', content });
+    if (content) {
+      context.push({ role: 'system', content });
+      groupWiEmitted += tk(content);
+      sliceForPushed({ stage: 'B', cls: 'wi_at_depth' });
+    }
   }
 
   // If depth exceeds history, prepend. E9-S6/AC4: same post-macro trim guard
@@ -2391,6 +2870,7 @@ CONTENT RULES:
         role: groupAuthorNote.role,
         content: anContent,
       });
+      sliceForSpliced({ stage: 'B', cls: 'authors_note' });
     }
   }
 
@@ -2400,13 +2880,21 @@ CONTENT RULES:
     const d = parseInt(depthKey, 10);
     if (d > recentMessages.length) {
       const content = joinWi(wiAtDepthByDepth[d]);
-      if (content) context.splice(1, 0, { role: 'system', content });
+      if (content) {
+        context.splice(1, 0, { role: 'system', content });
+        groupWiEmitted += tk(content);
+        sliceForSpliced({ stage: 'B', cls: 'wi_at_depth' });
+      }
     }
   }
 
   // Post-history slot (solo chat's wi_after_an stage). Joined above with the
   // other three non-depth positions; only the emission happens here.
-  if (wiAfterAn) context.push({ role: 'system', content: wiAfterAn });
+  if (wiAfterAn) {
+    context.push({ role: 'system', content: wiAfterAn });
+    groupWiEmitted += tk(wiAfterAn);
+    sliceForPushed({ stage: 'C', id: 'group_wi_after_an' });
+  }
 
   // Phase 9.3: persist any macro variable writes back to the chat's store.
   if (groupChatFile) {
@@ -2418,9 +2906,54 @@ CONTENT RULES:
   // promptOrder section toggles and no token-aware history trim — so every
   // entry that rendered to non-empty content was injected somewhere above,
   // and nothing at-depth can be trimmed away after the fact.
+  const groupFired = matchedEntries.filter((m) => wiRendered.has(m));
   if (wiTimerOut) {
-    wiTimerOut.fired = matchedEntries.filter((m) => wiRendered.has(m));
+    wiTimerOut.fired = groupFired;
     wiTimerOut.trimmedAtDepth = [];
+  }
+
+  if (breakdownOut) {
+    let stageA = 0;
+    let stageB = 0;
+    let stageC = 0;
+    for (const slice of breakdownOut.slices) {
+      if (slice.kind.stage === 'A') stageA += slice.tokens;
+      else if (slice.kind.stage === 'B') stageB += slice.tokens;
+      else if (slice.kind.stage === 'C') stageC += slice.tokens;
+    }
+    breakdownOut.totals.stageA = stageA;
+    breakdownOut.totals.stageB = stageB;
+    breakdownOut.totals.stageC = stageC;
+    breakdownOut.totals.assembledTotal = estimateConversationTokens(
+      context,
+      tokenProfile
+    );
+    breakdownOut.totals.trimTotal =
+      breakdownOut.totals.assembledTotal - stageC;
+    // Group's chrome slice already absorbs every rounding effect at the
+    // template seams, so there is no separate join residual to report.
+    breakdownOut.stageAJoinResidual = 0;
+    breakdownOut.wi.emittedTokens = groupWiEmitted;
+    breakdownOut.wi.rawTokens = groupFired.reduce(
+      (sum, m) => sum + tk(m.entry.content),
+      0
+    );
+    breakdownOut.wi.budget = wiScanReport.budget;
+    breakdownOut.wi.droppedIds = wiScanReport.dropped.map((m) => m.entry.id);
+    // Group never calls server retrieval (utils/serverRetrieval.ts:32-33), so
+    // its activations always come from the client engine.
+    breakdownOut.wi.activationSource = 'client';
+    // AC 7: group has no history trim — badge the HISTORY slice "not trimmed",
+    // not the whole view "un-budgeted". The WI slice above IS budgeted, and
+    // `wi.budget` / `wi.droppedIds` are how the panel shows that.
+    breakdownOut.flags.historyTrimmed = false;
+    breakdownOut.flags.overBudget = false;
+    breakdownOut.flags.droppedFromHistory = 0;
+    // Group never reads `responseReserve` — no trim runs here at all. Null,
+    // not 0: 0 is a legal reserve, and the panel must be able to tell "no
+    // reserve was set" from "the reserve was never consulted".
+    breakdownOut.flags.hasReservedSlice = false;
+    breakdownOut.responseReserve = null;
   }
 
   return context;
@@ -2471,6 +3004,7 @@ async function generateGroupTurn(
     timers: loadWiTimers(groupChatFile || ''),
     activated: wiTimerActivated,
   };
+  const breakdown = createPromptBreakdown('group');
   const context = buildGroupConversationContext(
     updatedMessages,
     characters,
@@ -2483,8 +3017,11 @@ async function generateGroupTurn(
     // api.generateMessage below, so only this turn can have an attachment
     // folded into it. Callers that withhold images for a later speaker in the
     // round must not leave a blank user turn behind to carry nothing.
-    Boolean(images && images.length > 0)
+    Boolean(images && images.length > 0),
+    breakdown
   );
+  recordAttachments(breakdown, images);
+  useGenerationStore.getState().setLastPromptBreakdown(breakdown);
 
   const finalContext = await runGenerateInterceptors(
     maybeApplyInstructMode(context),
@@ -4016,8 +4553,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // scan the client-side path would never match, so this call site
       // always falls back to the client-side scan rather than risk
       // silently wrong or early-firing lore.
-      const { context, overBudget } = buildConversationContext(contextMessages, character, availableEmotions, wiOut, ragCtx ?? undefined);
+      const breakdown = createPromptBreakdown('solo');
+      const { context, overBudget } = buildConversationContext(contextMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, undefined, breakdown);
       const { provider, model } = getProviderAndModel();
+      // Hoisted out of the generateMessage argument list so the breakdown can
+      // see the same attachments the request carries — they never pass
+      // through the builder, so nothing inside it could have counted them.
+      const swipeImages = imagesFromLastUserMessage(contextMessages, provider, model);
+      recordAttachments(breakdown, swipeImages);
+      useGenerationStore.getState().setLastPromptBreakdown(breakdown);
       const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
@@ -4031,7 +4575,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         model,
         abortController.signal,
         generationOptions,
-        imagesFromLastUserMessage(contextMessages, provider, model),
+        swipeImages,
         isTextCompletionMode()
       );
       if (!stream) return;
@@ -4165,7 +4709,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // letting a delay-gated entry fire through the server path a turn
       // earlier than the client-side engine would ever allow, so this call
       // site always falls back to the client-side scan.
-      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined);
+      const breakdown = createPromptBreakdown('solo');
+      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined, undefined, breakdown);
       // Append the continue instruction as a user turn, not a system one.
       // Gemini extracts system messages into its separate systemInstruction
       // field, which would leave contents[] ending with an assistant ('model')
@@ -4176,8 +4721,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'user',
         content: '(Continue your previous response naturally. Do not repeat what you already said. Pick up exactly where you left off.)',
       });
+      recordCallSiteTurn(breakdown, 'continue', context[context.length - 1].content);
 
       const { provider, model } = getProviderAndModel();
+      const continueImages = imagesFromLastUserMessage(messages, provider, model);
+      recordAttachments(breakdown, continueImages);
+      useGenerationStore.getState().setLastPromptBreakdown(breakdown);
       const finalContext = await runGenerateInterceptors(
         maybeApplyInstructMode(context),
         character.name,
@@ -4190,7 +4739,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         model,
         abortController.signal,
         generationOptions,
-        imagesFromLastUserMessage(messages, provider, model),
+        continueImages,
         isTextCompletionMode()
       );
       if (!stream) return;
@@ -4288,7 +4837,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // commit call below (impersonate has never persisted WI timers — see
       // the comment above wiOut — so there's nothing to mirror there).
       const serverRetrieval = await tryServerRetrieval(character.avatar || '', currentChatFile || '');
-      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries);
+      const breakdown = createPromptBreakdown('solo');
+      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries, breakdown);
       // User-role instruction so Gemini (which extracts system into a
       // separate systemInstruction field) doesn't leave contents[] ending
       // with an assistant turn and trip its 400. See continueMessage above
@@ -4297,6 +4847,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'user',
         content: `(Now write the next message as the user (You). Write from a first-person perspective as the user would. Do NOT include an emotion tag. Do NOT write as ${character.name}.)`,
       });
+      recordCallSiteTurn(breakdown, 'impersonate', context[context.length - 1].content);
+      // No recordAttachments here: impersonate passes `undefined` images to
+      // api.generateMessage below, so this request carries none.
+      useGenerationStore.getState().setLastPromptBreakdown(breakdown);
 
       const { provider, model } = getProviderAndModel();
       const finalContext = await runGenerateInterceptors(
@@ -4520,7 +5074,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
       };
-      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries);
+      const breakdown = createPromptBreakdown('solo');
+      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries, breakdown);
+      const sendImages = resolveImagesForSend(attachedImages);
+      recordAttachments(breakdown, sendImages);
+      useGenerationStore.getState().setLastPromptBreakdown(breakdown);
       const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
@@ -4534,7 +5092,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         model,
         abortController.signal,
         generationOptions,
-        resolveImagesForSend(attachedImages),
+        sendImages,
         isTextCompletionMode()
       );
       if (usedFallback) showToastGlobal('Primary provider failed — using fallback', 'warning');
@@ -4920,8 +5478,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // below. Safe to call now: updatedMessages was just persisted above,
       // so the server's re-read of Chat.messages matches what's on screen.
       const serverRetrieval = await tryServerRetrieval(character.avatar || '', currentChatFile || '');
-      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries);
+      const breakdown = createPromptBreakdown('solo');
+      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries, breakdown);
       const { provider, model } = getProviderAndModel();
+      const regenImages = imagesFromLastUserMessage(updatedMessages, provider, model);
+      recordAttachments(breakdown, regenImages);
+      useGenerationStore.getState().setLastPromptBreakdown(breakdown);
       const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
@@ -4935,7 +5497,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         model,
         abortController.signal,
         generationOptions,
-        imagesFromLastUserMessage(updatedMessages, provider, model),
+        regenImages,
         isTextCompletionMode()
       );
 

@@ -63,13 +63,34 @@ export function estimateTokens(
   return base + Math.floor(whitespaceCount * 0.05);
 }
 
+/**
+ * Per-message overhead: role marker and separators (~4 tokens in ChatML).
+ * Sibling of `CONVERSATION_PRIMING_TOKENS` below, named for the same reason —
+ * the token breakdown reports it as its own reconciliation line
+ * (`PromptBreakdown.messageOverheadPerMessage`), because a panel showing
+ * Reading A (one aggregate overhead row, rather than the cost baked into each
+ * slice) has to multiply it by the message count, and a second copy of the
+ * literal on the render side is how that row silently stops matching the
+ * estimator. Declared here rather than beside the priming constant only
+ * because the function below it is its sole production use.
+ */
+export const MESSAGE_OVERHEAD_TOKENS = 4;
+
 export function estimateMessageTokens(
   message: { role: string; content: string },
   profile: TokenizerProfile = 'generic'
 ): number {
-  // Per-message overhead: role marker, separators (~4 tokens in ChatML)
-  return estimateTokens(message.content, profile) + 4;
+  return estimateTokens(message.content, profile) + MESSAGE_OVERHEAD_TOKENS;
 }
+
+/**
+ * The flat priming allowance `estimateConversationTokens` adds on top of the
+ * per-message costs. Named rather than inlined because the token breakdown
+ * reports it as its own reconciliation line (`PromptBreakdown.conversationPriming`)
+ * — a consumer summing the breakdown's sections has to account for it, and
+ * hardcoding a second copy of the number beside this one is how the two drift.
+ */
+export const CONVERSATION_PRIMING_TOKENS = 2;
 
 export function estimateConversationTokens(
   messages: { role: string; content: string }[],
@@ -80,7 +101,7 @@ export function estimateConversationTokens(
     total += estimateMessageTokens(m, profile);
   }
   // Final priming tokens
-  return total + 2;
+  return total + CONVERSATION_PRIMING_TOKENS;
 }
 
 // Default max context size per provider (in tokens)
@@ -131,7 +152,12 @@ export function trimHistoryToBudget<
     (acc, m) => acc + estimateMessageTokens(m, profile),
     0
   );
-  let remaining = budget - systemCost - 2;
+  // The same priming allowance `estimateConversationTokens` charges — this is
+  // what makes `usedTokens` comparable with it, and the token breakdown's
+  // `trimTotal + stageC === assembledTotal` identity hold. Was a second copy
+  // of the literal, which the identity would have silently lost if either
+  // moved.
+  let remaining = budget - systemCost - CONVERSATION_PRIMING_TOKENS;
 
   const keepFlags = new Array<boolean>(history.length).fill(false);
   let keptCount = 0;

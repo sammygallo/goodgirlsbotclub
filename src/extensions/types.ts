@@ -22,6 +22,19 @@ export interface ContextContribution {
   depth?: number;
   /** Sort priority within the same position (lower = earlier). Default 100. */
   order?: number;
+  /**
+   * Which extension produced this contribution. Stamped by the registry
+   * (`runContextHooks`), never by the extension itself, so it cannot be
+   * spoofed or forgotten.
+   *
+   * Read only by E2-S2's token breakdown, which has to name the at-depth
+   * insertion class: `summarize` is the one extension whose output is a chat
+   * SUMMARY rather than an instruction, and without this field it is
+   * indistinguishable from any other at-depth contributor. The builders read
+   * content/role/position/depth/order and nothing else, so adding it changes
+   * zero emitted bytes.
+   */
+  sourceExtensionId?: string;
 }
 
 // ---------------------------------------------------------------------------

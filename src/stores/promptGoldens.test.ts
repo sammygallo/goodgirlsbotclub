@@ -43,6 +43,8 @@ import { describe, it, expect, vi } from 'vitest';
 // Dockerfile's `tsc -b`, which — unlike PR CI — typechecks test files).
 import goldensReadmeRaw from './__goldens__/README.md?raw';
 import chatStoreRaw from './chatStore.ts?raw';
+import worldInfoStoreRaw from './worldInfoStore.ts?raw';
+import tokenizerRaw from '../utils/tokenizer.ts?raw';
 
 // chatStore pulls serverSettings (and through it the api layer) at module
 // load — neutralize before importing, per the worldInfoStore.test.ts pattern.
@@ -128,6 +130,7 @@ const { useGenerationStore } = await import('./generationStore');
 const {
   GOLDEN_CHAT_FILE,
   GROUP_FIXTURES,
+  PINS_ANCHORS,
   SOLO_FIXTURES,
   productionCurrentTurn,
   resetStores,
@@ -552,26 +555,87 @@ describe('prompt goldens — the harness pins what it claims to', () => {
     );
   });
 
-  it('every :NNNN anchor in a fixture pins line lands on real code, not a blank or comment', () => {
-    // Round-3 review: anchors drifted one-to-three lines off the guards they
-    // name in every round so far (three fixed by hand in e7f83463, four more
-    // found after). This cannot verify an anchor points at the RIGHT code,
-    // but it catches the drift signature — an anchor sitting on a blank line
-    // or a comment — which is what every observed drift produced. Line
-    // numbers shift when chatStore.ts changes: if this fails after an
-    // unrelated chatStore edit, the anchors are stale — re-resolve them, do
-    // not delete the check.
-    const store = chatStoreRaw.split('\n');
+  it('every :NNNN anchor in a fixture pins line names a construct that still exists', () => {
+    // WHAT REPLACED WHAT. Task 0 resolved each anchor against `chatStore.ts`
+    // and asserted the line was code rather than a blank or a comment. That
+    // check could not survive E2-S2's own instrumentation: splitting the solo
+    // builder and tagging sixteen insertion sites moves hundreds of lines, and
+    // the only way to keep the NUMBERS true is to edit `pins` — which every
+    // golden header renders verbatim, so all 129 golden files would be
+    // rewritten for a documentation change, in the story whose acceptance
+    // criterion is that they do not change.
+    //
+    // The number is therefore a stable KEY now, and `PINS_ANCHORS` records the
+    // construct behind it. Strictly stronger than what it replaces, which said
+    // of itself that it "cannot verify an anchor points at the RIGHT code" —
+    // and it can no longer be satisfied by an anchor that drifted onto some
+    // unrelated statement. It also fixes a live flaw: `worldInfoStore.ts:1319`,
+    // `:1420` and `tokenizer.ts:180` were all being validated against
+    // `chatStore.ts`, where they landed on unrelated code and passed.
+    //
+    // The failure modes it catches, each of which the old check missed:
+    //   - an anchored construct deleted or renamed out of the builder;
+    //   - a fixture citing a line nobody recorded a meaning for;
+    //   - an entry left behind after the fixture that cited it was removed.
+    //
+    // The first of those needs the OCCURRENCE COUNT, not just presence: a
+    // substring test over the whole file is satisfied by any copy, so a
+    // fingerprint that exists twice proves only that at least one of the two
+    // survives. Sixteen entries were in that state, and two of them shared one
+    // fingerprint outright — deleting the group builder's hidden-message strip
+    // left both green against the solo builder's identical line. Entries are
+    // unique by default; `[fingerprint, n]` is how a construct that genuinely
+    // exists n times (once per builder) declares it, and n is asserted.
+    const sources: Record<string, string> = {
+      'chatStore.ts': chatStoreRaw,
+      'worldInfoStore.ts': worldInfoStoreRaw,
+      'tokenizer.ts': tokenizerRaw,
+    };
+    const cited = new Set<number>();
     const bad: string[] = [];
     for (const f of [...SOLO_FIXTURES, ...GROUP_FIXTURES]) {
       for (const m of (f.pins ?? '').matchAll(/:(\d{3,4})/g)) {
         const ln = Number(m[1]);
-        const text = (store[ln - 1] ?? '').trim();
-        if (text === '' || text.startsWith('//') || text.startsWith('*') || text.startsWith('/*')) {
-          bad.push(`${f.name} pins :${ln} -> ${text === '' ? '(blank)' : JSON.stringify(text.slice(0, 40))}`);
+        cited.add(ln);
+        const entry = PINS_ANCHORS[ln];
+        if (!entry) {
+          bad.push(`${f.name} pins :${ln} — no PINS_ANCHORS entry says what it names`);
+          continue;
+        }
+        const [declared, expected]: [string, number] = Array.isArray(entry)
+          ? entry
+          : [entry, 1];
+        // Only a leading `<name>.ts|` is a file prefix — fingerprints contain
+        // `|` of their own (`||`, `string | null`), so a bare indexOf would
+        // shred them.
+        const prefixed = /^([A-Za-z]+\.ts)\|([\s\S]*)$/.exec(declared);
+        const file = prefixed ? prefixed[1] : 'chatStore.ts';
+        const text = prefixed ? prefixed[2] : declared;
+        // A fingerprint like `{` or `} else {` survives anything and proves
+        // nothing — the same emptiness the old blank/comment test was aimed at.
+        if (text.length < 12) {
+          bad.push(`${f.name} pins :${ln} — fingerprint ${JSON.stringify(text)} is too generic to prove anything`);
+          continue;
+        }
+        if (!sources[file]) {
+          bad.push(`${f.name} pins :${ln} — unknown source file ${JSON.stringify(file)}`);
+          continue;
+        }
+        const found = sources[file].split(text).length - 1;
+        if (found === 0) {
+          bad.push(`${f.name} pins :${ln} — ${file} no longer contains ${JSON.stringify(text.slice(0, 60))}`);
+        } else if (found !== expected) {
+          bad.push(
+            `${f.name} pins :${ln} — ${JSON.stringify(text.slice(0, 60))} occurs ${found}x in ${file}, not ${expected}x, ` +
+              `so it cannot prove the construct this anchor names still exists (lengthen the fingerprint, or declare the count)`
+          );
         }
       }
     }
+    const orphans = Object.keys(PINS_ANCHORS)
+      .map(Number)
+      .filter((n) => !cited.has(n));
+    expect(orphans, 'PINS_ANCHORS entries no fixture cites').toEqual([]);
     expect(bad, `stale pins anchors:\n${bad.join('\n')}`).toEqual([]);
   });
 
