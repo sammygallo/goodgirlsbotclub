@@ -63,12 +63,24 @@ export function estimateTokens(
   return base + Math.floor(whitespaceCount * 0.05);
 }
 
+/**
+ * Per-message overhead: role marker and separators (~4 tokens in ChatML).
+ * Sibling of `CONVERSATION_PRIMING_TOKENS` below, named for the same reason —
+ * the token breakdown reports it as its own reconciliation line
+ * (`PromptBreakdown.messageOverheadPerMessage`), because a panel showing
+ * Reading A (one aggregate overhead row, rather than the cost baked into each
+ * slice) has to multiply it by the message count, and a second copy of the
+ * literal on the render side is how that row silently stops matching the
+ * estimator. Declared here rather than beside the priming constant only
+ * because the function below it is its sole production use.
+ */
+export const MESSAGE_OVERHEAD_TOKENS = 4;
+
 export function estimateMessageTokens(
   message: { role: string; content: string },
   profile: TokenizerProfile = 'generic'
 ): number {
-  // Per-message overhead: role marker, separators (~4 tokens in ChatML)
-  return estimateTokens(message.content, profile) + 4;
+  return estimateTokens(message.content, profile) + MESSAGE_OVERHEAD_TOKENS;
 }
 
 /**
