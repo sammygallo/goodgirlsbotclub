@@ -77,7 +77,11 @@ export const extensionRegistry = {
       try {
         const items = ext.onBuildContext(event);
         for (const item of items) {
-          contributions.push({ ...item, order: item.order ?? 100 });
+          contributions.push({
+            ...item,
+            order: item.order ?? 100,
+            sourceExtensionId: ext.id,
+          });
         }
       } catch (err) {
         console.error(`[ExtensionRegistry] onBuildContext error in "${ext.id}":`, err);
