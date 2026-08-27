@@ -45,16 +45,25 @@ describe('groupHistoryWindow', () => {
 
   it('filters hidden BEFORE slicing, so a hidden message never eats a slot', () => {
     // KILLS: `.slice(-30).filter(!hidden)`, i.e. filtering after the slice.
-    // That ordering would spend one of the thirty slots on the hidden message
-    // and emit twenty-nine turns, shifting the boundary one turn newer — and
-    // with it every `depthFromEnd` the builder's loop computes.
-    const messages = [
-      mkMsg('hidden, and oldest', { hidden: true }),
-      ...Array.from({ length: 30 }, (_, i) => mkMsg(`turn ${i}`)),
-    ];
+    // That ordering spends one of the thirty slots on the hidden message and
+    // emits twenty-nine turns, shifting the boundary a turn newer — and with
+    // it every `depthFromEnd` the builder's loop computes.
+    //
+    // THE FIXTURE IS THE WHOLE TEST, and the obvious one does not work: with
+    // the hidden message OLDEST, the slice drops it under either ordering and
+    // both implementations agree. It has to sit INSIDE the last thirty raw
+    // slots of a chat that has more than thirty visible messages. The
+    // `group-hidden-and-overflow-note` golden has the same blind spot — its
+    // hidden turn is the newest — so nothing else in the suite covers this.
+    const visible = Array.from({ length: 31 }, (_, i) => mkMsg(`turn ${i}`));
+    const messages = [...visible];
+    messages.splice(20, 0, mkMsg('hidden, and well inside the raw window', { hidden: true }));
+    expect(messages.length).toBe(32);
+
     const window = groupHistoryWindow(messages);
+    // Filtering first leaves 31 visible; the slice then keeps visible[1..30].
     expect(window.length).toBe(30);
-    expect(window[0].id).toBe(messages[1].id);
+    expect(window[0].id).toBe(visible[1].id);
     expect(window.some((m) => m.hidden)).toBe(false);
   });
 
