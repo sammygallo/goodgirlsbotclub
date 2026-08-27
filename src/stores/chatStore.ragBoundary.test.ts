@@ -307,15 +307,42 @@ describe('resolveRagContext — the server degradation reason', () => {
     expect(out).toContain('It went with the ledger.');
   });
 
-  it('says nothing when the server reports no reason', async () => {
-    // KILLS: warning on every call, or on an empty-chunks response. An absent
-    // reason is the ordinary case and must be silent — a warning per turn is a
-    // warning nobody reads.
+  it('says nothing on the REAL ordinary-success wire shape, reason: null', async () => {
+    // THE DEPLOYED SHAPE. `RetrievalMessagesOut.reason` is `str | None = None`
+    // and the route serializes it with no `exclude_none`, so an ordinary 200
+    // carries `"reason": null` — ggbc-backend's own tests assert that literal
+    // body. This fixture used to be `{ chunks: [CHUNK] }`, i.e. `undefined`,
+    // a shape no server has ever sent: it left the healthy production path
+    // entirely untested while reading as though it covered it.
     //
-    // AND THE SEMANTICS: an absent reason means ONLY "the id resolved to a
+    // KILLS: the natural TS narrowing `if (dto.reason !== undefined)`, which
+    // the old `reason?: string` type actively invited and the compiler
+    // accepted as exhaustive — every successful recall would have been
+    // classified as degraded, and nothing would have failed. Also kills
+    // warning on every call, or on an empty-chunks response.
+    //
+    // AND THE SEMANTICS: a null reason means ONLY "the id resolved to a
     // live message". It is NOT a statement that the window is correct — the
     // server cannot check that. Nothing here, and nothing at the read site,
     // may treat a null reason as validation.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({
+      chunks: [CHUNK],
+      reason: null,
+    });
+    const out = await resolveRagContext(messages, CHAT, 'b17');
+    expect(warn).not.toHaveBeenCalled();
+    // Degradation-free is not recall-free: the chunks still reach the prompt.
+    expect(out).toContain('It went with the ledger.');
+  });
+
+  it('says nothing when the field is absent entirely', async () => {
+    // The other half of the shared `case null: case undefined:` arm. No
+    // deployed backend emits this — it is the stripping-proxy / pre-#81
+    // shape the optional DTO field still permits — so it is kept as the
+    // secondary case rather than the one that claims to cover production.
+    // KILLS: deleting `case undefined` on the grounds that null is the real
+    // wire, which would send an absent field to `default:`.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ chunks: [CHUNK] });
     await resolveRagContext(messages, CHAT, 'b17');

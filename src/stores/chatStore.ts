@@ -949,14 +949,24 @@ export async function resolveRagContext(
     // (#455) surfaces `"no_key"` as a UI hint and must be able to add a case
     // rather than rewrite this read.
     //
-    // SEMANTICS — do not misread this: an ABSENT reason means only "the id you
-    // sent resolved to a live message in the persisted chat". It is NOT a
+    // SEMANTICS — do not misread this: a NULL (or absent) reason means only
+    // "the id you sent resolved to a live message in the persisted chat". It is NOT a
     // statement that the window is correct. Nothing server-side can validate
     // that; the only defence is that the id came from the real assembly rather
     // than from a re-simulation of it, which is exactly what task 1b's
     // deletion of `computeRagBoundary` bought. Never add code that treats a
     // null reason as validation of the boundary.
     switch (dto.reason) {
+      // THE ORDINARY CASE, and `null` is the shape the deployed server
+      // actually sends: `RetrievalMessagesOut.reason` is `str | None = None`
+      // serialized without `exclude_none`, so every 200 carries the key and
+      // an ABSENT `reason` is something no current backend produces.
+      // `undefined` is kept in the same arm rather than deleted — the DTO
+      // types the field optional, and a stripping proxy or a pre-#81 build
+      // would land here — but the two are ONE arm on purpose: split them, or
+      // narrow on `!== undefined` anywhere, and every healthy recall turn
+      // gets classified as degraded.
+      case null:
       case undefined:
         break;
       case 'boundary_not_found':
