@@ -10,7 +10,7 @@ nothing about what the instrumentation changed.
 
 | File | What it is |
 |---|---|
-| `../promptGoldens.fixtures.ts` | Store state + build inputs. One fixture = one build. |
+| `../promptGoldens.fixtures.ts` | Store state + build inputs. One fixture = one build. Also `PINS_ANCHORS`. |
 | `../promptGoldens.test.ts` | The harness: serializer, one build per fixture, structural self-checks. |
 | `solo-*.prompt.txt` / `group-*.prompt.txt` | Every context entry the build emitted, in order, raw. |
 | `solo-*.variables.txt` / `group-*.variables.txt` | The chat variables that build persisted. |
@@ -46,17 +46,17 @@ Five parts of a diff deserve a deliberate look before you accept it:
   cooldown clock: a **sticky carry-over must never appear in it**
   (`worldInfoStore.ts:1541-1546`) or the carry-over becomes permanent.
 - **`# toasts:`** (in `.fired.txt`) — the fail-loud world-info budget warning
-  (`chatStore.ts:1106` / `:1892`), captured through a mocked
+  (`chatStore.ts:1234` / `:2239`), captured through a mocked
   `showToastGlobal`. It is the *only* output of that branch: it puts nothing
   in the context, so before round 3 both blocks could be deleted with the
   whole suite green. Exactly two builds raise one, on two different chat
   files — the warning is suppressed after the first time it fires for a chat
-  (`wiPinnedWarnedChats`, `:963`), which is why those two fixtures call
+  (`wiPinnedWarnedChats`, `:975`), which is why those two fixtures call
   `withChatFile()`.
 - **`# entries:` / `# overBudget:` / `# lastTokenEstimate:`** — the trim's own
   verdict. `lastTokenEstimate` has **two definitions** today: the token-aware
-  path (`chatStore.ts:1676`) reports the trim's `usedTokens`, which excludes
-  Stage C; the non-token-aware path (`:1694-1696`) re-estimates the whole
+  path (`chatStore.ts:1944`) reports the trim's `usedTokens`, which excludes
+  Stage C; the non-token-aware path (`:2007-2011`) re-estimates the whole
   assembled context, which includes it. Task 4 reconciles those; until it
   does, both numbers are pinned here so the discrepancy is visible rather
   than inherited.
@@ -69,9 +69,9 @@ readable diff instead of a surprise:
 
 | Fixture | What it pins |
 |---|---|
-| `solo-persona-in-prompt` | A persona set to position **in_prompt** (an option the settings UI offers) has its `personaBlock` computed at `chatStore.ts:1266` and then emitted by nothing — `sectionContent.persona_before_char` gates on `descriptionPosition === 'before_char'`. The description silently never reaches the model. |
+| `solo-persona-in-prompt` | A persona set to position **in_prompt** (an option the settings UI offers) has its `personaBlock` computed at `chatStore.ts:1391` and then emitted by nothing — `sectionContent.persona_before_char` gates on `descriptionPosition === 'before_char'`. The description silently never reaches the model. |
 | `group-author-note-depth-zero-dropped` | A group author's note at depth 0 matches neither the in-loop branch nor the overflow branch and is dropped. Solo emits it. Known, filed separately (#466). |
-| `solo-recall-absent` vs `solo-empty-system-block` | A character note that renders to **whitespace only** is unshifted by the overflow branch (`:1593` tests truthiness) and swallowed by the depth-0 branch (`:1548` tests `.trim()`). One of the two ships an all-whitespace context entry. Filed as #477; when it is fixed, `solo-recall-absent` loses an entry. |
+| `solo-recall-absent` vs `solo-empty-system-block` | A character note that renders to **whitespace only** is unshifted by the overflow branch (`:1746` tests truthiness) and swallowed by the depth-0 branch (`:1696` tests `.trim()`). One of the two ships an all-whitespace context entry. Filed as #477; when it is fixed, `solo-recall-absent` loses an entry. |
 | every `group-*` golden's `# lastTokenEstimate: -1` | Group never writes `lastTokenEstimate`, so the context meter shows a **stale** value from the last solo send. The fixtures seed the field with `-1`, so `-1` in a group golden reads "this build reported no total at all". |
 
 ## The mutation drill
@@ -91,9 +91,9 @@ git worktree remove --force /tmp/ggbc-mutate
 
 | # | Mutation | Must fail |
 |---|---|---|
-| M1 | Change one character of the `emotion_instruction` string (`chatStore.ts:1229`) | ≥ 1 prompt golden |
-| M2 | `join('\n\n')` → `join('\n')` at `chatStore.ts:1337` | ≥ 2 prompt goldens |
-| M3 | Remove the `export` on `buildConversationContext` (`chatStore.ts:966`) | the suite must fail to **compile** (`npm run build`) and fail at runtime — never silently skip |
+| M1 | Change one character of the `emotion_instruction` string (`chatStore.ts:1357`) | ≥ 1 prompt golden |
+| M2 | `join('\n\n')` → `join('\n')` at `chatStore.ts:1884` | ≥ 2 prompt goldens |
+| M3 | Remove the `export` on `buildConversationContext` (`chatStore.ts:1076`) | the suite must fail to **compile** (`npm run build`) and fail at runtime — never silently skip |
 
 Round 2 added five more, each one an adversarial reviewer's *proven-green*
 mutation against round 1's harness. Round 3 split the last of them in two —
@@ -102,12 +102,12 @@ its two halves land on different fixtures, and saying so in one row was how
 
 | # | Mutation | Must fail |
 |---|---|---|
-| M4 | Replace every at-depth `role:` expression with the literal `'system'` (14 sites: `:1483 :1494 :1501 :1520 :1550 :1558 :1565 :1585 :1597 :1605 :1612 :1637 :2302 :2391`) | the three `solo-at-depth-*` goldens plus `group-macro-writes` and `group-hidden-and-overflow-note` |
+| M4 | Replace every at-depth `role:` expression with the literal `'system'` (14 sites: `:1621 :1633 :1641 :1662 :1698 :1707 :1715 :1737 :1750 :1759 :1767 :1794 :2726 :2830`) | the three `solo-at-depth-*` goldens plus `group-macro-writes` and `group-hidden-and-overflow-note` |
 | M5 | Rewrite any single macro-executed input as `(sub(x), sub(x))` | that site's counter reads `"2"`, and `the macro canaries record every write exactly once` fails by name |
-| M6 | Delete the `${wiAfterChar …}` or `${wiBeforeAn …}` interpolation from the group flat template (`:2217`/`:2218`) | `group-wi-attribution` |
-| M7 | `const finalSystemPrompt = systemPrompt;` (drop the RAG concat, `:2233-2235`) | `group-join` |
-| M8 | Drop `- windowSkew` from `summarySliceOffset` (`:1359`) | `solo-fixed-window-summary-skew` |
-| M9 | Filter before slicing at `:1350` | `solo-token-aware-off` — **not** `solo-fixed-window-summary-skew`, whose `pins` claimed this until round 3 caught it. With a summary present the offset rebase subtracts `windowSkew` again, the window terms cancel, and both orderings emit the same tail |
+| M6 | Delete the `${wiAfterCharSlot}` or `${wiBeforeAnSlot}` interpolation from the group flat template (`:2577`/`:2578`), or empty either slot const (`:2566`/`:2571`) | `group-wi-attribution` |
+| M7 | `const finalSystemPrompt = systemPrompt;` (drop the RAG concat, `:2593-2595`) | `group-join` |
+| M8 | Drop `- windowSkew` from `summarySliceOffset` (`:1517`) | `solo-fixed-window-summary-skew` |
+| M9 | Filter before slicing at `:1471` | `solo-token-aware-off` — **not** `solo-fixed-window-summary-skew`, whose `pins` claimed this until round 3 caught it. With a summary present the offset rebase subtracts `windowSkew` again, the window terms cancel, and both orderings emit the same tail |
 
 Round 3 closed the gap between what fixtures *claimed* to pin and what a
 mutation could actually reach. Each of these was **proven green** against
@@ -115,25 +115,48 @@ round 2's harness:
 
 | # | Mutation | Must fail |
 |---|---|---|
-| M10a | Delete either pinned-over-budget `showToastGlobal` block (`:1100-1110` solo, `:1886-1896` group) | that builder's `*-wi-budget-eviction.fired.txt` (the `# toasts:` line), and `the fail-loud world-info budget warning fires once per chat file` by name |
+| M10a | Delete either pinned-over-budget `showToastGlobal` block (`:1228-1238` solo, `:2233-2243` group) | that builder's `*-wi-budget-eviction.fired.txt` (the `# toasts:` line), and `the fail-loud world-info budget warning fires once per chat file` by name |
 | M10b | Delete **either** `withChatFile()` call in the fixtures | `the fail-loud …` test by name — the round-3 review proved each single deletion was GREEN until the test gained its `not.toBe(GOLDEN_CHAT_FILE)` assertion per fired run; that assertion is what makes this row true, so do not remove it without re-running this drill |
-| M11 | Delete `if (!enabledSections.has(sectionId)) continue;` (`:1722`) | `solo-wi-sections-disabled.fired.txt` |
-| M12 | Drop any one of the four `wiRendered` filters (`:1512`, `:1577`, `:1626`, `:1724`) | `solo-wi-blank-guards.fired.txt` |
-| M13 | Iterate `wiAtDepthByMessage` instead of `keptHistory` at `:1725-1728` (ignore the trim) | `solo-trim-bites.fired.txt` + `solo-at-depth-overflow.fired.txt` — this third claim in `renderFired`'s docstring was already true; M11 and M12 are the two that were not |
-| M14 | `:1548` depth-0 depth-prompt guard `.trim()` → plain truthiness | `solo-empty-system-block.prompt.txt` |
-| M15 | `:1593` overflow depth-prompt guard truthiness → `.trim()` | `solo-recall-absent.prompt.txt` |
-| M16 | Hoist the `sub()` out of the `:1205` or `:1209-1211` suppression ternary (execute the macro, discard the text) | `the macro canaries record every write exactly once`, via `card-overrides-disabled` / `linked-style-active` / `pure-chat-mode` |
+| M11 | Delete `if (!enabledSections.has(sectionId)) continue;` (`:2040`) | `solo-wi-sections-disabled.fired.txt` |
+| M12 | Drop any one of the four `wiRendered` filters (`:1653`, `:1728`, `:1782`, `:2042`) | `solo-wi-blank-guards.fired.txt` |
+| M13 | Iterate `wiAtDepthByMessage` instead of `keptHistory` at `:2045-2047` (ignore the trim) | `solo-trim-bites.fired.txt` + `solo-at-depth-overflow.fired.txt` — this third claim in `renderFired`'s docstring was already true; M11 and M12 are the two that were not |
+| M14 | `:1696` depth-0 depth-prompt guard `.trim()` → plain truthiness | `solo-empty-system-block.prompt.txt` |
+| M15 | `:1746` overflow depth-prompt guard truthiness → `.trim()` | `solo-recall-absent.prompt.txt` |
+| M16 | Hoist the `sub()` out of the `:1333` or `:1337-1339` suppression ternary (execute the macro, discard the text) | `the macro canaries record every write exactly once`, via `card-overrides-disabled` / `linked-style-active` / `pure-chat-mode` |
 | M17 | Delete any fixture's whole `counters` array | `the macro canaries record every write exactly once` — the assertion count is now EXACT, not a floor with slack |
 
 Recorded results at the time this directory was created are in the task-0
 build report; re-run them, do not trust the record.
 
+## `pins` anchors are keys, not live line numbers
+
+Every golden renders its fixture's `what` and `pins` prose in its header. That
+makes `pins` **part of a byte-pinned artifact**: re-resolving its line numbers
+after a refactor rewrites all 129 golden files for a documentation edit, in the
+harness whose whole job is that those files change only when the prompt does.
+E2-S2's instrumentation moved several hundred lines of `chatStore.ts` and made
+that collision unavoidable.
+
+So a `:NNNN` in `pins` is a stable **key**, resolved through `PINS_ANCHORS` in
+`../promptGoldens.fixtures.ts`, which records the source construct behind it.
+The test `every :NNNN anchor in a fixture pins line names a construct that
+still exists` checks that every cited key has an entry, that the entry is
+specific enough to prove something, and that the construct is still present in
+the file it names. That is strictly more than the check it replaced — which
+said of itself that it "cannot verify an anchor points at the RIGHT code", and
+which silently resolved `worldInfoStore.ts:1319`, `:1420` and
+`tokenizer.ts:180` against `chatStore.ts`.
+
+Line numbers elsewhere in THIS file (the mutation tables, the seam-defence
+table) are live, and were re-resolved for the instrumentation. Re-resolve them
+whenever they drift — nothing byte-pinned depends on them.
+
 ## Adding a fixture
 
 1. Add it to `SOLO_FIXTURES` / `GROUP_FIXTURES` in
    `../promptGoldens.fixtures.ts`. `what` and `pins` are required and are
-   asserted — `pins` must name at least one `chatStore.ts` line anchor, so a
-   later reader can find the branch the fixture walks.
+   asserted — `pins` must name at least one line anchor, and that anchor needs
+   its `PINS_ANCHORS` entry in the same commit.
 2. `npx vitest run src/stores/promptGoldens -u`.
 3. Read the new golden end to end and check it walks the branch you claimed.
    `cap-overflow` in `src/utils/storyRender/__calibration__/` is the cautionary
@@ -205,18 +228,20 @@ Use:
 `setvar` is still right for recording *which stage ran last* (the `stage`
 variable in `solo-macro-writes`); it is never right for a run count.
 
-### 2. Task 1b's split boundary is defended by the at-depth counters
+### 2. The prepare/finish split boundary is defended by the at-depth counters
 
-Task 1b splits `buildConversationContext` into a "prepare" half and a "finish"
-half and **runs the finish half twice** (a two-pass fixed point: recall is an
-input to the builder and also consumes the trim budget that decides the
-boundary). The planned seam is after the at-depth overflow unshifts, at
-`chatStore.ts:1641/1642`.
+E2-S2 task 1 split `buildConversationContext` into
+`prepareConversationContext` (`chatStore.ts:1104`) and
+`finishConversationContext` (`:1832`); task 1b will **run the finish half
+twice** (a two-pass fixed point: recall is an input to the builder and also
+consumes the trim budget that decides the boundary). The seam is after the
+at-depth overflow unshifts: everything above it executes macros, everything
+below it executes none.
 
 A review of round 1 proved that applying that design one block **higher** — at
-the natural-looking seam after the history loop (`:1547`), so that the finish
-half re-runs the depth-0 trailing slot and the four overflow unshifts —
-re-executed `sub()` at `:1555`/`:1602` and `joinWi()` at `:1571`/`:1616`, and
+the natural-looking seam after the history loop (now `:1695`), so that the
+finish half re-runs the depth-0 trailing slot and the four overflow unshifts —
+re-executed `sub()` at `:1704`/`:1756` and `joinWi()` at `:1722`/`:1777`, and
 **not one golden changed**. Nothing in the harness defended the seam.
 
 It does now. Every macro-executed input in those blocks carries its own
@@ -224,11 +249,16 @@ counter, and the fixture that owns it lists the counter in `counters`:
 
 | Block | Counters | Fixture |
 |---|---|---|
-| in-loop insertions (`:1481`-`:1523`) | `note` `wiDepthInLoop` `soloWiBlankInLoop` | `solo-at-depth-interleave`, `solo-wi-blank-guards` |
-| depth-0 trailing (`:1548`-`:1588`) | `anDepthZero` `wiDepthZero` `anGuardRuns` `soloWiBlankZero` | `solo-at-depth-zero`, `solo-empty-system-block`, `solo-wi-blank-guards` |
-| overflow unshifts (`:1591`-`:1641`) | `anOverflow` `anGuardRuns` `wiDepthOverflow` `wiDepthOverflowB` `soloWiBlankOverflow` | `solo-at-depth-overflow`, `solo-recall-absent`, `solo-wi-blank-guards` |
-| *(prepare half — NOT a split defence)* | `depthPromptRuns` | counts the single `sub(depthPrompt.prompt)` at `:1425`, **above** the planned boundary; the round-3 review proved re-running any block below the boundary cannot move it. It defends against a split drawn above `:1425`, nothing later — the three rows above are what defend the planned seam |
+| in-loop insertions (`:1619`-`:1665`) | `note` `wiDepthInLoop` `soloWiBlankInLoop` | `solo-at-depth-interleave`, `solo-wi-blank-guards` |
+| depth-0 trailing (`:1696`-`:1741`) | `anDepthZero` `wiDepthZero` `anGuardRuns` `soloWiBlankZero` | `solo-at-depth-zero`, `solo-empty-system-block`, `solo-wi-blank-guards` |
+| overflow unshifts (`:1744`-`:1798`) | `anOverflow` `anGuardRuns` `wiDepthOverflow` `wiDepthOverflowB` `soloWiBlankOverflow` | `solo-at-depth-overflow`, `solo-recall-absent`, `solo-wi-blank-guards` |
+| *(prepare half — NOT a split defence)* | `depthPromptRuns` | counts the single `sub(depthPrompt.prompt)` at `:1546`, **above** the boundary; the round-3 review proved re-running any block below it cannot move that counter. It defends against a split drawn above `:1546`, nothing later — the three rows above are what defend the seam |
 | group in-loop / depth-0 / overflow | `gWiDepthInLoop` `gWiDepthZero` `gWiDepthOverflow` `anCount` `gAnOverflow` | `group-wi-attribution`, `group-hidden-and-overflow-note` |
+
+`chatStore.breakdown.test.ts` now carries the same guarantee as a NAMED test
+rather than only a file diff: `finish executes no macros, however many times it
+runs` does one prepare and three finishes and asserts every counter still
+reads `"1"`.
 
 Re-running any of those blocks flips its counters to `"2"` and fails a named
 test (`the macro canaries record every write exactly once`), not just an
