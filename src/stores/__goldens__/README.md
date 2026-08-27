@@ -27,7 +27,7 @@ list of everything your change altered about what the model is sent. An update
 committed without reading it throws away the only thing this harness does.
 Never blind-accept `-u`.
 
-Four parts of a diff deserve a deliberate look before you accept it:
+Five parts of a diff deserve a deliberate look before you accept it:
 
 - **`.variables.txt`** — a count that went from `"1"` to `"2"` means a macro
   now executes **twice**. `{{setvar}}`/`{{incvar}}` writes are persisted into
@@ -45,6 +45,14 @@ Four parts of a diff deserve a deliberate look before you accept it:
   a future replay believes fired. `activated` is what stamps the sticky /
   cooldown clock: a **sticky carry-over must never appear in it**
   (`worldInfoStore.ts:1541-1546`) or the carry-over becomes permanent.
+- **`# toasts:`** (in `.fired.txt`) — the fail-loud world-info budget warning
+  (`chatStore.ts:1106` / `:1892`), captured through a mocked
+  `showToastGlobal`. It is the *only* output of that branch: it puts nothing
+  in the context, so before round 3 both blocks could be deleted with the
+  whole suite green. Exactly two builds raise one, on two different chat
+  files — the warning is suppressed after the first time it fires for a chat
+  (`wiPinnedWarnedChats`, `:962`), which is why those two fixtures call
+  `withChatFile()`.
 - **`# entries:` / `# overBudget:` / `# lastTokenEstimate:`** — the trim's own
   verdict. `lastTokenEstimate` has **two definitions** today: the token-aware
   path (`chatStore.ts:1676`) reports the trim's `usedTokens`, which excludes
@@ -63,6 +71,7 @@ readable diff instead of a surprise:
 |---|---|
 | `solo-persona-in-prompt` | A persona set to position **in_prompt** (an option the settings UI offers) has its `personaBlock` computed at `chatStore.ts:1266` and then emitted by nothing — `sectionContent.persona_before_char` gates on `descriptionPosition === 'before_char'`. The description silently never reaches the model. |
 | `group-author-note-depth-zero-dropped` | A group author's note at depth 0 matches neither the in-loop branch nor the overflow branch and is dropped. Solo emits it. Known, filed separately (#466). |
+| `solo-recall-absent` vs `solo-empty-system-block` | A character note that renders to **whitespace only** is unshifted by the overflow branch (`:1593` tests truthiness) and swallowed by the depth-0 branch (`:1548` tests `.trim()`). One of the two ships an all-whitespace context entry. Filed as #477; when it is fixed, `solo-recall-absent` loses an entry. |
 | every `group-*` golden's `# lastTokenEstimate: -1` | Group never writes `lastTokenEstimate`, so the context meter shows a **stale** value from the last solo send. The fixtures seed the field with `-1`, so `-1` in a group golden reads "this build reported no total at all". |
 
 ## The mutation drill
@@ -87,7 +96,9 @@ git worktree remove --force /tmp/ggbc-mutate
 | M3 | Remove the `export` on `buildConversationContext` (`chatStore.ts:966`) | the suite must fail to **compile** (`npm run build`) and fail at runtime — never silently skip |
 
 Round 2 added five more, each one an adversarial reviewer's *proven-green*
-mutation against round 1's harness:
+mutation against round 1's harness. Round 3 split the last of them in two —
+its two halves land on different fixtures, and saying so in one row was how
+`solo-fixed-window-summary-skew` came to claim coverage it never had:
 
 | # | Mutation | Must fail |
 |---|---|---|
@@ -95,7 +106,23 @@ mutation against round 1's harness:
 | M5 | Rewrite any single macro-executed input as `(sub(x), sub(x))` | that site's counter reads `"2"`, and `the macro canaries record every write exactly once` fails by name |
 | M6 | Delete the `${wiAfterChar …}` or `${wiBeforeAn …}` interpolation from the group flat template (`:2217`/`:2218`) | `group-wi-attribution` |
 | M7 | `const finalSystemPrompt = systemPrompt;` (drop the RAG concat, `:2233-2235`) | `group-join` |
-| M8 | Drop `- windowSkew` from `summarySliceOffset` (`:1359`), or filter before slicing at `:1350` | `solo-fixed-window-summary-skew` |
+| M8 | Drop `- windowSkew` from `summarySliceOffset` (`:1359`) | `solo-fixed-window-summary-skew` |
+| M9 | Filter before slicing at `:1350` | `solo-token-aware-off` — **not** `solo-fixed-window-summary-skew`, whose `pins` claimed this until round 3 caught it. With a summary present the offset rebase subtracts `windowSkew` again, the window terms cancel, and both orderings emit the same tail |
+
+Round 3 closed the gap between what fixtures *claimed* to pin and what a
+mutation could actually reach. Each of these was **proven green** against
+round 2's harness:
+
+| # | Mutation | Must fail |
+|---|---|---|
+| M10 | Delete either pinned-over-budget `showToastGlobal` block (`:1101-1110` solo, `:1884-1895` group), or either `withChatFile()` call in the fixtures | that builder's `*-wi-budget-eviction.fired.txt`, and `the fail-loud world-info budget warning fires once per chat file` by name |
+| M11 | Delete `if (!enabledSections.has(sectionId)) continue;` (`:1722`) | `solo-wi-sections-disabled.fired.txt` |
+| M12 | Drop any one of the four `wiRendered` filters (`:1512`, `:1577`, `:1626`, `:1724`) | `solo-wi-blank-guards.fired.txt` |
+| M13 | Iterate `wiAtDepthByMessage` instead of `keptHistory` at `:1725-1728` (ignore the trim) | `solo-trim-bites.fired.txt` + `solo-at-depth-overflow.fired.txt` — this third claim in `renderFired`'s docstring was already true; M11 and M12 are the two that were not |
+| M14 | `:1548` depth-0 depth-prompt guard `.trim()` → plain truthiness | `solo-empty-system-block.prompt.txt` |
+| M15 | `:1593` overflow depth-prompt guard truthiness → `.trim()` | `solo-recall-absent.prompt.txt` |
+| M16 | Hoist the `sub()` out of the `:1205` or `:1209-1211` suppression ternary (execute the macro, discard the text) | `the macro canaries record every write exactly once`, via `card-overrides-disabled` / `linked-style-active` / `pure-chat-mode` |
+| M17 | Delete any fixture's whole `counters` array | `the macro canaries record every write exactly once` — the assertion count is now EXACT, not a floor with slack |
 
 Recorded results at the time this directory was created are in the task-0
 build report; re-run them, do not trust the record.
@@ -125,15 +152,16 @@ on every run):
 
 ## Coverage
 
-Solo (25 fixtures): baseline · all sections · reordered + disabled promptOrder
+Solo (27 fixtures): baseline · all sections · reordered + disabled promptOrder
 · empty system block · trim bites · trim over budget · token-aware off ·
 at-depth interleave · at-depth 0 · at-depth overflow · image-only + blank
 assistant turn · macro writes · recall present/absent · persona after_char ·
 persona in_prompt · pure chat mode · linked style · summary compaction floor ·
 hidden messages · world-info scan options · world-info budget eviction ·
-server-matched entries · card overrides disabled · fixed window + summary skew.
+server-matched entries · card overrides disabled · fixed window + summary skew
+· world-info sections disabled · world-info blank guards.
 
-Group (17 fixtures): swap · join (+ recall) · swap + scenario override · join +
+Group (16 fixtures): swap · join (+ recall) · swap + scenario override · join +
 scenario override · blank user turn kept (folded) / dropped (unfolded) /
 dropped (not last) · blank guards in-loop · blank guards overflow · 30-message
 window slice before the system filter · macro writes (join) · macro writes
@@ -145,6 +173,11 @@ because `persona_before_char` and `persona_after_char` both read the single
 `persona.descriptionPosition` field and are mutually exclusive. `all-sections`
 covers 13 of 14 with the persona before the card; `persona-after-char` covers
 the 14th.
+
+Both counts above are asserted by `the fixture counts the README quotes are
+the ones that exist`. They were prose until round 3, and the group number was
+wrong by one for as long as it had been written down. Change a fixture list,
+change that test, change this paragraph — in one commit.
 
 Deferred (per the task-0 spec): empty roster · single-member group ·
 promptOrder permutations beyond the one reordering.
@@ -190,9 +223,9 @@ counter, and the fixture that owns it lists the counter in `counters`:
 
 | Block | Counters | Fixture |
 |---|---|---|
-| in-loop insertions (`:1481`-`:1523`) | `depthPromptRuns` `note` `wiDepthInLoop` | `solo-at-depth-interleave` |
-| depth-0 trailing (`:1548`-`:1588`) | `depthPromptRuns` `anDepthZero` `wiDepthZero` | `solo-at-depth-zero` |
-| overflow unshifts (`:1591`-`:1641`) | `depthPromptRuns` `anOverflow` `wiDepthOverflow` `wiDepthOverflowB` | `solo-at-depth-overflow` |
+| in-loop insertions (`:1481`-`:1523`) | `depthPromptRuns` `note` `wiDepthInLoop` `soloWiBlankInLoop` | `solo-at-depth-interleave`, `solo-wi-blank-guards` |
+| depth-0 trailing (`:1548`-`:1588`) | `depthPromptRuns` `anDepthZero` `wiDepthZero` `anGuardRuns` `soloWiBlankZero` | `solo-at-depth-zero`, `solo-empty-system-block`, `solo-wi-blank-guards` |
+| overflow unshifts (`:1591`-`:1641`) | `depthPromptRuns` `anOverflow` `wiDepthOverflow` `wiDepthOverflowB` `soloWiBlankOverflow` | `solo-at-depth-overflow`, `solo-recall-absent`, `solo-wi-blank-guards` |
 | group in-loop / depth-0 / overflow | `gWiDepthInLoop` `gWiDepthZero` `gWiDepthOverflow` `anCount` `gAnOverflow` | `group-wi-attribution`, `group-hidden-and-overflow-note` |
 
 Re-running any of those blocks flips its counters to `"2"` and fails a named
