@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { MoreHorizontal, Check, X, Volume2, Square, Globe, EyeOff } from 'lucide-react';
 import { Avatar } from '../ui';
 import { BottomSheet } from '../ui/BottomSheet';
+import { PromptBreakdownSheet } from './PromptBreakdownSheet';
 import { MessageActionMenu } from './MessageActionMenu';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { haptic } from '../../utils/haptics';
@@ -128,6 +129,7 @@ export function ChatMessage({
   const [editContent, setEditContent] = useState(content);
   const [showMenu, setShowMenu] = useState(false);
   const [showEditOptions, setShowEditOptions] = useState(false);
+  const [showBreakdown, setShowBreakdown] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Phase 8.2: apply display-only regex scripts for rendering.
@@ -297,15 +299,31 @@ export function ChatMessage({
     !isUser && usage
       ? estimateTokens(displayContent, profileForProvider(usage.provider || ''))
       : 0;
+  // E2-S2 task 6: the chip opens the breakdown sheet, which independently
+  // decides whether it still owns the last-published breakdown for THIS
+  // message (see PromptBreakdownSheet) — this button doesn't know or care.
   const usageChip =
     !isUser && usage && (usage.inputTokens > 0 || usageOutTokens > 0) ? (
-      <span
-        className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] tabular-nums whitespace-nowrap"
+      <button
+        type="button"
+        onClick={() => setShowBreakdown(true)}
+        className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] tabular-nums whitespace-nowrap hover:bg-[var(--color-bg-primary)] transition-colors"
         title={`Estimated this turn: ~${usage.inputTokens.toLocaleString()} input + ~${usageOutTokens.toLocaleString()} output tokens`}
+        aria-label="Token breakdown for this turn"
       >
         ~{formatTokens(usage.inputTokens + usageOutTokens)} tok
-      </span>
+      </button>
     ) : null;
+  // Rendered next to the chip in every layout branch, matching how
+  // `hiddenBadge` repeats across the same three branches below — the sheet
+  // itself is a no-op (`null`) until `showBreakdown` flips true.
+  const breakdownSheetEl = !isUser && usage ? (
+    <PromptBreakdownSheet
+      isOpen={showBreakdown}
+      onClose={() => setShowBreakdown(false)}
+      messageId={messageId}
+    />
+  ) : null;
 
   // #414: badge shown on a hidden message. Lives in the header row (outside the
   // dimmed content) so it stays fully legible while the message body is faded.
@@ -581,6 +599,7 @@ export function ChatMessage({
             <span className="text-xs font-medium text-[var(--color-text-secondary)]">{name}</span>
             {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
             {usageChip}
+            {breakdownSheetEl}
             {hiddenBadge}
           </div>
 
@@ -640,6 +659,7 @@ export function ChatMessage({
           </span>
           {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
           {usageChip}
+          {breakdownSheetEl}
           {hiddenBadge}
           <div className="ml-auto">{actionButtons}</div>
         </div>
@@ -679,6 +699,7 @@ export function ChatMessage({
           </span>
           {timeStr && <span className="text-xs text-zinc-500 ml-2">{timeStr}</span>}
           {usageChip}
+          {breakdownSheetEl}
           {hidden && <span className="ml-2 inline-flex">{hiddenBadge}</span>}
 
           {imageGrid && <div className={`mt-1 ${hidden ? 'opacity-50' : ''}`}>{imageGrid}</div>}
