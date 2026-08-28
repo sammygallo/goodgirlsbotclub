@@ -21,6 +21,7 @@ import { ChatMessage } from './ChatMessage';
 import { useGenerationStore } from '../../stores/generationStore';
 import { addSlice, createPromptBreakdown, type PromptBreakdown } from '../../utils/promptBreakdown';
 import type { TokenUsage } from '../../stores/chatStore';
+import type { ChatLayoutMode } from '../../hooks/displayPreferences';
 
 // jsdom (this repo's chosen DOM env — see vitest.config.ts) doesn't implement
 // matchMedia; ChatMessage calls useIsMobile() unconditionally, which calls
@@ -66,8 +67,11 @@ const USAGE: TokenUsage = {
 };
 
 /** An AI message with two swipes, rendered at `swipeId` — the same shape
- *  ChatView hands ChatMessage (`swipeId={message.swipeId}`). */
-function renderAiMessage(swipeId: number) {
+ *  ChatView hands ChatMessage (`swipeId={message.swipeId}`). `layoutMode`
+ *  defaults to 'bubbles' (ChatMessage's own default), matching the file's
+ *  original rows; review round 4 (R4-G/F9) parameterizes over the other two
+ *  reachable layouts too — see the describe block below. */
+function renderAiMessage(swipeId: number, layoutMode?: ChatLayoutMode) {
   render(
     <ChatMessage
       messageId="m1"
@@ -77,6 +81,7 @@ function renderAiMessage(swipeId: number) {
       usage={USAGE}
       swipes={['Hi there.', 'Hello again.']}
       swipeId={swipeId}
+      layoutMode={layoutMode}
     />
   );
 }
@@ -151,4 +156,32 @@ describe('ChatMessage — the read half of the swipe-ownership wire (review roun
     expect(screen.queryByText(/no longer available/)).toBeNull();
     expect(screen.getByText('Within budget')).toBeTruthy();
   });
+});
+
+// ---------------------------------------------------------------------------
+// Layouts — review round 4, R4-G/F9
+// ---------------------------------------------------------------------------
+
+describe('ChatMessage — the cost chip and its sheet render in every user-selectable layout (review round 4, R4-G/F9)', () => {
+  // KILLS: `{breakdownSheetEl}` (or the chip itself) missing from the flat
+  // or document layout branch — the file's own comment above
+  // `breakdownSheetEl` claims it is "Rendered next to the chip in every
+  // layout branch", and before this describe nothing rendered ChatMessage
+  // with any `layoutMode` other than the 'bubbles' default, so a refactor
+  // that dropped either element from one of the other two branches would
+  // silently kill the feature for users on that layout with the suite green.
+  const layouts: ChatLayoutMode[] = ['bubbles', 'flat', 'document'];
+
+  for (const layoutMode of layouts) {
+    it(`${layoutMode}: the chip opens the sheet and renders owned content`, () => {
+      useGenerationStore.setState({
+        lastPromptBreakdown: soloBreakdown(),
+        lastPromptBreakdownTag: { messageId: 'm1', swipeIndex: 1 },
+      });
+      renderAiMessage(1, layoutMode);
+      openChip();
+      expect(screen.queryByText(/no longer available/)).toBeNull();
+      expect(screen.getByText('Within budget')).toBeTruthy();
+    });
+  }
 });
