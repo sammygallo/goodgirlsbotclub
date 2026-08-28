@@ -223,11 +223,19 @@ export function PromptBreakdownView({
         {reserved && (
           <>
             <div className="w-px bg-[var(--color-border)]" aria-hidden="true" />
+            {/* Review round 4, R4-D/F4: every other number on the panel is
+                label-value paired; this chip used to carry only a `title`
+                tooltip, which never fires on touch and isn't reachable by
+                keyboard/screen-reader. Visible "Reserved" label + value,
+                matching the panel's row idiom, with the tooltip kept for
+                desktop hover and an aria-label for assistive tech. */}
             <div
-              className="h-6 min-w-[2.5rem] px-2 rounded-md flex items-center justify-center text-[10px] tabular-nums text-[var(--color-text-secondary)] bg-[var(--color-bg-tertiary)] border border-dashed border-[var(--color-border)]"
+              className="h-6 px-2 rounded-md flex items-center gap-1 justify-center text-[10px] tabular-nums text-[var(--color-text-secondary)] bg-[var(--color-bg-tertiary)] border border-dashed border-[var(--color-border)] whitespace-nowrap"
               title={`Reserved for the response: ${n(reserved.tokens)} tokens`}
+              aria-label={`Reserved for the response: ${n(reserved.tokens)} tokens`}
             >
-              {formatTokens(reserved.tokens)}
+              <span className="uppercase tracking-wide opacity-70">Reserved</span>
+              <span>{formatTokens(reserved.tokens)}</span>
             </div>
           </>
         )}
