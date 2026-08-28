@@ -40,7 +40,7 @@ TRIGGER-LIST FLAGS: <which apply, or "none"> → review tier: <standard|trigger>
 ```
 
 ### 3 · PLAN (M-size and larger builds only; S skips)
-Spawn the built-in `Plan` agent with the brief. Sanity-check the plan against the AC yourself before build.
+Spawn the built-in `Plan` agent with the brief. Sanity-check the plan against the AC yourself before build. **The plan declares the story's task-PR split (the loop count N); restate the verify budget as N × the §5 class budget at PLAN exit. S stories, which skip this step, fix N=1 at the BRIEF.**
 
 **Board artifact — publish/refresh here.** As soon as Definition of Ready is met — right after this step for M+ stories, right after step 2 BRIEF for S stories (which skip PLAN) — refresh the visual Kanban mirror and publish it, so Sammy sees the story move the moment its shape is locked rather than only at close:
 - Source lives at `.claude/skills/run-story/board/ggbc-board.html`, committed to the repo — never the scratchpad, which is session-scoped and gone by the next run. Read it, move this story's card to its new column/state, and leave every other card as last ground-truthed.
