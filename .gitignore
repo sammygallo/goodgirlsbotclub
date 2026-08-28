@@ -41,6 +41,3 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# Untracked local planning doc (stale carriers corrected 2026-08-26; kept out of the tree and out of the run-story byte-clean gate)
-HANDOFF_FABLE_GGBC_PRODUCT_PLAN.md
