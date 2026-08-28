@@ -307,7 +307,10 @@ export interface PromptBreakdown {
   responseReserve: number | null;
 
   flags: {
-    /** The trim's verdict — the newest turn alone busted the budget. */
+    /** True when the PINNED content alone — the newest turn, plus the
+     *  system/character block, plus any pinned constant/critical World Info
+     *  entries — exceeded the configured token budget and had to be
+     *  force-included anyway (#453; NOT the newest message alone). */
     overBudget: boolean;
     /** False in group, and on a solo build with `tokenAware` off. When false
      *  the history slice is badged "not trimmed" (AC 7). */
@@ -330,6 +333,27 @@ export interface PromptBreakdown {
      * The builders set it; construction only supplies the safe default.
      */
     hasReservedSlice: boolean;
+    /**
+     * ADDITIVE (review round 4, R4-B/F3 — file unfrozen for this one field
+     * pair, additive-only, by PM decision). Messages Message Count mode's
+     * fixed window discarded before the trim ever saw them — 0 on every
+     * build the window did not touch (token-aware solo, and group, which has
+     * its own unrelated fixed window). chatStore.ts computes this as
+     * `windowSkew` while pre-windowing `historyPool` to the last
+     * `messageWindowSize` raw messages; nothing recorded it into the
+     * breakdown before this field, so the one panel whose job is "what
+     * reached the model" could not see messages a fixed window silently cut.
+     */
+    droppedByMessageWindow: number;
+    /**
+     * The window size Message Count mode windowed `historyPool` against, or
+     * null when this build never windowed on message count (token-aware
+     * solo; group, which uses `GROUP_HISTORY_WINDOW` instead — a different
+     * mechanism, unrelated to this field). Null rather than 0 for the same
+     * reason `responseReserve` is: 0 is a legal window size in principle, and
+     * a panel must be able to tell "windowed to 0" from "never windowed".
+     */
+    messageWindowSize: number | null;
   };
 
   attachments: {
@@ -415,6 +439,8 @@ export function createPromptBreakdown(
       historyTrimmed: false,
       droppedFromHistory: 0,
       hasReservedSlice: false,
+      droppedByMessageWindow: 0,
+      messageWindowSize: null,
     },
     attachments: { count: 0, bytes: 0 },
     boundaryId: null,
@@ -471,6 +497,13 @@ export function beginBreakdownPass(
   out.flags.historyTrimmed = false;
   out.flags.droppedFromHistory = 0;
   out.flags.hasReservedSlice = false;
+  // Review round 4, R4-B/F3: same pattern as the four flags above — cleared
+  // here, then EVERY builder tail reassigns its own value unconditionally
+  // (group's tail leaves these at the clear's defaults, since group never
+  // windows on message count; that is the correct value for group, not an
+  // omission).
+  out.flags.droppedByMessageWindow = 0;
+  out.flags.messageWindowSize = null;
   out.attachments.count = 0;
   out.attachments.bytes = 0;
   out.boundaryId = null;

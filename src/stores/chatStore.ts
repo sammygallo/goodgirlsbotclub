@@ -715,15 +715,21 @@ async function* parseSSEStream(
 
 // Build the empty-response error message, distinguishing an over-length
 // cutoff or content-filter refusal (when the upstream reason is known) from
-// a request whose newest message alone blew the local token budget, falling
-// back to the given generic message otherwise.
+// an overBudget request — per #453, that fires when the PINNED content (the
+// newest turn plus pinned critical lore plus the system block) exceeds the
+// trim budget, not when the newest message alone does — falling back to the
+// given generic message otherwise.
 // `retryAction` completes "..., then <retryAction>." (e.g. "tap send again").
 // `maxTokens` and `overBudget` must be the values captured at dispatch time
 // (the request that actually produced this empty response), not re-read from
 // generationStore live — the sampler and trim-budget flag are shared mutable
 // state that a concurrent send/swipe/chat-switch can overwrite before this
 // stream resolves.
-function buildEmptyResponseError(
+// Exported for tests — the app itself only reaches this via the five solo
+// generation call sites' empty-completion branches (review round 1, F19: the
+// overBudget string had no test at all, and reverting it via a bad merge
+// would silently restore the #453 misdiagnosis this diff exists to fix).
+export function buildEmptyResponseError(
   genericMessage: string,
   retryAction: string,
   finishReason: string | null,
@@ -748,7 +754,13 @@ function buildEmptyResponseError(
     return `The response was blocked by the provider's content filter. Try rewording your message, then ${retryAction}.`;
   }
   if (overBudget) {
-    return `Your message may be too long for the current context window. Try raising Max Context Tokens in Settings → Generation, or shortening your message, then ${retryAction}.`;
+    // Review round 1 (F4/F11/F19): name all THREE pinned contributors — the
+    // old wording named the message and critical lore but dropped the system/
+    // character block, which trimHistoryToBudget charges off the top before
+    // any pinned message and is very often the largest of the three. This
+    // must stay in sync with historyBadge's over-budget string in
+    // breakdownBuckets.ts, which names the same triad.
+    return `Your message, the assembled system/character block (persona, character card, and World Info), or pinned lore (constant/critical World Info entries) may be too large for the current context window. Try raising Max Context Tokens in Settings → Generation, shortening your message, trimming the character card or persona, or demoting/splitting critical lore entries, then ${retryAction}.`;
   }
   return genericMessage;
 }
@@ -1114,6 +1126,13 @@ export interface PreparedConversation {
    *  — once, on the committing pass only. */
   variables: Record<string, string>;
   wiTimerOut?: WiScanOut;
+  /** How many non-system messages Message Count mode's fixed window
+   *  (`historyPool = visibleMessages.slice(-ctxConfig.messageCount)`) dropped
+   *  before `historyPool` was even built — 0 in token-aware mode, where the
+   *  full non-system list is used. Review round 4, R4-B/F3: threaded through
+   *  to `finish` so the breakdown collector can record it (see
+   *  `flags.droppedByMessageWindow`). */
+  windowSkew: number;
 }
 
 export interface FinishConversationOptions {
@@ -1130,8 +1149,10 @@ export interface FinishConversationOptions {
 
 export interface FinishedConversation {
   context: ContextEntry[];
-  /** True when the newest message alone exceeded the configured token
-   *  budget and had to be force-included anyway. Captured here (dispatch
+  /** True when the PINNED content alone — the newest turn, plus the system/
+   *  character block, plus any pinned constant/critical World Info entries —
+   *  exceeded the configured token budget and had to be force-included
+   *  anyway (#453; NOT the newest message alone). Captured here (dispatch
    *  time) rather than round-tripped through generationStore, since a
    *  concurrent send/swipe can overwrite a shared store field before this
    *  call's own stream resolves. */
@@ -1893,6 +1914,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     ctxChatFile,
     variables,
     wiTimerOut,
+    windowSkew,
   };
 }
 
@@ -1927,6 +1949,7 @@ export function finishConversationContext(
     ctxChatFile,
     variables,
     wiTimerOut,
+    windowSkew,
   } = prepared;
   const commit = opts?.commit !== false;
   const out = opts?.breakdownOut;
@@ -2158,6 +2181,15 @@ export function finishConversationContext(
     out.flags.overBudget = overBudget;
     out.flags.historyTrimmed = ctxConfig.tokenAware;
     out.flags.droppedFromHistory = droppedFromHistory;
+    // Review round 4, R4-B/F3: `windowSkew` is a direct measurement (not a
+    // mode test) — it is already 0 whenever tokenAware is on, because
+    // `historyPool` is the full non-system list on that path (see
+    // `prepareConversationContext`'s comment above `windowSkew`'s
+    // computation). `messageWindowSize`, like `responseReserve` above, IS a
+    // mode test: there is no non-null "window size" to report when this
+    // build never windowed on message count at all.
+    out.flags.droppedByMessageWindow = windowSkew;
+    out.flags.messageWindowSize = ctxConfig.tokenAware ? null : ctxConfig.messageCount;
     // The reserve is read at one place only — the trim call above — so with
     // `tokenAware` off it constrained nothing and there is no Reserved slice
     // to draw, exactly as in group.
@@ -3146,6 +3178,11 @@ async function generateGroupTurn(
       },
     ],
   }));
+  // E2-S2 task 4: tag the breakdown published above with the message it
+  // describes, guarded by object identity — a later speaker in this same
+  // round may already have replaced the slot by the time this line runs.
+  // Freshly created message, so swipe 0 (review round 1, M3/F6).
+  useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId, 0);
 
   let responseText = '';
   for await (const token of parseSSEStream(stream)) {
@@ -4679,6 +4716,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const swipeImages = imagesFromLastUserMessage(contextMessages, provider, model);
       recordAttachments(breakdown, swipeImages);
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
+      // E2-S2 task 4: this swipe re-generates `messageId` in place, so it is
+      // the id this breakdown describes. `msg.swipes.length` (captured before
+      // this call ever appends anything) is the NEW swipe index the generation
+      // below is about to land in — the same value `newSwipeIndex` resolves to
+      // further down. Tagging the swipe this build produces, not the one on
+      // screen right now, is what lets a swipe-back afterward stop reading as
+      // "owned" (review round 1, M3/F6): the sheet's ownership check compares
+      // this against the message's CURRENT swipe id, not its swipe id at tag
+      // time.
+      useGenerationStore.getState().tagLastBreakdownMessage(breakdown, messageId, msg.swipes.length);
       const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
@@ -4849,6 +4896,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const continueImages = imagesFromLastUserMessage(messages, provider, model);
       recordAttachments(breakdown, continueImages);
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
+      // E2-S2 task 4: continueMessage takes no messageId argument (unlike
+      // swipeRight) — `lastAiMsg`, resolved above, is the turn this build
+      // extends, so its id is what the breakdown describes. Unlike swipeRight,
+      // this EXTENDS the current swipe rather than creating a new one (see the
+      // `newSwipes[m.swipeId] = ...` writes below), so the swipe it describes
+      // is `lastAiMsg.swipeId` as captured here, unchanged by this call
+      // (review round 1, M3/F6).
+      useGenerationStore.getState().tagLastBreakdownMessage(breakdown, lastAiMsg.id, lastAiMsg.swipeId);
       const finalContext = await runGenerateInterceptors(
         maybeApplyInstructMode(context),
         character.name,
@@ -5251,6 +5306,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             },
           ],
         }));
+        // E2-S2 task 4 — see generateGroupTurn for the identity-guard rationale.
+        // Freshly created message, so swipe 0 (review round 1, M3/F6).
+        useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId, 0);
 
         let responseText = '';
         const sseMeta: SSEStreamMeta = { finishReason: null };
@@ -5661,6 +5719,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             },
           ],
         }));
+        // E2-S2 task 4 — see generateGroupTurn for the identity-guard rationale.
+        // Freshly created message, so swipe 0 (review round 1, M3/F6).
+        useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId, 0);
 
         let responseText = '';
         const sseMeta: SSEStreamMeta = { finishReason: null };

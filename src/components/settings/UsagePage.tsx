@@ -1,7 +1,10 @@
 import { useState } from 'react';
-import { ArrowLeft, Fuel, Gauge, Info, RotateCcw, Trash2 } from 'lucide-react';
+import { ArrowLeft, Fuel, Gauge, Info, ReceiptText, RotateCcw, Trash2 } from 'lucide-react';
 import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useUsageStore, formatTokens } from '../../stores/usageStore';
+import { useGenerationStore } from '../../stores/generationStore';
+import { computeBreakdownView } from '../../utils/breakdownBuckets';
+import { PromptBreakdownView } from '../chat/PromptBreakdownView';
 import { Button, Input } from '../ui';
 
 /** Parse a budget entry like "2m", "500k", or "1500000" into a token count. */
@@ -40,6 +43,7 @@ export function UsagePage() {
   const resetBudget = useUsageStore((s) => s.resetBudget);
   const setContextMeterEnabled = useUsageStore((s) => s.setContextMeterEnabled);
   const clearAll = useUsageStore((s) => s.clearAll);
+  const lastPromptBreakdown = useGenerationStore((s) => s.lastPromptBreakdown);
 
   const [budgetInput, setBudgetInput] = useState('');
   const [budgetError, setBudgetError] = useState<string | null>(null);
@@ -191,6 +195,26 @@ export function UsagePage() {
             </>
           )}
           {budgetError && <p className="text-xs text-red-400 mt-2">{budgetError}</p>}
+        </section>
+
+        {/* Last prompt breakdown (E2-S2 task 6) — the same PromptBreakdownView
+            the per-message sheet uses, embedded inline. This page reads
+            `lastPromptBreakdown` directly rather than via a message id: there
+            is no "owning message" concept here, just "whatever the app last
+            built" — the header below is the breakdown's own provenance
+            stamps, not a claim about which chat bubble it belongs to. */}
+        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
+          <div className="flex items-center gap-2 mb-3">
+            <ReceiptText size={18} className="text-[var(--color-primary)]" />
+            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Last prompt breakdown</h2>
+          </div>
+          {lastPromptBreakdown ? (
+            <PromptBreakdownView view={computeBreakdownView(lastPromptBreakdown)} provenanceVariant="full" />
+          ) : (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              No prompt assembled yet this session — send a message to see its breakdown.
+            </p>
+          )}
         </section>
 
         {/* Preferences */}

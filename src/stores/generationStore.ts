@@ -170,42 +170,42 @@ export const POST_HISTORY_SECTIONS: ReadonlySet<PromptSectionId> = new Set<Promp
 export const PROMPT_SECTION_LABELS: Record<PromptSectionId, string> = {
   main_prompt: 'Main / System Prompt',
   persona_before_char: 'Persona (before character)',
-  wi_before_char: 'World Info — Before Char',
+  wi_before_char: 'World Info / Lorebooks — Before Char',
   ext_before_char: 'Extensions — Before Char',
   char_info_block: 'Character Info (desc / personality / scenario / examples)',
-  wi_after_char: 'World Info — After Char',
+  wi_after_char: 'World Info / Lorebooks — After Char',
   ext_after_char: 'Extensions — After Char',
   persona_after_char: 'Persona (after character)',
-  wi_before_an: 'World Info — Before Author Note',
+  wi_before_an: 'World Info / Lorebooks — Before Author Note',
   ext_before_an: 'Extensions — Before Author Note',
   jailbreak: 'Jailbreak / Auxiliary Prompt',
   emotion_instruction: 'Emotion Tag Instruction',
   selfie_instruction: 'Selfie Tag Instruction',
-  rag_context: 'Data Bank / RAG Context',
+  rag_context: 'Chat recall',
   char_phi: 'Character Post-History Instructions',
   user_phi: 'User Post-History Instructions',
-  wi_after_an: 'World Info — After Author Note',
+  wi_after_an: 'World Info / Lorebooks — After Author Note',
   ext_after_an: 'Extensions — After Author Note',
 };
 
 export const PROMPT_SECTION_DESCRIPTIONS: Record<PromptSectionId, string> = {
   main_prompt: 'The top-level system instruction. Character card overrides win when respected.',
   persona_before_char: 'Your persona description, when positioned before the character block.',
-  wi_before_char: 'World Info entries marked "before character".',
+  wi_before_char: 'World Info entries marked "before character" (incl. Data Bank documents).',
   ext_before_char: 'Extension-injected context marked "before character".',
   char_info_block: 'Description + personality + scenario + example dialogue.',
-  wi_after_char: 'World Info entries marked "after character".',
+  wi_after_char: 'World Info entries marked "after character" (incl. Data Bank documents).',
   ext_after_char: 'Extension-injected context marked "after character".',
   persona_after_char: 'Your persona description, when positioned after the character block.',
-  wi_before_an: 'World Info entries marked "before author note".',
+  wi_before_an: 'World Info entries marked "before author note" (incl. Data Bank documents).',
   ext_before_an: 'Extension-injected context marked "before author note".',
   jailbreak: 'User-level jailbreak / auxiliary system prompt.',
   emotion_instruction: 'Instructs the AI to prefix each reply with an [emotion:TAG] tag.',
   selfie_instruction: 'Teaches the character to send selfies via a [selfie: …] tag. Only injected for provenance-cleared avatars when the feature is on and you can generate images.',
-  rag_context: 'Semantic chunks retrieved from the Data Bank for the current message.',
+  rag_context: 'Relevant older messages from this chat, retrieved semantically and re-injected. (Data Bank documents now arrive through the World Info sections.)',
   char_phi: "Character card's post-history instructions (after chat history).",
   user_phi: 'User-level post-history instructions (after chat history).',
-  wi_after_an: 'World Info entries marked "after author note" (after chat history).',
+  wi_after_an: 'World Info entries marked "after author note" (after chat history) (incl. Data Bank documents).',
   ext_after_an: 'Extension-injected context marked "after author note" (after chat history).',
 };
 
@@ -251,6 +251,22 @@ interface GenerationState {
    * previous session.
    */
   lastPromptBreakdown: PromptBreakdown | null;
+  /**
+   * Which message (and which SWIPE of it) `lastPromptBreakdown` describes, so
+   * a sheet opened from a message's cost chip can tell "this is my build" from
+   * "the slot moved on without me" instead of silently showing whichever
+   * breakdown happens to be sitting there. Also not persisted, for the same
+   * reason as the breakdown itself.
+   *
+   * `swipeIndex` is part of the identity, not just `messageId` (E2-S2 review
+   * round 1, F6): `ChatMessage.id` is stable across every swipe of the same AI
+   * message, but swiping right and generating publishes a NEW breakdown under
+   * the SAME id — swiping back to an older swipe afterwards must not still
+   * read as "owned", or the sheet shows one swipe's numbers against another
+   * swipe's text. A message's current `swipeId` is what has to match this
+   * field's `swipeIndex` for the tag to still apply.
+   */
+  lastPromptBreakdownTag: { messageId: string; swipeIndex: number } | null;
 
   // Actions
   setSampler: (sampler: Partial<SamplerParams>) => void;
@@ -288,6 +304,21 @@ interface GenerationState {
 
   setLastTokenEstimate: (n: number) => void;
   setLastPromptBreakdown: (b: PromptBreakdown | null) => void;
+  /**
+   * Stamp `{ messageId, swipeIndex }` onto `lastPromptBreakdown`, but ONLY if
+   * `breakdown` is still the object sitting in the slot — an object-identity
+   * guard, not an equality one, so a concurrent turn that already replaced the
+   * slot with its OWN breakdown (group awaits `generateGroupTurn` per member;
+   * each publishes before the next starts) makes this a silent no-op instead
+   * of mis-tagging the new breakdown with the old call site's message id.
+   *
+   * `swipeIndex` is the swipe THIS breakdown describes — for a freshly
+   * created message that is always 0; for `swipeRight`'s generate-new path
+   * and `continueMessage` (which extends the CURRENT swipe rather than
+   * creating one) it is whatever swipe index the call site resolves. See the
+   * `lastPromptBreakdownTag` doc for why this has to be part of the identity.
+   */
+  tagLastBreakdownMessage: (breakdown: PromptBreakdown, messageId: string, swipeIndex: number) => void;
 
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
@@ -403,6 +434,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   promptOrder: mergePromptOrder(initial.promptOrder),
   lastTokenEstimate: 0,
   lastPromptBreakdown: null,
+  lastPromptBreakdownTag: null,
 
   setSampler: (patch) => {
     set((state) => {
@@ -750,7 +782,12 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   },
 
   setLastPromptBreakdown: (b) => {
-    set({ lastPromptBreakdown: b });
+    set({ lastPromptBreakdown: b, lastPromptBreakdownTag: null });
+  },
+
+  tagLastBreakdownMessage: (breakdown, messageId, swipeIndex) => {
+    if (get().lastPromptBreakdown !== breakdown) return;
+    set({ lastPromptBreakdownTag: { messageId, swipeIndex } });
   },
 
   resetUser: () => {
@@ -768,6 +805,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       promptOrder: mergePromptOrder(undefined),
       lastTokenEstimate: 0,
       lastPromptBreakdown: null,
+      lastPromptBreakdownTag: null,
     });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
