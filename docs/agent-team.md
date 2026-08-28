@@ -172,7 +172,8 @@ Estimated build spend: **S–M total** (≤500k). The pipeline reuses `/deploy-g
 1. **Pilot 1 — E1-S1** (ship the LP/scene-video provenance gate): exercises **review, QA, PR, merge-gate, deploy** on code that's already written — the fastest safe shakedown, and it's the roadmap's top item anyway.
 2. ~~**Pilot 2 — E9-S1** (swap-vs-join)~~ — **retired 2026-08-26. E9-S1 could never have served as a pilot: its deliverable shipped 2026-04-11 in PR #59, four and a half months before this plan named it.** The run that discovered that exited blocked at INTAKE for ~55k and is logged in `docs/agent-team-log.md`. Leaving the designation in place was a live trap — §8 tells a fresh session to "run the §7 pilots".
    **Sammy's call, given 2026-08-26: E2-S2 (token breakdown) runs as the PLAN-leg pilot.** It is the first story banded large enough that `run-story` step 3 cannot skip PLAN. Whether probation is *satisfied* is still decided at the §7.3 checkpoint after it closes, not in advance. Since v1.0 was written, E4-S0 and E9-S6 both completed full pipeline runs (E9-S6's PR carries a build leg of 1.04M across 5 fix rounds, four adversarial passes, QA and deploy), so the evidence Sammy needs may already exist — but the team does not get to declare its own probation over, and §7.3 reserves that verdict for you. Two legs have no artifact proving they ever ran: **PLAN (step 3)** and **step 10c's CURATE mode**.
-3. **Hire/adjust checkpoint:** evidence bundles complete, token actuals reported as the numbers §6.5 mandates **with variance explained** (not "within band" — three of the four runs so far blew their bands for reasons §6.6 now accepts), and your verdict on report quality. Then 10.2 proceeds through the team as standard practice, and we consider the later upgrade path (a scheduled PM loop draining Ready-for-Dev under the WIP limit — the `/sprint-plan` pattern pointed at the roadmap). Not in v1.
+   **§7.3 verdict — Sammy, 2026-08-28: probation satisfied; the team is hired.** Rendered after E2-S2 closed (deployed, 6 review rounds, full close report with variance explained). Every leg except CURATE has now run with a durable artifact — PLAN ran twice on E2-S2 — and CURATE is not outstanding evidence: its ≥5-exit cadence stood at 2 at verdict time and fires naturally from the ledger.
+3. **Hire/adjust checkpoint — PASSED 2026-08-28 (Sammy's verdict above). 10.2 now proceeds through the team as standard practice; the scheduled-PM-loop upgrade below remains a separate future decision, not enabled by this verdict.** Original bar: evidence bundles complete, token actuals reported as the numbers §6.5 mandates **with variance explained** (not "within band" — three of the four runs so far blew their bands for reasons §6.6 now accepts), and your verdict on report quality. Then 10.2 proceeds through the team as standard practice, and we consider the later upgrade path (a scheduled PM loop draining Ready-for-Dev under the WIP limit — the `/sprint-plan` pattern pointed at the roadmap). Not in v1.
 
 ---
 
@@ -184,7 +185,7 @@ This charter is the handoff. The new session loads, in order:
 3. Memory: `project_roadmap_v3_phases_10_2_to_12.md`, `user_model_effort_delegation.md`, `feedback_adversarial_review_catches_real_bugs.md`, `feedback_review_before_merge_not_after.md`
 4. Ground-truth check per the house rule: verify branch/PR state with `gh` before acting — never trust a handoff's snapshot (this week's lesson, three times over).
 
-Task for that session: review §9 decisions with Sammy → build the §6 manifest → run the §7 pilots.
+Task for that session (historical — the §6 manifest is built and the §7 pilots completed 2026-08-28): pick up the next Ready-for-Dev story via `/run-story` under the WIP limit.
 
 ---
 
