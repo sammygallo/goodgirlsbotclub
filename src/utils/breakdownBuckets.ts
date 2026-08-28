@@ -217,6 +217,27 @@ export interface OverheadBreakdown {
   total: number;
 }
 
+/**
+ * Labels for the two headline reconciliation rows (solo panel), shared
+ * between the row itself and its explanatory note below
+ * (`trimmedMeterNote` / `fullPromptNote`) so the note can name its row
+ * without a second, independently-typed literal drifting from what the row
+ * actually renders — review round 3, R3-A (F1/F2/F5/F7): round 2 made the
+ * notes digit-free but left them with no subject, so positional adjacency
+ * bound the trim note to the WRONG row (it renders after the assembled-
+ * total row, not the trim row it describes).
+ */
+export const TRIMMED_METER_LABEL = 'Counted by the trim';
+export const FULL_PROMPT_LABEL = 'Full assembled prompt';
+/**
+ * Row-1's label in Message Count mode (`flags.historyTrimmed === false`) —
+ * review round 3, R3-B (F4). No trim ran in this mode (chatStore.ts sets
+ * `historyTrimmed` from the token-aware toggle), so this row is just the
+ * pre-Stage-C subtotal, not "the trim" — calling it that would contradict
+ * the "Trim disabled (Message Count mode)" badge rendered two rows below.
+ */
+export const PRE_STAGE_C_LABEL = 'Before after-history sections';
+
 export interface StageCReconciliation {
   /** `breakdown.totals.stageC` verbatim — Σ of the per-bucket `stageCTokens`
    *  plus `afterHistoryOverhead`, never recomputed independently of it. */
@@ -224,7 +245,21 @@ export interface StageCReconciliation {
   /** `messageOverheadPerMessage × (Stage-C slice count)`. */
   afterHistoryOverhead: number;
   assembledTotal: number;
-  trimmedMeterNote: string;
+  /** Row-1's label: `TRIMMED_METER_LABEL` when a trim actually ran
+   *  (`flags.historyTrimmed`), `PRE_STAGE_C_LABEL` in Message Count mode.
+   *  Review round 3, R3-B/F4. */
+  meterRowLabel: string;
+  /** Present only when `flags.historyTrimmed` — there is nothing to say
+   *  about "what the trim measures" when no trim ran (Message Count mode).
+   *  Always begins with `${meterRowLabel} — `, i.e. `${TRIMMED_METER_LABEL}
+   *  — `, so the note self-labels regardless of render position (review
+   *  round 3, R3-A). */
+  trimmedMeterNote?: string;
+  /** Always begins with `${FULL_PROMPT_LABEL} — `. Wording is mode-
+   *  dependent: "what it tracks when trimming is off" describes a
+   *  hypothetical (trimming is currently ON) in token-aware mode; "what the
+   *  in-chat meter tracks (token-aware trimming is off)" is the literal
+   *  truth in Message Count mode (review round 3, R3-B/F4). */
   fullPromptNote: string;
 }
 
@@ -493,6 +528,11 @@ export function computeBreakdownView(breakdown: PromptBreakdown): BreakdownViewM
             breakdown.conversationPriming,
         };
 
+  // Review round 3, R3-B/F4: Message Count mode (no token-aware trim) still
+  // reaches this branch — reconciliation.stageC is gated on mode alone, never
+  // on historyTrimmed — so row 1's label/note have to be honest about
+  // whether a trim actually measured anything.
+  const historyTrimmed = breakdown.flags.historyTrimmed;
   const reconciliation: Reconciliation =
     mode === 'solo'
       ? {
@@ -503,13 +543,18 @@ export function computeBreakdownView(breakdown: PromptBreakdown): BreakdownViewM
             tokens: breakdown.totals.stageC,
             afterHistoryOverhead: perMessage * nC,
             assembledTotal: breakdown.totals.assembledTotal,
-            // Review round 2 (R2-C/F3/F7/F10): prose ONLY, no number. The row
-            // above already renders this exact total through the view's
-            // formatter (toLocaleString) — interpolating it again here, raw,
-            // duplicated it a few lines away in a DIFFERENT format (round 1's
-            // m10 fix only removed the same duplication from the row LABEL).
-            trimmedMeterNote: 'What the in-chat meter tracks while token-aware trimming is on.',
-            fullPromptNote: 'What it tracks when trimming is off.',
+            meterRowLabel: historyTrimmed ? TRIMMED_METER_LABEL : PRE_STAGE_C_LABEL,
+            // Review round 3, R3-A/F1/F2/F5/F7: self-labeling again (each
+            // note begins with the SAME constant its row renders), after
+            // round 2's digit-free fix left both notes as orphan sentences
+            // that read — by simple positional adjacency — as describing the
+            // LAST row (Full assembled prompt) instead of their own.
+            trimmedMeterNote: historyTrimmed
+              ? `${TRIMMED_METER_LABEL} — what the in-chat meter tracks while token-aware trimming is on.`
+              : undefined,
+            fullPromptNote: historyTrimmed
+              ? `${FULL_PROMPT_LABEL} — what it tracks when trimming is off.`
+              : `${FULL_PROMPT_LABEL} — what the in-chat meter tracks (token-aware trimming is off).`,
           },
         }
       : { target: breakdown.totals.assembledTotal, bucketsTotal, overhead };

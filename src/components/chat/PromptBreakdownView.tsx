@@ -17,6 +17,7 @@ import { useState } from 'react';
 import { formatTokens } from '../../stores/usageStore';
 import {
   BUCKET_ORDER,
+  FULL_PROMPT_LABEL,
   type BreakdownViewModel,
   type BucketId,
   type BucketRow,
@@ -37,21 +38,13 @@ const BUCKET_COLORS: Record<BucketId, string> = {
 
 const OVERHEAD_COLOR = 'var(--color-border)';
 
-/**
- * Row labels for the two headline reconciliation rows below — prose stems
- * only, no digits. Round 1 (F7/F12) found the label derived via
- * `note.split(' (')[0]` kept `trimmedMeterNote`/`fullPromptNote`'s RAW total
- * in the label while the row's own value cell rendered the same total
- * formatted; these constants fixed the label half. Round 2 (R2-C/F3/F7/F10)
- * found the OTHER half of the same defect survived one layer down: the notes
- * themselves (breakdownBuckets.ts) still interpolated the raw total, so the
- * italic explanatory paragraphs a few lines below these rows kept printing
- * it a second time, unformatted. Fixed at the source — the notes are now
- * pure prose with no number in them at all — so every total on this panel
- * renders through `n()` exactly once, in exactly one place.
- */
-const TRIMMED_METER_LABEL = 'Counted by the trim';
-const FULL_PROMPT_LABEL = 'Full assembled prompt';
+// Row-1's label is mode-dependent (TRIMMED_METER_LABEL vs PRE_STAGE_C_LABEL
+// — review round 3, R3-B/F4), so it comes from the view model
+// (`reconciliation.stageC.meterRowLabel`) rather than a view-local constant.
+// FULL_PROMPT_LABEL never varies by mode (it names row 2 in both the
+// Stage-C branch and the group/else branch below), so it stays a single
+// import shared with the notes that self-label against it
+// (breakdownBuckets.ts — round 3, R3-A).
 
 function n(x: number): string {
   return x.toLocaleString();
@@ -271,7 +264,7 @@ export function PromptBreakdownView({
         {reconciliation.stageC ? (
           <>
             <div className="flex justify-between font-medium text-[var(--color-text-primary)]">
-              <span>{TRIMMED_METER_LABEL}</span>
+              <span>{reconciliation.stageC.meterRowLabel}</span>
               <span className="tabular-nums">{n(reconciliation.target)}</span>
             </div>
             <div className="flex justify-between">
@@ -286,7 +279,12 @@ export function PromptBreakdownView({
               <span>{FULL_PROMPT_LABEL}</span>
               <span className="tabular-nums">{n(reconciliation.stageC.assembledTotal)}</span>
             </div>
-            <p className="text-[11px] italic">{reconciliation.stageC.trimmedMeterNote}</p>
+            {/* Review round 3, R3-B/F4: no trim-anchored note when no trim
+                ran (Message Count mode) — there is nothing true to say about
+                what "the trim" measures. */}
+            {reconciliation.stageC.trimmedMeterNote && (
+              <p className="text-[11px] italic">{reconciliation.stageC.trimmedMeterNote}</p>
+            )}
             <p className="text-[11px] italic">{reconciliation.stageC.fullPromptNote}</p>
           </>
         ) : (
