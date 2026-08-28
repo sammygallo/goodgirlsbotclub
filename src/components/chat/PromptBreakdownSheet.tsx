@@ -8,6 +8,15 @@
  * that stale breakdown under the tapped message's name would be silently
  * wrong in a way nothing on screen would hint at; an explicit "no longer
  * available" state is the honest alternative (E2-S2 task 6).
+ *
+ * Ownership also checks the SWIPE, not just the message id (review round 1,
+ * M3/F6): `ChatMessage.id` is stable across every swipe of the same AI
+ * message, so swiping right (generating a new swipe) and then back tags the
+ * slot for a swipe that is no longer the one on screen. `swipeIndex` — the
+ * message's CURRENT swipe, read off the same source the swipe control
+ * itself uses — is what lets that mismatch fall into the same "not owned"
+ * state as any other stale slot, rather than rendering the newer swipe's
+ * numbers under the older swipe's text.
  */
 import { BottomSheet } from '../ui/BottomSheet';
 import { useGenerationStore } from '../../stores/generationStore';
@@ -19,37 +28,51 @@ interface PromptBreakdownSheetProps {
   onClose: () => void;
   /** The message whose cost chip opened this sheet. */
   messageId: string;
+  /** That message's CURRENT swipe index (`ChatMessage.swipeId`) — part of the
+   *  ownership check, see the file doc. */
+  swipeIndex: number;
 }
 
-export function PromptBreakdownSheet({ isOpen, onClose, messageId }: PromptBreakdownSheetProps) {
+export function PromptBreakdownSheet({ isOpen, onClose, messageId, swipeIndex }: PromptBreakdownSheetProps) {
   const breakdown = useGenerationStore((s) => s.lastPromptBreakdown);
-  const taggedMessageId = useGenerationStore((s) => s.lastPromptBreakdownMessageId);
+  const tag = useGenerationStore((s) => s.lastPromptBreakdownTag);
 
   // Never a fallback to "whichever breakdown is in the slot" — a null slot
-  // and a slot that has moved on are the same case from this message's
-  // point of view, and both get the same explicit non-answer.
-  const owned = breakdown !== null && taggedMessageId === messageId;
+  // and a slot that has moved on (different message OR the same message's
+  // slot describing a different swipe) are both the same case from this
+  // message's point of view, and both get an explicit non-answer. The two
+  // ARE distinguished in the copy below (F5): a null slot means nothing was
+  // ever assembled this session, which is a different cause than "something
+  // was assembled but it isn't this turn/swipe" and reads wrong if worded as
+  // a replacement that never happened.
+  const owned =
+    breakdown !== null &&
+    tag !== null &&
+    tag.messageId === messageId &&
+    tag.swipeIndex === swipeIndex;
 
   return (
     <BottomSheet isOpen={isOpen} onClose={onClose} title="Token breakdown">
       <div className="px-4">
         {owned ? (
-          <PromptBreakdownView view={computeBreakdownView(breakdown)} provenanceVariant="compact" />
+          <PromptBreakdownView view={computeBreakdownView(breakdown!)} provenanceVariant="compact" />
+        ) : breakdown === null ? (
+          <div className="py-4 text-sm text-[var(--color-text-secondary)] space-y-3">
+            <p>No prompt assembled yet this session — send a message to see its breakdown.</p>
+          </div>
         ) : (
           <div className="py-4 text-sm text-[var(--color-text-secondary)] space-y-3">
             <p>
               Breakdown no longer available for this turn — the app keeps only the most recent
               prompt build, and a newer message, swipe, or group speaker replaced it.
             </p>
-            {breakdown && (
-              <button
-                type="button"
-                onClick={onClose}
-                className="text-xs text-[var(--color-primary)] underline underline-offset-2"
-              >
-                Close — the most recent turn's chip still shows the current build.
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-xs text-[var(--color-primary)] underline underline-offset-2"
+            >
+              Close — the most recent turn's chip still shows the current build.
+            </button>
           </div>
         )}
       </div>

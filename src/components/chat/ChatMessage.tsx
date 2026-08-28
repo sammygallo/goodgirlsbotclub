@@ -322,6 +322,13 @@ export function ChatMessage({
       isOpen={showBreakdown}
       onClose={() => setShowBreakdown(false)}
       messageId={messageId}
+      // The sheet's ownership check is (messageId, swipeIndex) as of E2-S2
+      // review round 1 (M3/F6) — `swipeId` is always set for a real message
+      // (ChatMessage.swipeId is non-optional; the prop here is only optional
+      // because this component also renders user messages), so this can only
+      // be undefined if the caller passed nothing at all, which never happens
+      // for an AI message with `usage`.
+      swipeIndex={swipeId ?? 0}
     />
   ) : null;
 
