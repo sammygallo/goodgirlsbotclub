@@ -78,6 +78,7 @@ import {
   computeBreakdownView,
   type BucketId,
 } from './breakdownBuckets';
+import { PROMPT_SECTION_LABELS } from '../stores/generationStore';
 
 function runSolo(name: string): PromptBreakdown {
   const fx = SOLO_FIXTURES.find((f) => f.name === name);
@@ -131,6 +132,86 @@ describe('bucket tables are complete', () => {
     for (const id of Object.values(SECTION_BUCKET) as BucketId[]) {
       expect(BUCKET_ORDER).toContain(id);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mapping VALUES, pinned (review round 1, M2/F2/F14). The "complete"
+// describe above only proves the tables are the right SHAPE (key counts,
+// values that are members of BUCKET_ORDER) — it does not notice a single
+// slot re-mapped to a different (but still valid) bucket, e.g.
+// `char_info_block: 'character'` -> `'instructions'`, which the file's own
+// header calls the "WHOLE story" of this module. Every existing count/sum
+// guard is invariant under that mutation: row count is unchanged (the slice
+// still lands in exactly one bucket, just the wrong one) and every
+// reconciliation sum is unchanged (the tokens moved between rows, not off
+// the totals). Only a value-level pin catches it.
+// ---------------------------------------------------------------------------
+
+describe('SECTION_BUCKET / GROUP_SLOT_BUCKET / STAGE_B_BUCKET — the full mapping, pinned', () => {
+  it('pins every prompt-section id to its exact bucket', () => {
+    expect(SECTION_BUCKET).toEqual({
+      main_prompt: 'instructions',
+      persona_before_char: 'persona',
+      wi_before_char: 'world_info',
+      ext_before_char: 'instructions',
+      char_info_block: 'character',
+      wi_after_char: 'world_info',
+      ext_after_char: 'instructions',
+      persona_after_char: 'persona',
+      wi_before_an: 'world_info',
+      ext_before_an: 'instructions',
+      jailbreak: 'instructions',
+      emotion_instruction: 'instructions',
+      selfie_instruction: 'instructions',
+      rag_context: 'chat_recall',
+      char_phi: 'instructions',
+      user_phi: 'instructions',
+      wi_after_an: 'world_info',
+      ext_after_an: 'instructions',
+    });
+  });
+
+  it('pins every group-slot id to its exact bucket', () => {
+    expect(GROUP_SLOT_BUCKET).toEqual({
+      group_system_chrome: 'system',
+      group_cards: 'system',
+      group_scenario: 'system',
+      group_examples: 'system',
+      group_wi_before_char: 'world_info',
+      group_wi_after_char: 'world_info',
+      group_wi_before_an: 'world_info',
+      group_wi_after_an: 'world_info',
+      group_rag_context: 'chat_recall',
+    });
+  });
+
+  it('pins every Stage-B class to its exact bucket', () => {
+    expect(STAGE_B_BUCKET).toEqual({
+      history: 'chat_history',
+      authors_note: 'summary_notes',
+      characters_note: 'summary_notes',
+      persona_at_depth: 'persona',
+      wi_at_depth: 'world_info',
+      ext_at_depth: 'summary_notes',
+    });
+  });
+
+  it('a real fixture: char_info_block renders under the Character bucket, labeled by the section-label table', () => {
+    // The one fixture-driven check the finding also asked for: SECTION_BUCKET
+    // is pinned above in isolation, but this proves the pinned mapping is
+    // actually what a real builder run feeds `computeBreakdownView` through.
+    const breakdown = runSolo('all-sections');
+    const rawCharSlice = breakdown.slices.find(
+      (s) => s.kind.stage === 'A' && s.kind.id === 'char_info_block'
+    );
+    expect(rawCharSlice, 'all-sections should emit a char_info_block Stage-A slice').toBeDefined();
+    const view = computeBreakdownView(breakdown);
+    const character = view.buckets.find((b) => b.id === 'character');
+    expect(character, 'no Character bucket at all').toBeDefined();
+    expect(character!.slices).toEqual([
+      { label: PROMPT_SECTION_LABELS.char_info_block, tokens: rawCharSlice!.tokens },
+    ]);
   });
 });
 
@@ -230,6 +311,189 @@ describe('breakdown view — reconciliation', () => {
       expect(view.reconciliation.target).toBe(breakdown.totals.assembledTotal);
       expect(view.reconciliation.stageC).toBeUndefined();
       expect(view.reconciliation.overhead.separatorRounding).toBeUndefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Itemized overhead rows — review round 1, M5/F9/F15. The describe above
+// only proves `overhead.total` reconciles; `total` is written as ITS OWN
+// independent expression rather than derived from the three fields the panel
+// actually renders as an itemization (separatorRounding, messageOverhead,
+// conversationPriming), so one of those three can drift from `total` with
+// every existing assertion green. These tests recompute each displayed field
+// from `breakdown`'s own raw collector fields — the same reading the panel
+// promises, not the same expression computeBreakdownView happens to use — so
+// a mutation that changes ONE field without touching `total` shows up as a
+// mismatch here even though `overhead.total` itself is untouched.
+// ---------------------------------------------------------------------------
+
+describe('breakdown view — itemized overhead rows are individually pinned', () => {
+  it('solo: each displayed row equals its own formula off the raw breakdown, and the rows sum to the target', () => {
+    for (const fx of SOLO_FIXTURES) {
+      const breakdown = runSolo(fx.name);
+      const view = computeBreakdownView(breakdown);
+      const perMessage = breakdown.messageOverheadPerMessage;
+      const nB = breakdown.slices.filter((s) => s.kind.stage === 'B').length;
+      const nC = breakdown.slices.filter((s) => s.kind.stage === 'C').length;
+      const { overhead, stageC } = view.reconciliation;
+
+      expect(overhead.separatorRounding, `${fx.name}: separator+rounding`).toBe(
+        breakdown.stageAJoinResidual
+      );
+      expect(overhead.messageOverhead, `${fx.name}: message overhead`).toBe(
+        breakdown.stageAMessageOverhead + perMessage * nB
+      );
+      expect(overhead.conversationPriming, `${fx.name}: conversation priming`).toBe(
+        breakdown.conversationPriming
+      );
+      expect(
+        (overhead.separatorRounding ?? 0) + overhead.messageOverhead + overhead.conversationPriming,
+        `${fx.name}: the three itemized rows should sum EXACTLY to overhead.total`
+      ).toBe(overhead.total);
+
+      expect(stageC!.afterHistoryOverhead, `${fx.name}: after-history overhead`).toBe(perMessage * nC);
+      // Buckets + the four displayed rows (Separator+rounding, Message
+      // overhead, Conversation priming, then the headline total) is exactly
+      // what a user reading the panel top to bottom adds up — AC 5's own
+      // reconciliation claim, stated at the row level rather than the
+      // opaque-total level the describe above checks.
+      expect(
+        view.reconciliation.bucketsTotal +
+          (overhead.separatorRounding ?? 0) +
+          overhead.messageOverhead +
+          overhead.conversationPriming,
+        `${fx.name}: buckets + itemized overhead rows should sum to the "Counted by the trim" target`
+      ).toBe(view.reconciliation.target);
+    }
+  });
+
+  it("group: message overhead folds Stage C's per-message cost in too (no separate after-history line), and the rows sum to the target", () => {
+    for (const fx of GROUP_FIXTURES) {
+      const breakdown = runGroup(fx.name);
+      const view = computeBreakdownView(breakdown);
+      const perMessage = breakdown.messageOverheadPerMessage;
+      const nBC = breakdown.slices.filter(
+        (s) => s.kind.stage === 'B' || s.kind.stage === 'C'
+      ).length;
+      const { overhead } = view.reconciliation;
+
+      expect(overhead.messageOverhead, `${fx.name}: message overhead`).toBe(
+        breakdown.stageAMessageOverhead + perMessage * nBC
+      );
+      expect(overhead.conversationPriming, `${fx.name}: conversation priming`).toBe(
+        breakdown.conversationPriming
+      );
+      expect(
+        overhead.messageOverhead + overhead.conversationPriming,
+        `${fx.name}: the itemized rows should sum EXACTLY to overhead.total`
+      ).toBe(overhead.total);
+      expect(
+        view.reconciliation.bucketsTotal + overhead.messageOverhead + overhead.conversationPriming,
+        `${fx.name}: buckets + itemized overhead rows should sum to the assembled-prompt target`
+      ).toBe(view.reconciliation.target);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drill-down row contents — review round 1, M6/F17. Bucket TOTALS
+// (`row.tokens` / `row.stageCTokens`) are accumulated independently of the
+// per-slice payload pushed into `row.slices` / `row.stageCSlices`, in the
+// same loop, off the same `slice.tokens` / `content` value — so a push that
+// drops or zeroes what it writes into the drill-down array leaves every
+// count/sum guard elsewhere in this file green.
+// ---------------------------------------------------------------------------
+
+describe('breakdown view — drill-down rows are individually pinned', () => {
+  it('Σ per-slice tokens equals the bucket total (and Σ stageC per-slice tokens equals stageCTokens) for every bucket of every fixture', () => {
+    for (const fx of SOLO_FIXTURES) {
+      const view = computeBreakdownView(runSolo(fx.name));
+      for (const b of view.buckets) {
+        const slicesSum = b.slices.reduce((n, s) => n + s.tokens, 0);
+        expect(slicesSum, `${fx.name} / ${b.id}: Σ slices.tokens should equal bucket.tokens`).toBe(
+          b.tokens
+        );
+        const stageCSum = (b.stageCSlices ?? []).reduce((n, s) => n + s.tokens, 0);
+        expect(
+          stageCSum,
+          `${fx.name} / ${b.id}: Σ stageCSlices.tokens should equal stageCTokens`
+        ).toBe(b.stageCTokens ?? 0);
+      }
+    }
+    for (const fx of GROUP_FIXTURES) {
+      const view = computeBreakdownView(runGroup(fx.name));
+      for (const b of view.buckets) {
+        const slicesSum = b.slices.reduce((n, s) => n + s.tokens, 0);
+        expect(slicesSum, `${fx.name} / ${b.id}: Σ slices.tokens should equal bucket.tokens`).toBe(
+          b.tokens
+        );
+      }
+    }
+  });
+
+  it('a hand-built breakdown pins exact labels and content-only token math for Stage-B and Stage-C rows', () => {
+    // KILLS: `stageALabel` collapsing to a constant (every row reading
+    // "Section" instead of its real label), and the Reading-A subtraction
+    // (`slice.tokens - messageOverheadPerMessage`) being skipped or applied
+    // to the wrong stage.
+    const b = createPromptBreakdown('solo');
+    const perMessage = b.messageOverheadPerMessage;
+    addSlice(b, { stage: 'B', cls: 'history', messageId: 'm1', role: 'user' }, 14, 40);
+    addSlice(b, { stage: 'B', cls: 'history', messageId: 'm2', role: 'assistant' }, 20, 60);
+    addSlice(b, { stage: 'B', cls: 'authors_note' }, 10, 30);
+    addSlice(b, { stage: 'C', id: 'char_phi' }, 12, 35);
+    const view = computeBreakdownView(b);
+
+    const yourMessage = view.buckets.find((bk) => bk.id === 'your_message')!;
+    expect(yourMessage.slices).toEqual([
+      { label: 'User', tokens: 14 - perMessage, role: 'user', messageId: 'm1' },
+    ]);
+
+    const history = view.buckets.find((bk) => bk.id === 'chat_history')!;
+    expect(history.slices).toEqual([
+      { label: 'Assistant', tokens: 20 - perMessage, role: 'assistant', messageId: 'm2' },
+    ]);
+
+    const notes = view.buckets.find((bk) => bk.id === 'summary_notes')!;
+    expect(notes.slices).toEqual([{ label: "Author's Note", tokens: 10 - perMessage }]);
+
+    const instructions = view.buckets.find((bk) => bk.id === 'instructions')!;
+    expect(instructions.slices).toEqual([]);
+    expect(instructions.stageCSlices).toEqual([
+      {
+        label: PROMPT_SECTION_LABELS.char_phi,
+        tokens: 12 - perMessage,
+        badge: 'not counted by the trim — sent after the history',
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// System/Character exclusivity — review round 1, m7/F3/F10/F18. The panel
+// reuses ONE chart hex for `system` and `character` on the premise the two
+// buckets are never co-present (system is group-only, character solo-only).
+// `SECTION_BUCKET`/`GROUP_SLOT_BUCKET` are plain `Record<K, BucketId>`s, so
+// nothing in the type system enforces that — only this test does.
+// ---------------------------------------------------------------------------
+
+describe('breakdown view — system/character are mutually exclusive (shared chart color)', () => {
+  it('no SECTION_BUCKET value is "system" and no GROUP_SLOT_BUCKET value is "character"', () => {
+    expect(Object.values(SECTION_BUCKET)).not.toContain('system');
+    expect(Object.values(GROUP_SLOT_BUCKET)).not.toContain('character');
+  });
+
+  it('solo never yields a system bucket, group never yields a character bucket, on any real fixture', () => {
+    for (const fx of SOLO_FIXTURES) {
+      const ids = computeBreakdownView(runSolo(fx.name)).buckets.map((b) => b.id);
+      expect(ids, `${fx.name}: solo should never yield a 'system' bucket`).not.toContain('system');
+    }
+    for (const fx of GROUP_FIXTURES) {
+      const ids = computeBreakdownView(runGroup(fx.name)).buckets.map((b) => b.id);
+      expect(ids, `${fx.name}: group should never yield a 'character' bucket`).not.toContain(
+        'character'
+      );
     }
   });
 });
@@ -410,6 +674,40 @@ describe('breakdown view — world info summary', () => {
     expect(view.wi.evictedCount).toBe(1);
     expect(view.wi.emittedTokens).toBeGreaterThan(0);
     expect(view.wi.rawTokens).toBeGreaterThan(0);
+  });
+
+  // AC 9 (review round 1, M1/F1/F16): `buildWiSummary` must branch on
+  // `activationSource`, never on the forbidden proxy "budget is 0 (and
+  // nothing was evicted)". The two cases above happen to also agree with
+  // that proxy — server-matched-entries is server+budget-0,
+  // wi-budget-eviction is client+budget-40 — so together they cannot tell
+  // the real guard from the forbidden one. These two close that gap.
+  it('AC 9 kill test: a client-path turn with a zero WI budget is never mistaken for server-path', () => {
+    // KILLS `activationSource === 'server'` -> `budget === 0` (or
+    // `budget === 0 && droppedIds.length === 0`): 'minimal' never touches
+    // World Info at all, so it keeps the collector's client-path defaults
+    // verbatim (budget 0, no drops) — the ordinary case for most real
+    // client-path turns (no WI token budget configured).
+    const view = computeBreakdownView(runSolo('minimal'));
+    expect(view.wi.unavailableNote).toBeUndefined();
+    expect(view.wi.budget).toBe(0);
+    expect(view.wi.evictedCount).toBe(0);
+  });
+
+  it('AC 9 kill test: server path still wins even with a nonzero budget and a recorded drop', () => {
+    // The other half of the same guard: a server-path breakdown whose wi
+    // fields are shaped exactly like an ordinary client-path eviction (budget
+    // 40, one dropped id) must still render the unavailable note — proving
+    // the branch reads `activationSource`, not "budget is 0 and nothing was
+    // evicted".
+    const breakdown = createPromptBreakdown('solo');
+    breakdown.wi.activationSource = 'server';
+    breakdown.wi.budget = 40;
+    breakdown.wi.droppedIds = ['ev1'];
+    const view = computeBreakdownView(breakdown);
+    expect(view.wi.unavailableNote).toBe('Activation details unavailable (server-path turn)');
+    expect(view.wi.budget).toBeUndefined();
+    expect(view.wi.evictedCount).toBeUndefined();
   });
 });
 
