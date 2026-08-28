@@ -34,6 +34,15 @@ import type {
 } from './promptBreakdown';
 import type { TokenizerProfile } from './tokenizer';
 import { PROMPT_SECTION_LABELS, type PromptSectionId } from '../stores/generationStore';
+// Review round 4, R4-E/F5: the group builder's ONE definition of its history
+// window (groupHistoryWindow.ts's own doc: "before E2-S2 task 1b those were
+// two hand-synced copies... one function, imported by both, is the only
+// shape in which they cannot drift again") — imported here rather than a
+// second literal `30`, which is exactly the drift pattern that file exists to
+// prevent and this module's own doc calls out for `conversationPriming` /
+// `messageOverheadPerMessage` ("a second copy of the number is how the panel
+// silently rots").
+import { GROUP_HISTORY_WINDOW } from './groupHistoryWindow';
 
 // ---------------------------------------------------------------------------
 // Buckets
@@ -274,9 +283,19 @@ export interface Reconciliation {
 }
 
 export interface Badges {
+  /** Names the drop count too, when there is one (Message Count mode) — see
+   *  `historyBadge`. */
   history: string;
-  /** Present only when `flags.droppedFromHistory > 0`. */
+  /** Present only when `flags.droppedFromHistory > 0` — the TOKEN-AWARE
+   *  trim's drop count. */
   droppedFromHistory?: number;
+  /** Present only when `flags.droppedByMessageWindow > 0` — messages
+   *  Message Count mode's fixed window discarded before the trim (which
+   *  never ran in this mode) could ever see them. A DIFFERENT mechanism
+   *  from `droppedFromHistory`: a window cut, not a trim decision (review
+   *  round 4, R4-B/F3). Same underlying `breakdown.flags` value `history`'s
+   *  string embeds, so the two cannot drift apart. */
+  droppedFromWindow?: number;
 }
 
 export interface WiSummary {
@@ -359,14 +378,26 @@ function selectYourMessageId(breakdown: PromptBreakdown): string | null {
 function historyBadge(
   mode: 'solo' | 'group',
   historyTrimmed: boolean,
-  overBudget: boolean
+  overBudget: boolean,
+  droppedByMessageWindow: number,
+  messageWindowSize: number | null
 ): string {
   if (!historyTrimmed) {
     // NEVER "within budget" here — nothing was measured against a budget:
     // solo's Message Count mode skips the trim outright, and group has none.
-    return mode === 'solo'
-      ? 'Trim disabled (Message Count mode)'
-      : 'History not trimmed (fixed 30-message window)';
+    if (mode === 'group') {
+      return `History not trimmed (fixed ${GROUP_HISTORY_WINDOW}-message window)`;
+    }
+    // Review round 4, R4-B/F3: "Trim disabled" alone implied nothing was
+    // ever cut — but Message Count mode pre-windows history to a fixed
+    // count BEFORE the (skipped) trim would have run, and that window can
+    // silently drop plenty. Name the window and the drop count whenever
+    // there is one; keep the old (still true, still the common case —
+    // "the window covers the whole chat") wording when there is not.
+    if (messageWindowSize !== null && droppedByMessageWindow > 0) {
+      return `Trim disabled — last ${messageWindowSize} messages kept (${droppedByMessageWindow} older dropped)`;
+    }
+    return 'Trim disabled (Message Count mode)';
   }
   return overBudget
     ? 'Over budget — the pinned content alone (newest turn + critical lore + system block) exceeded the trim budget'
@@ -430,6 +461,12 @@ export function computeBreakdownView(breakdown: PromptBreakdown): BreakdownViewM
 
   let nB = 0;
   let nC = 0;
+  // Moved up from the reconciliation block below (review round 4, R4-A/F1)
+  // so the Stage-C loop can read it too — the badge it stamps has to be
+  // mode-conditional for the exact reason the reconciliation row's label
+  // already is (R3-B/F4): no trim ran in Message Count mode, so nothing may
+  // claim content was excluded FROM one.
+  const historyTrimmed = breakdown.flags.historyTrimmed;
 
   for (const slice of breakdown.slices as BreakdownSlice[]) {
     const kind: SectionKind = slice.kind;
@@ -483,7 +520,14 @@ export function computeBreakdownView(breakdown: PromptBreakdown): BreakdownViewM
         (row.stageCSlices ??= []).push({
           label,
           tokens: content,
-          badge: 'not counted by the trim — sent after the history',
+          // Review round 4, R4-A/F1/F6/F7: mode-conditional, matching the
+          // reconciliation row's label/note (R3-B/F4) — in Message Count
+          // mode there is no trim to have excluded this content FROM, and
+          // the in-chat meter counts it (fullPromptNote says so three rows
+          // up on the same panel).
+          badge: historyTrimmed
+            ? 'not counted by the trim — sent after the history'
+            : 'sent after the history',
         });
       }
       continue;
@@ -531,8 +575,8 @@ export function computeBreakdownView(breakdown: PromptBreakdown): BreakdownViewM
   // Review round 3, R3-B/F4: Message Count mode (no token-aware trim) still
   // reaches this branch — reconciliation.stageC is gated on mode alone, never
   // on historyTrimmed — so row 1's label/note have to be honest about
-  // whether a trim actually measured anything.
-  const historyTrimmed = breakdown.flags.historyTrimmed;
+  // whether a trim actually measured anything. (`historyTrimmed` itself is
+  // declared above, before the slice loop — R4-A/F1 needs it there too.)
   const reconciliation: Reconciliation =
     mode === 'solo'
       ? {
@@ -560,9 +604,17 @@ export function computeBreakdownView(breakdown: PromptBreakdown): BreakdownViewM
       : { target: breakdown.totals.assembledTotal, bucketsTotal, overhead };
 
   const badges: Badges = {
-    history: historyBadge(mode, breakdown.flags.historyTrimmed, breakdown.flags.overBudget),
+    history: historyBadge(
+      mode,
+      breakdown.flags.historyTrimmed,
+      breakdown.flags.overBudget,
+      breakdown.flags.droppedByMessageWindow,
+      breakdown.flags.messageWindowSize
+    ),
     droppedFromHistory:
       breakdown.flags.droppedFromHistory > 0 ? breakdown.flags.droppedFromHistory : undefined,
+    droppedFromWindow:
+      breakdown.flags.droppedByMessageWindow > 0 ? breakdown.flags.droppedByMessageWindow : undefined,
   };
 
   const callSite: CallSiteLine[] = breakdown.slices
