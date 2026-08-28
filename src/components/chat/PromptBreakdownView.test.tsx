@@ -79,6 +79,36 @@ function groupBasic(): PromptBreakdown {
   return b;
 }
 
+/**
+ * Same shape as `soloWithStageC`, scaled up so `trimTotal`/`assembledTotal`
+ * cross 1000 — review round 2 (R2-C/F3/F7/F10): a raw-vs-formatted
+ * duplication is invisible below 1000 (both render identically), so the
+ * round-1 fixtures could not have caught the residual defect even if a test
+ * had looked for it. This one exists specifically so `toLocaleString()`
+ * actually changes the string.
+ */
+function soloWithBigTotals(): PromptBreakdown {
+  const b = createPromptBreakdown('solo');
+  const perMessage = b.messageOverheadPerMessage; // 4
+  addSlice(b, { stage: 'A', id: 'main_prompt' }, 4000, 16000);
+  addSlice(b, { stage: 'B', cls: 'history', messageId: 'm1', role: 'user' }, 404, 1600);
+  addSlice(b, { stage: 'B', cls: 'history', messageId: 'm2', role: 'assistant' }, 404, 1600);
+  addSlice(b, { stage: 'C', id: 'char_phi' }, 110, 400);
+  b.stageAMessageOverhead = 4;
+  b.conversationPriming = 2;
+  b.totals.stageA = 4000;
+  b.totals.stageB = 808;
+  b.totals.stageC = (110 - perMessage) + perMessage;
+  const nB = 2;
+  const bucketsTotal = 4000 + (404 - perMessage) + (404 - perMessage);
+  const overhead = b.stageAJoinResidual + b.stageAMessageOverhead + perMessage * nB + b.conversationPriming;
+  b.totals.trimTotal = bucketsTotal + overhead;
+  b.totals.assembledTotal = b.totals.trimTotal + b.totals.stageC;
+  b.flags.historyTrimmed = true;
+  b.flags.overBudget = false;
+  return b;
+}
+
 function soloServerPathWi(): PromptBreakdown {
   const b = createPromptBreakdown('solo');
   addSlice(b, { stage: 'A', id: 'main_prompt' }, 10, 40);
@@ -151,21 +181,32 @@ describe('PromptBreakdownView — badge and label text', () => {
 // ---------------------------------------------------------------------------
 
 describe('PromptBreakdownView — headline reconciliation rows never duplicate their total', () => {
-  it('solo (with Stage C): the label cell is the prose stem only, no digits — the value cell carries the number, formatted', () => {
-    // KILLS: deriving the row label via `note.split(' (')[0]`, which used to
-    // leave the RAW (unformatted) total inside the label text while the
-    // row's own value cell rendered the same total again, formatted — every
-    // total on these two rows appeared twice, once unformatted.
+  it('solo (with Stage C): the row labels AND the explanatory notes below them are prose-only, no digits', () => {
+    // KILLS: deriving the row label via `note.split(' (')[0]` (round 1) —
+    // which left the RAW total inside the label while the value cell
+    // rendered it formatted. ALSO KILLS a note that still interpolates the
+    // raw total on its own (round 2, R2-C/F3/F7/F10) — the round-1 fix only
+    // removed the label-side duplicate; the note paragraphs a few lines
+    // below kept the raw number, so the total still appeared twice a few
+    // lines apart. Both the label cell AND the note paragraph must carry
+    // zero digits — the row's own value cell is the ONLY place either total
+    // is meant to render.
     const b = soloWithStageC();
     render(<PromptBreakdownView view={computeBreakdownView(b)} />);
     const trimmedLabel = screen.getByText('Counted by the trim');
     const fullLabel = screen.getByText('Full assembled prompt');
     expect(trimmedLabel.textContent, 'the "Counted by the trim" label should carry no digits').not.toMatch(/\d/);
     expect(fullLabel.textContent, 'the "Full assembled prompt" label should carry no digits').not.toMatch(/\d/);
-    // The full notes, digits and all, still appear — just as their own
-    // separate italic paragraphs below the rows, not doubled into the label.
-    expect(screen.getByText(/Counted by the trim: \d+ \(what the in-chat meter tracks/)).toBeTruthy();
-    expect(screen.getByText(/Full assembled prompt: \d+ \(what it tracks when trimming is off\)/)).toBeTruthy();
+    const trimmedNote = screen.getByText(/what the in-chat meter tracks/i);
+    const fullNote = screen.getByText(/what it tracks when trimming is off/i);
+    expect(
+      trimmedNote.textContent,
+      'the explanatory note must carry no digits either — the row above already shows this total, formatted'
+    ).not.toMatch(/\d/);
+    expect(
+      fullNote.textContent,
+      'the explanatory note must carry no digits either — the row above already shows this total, formatted'
+    ).not.toMatch(/\d/);
   });
 
   it('group (no Stage C split): the single reconciliation row is also label-only, no digits', () => {
@@ -173,6 +214,24 @@ describe('PromptBreakdownView — headline reconciliation rows never duplicate t
     render(<PromptBreakdownView view={computeBreakdownView(b)} />);
     const label = screen.getByText('Full assembled prompt');
     expect(label.textContent).not.toMatch(/\d/);
+  });
+
+  it('the rendered panel shows each headline total EXACTLY ONCE, formatted — no raw duplicate anywhere in the block (review round 2, R2-C/F3/F7/F10)', () => {
+    // The round-1 fixtures (totals under 100) could never have caught this:
+    // below 1000, the formatted and raw forms are the SAME string, so
+    // reintroducing the raw duplicate would be invisible to a digit-presence
+    // check alone. This fixture's totals cross 1000 specifically so
+    // toLocaleString() changes the string, and the assertion below checks
+    // the WHOLE rendered block, not just the label cells.
+    const b = soloWithBigTotals();
+    const { container } = render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    const text = container.textContent ?? '';
+    expect(text, 'the formatted trim total should appear').toContain('4,814');
+    expect(text, 'the formatted assembled total should appear').toContain('4,924');
+    // No bare (unformatted, no thousands separator) run of either total
+    // anywhere in the rendered block.
+    expect(text).not.toMatch(/(?<![\d,])4814(?![\d,])/);
+    expect(text).not.toMatch(/(?<![\d,])4924(?![\d,])/);
   });
 });
 

@@ -503,8 +503,13 @@ export function computeBreakdownView(breakdown: PromptBreakdown): BreakdownViewM
             tokens: breakdown.totals.stageC,
             afterHistoryOverhead: perMessage * nC,
             assembledTotal: breakdown.totals.assembledTotal,
-            trimmedMeterNote: `Counted by the trim: ${breakdown.totals.trimTotal} (what the in-chat meter tracks while token-aware trimming is on)`,
-            fullPromptNote: `Full assembled prompt: ${breakdown.totals.assembledTotal} (what it tracks when trimming is off)`,
+            // Review round 2 (R2-C/F3/F7/F10): prose ONLY, no number. The row
+            // above already renders this exact total through the view's
+            // formatter (toLocaleString) — interpolating it again here, raw,
+            // duplicated it a few lines away in a DIFFERENT format (round 1's
+            // m10 fix only removed the same duplication from the row LABEL).
+            trimmedMeterNote: 'What the in-chat meter tracks while token-aware trimming is on.',
+            fullPromptNote: 'What it tracks when trimming is off.',
           },
         }
       : { target: breakdown.totals.assembledTotal, bucketsTotal, overhead };

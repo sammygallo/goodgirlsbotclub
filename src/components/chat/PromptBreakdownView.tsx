@@ -39,14 +39,16 @@ const OVERHEAD_COLOR = 'var(--color-border)';
 
 /**
  * Row labels for the two headline reconciliation rows below — prose stems
- * only, no digits. `trimmedMeterNote` / `fullPromptNote` (breakdownBuckets.ts)
- * embed the RAW total inline for the italic explanation lower on the panel
- * ("Counted by the trim: 12347 (what the in-chat meter tracks…)"); deriving a
- * row LABEL from those by string-splitting on `' ('` used to keep the raw
- * number in the label while the row's own value cell rendered the same total
- * formatted — every total on the two headline rows appeared twice, once
- * unformatted (review round 1, F7/F12). These constants are the fix: the
- * label carries no number at all, so there is nothing left to duplicate.
+ * only, no digits. Round 1 (F7/F12) found the label derived via
+ * `note.split(' (')[0]` kept `trimmedMeterNote`/`fullPromptNote`'s RAW total
+ * in the label while the row's own value cell rendered the same total
+ * formatted; these constants fixed the label half. Round 2 (R2-C/F3/F7/F10)
+ * found the OTHER half of the same defect survived one layer down: the notes
+ * themselves (breakdownBuckets.ts) still interpolated the raw total, so the
+ * italic explanatory paragraphs a few lines below these rows kept printing
+ * it a second time, unformatted. Fixed at the source — the notes are now
+ * pure prose with no number in them at all — so every total on this panel
+ * renders through `n()` exactly once, in exactly one place.
  */
 const TRIMMED_METER_LABEL = 'Counted by the trim';
 const FULL_PROMPT_LABEL = 'Full assembled prompt';
