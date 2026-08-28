@@ -715,8 +715,10 @@ async function* parseSSEStream(
 
 // Build the empty-response error message, distinguishing an over-length
 // cutoff or content-filter refusal (when the upstream reason is known) from
-// a request whose newest message alone blew the local token budget, falling
-// back to the given generic message otherwise.
+// an overBudget request — per #453, that fires when the PINNED content (the
+// newest turn plus pinned critical lore plus the system block) exceeds the
+// trim budget, not when the newest message alone does — falling back to the
+// given generic message otherwise.
 // `retryAction` completes "..., then <retryAction>." (e.g. "tap send again").
 // `maxTokens` and `overBudget` must be the values captured at dispatch time
 // (the request that actually produced this empty response), not re-read from
@@ -748,7 +750,7 @@ function buildEmptyResponseError(
     return `The response was blocked by the provider's content filter. Try rewording your message, then ${retryAction}.`;
   }
   if (overBudget) {
-    return `Your message may be too long for the current context window. Try raising Max Context Tokens in Settings → Generation, or shortening your message, then ${retryAction}.`;
+    return `Your message — or pinned lore (constant/critical World Info entries) — may be too large for the current context window. Try raising Max Context Tokens in Settings → Generation, shortening your message, or demoting/splitting critical lore entries, then ${retryAction}.`;
   }
   return genericMessage;
 }
