@@ -3148,6 +3148,10 @@ async function generateGroupTurn(
       },
     ],
   }));
+  // E2-S2 task 4: tag the breakdown published above with the message it
+  // describes, guarded by object identity — a later speaker in this same
+  // round may already have replaced the slot by the time this line runs.
+  useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId);
 
   let responseText = '';
   for await (const token of parseSSEStream(stream)) {
@@ -4681,6 +4685,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const swipeImages = imagesFromLastUserMessage(contextMessages, provider, model);
       recordAttachments(breakdown, swipeImages);
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
+      // E2-S2 task 4: this swipe re-generates `messageId` in place, so it is
+      // the id this breakdown describes.
+      useGenerationStore.getState().tagLastBreakdownMessage(breakdown, messageId);
       const generationOptions = getGenerationOptions();
 
       const finalContext = await runGenerateInterceptors(
@@ -4851,6 +4858,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const continueImages = imagesFromLastUserMessage(messages, provider, model);
       recordAttachments(breakdown, continueImages);
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
+      // E2-S2 task 4: continueMessage takes no messageId argument (unlike
+      // swipeRight) — `lastAiMsg`, resolved above, is the turn this build
+      // extends, so its id is what the breakdown describes.
+      useGenerationStore.getState().tagLastBreakdownMessage(breakdown, lastAiMsg.id);
       const finalContext = await runGenerateInterceptors(
         maybeApplyInstructMode(context),
         character.name,
@@ -5253,6 +5264,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             },
           ],
         }));
+        // E2-S2 task 4 — see generateGroupTurn for the identity-guard rationale.
+        useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId);
 
         let responseText = '';
         const sseMeta: SSEStreamMeta = { finishReason: null };
@@ -5663,6 +5676,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             },
           ],
         }));
+        // E2-S2 task 4 — see generateGroupTurn for the identity-guard rationale.
+        useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId);
 
         let responseText = '';
         const sseMeta: SSEStreamMeta = { finishReason: null };
