@@ -22,8 +22,20 @@
  * a newer message, a swipe, a group speaker — and `impersonate`, which
  * publishes its own breakdown (chatStore.ts) with no message to tag, so it
  * always lands the sheet in this "not owned" branch for whatever message was
- * previously current. The copy below names all four so it never states a
- * cause that did not happen.
+ * previously current. The copy states the FACT (this turn isn't the most
+ * recent build) and lists the four only as EXAMPLES of why, not as a claim
+ * that one of them definitely happened — round 3 asserted a cause; review
+ * round 4 (R4-C/F2, R4-I) found that framing itself is sometimes wrong (a
+ * turn that was simply never built this session has nothing that
+ * "replaced" it).
+ *
+ * The escape-hatch button ALSO used to claim "the most recent turn's chip
+ * still shows the current build" — false whenever the tag is null
+ * (impersonate: nothing owns the slot, including the newest turn) or the
+ * user has swiped back past the tagged swipe. Points at Settings → Usage →
+ * "Last prompt breakdown" instead (UsagePage.tsx), which reads
+ * `lastPromptBreakdown` directly with no tag check and is therefore
+ * accurate in every not-owned state, not just some of them.
  */
 import { BottomSheet } from '../ui/BottomSheet';
 import { useGenerationStore } from '../../stores/generationStore';
@@ -71,15 +83,15 @@ export function PromptBreakdownSheet({ isOpen, onClose, messageId, swipeIndex }:
           <div className="py-4 text-sm text-[var(--color-text-secondary)] space-y-3">
             <p>
               Breakdown no longer available for this turn — the app keeps only the most recent
-              prompt build, and a newer message, swipe, group speaker, or impersonation draft
-              replaced it.
+              prompt build, and this turn isn't it, usually because a newer message, swipe,
+              group speaker, or impersonation draft came after it.
             </p>
             <button
               type="button"
               onClick={onClose}
               className="text-xs text-[var(--color-primary)] underline underline-offset-2"
             >
-              Close — the most recent turn's chip still shows the current build.
+              Close — see the current build under Settings → Usage → "Last prompt breakdown".
             </button>
           </div>
         )}
