@@ -24,7 +24,7 @@ import {
 
 afterEach(() => {
   cleanup();
-  useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownMessageId: null });
+  useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
 });
 
 // ---------------------------------------------------------------------------
@@ -147,6 +147,36 @@ describe('PromptBreakdownView — badge and label text', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Reconciliation row labels — review round 1, F7/F12
+// ---------------------------------------------------------------------------
+
+describe('PromptBreakdownView — headline reconciliation rows never duplicate their total', () => {
+  it('solo (with Stage C): the label cell is the prose stem only, no digits — the value cell carries the number, formatted', () => {
+    // KILLS: deriving the row label via `note.split(' (')[0]`, which used to
+    // leave the RAW (unformatted) total inside the label text while the
+    // row's own value cell rendered the same total again, formatted — every
+    // total on these two rows appeared twice, once unformatted.
+    const b = soloWithStageC();
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    const trimmedLabel = screen.getByText('Counted by the trim');
+    const fullLabel = screen.getByText('Full assembled prompt');
+    expect(trimmedLabel.textContent, 'the "Counted by the trim" label should carry no digits').not.toMatch(/\d/);
+    expect(fullLabel.textContent, 'the "Full assembled prompt" label should carry no digits').not.toMatch(/\d/);
+    // The full notes, digits and all, still appear — just as their own
+    // separate italic paragraphs below the rows, not doubled into the label.
+    expect(screen.getByText(/Counted by the trim: \d+ \(what the in-chat meter tracks/)).toBeTruthy();
+    expect(screen.getByText(/Full assembled prompt: \d+ \(what it tracks when trimming is off\)/)).toBeTruthy();
+  });
+
+  it('group (no Stage C split): the single reconciliation row is also label-only, no digits', () => {
+    const b = groupBasic();
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    const label = screen.getByText('Full assembled prompt');
+    expect(label.textContent).not.toMatch(/\d/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Drill-down interaction
 // ---------------------------------------------------------------------------
 
@@ -175,25 +205,68 @@ describe('PromptBreakdownView — drill-down', () => {
 // ---------------------------------------------------------------------------
 
 describe('PromptBreakdownSheet — ownership', () => {
-  it('owned: lastPromptBreakdown is set and tagged with this messageId', () => {
+  it('owned: lastPromptBreakdown is set and tagged with this messageId at this swipe', () => {
     const b = soloWithStageC();
-    useGenerationStore.setState({ lastPromptBreakdown: b, lastPromptBreakdownMessageId: 'msg-1' });
-    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" />);
+    useGenerationStore.setState({
+      lastPromptBreakdown: b,
+      lastPromptBreakdownTag: { messageId: 'msg-1', swipeIndex: 0 },
+    });
+    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
     expect(screen.queryByText(/no longer available/)).toBeNull();
+    expect(screen.queryByText(/no prompt assembled/i)).toBeNull();
     expect(screen.getByText('Within budget')).toBeTruthy();
   });
 
   it('not owned: a different message is tagged (slot moved on)', () => {
     const b = soloWithStageC();
-    useGenerationStore.setState({ lastPromptBreakdown: b, lastPromptBreakdownMessageId: 'msg-2' });
-    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" />);
+    useGenerationStore.setState({
+      lastPromptBreakdown: b,
+      lastPromptBreakdownTag: { messageId: 'msg-2', swipeIndex: 0 },
+    });
+    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
     expect(screen.getByText(/no longer available/)).toBeTruthy();
     expect(screen.queryByText('Within budget')).toBeNull();
   });
 
-  it('null slot: nothing has ever been published this session', () => {
-    useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownMessageId: null });
-    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" />);
+  it('not owned: same message, but tagged at a DIFFERENT swipe than the one on screen (review round 1, M3/F6)', () => {
+    // KILLS a fix that only compares messageId: `taggedMessageId === messageId`
+    // alone would report this as owned, rendering the swipe-1 build's numbers
+    // under whatever text swipe 0 (the one on screen) actually holds — the
+    // exact bug the swipe-index field was added to close. The tag here models
+    // "swipeRight generated a new swipe 1 and tagged it"; the sheet is opened
+    // against swipe 0, i.e. the user swiped back afterward.
+    const b = soloWithStageC();
+    useGenerationStore.setState({
+      lastPromptBreakdown: b,
+      lastPromptBreakdownTag: { messageId: 'msg-1', swipeIndex: 1 },
+    });
+    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
     expect(screen.getByText(/no longer available/)).toBeTruthy();
+    expect(screen.queryByText('Within budget')).toBeNull();
+  });
+
+  it('owned again once the swipe on screen matches the tagged swipe (swiping forward again)', () => {
+    const b = soloWithStageC();
+    useGenerationStore.setState({
+      lastPromptBreakdown: b,
+      lastPromptBreakdownTag: { messageId: 'msg-1', swipeIndex: 1 },
+    });
+    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={1} />);
+    expect(screen.queryByText(/no longer available/)).toBeNull();
+    expect(screen.getByText('Within budget')).toBeTruthy();
+  });
+
+  it('null slot: nothing has ever been published this session (F5 — a distinct cause from "moved on")', () => {
+    // KILLS a single collapsed copy string: the null-slot case never had
+    // "a newer message, swipe, or group speaker" replace anything — there was
+    // simply no breakdown this session (e.g. right after a reload, since
+    // lastPromptBreakdown is deliberately not persisted). Wording it as a
+    // replacement event misdiagnoses the cause, exactly as UsagePage's own
+    // null-state copy ("No prompt assembled yet this session…") gets right.
+    useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
+    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
+    expect(screen.getByText(/no prompt assembled yet this session/i)).toBeTruthy();
+    expect(screen.queryByText(/no longer available/)).toBeNull();
+    expect(screen.queryByText(/replaced it/)).toBeNull();
   });
 });
