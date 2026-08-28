@@ -27,6 +27,20 @@ afterEach(() => {
   useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
 });
 
+/**
+ * Reads a rendered "label ... value" row's numeric value, label↔value
+ * PAIRED — a swapped binding dies, not just a present-somewhere check.
+ * Hoisted to module scope in review round 5 (R5-C/F6) so more than one test
+ * can reuse it; introduced in round 3 (R3-C/F8, R3-D/F9) for the
+ * reconciliation block, and every row this app renders follows the same
+ * `<div><span>label</span><span>value</span></div>` shape.
+ */
+function cell(label: string): number {
+  const row = screen.getByText(label).closest('div');
+  expect(row, `no row found for "${label}"`).toBeTruthy();
+  return Number(row!.textContent!.slice(label.length).replace(/,/g, ''));
+}
+
 // ---------------------------------------------------------------------------
 // Hand-built breakdowns — same collector API the real builders use
 // (createPromptBreakdown / addSlice), so computeBreakdownView is exercised
@@ -190,6 +204,60 @@ describe('PromptBreakdownView — badge and label text', () => {
 });
 
 // ---------------------------------------------------------------------------
+// World Info emitted-vs-raw disclosure (§4.1 AC) — review round 5, R5-C/F6
+// ---------------------------------------------------------------------------
+
+describe('PromptBreakdownView — World Info emitted-vs-raw disclosure renders (review round 5, R5-C/F6)', () => {
+  it('renders both labeled numbers, label↔value paired, plus the gap-explanation sentence — deleting any of the three must redden', () => {
+    // KILLS: deleting the emitted-cost row, the raw-cost row, or the
+    // {wi.gapExplanation} paragraph — the §4.1 AC ("surfaces both the
+    // emitted... cost and the raw-content cost... or... explains the gap")
+    // had zero assertions anywhere before this test; all three could be
+    // deleted with the full suite green. `cell()` pairs label to value, so
+    // a swapped binding (emitted shown where raw belongs) dies too.
+    const b = soloWithStageC(); // wi.emittedTokens=12, wi.rawTokens=9
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    expect(cell('In the prompt (post-macro, incl. attribution wrappers)')).toBe(12);
+    expect(cell('Charged by the WI budget (raw entry text, pre-macro)')).toBe(9);
+    expect(
+      screen.getByText(/The gap is macro expansion and the attribution wrapper/)
+    ).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "N messages dropped by the trim" warning badge — review round 5, R5-D/F7
+// ---------------------------------------------------------------------------
+
+describe('PromptBreakdownView — the trim-drop warning badge renders (review round 5, R5-D/F7)', () => {
+  it('nonzero, non-one count: pluralized, and present', () => {
+    // KILLS: deleting the `{badges.droppedFromHistory !== undefined && (...)}`
+    // block — the panel's only warning-coloured disclosure that the
+    // token-aware trim discarded messages. Had zero renderer coverage
+    // before this test (badges.droppedFromHistory was pinned only at the
+    // view-model layer, breakdownBuckets.test.ts).
+    const b = soloWithStageC();
+    b.flags.droppedFromHistory = 12;
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    expect(screen.getByText('12 messages dropped by the trim')).toBeTruthy();
+  });
+
+  it('singular count: "1 message", not "1 messages" — kills the pluralisation ternary', () => {
+    const b = soloWithStageC();
+    b.flags.droppedFromHistory = 1;
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    expect(screen.getByText('1 message dropped by the trim')).toBeTruthy();
+    expect(screen.queryByText('1 messages dropped by the trim')).toBeNull();
+  });
+
+  it('absent when nothing was dropped', () => {
+    const b = soloWithStageC(); // badges.droppedFromHistory is undefined by default
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    expect(screen.queryByText(/dropped by the trim/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reconciliation row labels — review round 1, F7/F12
 // ---------------------------------------------------------------------------
 
@@ -312,12 +380,6 @@ describe('PromptBreakdownView — headline reconciliation rows never duplicate t
     // only, never that the RENDERER draws them.
     const b = soloWithBigTotals();
     render(<PromptBreakdownView view={computeBreakdownView(b)} />);
-
-    const cell = (label: string): number => {
-      const row = screen.getByText(label).closest('div');
-      expect(row, `no row found for "${label}"`).toBeTruthy();
-      return Number(row!.textContent!.slice(label.length).replace(/,/g, ''));
-    };
 
     const bucketsValue = cell('Buckets');
     const separatorValue = cell('Separator + rounding');
