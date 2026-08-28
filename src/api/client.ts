@@ -570,12 +570,20 @@ export interface MessageChunkDTO {
 }
 
 /** Response for POST /retrieval/messages. `chunks` is empty (not an
- *  error) whenever RAG isn't usable for this call; `reason`, when
- *  present, distinguishes why (today only `"no_key"`) — additive/optional
- *  so it's safe to ignore. */
+ *  error) whenever RAG isn't usable for this call; `reason` distinguishes
+ *  why (today `"no_key"` or `"boundary_not_found"`) — additive, so an
+ *  unknown value is safe to ignore.
+ *
+ *  `null` IS THE WIRE SHAPE, not a theoretical one:
+ *  `RetrievalMessagesOut.reason` is `str | None = None` and the route
+ *  serializes it without `exclude_none`, so an ordinary 200 carries
+ *  `"reason": null` — never an absent key. `undefined` stays in the type
+ *  for a body that genuinely lacks the field (a stripping proxy, or a
+ *  pre-ggbc-backend#81 build), but a consumer that reads only
+ *  `!== undefined` would classify EVERY successful recall as degraded. */
 export interface RetrievalMessagesDTO {
   chunks: MessageChunkDTO[];
-  reason?: string;
+  reason?: string | null;
 }
 
 export interface CharacterInfo {
@@ -1251,8 +1259,9 @@ export const api = {
    * POST /retrieval/messages — Phase 2 chat-history message recall (see
    * ggbc-backend's app/routers/retrieval.py). Pure read from the caller's
    * point of view. `boundaryId` is the ggbc_id (ChatMessage.id) of the
-   * oldest message in the caller's kept raw tail — see
-   * src/utils/ragBoundary.ts's computeRagBoundary for how it's derived.
+   * oldest message in the caller's kept raw tail. Solo callers read it off
+   * an uncommitted `finishConversationContext` pass and group callers off
+   * `groupHistoryWindow`; see `resolveRagContext` in chatStore.ts.
    */
   async getRetrievalMessages(
     characterAvatar: string,

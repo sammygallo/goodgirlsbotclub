@@ -79,7 +79,7 @@ import { useRegexScriptStore } from './regexScriptStore';
 import { applyRegexScripts, getActiveScripts } from '../utils/regexScripts';
 import { useSummarizeStore } from './summarizeStore';
 import { useChatHistoryRagStore } from './chatHistoryRagStore';
-import { computeRagBoundary } from '../utils/ragBoundary';
+import { groupHistoryWindow } from '../utils/groupHistoryWindow';
 import { extensionRegistry } from '../extensions/registry';
 import type { ContextContribution } from '../extensions/types';
 import { useAuthStore } from './authStore';
@@ -888,15 +888,29 @@ function ragAbortAfter(ms: number): { signal: AbortSignal; cancel: () => void } 
  * must not touch.
  *
  * `boundaryId` — the id of the oldest message in the raw tail this turn's
- * prompt will actually keep — comes from computeRagBoundary
- * (src/utils/ragBoundary.ts), which reproduces buildConversationContext's
- * post-trim kept set. See that module's docstring for why the naive
- * pre-trim frame would silently break recall for exactly the long-chat
- * users this feature serves.
+ * prompt will actually keep — is now an ARGUMENT, not something this helper
+ * derives. Until E2-S2 task 1b it came from `computeRagBoundary`
+ * (src/utils/ragBoundary.ts), a standalone re-simulation of the solo trim
+ * that ran before the builder and therefore had to guess at five things the
+ * real assembly knows: the provider's tokenizer profile, the size of the
+ * assembled system block (the sim passed an empty one where the real trim
+ * passes 2-3K tokens' worth), the at-depth insertions and summary that share
+ * the history array with real turns, macro-substituted vs raw content, and
+ * the blank/image-only turn skips. Five divergences in two directions do not
+ * add up to a "conservative" estimate, so the re-simulation was deleted
+ * rather than repaired: solo callers now run the real builder once and read
+ * `boundaryId` off an uncommitted `finishConversationContext` pass, and group
+ * callers read it off `groupHistoryWindow` — the same function the group
+ * builder emits its history from.
+ *
+ * Pass `null` only to mean "this caller genuinely has no boundary"; the
+ * server then falls back to excluding a fixed tail count, which can return
+ * chunks the prompt already contains.
  */
 export async function resolveRagContext(
   messages: ChatMessage[],
-  chatFile?: string
+  chatFile: string | undefined,
+  boundaryId: string | null
 ): Promise<string | null> {
   // #414: hidden messages must not feed chat-history RAG — neither as the
   // retrieval query nor (server-side) as embedded/retrievable chunks.
@@ -917,15 +931,6 @@ export async function resolveRagContext(
     groupChat?.characterAvatars[0] ?? useCharacterStore.getState().selectedCharacter?.avatar ?? '';
   if (!characterAvatar) return null;
 
-  const ctxConfig = useGenerationStore.getState().context;
-  const sumState = useSummarizeStore.getState();
-  const boundaryId = computeRagBoundary(
-    messages,
-    ctxConfig,
-    { summary: sumState.getSummary(chatFile), compactWhenSummarized: sumState.compactWhenSummarized },
-    groupChat !== null
-  );
-
   const { signal, cancel } = ragAbortAfter(RAG_MESSAGES_TIMEOUT_MS);
   try {
     const dto = await api.getRetrievalMessages(
@@ -937,6 +942,49 @@ export async function resolveRagContext(
       signal
     );
     if (!dto || !Array.isArray(dto.chunks)) return null;
+
+    // The server's degradation code for this call (ggbc-backend#81,
+    // app/routers/retrieval.py). Read as a switch over KNOWN values with an
+    // explicit default because a second consumer is already queued: E9-S7
+    // (#455) surfaces `"no_key"` as a UI hint and must be able to add a case
+    // rather than rewrite this read.
+    //
+    // SEMANTICS — do not misread this: a NULL (or absent) reason means only
+    // "the id you sent resolved to a live message in the persisted chat". It is NOT a
+    // statement that the window is correct. Nothing server-side can validate
+    // that; the only defence is that the id came from the real assembly rather
+    // than from a re-simulation of it, which is exactly what task 1b's
+    // deletion of `computeRagBoundary` bought. Never add code that treats a
+    // null reason as validation of the boundary.
+    switch (dto.reason) {
+      // THE ORDINARY CASE, and `null` is the shape the deployed server
+      // actually sends: `RetrievalMessagesOut.reason` is `str | None = None`
+      // serialized without `exclude_none`, so every 200 carries the key and
+      // an ABSENT `reason` is something no current backend produces.
+      // `undefined` is kept in the same arm rather than deleted — the DTO
+      // types the field optional, and a stripping proxy or a pre-#81 build
+      // would land here — but the two are ONE arm on purpose: split them, or
+      // narrow on `!== undefined` anywhere, and every healthy recall turn
+      // gets classified as degraded.
+      case null:
+      case undefined:
+        break;
+      case 'boundary_not_found':
+        // The id we sent named no live message, so the server excluded only a
+        // fixed count of newest messages instead of our real raw tail. Recall
+        // on that guessed window can return turns the prompt already carries.
+        console.warn(
+          '[resolveRagContext] server could not resolve boundaryId ' +
+            `${JSON.stringify(boundaryId)} — recall ran against a guessed ` +
+            'window (newest few messages excluded by count) and may duplicate ' +
+            'raw history this turn'
+        );
+        break;
+      default:
+        // A reason this build does not know about. Recall still applies; a
+        // newer server is allowed to say more than an older client parses.
+        break;
+    }
 
     const parts: string[] = [];
     for (const chunk of dto.chunks) {
@@ -951,6 +999,27 @@ export async function resolveRagContext(
   } finally {
     cancel();
   }
+}
+
+/**
+ * The boundary a GROUP turn must send to chat-history recall: the oldest
+ * message `buildGroupConversationContext` will emit as raw history.
+ *
+ * Group needs no two-pass fixed point the way solo does. There is no
+ * `trimHistoryToBudget` on that path — the window is a fixed slice — so
+ * recall's own size cannot move the boundary it is measured against, and the
+ * answer is available before the builder runs.
+ *
+ * It reads `groupHistoryWindow`, the SAME function the builder slices its
+ * history from, which is the whole point: these two used to be hand-synced
+ * copies of one expression living in two files, and the copy in
+ * `ragBoundary.ts` had already drifted a stale anchor 270 lines away from the
+ * real one. Exported so a test can prove both callers reach the same function
+ * object rather than two equal-looking expressions.
+ */
+export function groupRecallBoundary(messages: ChatMessage[]): string | null {
+  const window = groupHistoryWindow(messages);
+  return window.length > 0 ? window[0].id : null;
 }
 
 // In/out parameter for the world-info scan inside buildConversationContext
@@ -1068,13 +1137,18 @@ export interface FinishedConversation {
    *  call's own stream resolves. */
   overBudget: boolean;
   /** `ChatMessage.id` of the oldest KEPT entry that is a real chat turn, or
-   *  null. Task 1b's consumer — nothing reads it yet. */
+   *  null. Read by all five solo generation call sites (task 1b): the probe
+   *  pass's value is what `resolveRagContext` sends the server. */
   boundaryId: string | null;
 }
 
 // Build conversation context for AI. Thin wrapper over the prepare/finish
-// pair: one prepare, one committing finish. Signature unchanged apart from the
-// trailing optional collector, so every existing caller and test is untouched.
+// pair: one prepare, one committing finish. PRODUCTION NO LONGER CALLS THIS —
+// since task 1b the five solo call sites use prepare/finish directly (they need
+// the uncommitted probe). It remains the exported seam the golden-prompt
+// harness and E8-S4's byte-equivalence check are defined against; the goldens
+// pin THIS function's output, and chatStore.callSites.test.ts is what pins the
+// call sites' two-pass arrangement.
 export function buildConversationContext(
   messages: ChatMessage[],
   character: CharacterInfo,
@@ -2735,8 +2809,11 @@ CONTENT RULES:
     currentCharacter;
 
   // #414: exclude hidden messages from the group prompt too. Filter before the
-  // slice so a hidden message doesn't consume one of the last-30 slots.
-  const recentMessages = messages.filter((m) => !m.hidden).slice(-30).filter((m) => !m.isSystem);
+  // slice so a hidden message doesn't consume one of the last-30 slots — that
+  // ordering, and the isSystem filter that follows the slice, live in
+  // `groupHistoryWindow` because the chat-history recall path has to exclude
+  // exactly what this loop emits (see that module's docstring).
+  const recentMessages = groupHistoryWindow(messages);
   // E9-S6 review-fix (round 2): `attachmentsFolded` answers a question about the
   // whole BUILD ("does this generateMessage call carry images?"), but the image
   // exemption in the loop below is evaluated per MESSAGE. api.generateMessage
@@ -2983,7 +3060,16 @@ async function generateGroupTurn(
   // Phase 8.5: resolve Data Bank / RAG chunks scoped to the current speaker.
   // In a group turn this means Seraphina's character-scoped docs only fire
   // on Seraphina's turn, which matches how solo chats scope per-character.
-  const ragCtx = await resolveRagContext(updatedMessages, get().currentChatFile || undefined);
+  //
+  // The boundary comes from `groupRecallBoundary`, which reads the same
+  // `groupHistoryWindow` the builder below slices its history from — so recall
+  // excludes exactly what this turn's prompt will carry. See that function for
+  // why group needs no two-pass fixed point.
+  const ragCtx = await resolveRagContext(
+    updatedMessages,
+    get().currentChatFile || undefined,
+    groupRecallBoundary(updatedMessages)
+  );
   // Phase 5.3: look up the group's card-handling mode so the builder knows
   // whether to produce a swap-style flat bullet list or a full per-member
   // block layout for join mode.
@@ -4535,7 +4621,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { currentChatFile } = get();
       const currentTurn = contextMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
-      const ragCtx = await resolveRagContext(contextMessages, currentChatFile || undefined);
       const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
@@ -4553,8 +4638,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // scan the client-side path would never match, so this call site
       // always falls back to the client-side scan rather than risk
       // silently wrong or early-firing lore.
+      // TWO-PASS RECALL (E2-S2 task 1b) — THE CANONICAL EXPLANATION. The other
+      // four solo call sites repeat this shape and point back here.
+      //
+      // Recall is both an INPUT to the builder (one of the fourteen Stage-A
+      // sections) and a consumer of the trim budget that decides which turns
+      // survive, so the boundary it must be retrieved against is only knowable
+      // after a build. `prepare` runs ONCE — it is the side-effecting half
+      // (macro writes, world-info activation) and running it twice would
+      // double-execute every `{{setvar}}`. `finish` is pure and runs twice:
+      // an uncommitted probe with no recall, purely to learn the boundary,
+      // then the real committing pass with the recall that probe produced.
+      //
+      // DIRECTION INVARIANT — why one round trip is enough and no fixed-point
+      // iteration is needed: recall lands in the Stage-A system block, which
+      // `trimHistoryToBudget` charges as FIXED overhead before it keeps any
+      // history. So pass 2 has strictly less budget left for turns than pass 1
+      // did: it keeps a subset, and its boundary is therefore the same message
+      // or a NEWER one (boundary₂ >= boundary₁, never older). The failure mode
+      // that leaves is under-recall — a band of messages that pass 2
+      // actually dropped from the prompt but that we asked the server to treat
+      // as still present, so they simply are not recalled. The band is NOT
+      // fixed-size: it grows with the share of budget recall consumes (QA
+      // measured 0→17 of 24 turns as recall went 0→400 words on a tight
+      // budget). The opposite error
+      // — recalling a message the prompt also carries, i.e. duplication — is
+      // unreachable by construction. That is the safe direction, and it is why
+      // the probe deliberately runs WITHOUT recall rather than with a guess.
+      //
+      // No new round trips: this reorders awaits that already existed.
+      const prepared = prepareConversationContext(contextMessages, character, availableEmotions, wiOut);
+      const probe = finishConversationContext(prepared, undefined, { commit: false });
+      const ragCtx = await resolveRagContext(contextMessages, currentChatFile || undefined, probe.boundaryId);
       const breakdown = createPromptBreakdown('solo');
-      const { context, overBudget } = buildConversationContext(contextMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, undefined, breakdown);
+      const { context, overBudget } = finishConversationContext(prepared, ragCtx ?? undefined, { commit: true, breakdownOut: breakdown });
       const { provider, model } = getProviderAndModel();
       // Hoisted out of the generateMessage argument list so the breakdown can
       // see the same attachments the request carries — they never pass
@@ -4698,7 +4815,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timers: loadWiTimers(currentChatFile || ''),
         activated: new Set<string>(),
       };
-      const ragCtx = await resolveRagContext(messages, currentChatFile || undefined);
       // Server-side lore retrieval is intentionally NOT used on this path.
       // currentTurn above is deliberately count-1 (mirrors swipeRight,
       // excluding the message being continued from the turn count), but
@@ -4709,8 +4825,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // letting a delay-gated entry fire through the server path a turn
       // earlier than the client-side engine would ever allow, so this call
       // site always falls back to the client-side scan.
+      // Two-pass recall — see swipeRight for the full rationale and the
+      // direction invariant. Always-local path, so no tryServerRetrieval to
+      // sequence before `prepare`.
+      const prepared = prepareConversationContext(messages, character, availableEmotions, wiOut);
+      const probe = finishConversationContext(prepared, undefined, { commit: false });
+      const ragCtx = await resolveRagContext(messages, currentChatFile || undefined, probe.boundaryId);
       const breakdown = createPromptBreakdown('solo');
-      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined, undefined, breakdown);
+      const { context, overBudget } = finishConversationContext(prepared, ragCtx ?? undefined, { commit: true, breakdownOut: breakdown });
       // Append the continue instruction as a user turn, not a system one.
       // Gemini extracts system messages into its separate systemInstruction
       // field, which would leave contents[] ending with an assistant ('model')
@@ -4828,7 +4950,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timers: loadWiTimers(currentChatFile || ''),
         activated: new Set<string>(),
       };
-      const ragCtx = await resolveRagContext(messages, currentChatFile || undefined);
       // Server-side lore retrieval: eligibility-gated, always falls back to
       // the client-side scan on any failure/ineligibility (see
       // src/utils/serverRetrieval.ts). Content is safe to read server-side
@@ -4836,9 +4957,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // what the server would re-read from the persisted Chat row. No
       // commit call below (impersonate has never persisted WI timers — see
       // the comment above wiOut — so there's nothing to mirror there).
+      //
+      // Awaited BEFORE `prepare` (it used to sit after the recall call):
+      // `prepare` consumes `serverMatchedEntries` as the world-info scan's
+      // input, so it cannot run until this resolves.
       const serverRetrieval = await tryServerRetrieval(character.avatar || '', currentChatFile || '');
+      // Two-pass recall — see swipeRight for the full rationale and the
+      // direction invariant.
+      const prepared = prepareConversationContext(messages, character, availableEmotions, wiOut, serverRetrieval?.matchedEntries);
+      const probe = finishConversationContext(prepared, undefined, { commit: false });
+      const ragCtx = await resolveRagContext(messages, currentChatFile || undefined, probe.boundaryId);
       const breakdown = createPromptBreakdown('solo');
-      const { context, overBudget } = buildConversationContext(messages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries, breakdown);
+      const { context, overBudget } = finishConversationContext(prepared, ragCtx ?? undefined, { commit: true, breakdownOut: breakdown });
       // User-role instruction so Gemini (which extracts system into a
       // separate systemInstruction field) doesn't leave contents[] ending
       // with an assistant turn and trip its 400. See continueMessage above
@@ -5062,20 +5192,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { currentChatFile } = get();
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
-      const ragCtx = await resolveRagContext(updatedMessages, currentChatFile || undefined);
       // Server-side lore retrieval: eligibility-gated, always falls back to
       // the client-side scan on any failure/ineligibility (see
       // src/utils/serverRetrieval.ts). `updatedMessages` is provably in
       // sync with the persisted Chat row here — saveChatToBackend just ran
-      // unconditionally above, before this try block.
+      // unconditionally above, before this try block. Awaited before
+      // `prepare`, which consumes its entries as the world-info scan input.
       const serverRetrieval = await tryServerRetrieval(character.avatar || '', currentChatFile || '');
       const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
         activated: wiTimerActivated,
       };
+      // Two-pass recall — see swipeRight for the full rationale and the
+      // direction invariant.
+      const prepared = prepareConversationContext(updatedMessages, character, availableEmotions, wiOut, serverRetrieval?.matchedEntries);
+      const probe = finishConversationContext(prepared, undefined, { commit: false });
+      const ragCtx = await resolveRagContext(updatedMessages, currentChatFile || undefined, probe.boundaryId);
       const breakdown = createPromptBreakdown('solo');
-      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries, breakdown);
+      const { context, overBudget } = finishConversationContext(prepared, ragCtx ?? undefined, { commit: true, breakdownOut: breakdown });
       const sendImages = resolveImagesForSend(attachedImages);
       recordAttachments(breakdown, sendImages);
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
@@ -5463,7 +5598,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const { currentChatFile } = get();
       const currentTurn = updatedMessages.filter((m) => !m.isUser && !m.isSystem).length;
       const wiTimerActivated = new Set<string>();
-      const ragCtx = await resolveRagContext(updatedMessages, currentChatFile || undefined);
       const wiOut = {
         currentTurn,
         timers: loadWiTimers(currentChatFile || ''),
@@ -5477,9 +5611,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // rest of the chat's turns are using — see the commit/save branch
       // below. Safe to call now: updatedMessages was just persisted above,
       // so the server's re-read of Chat.messages matches what's on screen.
+      // Awaited before `prepare`, which consumes its entries as the
+      // world-info scan input.
       const serverRetrieval = await tryServerRetrieval(character.avatar || '', currentChatFile || '');
+      // Two-pass recall — see swipeRight for the full rationale and the
+      // direction invariant.
+      const prepared = prepareConversationContext(updatedMessages, character, availableEmotions, wiOut, serverRetrieval?.matchedEntries);
+      const probe = finishConversationContext(prepared, undefined, { commit: false });
+      const ragCtx = await resolveRagContext(updatedMessages, currentChatFile || undefined, probe.boundaryId);
       const breakdown = createPromptBreakdown('solo');
-      const { context, overBudget } = buildConversationContext(updatedMessages, character, availableEmotions, wiOut, ragCtx ?? undefined, serverRetrieval?.matchedEntries, breakdown);
+      const { context, overBudget } = finishConversationContext(prepared, ragCtx ?? undefined, { commit: true, breakdownOut: breakdown });
       const { provider, model } = getProviderAndModel();
       const regenImages = imagesFromLastUserMessage(updatedMessages, provider, model);
       recordAttachments(breakdown, regenImages);

@@ -2311,7 +2311,20 @@ export const PINS_ANCHORS: Record<number, string | [string, number]> = {
   2171: 'const mesExample =\n    cardMode ===',
   2213: 'FORMATTING RULES (follow exactly):',
   2233: 'const finalSystemPrompt = ragContext',
-  2275: '.slice(-30).filter((m) => !m.isSystem);',
+  // E2-S2 task 1b moved the window EXPRESSION out of the builder into
+  // src/utils/groupHistoryWindow.ts, because the chat-history recall path has
+  // to exclude exactly what this loop emits and a second hand-synced copy is
+  // how the two drift. The construct now reads
+  // `const recentMessages = groupHistoryWindow(messages);` and sits ~500 lines
+  // further down (chatStore.ts:2780 at the time of writing) — the key stays
+  // 2275 because `pins:` strings are serialized into the golden headers, so
+  // renumbering one rewrites golden bytes for a documentation change. Like
+  // every other key here the number is where it was read, not a live pointer;
+  // the FINGERPRINT is the enforced half. The hidden-before-slice /
+  // isSystem-after-slice ordering that this anchor used to carry is now pinned
+  // directly by src/utils/groupHistoryWindow.test.ts, and end-to-end by the
+  // two goldens that cite this anchor.
+  2275: 'const recentMessages = groupHistoryWindow(messages);',
   2283: 'const lastUserIndexInRecent = (() => {',
   2288: ['for (let i = 0; i < recentMessages.length; i++) {', 2],
   2298: 'if (groupAuthorNote && depthFromEnd === groupAuthorNote.depth) {',
