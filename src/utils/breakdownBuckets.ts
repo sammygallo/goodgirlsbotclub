@@ -409,7 +409,7 @@ function historyBadge(
     // compaction-covered turns are disclosed by the Summary slice, not
     // this badge.
     if (messageWindowSize !== null && droppedByMessageWindow > 0) {
-      return `Trim disabled (Message Count mode) — ${droppedByMessageWindow} older message(s) beyond the ${messageWindowSize}-message window`;
+      return `Trim disabled (Message Count mode) — ${droppedByMessageWindow} older message${droppedByMessageWindow === 1 ? '' : 's'} beyond the ${messageWindowSize}-message window`;
     }
     return 'Trim disabled (Message Count mode)';
   }

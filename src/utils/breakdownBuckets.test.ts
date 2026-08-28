@@ -595,7 +595,7 @@ describe('breakdown view — history badge', () => {
     expect(breakdown.flags.historyTrimmed).toBe(false);
     const view = computeBreakdownView(breakdown);
     expect(view.badges.history).toBe(
-      'Trim disabled (Message Count mode) — 4 older message(s) beyond the 5-message window'
+      'Trim disabled (Message Count mode) — 4 older messages beyond the 5-message window'
     );
   });
 
@@ -673,7 +673,7 @@ describe('breakdown view — Message Count mode surfaces its window drop (review
     const view = computeBreakdownView(breakdown);
     expect(view.badges.droppedFromWindow).toBe(4);
     expect(view.badges.history).toBe(
-      'Trim disabled (Message Count mode) — 4 older message(s) beyond the 5-message window'
+      'Trim disabled (Message Count mode) — 4 older messages beyond the 5-message window'
     );
   });
 
@@ -697,7 +697,7 @@ describe('breakdown view — Message Count mode surfaces its window drop (review
   it('Message Count mode with nothing windowed out (window covers the whole chat): no drop clause, plain wording stands (review round 5, R5-B/F3/F5/F8)', () => {
     // KILLS: the `&&` guard in `historyBadge` inverting to `||` (or any
     // other regression that emits the drop clause at
-    // droppedByMessageWindow === 0) — the exact "0 older message(s)" nonsense
+    // droppedByMessageWindow === 0) — the exact "0 older messages" nonsense
     // badge a shorter-than-its-window Message Count chat (the common case:
     // a fresh chat under e.g. a 30-message window) would otherwise show.
     //
@@ -754,7 +754,7 @@ describe('breakdown view — the Message Count badge never claims a kept count (
     const breakdown = runSolo('token-aware-off');
     const view = computeBreakdownView(breakdown);
     expect(view.badges.history).toBe(
-      `Trim disabled (Message Count mode) — ${breakdown.flags.droppedByMessageWindow} older message(s) beyond the ${breakdown.flags.messageWindowSize}-message window`
+      `Trim disabled (Message Count mode) — ${breakdown.flags.droppedByMessageWindow} older messages beyond the ${breakdown.flags.messageWindowSize}-message window`
     );
   });
 
@@ -769,9 +769,33 @@ describe('breakdown view — the Message Count badge never claims a kept count (
     expect(breakdown.flags.droppedByMessageWindow).toBeGreaterThan(0);
     const view = computeBreakdownView(breakdown);
     expect(view.badges.history).toBe(
-      `Trim disabled (Message Count mode) — ${breakdown.flags.droppedByMessageWindow} older message(s) beyond the ${breakdown.flags.messageWindowSize}-message window`
+      `Trim disabled (Message Count mode) — ${breakdown.flags.droppedByMessageWindow} older messages beyond the ${breakdown.flags.messageWindowSize}-message window`
     );
     expect(view.badges.history).not.toMatch(/kept/i);
+  });
+
+  it('pluralizes the drop count like the sibling trim badge — never a literal "(s)" (review round 6)', () => {
+    // KILLS: the round-5 "message(s)" shorthand (rendered verbatim next to a
+    // correctly pluralized "1 message dropped by the trim" badge), and a
+    // naive always-plural fix. Skew of exactly 1 is the common first
+    // exposure: every chat crossing its window boundary hits it. No golden
+    // fixture has skew 1, so both cases are hand-built.
+    const singular = createPromptBreakdown('solo');
+    singular.flags.historyTrimmed = false;
+    singular.flags.messageWindowSize = 20;
+    singular.flags.droppedByMessageWindow = 1;
+    expect(computeBreakdownView(singular).badges.history).toBe(
+      'Trim disabled (Message Count mode) — 1 older message beyond the 20-message window'
+    );
+    expect(computeBreakdownView(singular).badges.history).not.toMatch(/\(s\)/);
+
+    const plural = createPromptBreakdown('solo');
+    plural.flags.historyTrimmed = false;
+    plural.flags.messageWindowSize = 20;
+    plural.flags.droppedByMessageWindow = 2;
+    expect(computeBreakdownView(plural).badges.history).toBe(
+      'Trim disabled (Message Count mode) — 2 older messages beyond the 20-message window'
+    );
   });
 });
 
