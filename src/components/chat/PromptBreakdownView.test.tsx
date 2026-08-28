@@ -66,6 +66,19 @@ function soloWithStageC(): PromptBreakdown {
   return b;
 }
 
+/**
+ * Same shape as `soloWithStageC`, but Message Count mode (no token-aware
+ * trim) — review round 3, R3-B/F4. `historyTrimmed` is the only flag
+ * `computeBreakdownView` reads to decide row 1's label/note (chatStore.ts
+ * sets it from the token-aware toggle, independent of every other field
+ * here), so flipping just that flag is enough to model the mode.
+ */
+function soloMessageCountModeWithStageC(): PromptBreakdown {
+  const b = soloWithStageC();
+  b.flags.historyTrimmed = false;
+  return b;
+}
+
 function groupBasic(): PromptBreakdown {
   const b = createPromptBreakdown('group');
   addSlice(b, { stage: 'A', id: 'group_system_chrome' }, 30, 100);
@@ -181,32 +194,31 @@ describe('PromptBreakdownView — badge and label text', () => {
 // ---------------------------------------------------------------------------
 
 describe('PromptBreakdownView — headline reconciliation rows never duplicate their total', () => {
-  it('solo (with Stage C): the row labels AND the explanatory notes below them are prose-only, no digits', () => {
+  it('solo, token-aware (historyTrimmed true): row labels AND notes are prose-only, no digits — and each note NAMES its own row (review round 3, R3-A/F1/F2/F5/F7)', () => {
     // KILLS: deriving the row label via `note.split(' (')[0]` (round 1) —
     // which left the RAW total inside the label while the value cell
     // rendered it formatted. ALSO KILLS a note that still interpolates the
     // raw total on its own (round 2, R2-C/F3/F7/F10) — the round-1 fix only
     // removed the label-side duplicate; the note paragraphs a few lines
     // below kept the raw number, so the total still appeared twice a few
-    // lines apart. Both the label cell AND the note paragraph must carry
-    // zero digits — the row's own value cell is the ONLY place either total
-    // is meant to render.
+    // lines apart. ALSO KILLS a digit-free note with no row anchor (round 2
+    // regression, R3-A/F1/F2/F5/F7): both notes render AFTER the LAST
+    // headline row, so a note with no subject reads — by simple positional
+    // adjacency — as describing the WRONG row (the trim note would read as
+    // describing "Full assembled prompt"). Every total AND every note must
+    // name its own row exactly once.
     const b = soloWithStageC();
     render(<PromptBreakdownView view={computeBreakdownView(b)} />);
     const trimmedLabel = screen.getByText('Counted by the trim');
     const fullLabel = screen.getByText('Full assembled prompt');
     expect(trimmedLabel.textContent, 'the "Counted by the trim" label should carry no digits').not.toMatch(/\d/);
     expect(fullLabel.textContent, 'the "Full assembled prompt" label should carry no digits').not.toMatch(/\d/);
-    const trimmedNote = screen.getByText(/what the in-chat meter tracks/i);
+    const trimmedNote = screen.getByText(/what the in-chat meter tracks while token-aware trimming is on/i);
     const fullNote = screen.getByText(/what it tracks when trimming is off/i);
-    expect(
-      trimmedNote.textContent,
-      'the explanatory note must carry no digits either — the row above already shows this total, formatted'
-    ).not.toMatch(/\d/);
-    expect(
-      fullNote.textContent,
-      'the explanatory note must carry no digits either — the row above already shows this total, formatted'
-    ).not.toMatch(/\d/);
+    expect(trimmedNote.textContent, 'no digits').not.toMatch(/\d/);
+    expect(fullNote.textContent, 'no digits').not.toMatch(/\d/);
+    expect(trimmedNote.textContent, 'the trim note must self-label').toContain('Counted by the trim');
+    expect(fullNote.textContent, 'the assembled note must self-label').toContain('Full assembled prompt');
   });
 
   it('group (no Stage C split): the single reconciliation row is also label-only, no digits', () => {
@@ -232,6 +244,69 @@ describe('PromptBreakdownView — headline reconciliation rows never duplicate t
     // anywhere in the rendered block.
     expect(text).not.toMatch(/(?<![\d,])4814(?![\d,])/);
     expect(text).not.toMatch(/(?<![\d,])4924(?![\d,])/);
+  });
+
+  it('Message Count mode (historyTrimmed false): no "Counted by the trim" row anywhere, and no trim-anchored note — the assembled row carries the literal-truth note instead (review round 3, R3-B/F4)', () => {
+    // KILLS: rendering the trim row/note unconditionally in solo. In Message
+    // Count mode no trim ran at all (the badge two rows down says "Trim
+    // disabled"), and chatStore sets the in-chat meter from the FULL
+    // post-Stage-C context in this mode — so a "Counted by the trim" row
+    // both contradicts the badge on the same screen and names the wrong
+    // number as the meter's.
+    const b = soloMessageCountModeWithStageC();
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    expect(screen.queryByText('Counted by the trim')).toBeNull();
+    expect(screen.queryByText(/what the in-chat meter tracks while token-aware trimming is on/i)).toBeNull();
+    const preStageCLabel = screen.getByText('Before after-history sections');
+    expect(preStageCLabel.textContent).not.toMatch(/\d/);
+    const note = screen.getByText(/what the in-chat meter tracks \(token-aware trimming is off\)/i);
+    expect(note.textContent, 'the literal-truth note must self-label against the assembled row').toContain(
+      'Full assembled prompt'
+    );
+    expect(note.textContent, 'no digits').not.toMatch(/\d/);
+  });
+
+  it('token-aware mode (historyTrimmed true): the trim row and its trim-anchored note ARE present, "Before after-history sections" is not', () => {
+    const b = soloWithStageC();
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    expect(screen.getByText('Counted by the trim')).toBeTruthy();
+    expect(screen.queryByText('Before after-history sections')).toBeNull();
+    expect(screen.getByText(/what the in-chat meter tracks while token-aware trimming is on/i)).toBeTruthy();
+  });
+
+  it('the reconciliation rows pair the CORRECT label with the CORRECT value, and the Stage-C bridge reconciles on screen (review round 3, R3-C/F8, R3-D/F9)', () => {
+    // KILLS (R3-C): swapping the two headline rows' VALUE bindings while
+    // leaving the labels in place. The block-level "both totals appear
+    // somewhere" check above cannot see this — a swap keeps both formatted
+    // strings present, just attached to the wrong label.
+    // KILLS (R3-D): deleting either Stage-C bridge row ("+ sent after the
+    // history (Stage C)" / "After-history overhead"). Nothing before this
+    // test asserted their presence, value, or that they reconcile the trim
+    // total to the assembled total — a deleted bridge row would leave the
+    // panel showing the trim total immediately followed by the assembled
+    // total with the gap between them accounted for by nothing on screen.
+    const b = soloWithBigTotals();
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+
+    const cell = (label: string): number => {
+      const row = screen.getByText(label).closest('div');
+      expect(row, `no row found for "${label}"`).toBeTruthy();
+      return Number(row!.textContent!.slice(label.length).replace(/,/g, ''));
+    };
+
+    const trimValue = cell('Counted by the trim');
+    const stageCValue = cell('+ sent after the history (Stage C)');
+    const overheadValue = cell('After-history overhead');
+    const assembledValue = cell('Full assembled prompt');
+
+    expect(trimValue, '"Counted by the trim" must show the trim total').toBe(4814);
+    expect(assembledValue, '"Full assembled prompt" must show the assembled total').toBe(4924);
+    expect(stageCValue).toBe(110);
+    expect(overheadValue).toBe(4);
+    expect(
+      trimValue + stageCValue,
+      'trimTotal + stageC should equal assembledTotal, reconciled on screen'
+    ).toBe(assembledValue);
   });
 });
 
@@ -317,15 +392,33 @@ describe('PromptBreakdownSheet — ownership', () => {
 
   it('null slot: nothing has ever been published this session (F5 — a distinct cause from "moved on")', () => {
     // KILLS a single collapsed copy string: the null-slot case never had
-    // "a newer message, swipe, or group speaker" replace anything — there was
-    // simply no breakdown this session (e.g. right after a reload, since
-    // lastPromptBreakdown is deliberately not persisted). Wording it as a
-    // replacement event misdiagnoses the cause, exactly as UsagePage's own
-    // null-state copy ("No prompt assembled yet this session…") gets right.
+    // "a newer message, swipe, group speaker, or impersonation draft" replace
+    // anything — there was simply no breakdown this session (e.g. right
+    // after a reload, since lastPromptBreakdown is deliberately not
+    // persisted). Wording it as a replacement event misdiagnoses the cause,
+    // exactly as UsagePage's own null-state copy ("No prompt assembled yet
+    // this session…") gets right.
     useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
     render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
     expect(screen.getByText(/no prompt assembled yet this session/i)).toBeTruthy();
     expect(screen.queryByText(/no longer available/)).toBeNull();
     expect(screen.queryByText(/replaced it/)).toBeNull();
+  });
+
+  it('not-owned copy names all FOUR causes that clear the tag, including impersonate (review round 3, R3-E/F6)', () => {
+    // KILLS a copy regression back to the three-cause string: impersonate
+    // (chatStore.ts) publishes its own breakdown with no message to tag,
+    // clearing the slot's ownership with no newer message, swipe, or group
+    // speaker involved — the copy must not claim a cause that did not
+    // happen.
+    const b = soloWithStageC();
+    useGenerationStore.setState({
+      lastPromptBreakdown: b,
+      lastPromptBreakdownTag: { messageId: 'msg-2', swipeIndex: 0 },
+    });
+    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
+    expect(
+      screen.getByText(/a newer message, swipe, group speaker, or impersonation draft replaced it/)
+    ).toBeTruthy();
   });
 });
