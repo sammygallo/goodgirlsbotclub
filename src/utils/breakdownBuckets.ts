@@ -391,11 +391,25 @@ function historyBadge(
     // Review round 4, R4-B/F3: "Trim disabled" alone implied nothing was
     // ever cut — but Message Count mode pre-windows history to a fixed
     // count BEFORE the (skipped) trim would have run, and that window can
-    // silently drop plenty. Name the window and the drop count whenever
-    // there is one; keep the old (still true, still the common case —
-    // "the window covers the whole chat") wording when there is not.
+    // silently drop plenty. Name the drop whenever there is one; keep the
+    // old (still true, still the common case — "the window covers the
+    // whole chat") wording when there is not.
+    //
+    // Review round 5, R5-A/F1/F2/F9: round 4's first wording ("last N
+    // messages kept") was itself wrong — `messageWindowSize` is the RAW
+    // window setting applied to `visibleMessages` BEFORE the isSystem
+    // filter (chatStore.ts), not a count of what was actually kept, and a
+    // second history-reducing mechanism (summary compaction) can drop
+    // still more without ever touching `windowSkew`. This module cannot
+    // know the true kept count from `flags` alone — PM decision: report
+    // only what was actually MEASURED (the window's own drop,
+    // `droppedByMessageWindow`) and the mechanism (`messageWindowSize`),
+    // never a derived "kept" claim. The real kept count is what the
+    // drill-down rows already show, one section down, and any
+    // compaction-covered turns are disclosed by the Summary slice, not
+    // this badge.
     if (messageWindowSize !== null && droppedByMessageWindow > 0) {
-      return `Trim disabled — last ${messageWindowSize} messages kept (${droppedByMessageWindow} older dropped)`;
+      return `Trim disabled (Message Count mode) — ${droppedByMessageWindow} older message(s) beyond the ${messageWindowSize}-message window`;
     }
     return 'Trim disabled (Message Count mode)';
   }
