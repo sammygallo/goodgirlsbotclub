@@ -126,11 +126,19 @@ const IVY = mkChar({
   description: 'A quiet archivist who never throws anything away.',
 });
 
-function arrangeSolo(): ChatMessage[] {
+/**
+ * `aiMessageOverride` lets a row put the AI message at a NONZERO swipe —
+ * every field this function's default sets (`mkMsg`'s `swipeId: 0`,
+ * `swipes: [content]`) is otherwise the fixture continueMessage's coverage
+ * gap depends on (review round 2, R2-A/F1/F5/F6/F8): without it, every row
+ * in this file exercises a swipe-0 message, which cannot distinguish
+ * "read the live swipeId" from "hardcode 0".
+ */
+function arrangeSolo(aiMessageOverride: Partial<ChatMessage> = {}): ChatMessage[] {
   resetStores();
   const messages = [
     mkMsg('u1', 'Hello?'),
-    mkMsg('a1', 'Hi there.', { isUser: false, name: 'Ivy' }),
+    mkMsg('a1', 'Hi there.', { isUser: false, name: 'Ivy', ...aiMessageOverride }),
   ];
   useCharacterStore.setState({ selectedCharacter: IVY });
   useChatHistoryRagStore.setState({ enabled: false });
@@ -184,13 +192,16 @@ describe('tagLastBreakdownMessage is wired at every solo generation call site', 
   it('continueMessage tags the last AI message at its CURRENT (unchanged) swipe index', async () => {
     // KILLS: deleting the tag call in continueMessage. Unlike swipeRight,
     // continue EXTENDS the swipe already on screen rather than creating a new
-    // one, so the correct index is the message's existing `swipeId` — a fix
-    // that always tags swipe 0 (copy-pasted from a sibling call site) would
-    // pass this row too, since the fixture's swipeId already is 0, so the
-    // next row (regenerate-after-continue) is what actually kills that
-    // mutant — kept in mind here rather than duplicated as a sixth test,
-    // since chatStore.callSites.test.ts already owns "which call sites
-    // exist" coverage and this file's job is the tag alone.
+    // one, so the correct index is the message's existing `swipeId`.
+    //
+    // This row alone does NOT kill a fix that always tags swipe 0
+    // (copy-pasted from a sibling call site) — the fixture's swipeId is 0
+    // here, so `swipeIndex: lastAi.swipeId` degenerates to `swipeIndex: 0`
+    // and cannot distinguish "read the live swipeId" from "hardcode 0". The
+    // NEXT row below (review round 2, R2-A/F1/F5/F6/F8) is what actually
+    // kills that mutant — round 1 claimed that coverage existed here and it
+    // did not; this comment used to point at a "regenerate-after-continue"
+    // row that was never written.
     const messages = arrangeSolo();
     stubEdges();
     const lastAi = messages[messages.length - 1];
@@ -198,6 +209,34 @@ describe('tagLastBreakdownMessage is wired at every solo generation call site', 
     await useChatStore.getState().continueMessage(IVY);
 
     expect(tag()).toEqual({ messageId: lastAi.id, swipeIndex: lastAi.swipeId });
+  });
+
+  it('continueMessage tags the CURRENT swipe index even when it is NOT 0 — the one live-expression coordinate among the five call sites (review round 2, R2-A/F1/F5/F6/F8)', async () => {
+    // KILLS: `tagLastBreakdownMessage(breakdown, lastAiMsg.id, lastAiMsg.swipeId)`
+    // copy-pasted to a literal `0`. Every other row in this file (and the row
+    // just above) exercises a swipe-0 fixture, so this is the ONE row that
+    // can tell "the tag reads the live swipeId" apart from "the tag is
+    // always 0" — of the five call sites, continueMessage is the only one
+    // whose swipe argument is a live expression rather than a literal `0` or
+    // a length-derived constant.
+    const messages = arrangeSolo({
+      content: 'Hello again.',
+      swipes: ['Hi there.', 'Hello again.'],
+      swipeId: 1,
+    });
+    stubEdges();
+    const lastAi = messages[messages.length - 1];
+    expect(lastAi.swipeId, 'sanity: the fixture is at a NONZERO swipe').toBe(1);
+
+    await useChatStore.getState().continueMessage(IVY);
+
+    expect(tag()).toEqual({ messageId: lastAi.id, swipeIndex: 1 });
+    // Read/write coordinate parity: continueMessage extends the swipe in
+    // place and never changes swipeId, so the tag's swipe index must still
+    // equal the message's CURRENT swipe id after the call — the same
+    // coordinate ChatMessage reads to build the sheet's swipeIndex prop.
+    const after = useChatStore.getState().messages.find((m) => m.id === lastAi.id)!;
+    expect(after.swipeId).toBe(1);
   });
 
   it('editMessageAndRegenerate tags the newly appended AI message at swipe 0', async () => {
