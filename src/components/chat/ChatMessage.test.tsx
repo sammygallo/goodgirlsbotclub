@@ -87,6 +87,12 @@ function openChip() {
 
 describe('ChatMessage — the read half of the swipe-ownership wire (review round 2)', () => {
   it('renders OWNED content when the message is displayed at the swipe the tag names', () => {
+    // KILLS a hardcoded `swipeIndex={0}`: this row renders at swipe 1 (which
+    // matches the tag), so correct code (`swipeId ?? 0` = 1) reports owned
+    // while the {0} mutant reports not-owned — the two implementations
+    // disagree here. (Review round 3, R3-F/F3: verified by mutation that
+    // this is one of the two rows that actually catches {0}; the row below
+    // does not — see its comment.)
     useGenerationStore.setState({
       lastPromptBreakdown: soloBreakdown(),
       lastPromptBreakdownTag: { messageId: 'm1', swipeIndex: 1 },
@@ -98,9 +104,17 @@ describe('ChatMessage — the read half of the swipe-ownership wire (review roun
   });
 
   it('renders NOT-OWNED copy when the message is displayed at a DIFFERENT swipe than the tag names', () => {
-    // KILLS a hardcoded `swipeIndex={0}` (or `swipes.length - 1`, or any
-    // wire that isn't the live swipeId): the tag names swipe 1, but this
-    // message is rendered at swipe 0 — ownership must fail.
+    // KILLS `swipeIndex={swipes.length - 1}` (a wire that reads the LAST
+    // swipe rather than the CURRENT one): swipes.length-1 here is 1, which
+    // matches the tag and would wrongly report owned, while correct code
+    // (swipeId 0) correctly reports not-owned.
+    //
+    // Does NOT kill a hardcoded `swipeIndex={0}` (review round 3, R3-F/F3 —
+    // mutation-verified: this row stays green under that mutant). This row
+    // renders at swipe 0 and expects not-owned; a {0} mutant ALSO reports
+    // swipeIndex 0 here, so both correct code and the mutant produce the
+    // same (not-owned) outcome and this row cannot tell them apart. The rows
+    // immediately above and below this one are what actually kill {0}.
     useGenerationStore.setState({
       lastPromptBreakdown: soloBreakdown(),
       lastPromptBreakdownTag: { messageId: 'm1', swipeIndex: 1 },
@@ -112,6 +126,11 @@ describe('ChatMessage — the read half of the swipe-ownership wire (review roun
   });
 
   it('the SAME message swings from not-owned to owned purely by which swipe is on screen', () => {
+    // KILLS a hardcoded `swipeIndex={0}` (review round 3, R3-F/F3 — the
+    // second of the two rows that actually catch it, per the note on the row
+    // above): the rerender below moves to swipe 1, which matches the tag —
+    // correct code reports owned, the {0} mutant still reports not-owned.
+    //
     // The inverse framing of the two rows above, in one test: proves the
     // wire tracks the CURRENT swipe rather than being permanently
     // right/wrong for a given message id. Re-renders at swipe 1 (matching
