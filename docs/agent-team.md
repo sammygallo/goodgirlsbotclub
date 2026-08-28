@@ -196,6 +196,7 @@ Task for that session: review §9 decisions with Sammy → build the §6 manifes
 | D2 | Merge authority | **Strictly you, every PR** (matches the build-next-issue covenant) | Pre-authorize team merge for S-size docs/test-only stories to cut your load — can add later once the team has a track record |
 | D3 | Planner | Built-in Plan agent, prompt-loaded with house context | Custom `story-planner.md` now (only if v1 plans miss house patterns) |
 | D4 | Kanban home | Roadmap §7 table, PM-maintained | GitHub Projects (more tooling, better at >2 concurrent stories) |
+| D4a | Visual mirror of D4 (added 2026-08-27) | A published Artifact board, source at `.claude/skills/run-story/board/ggbc-board.html`, refreshed by the PM at PLAN/HUMAN GATE/CLOSE (`run-story` §3) — §7 stays the source of truth; the board is read-only convenience for Sammy | None yet in use |
 | D5 | Autonomous cadence | v1: you invoke `/run-story` per story | Later: scheduled PM loop drains Ready-for-Dev under the WIP limit — revisit after the pilots |
 
 ---

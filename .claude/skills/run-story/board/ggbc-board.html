@@ -1,0 +1,509 @@
+<!--
+  GGBC roadmap board — visual mirror of docs/product-roadmap-10.2-12.md §7 Kanban.
+  PM-maintained by the run-story pipeline (see .claude/skills/run-story/SKILL.md,
+  "Board artifact" section). Roadmap §7's table is the source of truth (charter
+  D4); this file is a rendering of it, kept in sync at the same points the PM
+  already touches §7 (Definition-of-Ready / PLAN, HUMAN GATE, CLOSE).
+
+  PUBLISHED ARTIFACT URL (update in place at this URL — do not create a new
+  artifact each run, or Sammy accumulates duplicate links):
+  https://claude.ai/code/artifact/df9da1f5-275c-4ae4-9231-4e311048522b
+-->
+<title>GGBC Roadmap Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@500;600&display=swap">
+
+<style>
+  :root {
+    --ground:   #F4F2F6;
+    --surface:  #FFFFFF;
+    --surface-2:#FAF8FB;
+    --ink:      #1C1A20;
+    --ink-2:    #4A4453;
+    --muted:    #6E6779;
+    --line:     #E3DFE8;
+    --line-2:   #D2CCD9;
+    --accent:   #5D4266;
+    --accent-2: #8A6E93;
+    --accent-wash:#EFE9F1;
+
+    --ok:       #3E7A55;
+    --ok-wash:  #E4F0E8;
+    --warn:     #8A6524;
+    --warn-wash:#F5EDDD;
+    --crit:     #A34459;
+    --crit-wash:#F7E7EA;
+
+    --shadow: 0 1px 2px rgba(28,26,32,.06), 0 4px 14px rgba(28,26,32,.05);
+    --radius: 7px;
+    --col-w: 268px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:   #141218;
+      --surface:  #1D1A22;
+      --surface-2:#232029;
+      --ink:      #E9E5EE;
+      --ink-2:    #C3BCCD;
+      --muted:    #948CA0;
+      --line:     #2C2833;
+      --line-2:   #3A3545;
+      --accent:   #B18FBA;
+      --accent-2: #8E7697;
+      --accent-wash:#2A2333;
+
+      --ok:       #6FB88A;
+      --ok-wash:  #1C2B22;
+      --warn:     #D4A855;
+      --warn-wash:#2E2618;
+      --crit:     #E08A9B;
+      --crit-wash:#2F1F24;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:   #141218;
+    --surface:  #1D1A22;
+    --surface-2:#232029;
+    --ink:      #E9E5EE;
+    --ink-2:    #C3BCCD;
+    --muted:    #948CA0;
+    --line:     #2C2833;
+    --line-2:   #3A3545;
+    --accent:   #B18FBA;
+    --accent-2: #8E7697;
+    --accent-wash:#2A2333;
+
+    --ok:       #6FB88A;
+    --ok-wash:  #1C2B22;
+    --warn:     #D4A855;
+    --warn-wash:#2E2618;
+    --crit:     #E08A9B;
+    --crit-wash:#2F1F24;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 40px 28px 72px; }
+
+  /* ---------- masthead ---------- */
+  .mast { display: flex; flex-wrap: wrap; gap: 24px 40px; align-items: flex-end;
+          justify-content: space-between; padding-bottom: 22px;
+          border-bottom: 2px solid var(--ink); }
+  .mast h1 { font-family: "IBM Plex Serif", Georgia, serif; font-weight: 600;
+             font-size: clamp(30px, 4.2vw, 44px); line-height: 1.05; margin: 0 0 8px;
+             letter-spacing: -.02em; text-wrap: balance; }
+  .mast p { margin: 0; color: var(--muted); max-width: 62ch; font-size: 14.5px; }
+  .stamp { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px;
+           color: var(--muted); text-align: right; line-height: 1.7; white-space: nowrap; }
+  .stamp b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- summary rail ---------- */
+  .rail { display: grid; gap: 10px; margin: 26px 0 6px;
+          grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); }
+  .tile { background: var(--surface); border: 1px solid var(--line);
+          border-radius: var(--radius); padding: 13px 14px 12px; box-shadow: var(--shadow); }
+  .tile .n { font-family: "IBM Plex Mono", monospace; font-size: 27px; font-weight: 600;
+             line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .tile .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em;
+             color: var(--muted); margin-top: 7px; font-weight: 600; }
+  .tile.is-live .n  { color: var(--accent); }
+  .tile.is-ok   .n  { color: var(--ok); }
+  .tile.is-warn .n  { color: var(--warn); }
+
+  /* ---------- notices ---------- */
+  .notices { display: grid; gap: 10px; margin: 20px 0 8px;
+             grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .note { border: 1px solid var(--line); border-left: 3px solid var(--accent-2);
+          background: var(--surface); border-radius: var(--radius); padding: 12px 15px;
+          font-size: 13.5px; color: var(--ink-2); }
+  .note.ok   { border-left-color: var(--ok); }
+  .note.crit { border-left-color: var(--crit); }
+  .note h3 { margin: 0 0 4px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+             color: var(--muted); font-weight: 600; }
+  .note code { font-family: "IBM Plex Mono", monospace; font-size: .88em;
+               background: var(--surface-2); padding: 1px 4px; border-radius: 3px;
+               border: 1px solid var(--line); }
+
+  /* ---------- filter ---------- */
+  .filterbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+               margin: 30px 0 14px; }
+  .filterbar .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em;
+                    color: var(--muted); font-weight: 600; margin-right: 4px; }
+  .fchip { font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 500;
+           padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line-2);
+           background: var(--surface); color: var(--ink-2); cursor: pointer;
+           transition: background .12s, color .12s, border-color .12s; }
+  .fchip:hover { border-color: var(--accent-2); color: var(--ink); }
+  .fchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .fchip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent);
+                                color: var(--surface); }
+  :root[data-theme="dark"] .fchip[aria-pressed="true"],
+  :root:not([data-theme="light"]) .fchip[aria-pressed="true"] { color: #17141C; }
+
+  /* ---------- board ---------- */
+  .board { display: grid; grid-auto-flow: column; grid-auto-columns: var(--col-w);
+           gap: 14px; overflow-x: auto; padding: 4px 4px 18px; align-items: start; }
+  .col { background: var(--surface-2); border: 1px solid var(--line);
+         border-radius: var(--radius); padding: 12px 11px 14px; }
+  .colhead { display: flex; align-items: baseline; justify-content: space-between;
+             gap: 8px; margin-bottom: 11px; padding-bottom: 9px;
+             border-bottom: 1px solid var(--line); }
+  .colhead h2 { margin: 0; font-size: 11.5px; text-transform: uppercase;
+                letter-spacing: .1em; font-weight: 700; color: var(--ink); }
+  .colhead .ct { font-family: "IBM Plex Mono", monospace; font-size: 12px;
+                 color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stack { display: flex; flex-direction: column; gap: 8px; }
+
+  .card { background: var(--surface); border: 1px solid var(--line);
+          border-left: 3px solid var(--line-2); border-radius: 5px;
+          padding: 10px 11px 11px; box-shadow: var(--shadow);
+          transition: opacity .15s; }
+  .card .id { font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 600;
+              color: var(--accent); letter-spacing: .01em; }
+  .card .t { font-size: 13.5px; line-height: 1.35; margin-top: 3px; color: var(--ink);
+             text-wrap: pretty; }
+  .card .m { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.45; }
+  .card.s-live { border-left-color: var(--accent); background: var(--accent-wash); }
+  .card.s-ok   { border-left-color: var(--ok); }
+  .card.s-warn { border-left-color: var(--warn); }
+  .card.s-crit { border-left-color: var(--crit); }
+  .card.dim { opacity: .22; }
+
+  .gates { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+  .gate { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; font-weight: 500;
+          padding: 2px 6px; border-radius: 3px; background: var(--warn-wash);
+          color: var(--warn); border: 1px solid transparent; white-space: nowrap; }
+  .gate.free { background: var(--ok-wash); color: var(--ok); }
+  .gate.hot  { background: var(--crit-wash); color: var(--crit); }
+
+  .tag { display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 10px;
+         font-weight: 600; letter-spacing: .04em; padding: 1px 5px; border-radius: 3px;
+         background: var(--surface-2); border: 1px solid var(--line-2);
+         color: var(--muted); margin-left: 6px; vertical-align: 1px; }
+
+  /* ---------- focus panel ---------- */
+  .focus { margin-top: 34px; background: var(--surface); border: 1px solid var(--line);
+           border-top: 3px solid var(--accent); border-radius: var(--radius);
+           padding: 22px 24px; box-shadow: var(--shadow); }
+  .focus h2 { font-family: "IBM Plex Serif", Georgia, serif; font-size: 21px; font-weight: 600;
+              margin: 0 0 3px; letter-spacing: -.01em; }
+  .focus .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
+  .steps { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+           margin-bottom: 20px; }
+  .step { border: 1px solid var(--line); border-radius: 5px; padding: 9px 11px;
+          background: var(--surface-2); }
+  .step .sn { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--muted);
+              letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+  .step .sv { font-size: 13px; margin-top: 3px; color: var(--ink); line-height: 1.3; }
+  .step.done { background: var(--ok-wash); border-color: transparent; }
+  .step.done .sv, .step.done .sn { color: var(--ok); }
+  .step.now  { background: var(--accent-wash); border-color: transparent; }
+  .step.now .sv, .step.now .sn { color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .tscroll { overflow-x: auto; }
+  th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em;
+       color: var(--muted); font-weight: 600; padding: 0 12px 7px 0;
+       border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top;
+       color: var(--ink-2); }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums;
+           white-space: nowrap; color: var(--ink); }
+  .up { color: var(--ok); font-weight: 600; }
+
+  /* ---------- lists ---------- */
+  .section { margin-top: 34px; }
+  .section > h2 { font-family: "IBM Plex Serif", Georgia, serif; font-size: 19px;
+                  font-weight: 600; margin: 0 0 3px; letter-spacing: -.01em; }
+  .section > .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 14px; max-width: 74ch; }
+  .issues { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .issue { background: var(--surface); border: 1px solid var(--line); border-radius: 5px;
+           padding: 10px 12px; font-size: 13px; color: var(--ink-2); }
+  .issue .n { font-family: "IBM Plex Mono", monospace; font-weight: 600; color: var(--accent);
+              font-size: 12px; }
+  .issue.new { border-left: 3px solid var(--crit); }
+
+  footer { margin-top: 42px; padding-top: 18px; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap;
+           gap: 6px 20px; justify-content: space-between; }
+  footer code { font-family: "IBM Plex Mono", monospace; }
+
+  @media (max-width: 720px) {
+    .wrap { padding: 26px 16px 56px; }
+    .board { grid-auto-flow: row; grid-auto-columns: auto; overflow-x: visible; }
+    .stamp { text-align: left; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div>
+      <h1>GGBC Roadmap Board</h1>
+      <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
+    </div>
+    <div class="stamp">
+      <b>27 Aug 2026</b><br>
+      main <b>0c90096e</b><br>
+      active <b>—</b>
+    </div>
+  </header>
+
+  <div class="rail">
+    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
+    <div class="tile"><div class="n">3</div><div class="k">Ready for dev</div></div>
+    <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
+    <div class="tile is-warn"><div class="n">19</div><div class="k">Gated</div></div>
+    <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
+    <div class="tile is-ok"><div class="n">5</div><div class="k">Deployed</div></div>
+    <div class="tile is-warn"><div class="n">11</div><div class="k">Open issues</div></div>
+  </div>
+
+  <div class="notices">
+    <div class="note ok">
+      <h3>Ordering gate — cleared</h3>
+      E2-S2's golden fixtures had to be seeded after <b>E4-S0</b> and <b>E9-S6</b>, both of which changed emitted prompt text. Both shipped 26 Aug. Goldens may be cut from <code>31a902d7</code> or later.
+    </div>
+    <div class="note crit">
+      <h3>Critical path</h3>
+      The <b>E8 Arch v2</b> chain — it holds the only decision gate (GO / ITERATE) and the largest build. Nothing in E8-S3→S6 unlocks until that gate resolves.
+    </div>
+    <div class="note">
+      <h3>Two cards were stale, not open</h3>
+      <b>E9-S1</b> and <b>E9-S4</b> both sat in the backlog for work that had already shipped — E9-S1's deliverable merged in April. Both closed as bookkeeping. A third, <b>E9-S3</b>, was re-scoped rather than closed.
+    </div>
+  </div>
+
+  <div class="filterbar" role="group" aria-label="Filter board by epic">
+    <span class="lbl">Epic</span>
+    <button class="fchip" aria-pressed="false" data-epic="E1">E1 Compliance</button>
+    <button class="fchip" aria-pressed="false" data-epic="E2">E2 Transparency</button>
+    <button class="fchip" aria-pressed="false" data-epic="E3">E3 Cascade</button>
+    <button class="fchip" aria-pressed="false" data-epic="E4">E4 Lore</button>
+    <button class="fchip" aria-pressed="false" data-epic="E5">E5 Optimization</button>
+    <button class="fchip" aria-pressed="false" data-epic="E6">E6 UI</button>
+    <button class="fchip" aria-pressed="false" data-epic="E7">E7 Wizard</button>
+    <button class="fchip" aria-pressed="false" data-epic="E8">E8 Arch v2</button>
+    <button class="fchip" aria-pressed="false" data-epic="E9">E9 Quick wins</button>
+  </div>
+
+  <div class="board" id="board">
+
+    <section class="col">
+      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="stack">
+        <article class="card s-live" data-epic="E2">
+          <div class="id">E2-S2</div>
+          <div class="t">Token breakdown visualization</div>
+          <div class="m">Tasks 0–2 + 1b deployed (PRs #479 #481 #482 + backend #81): instrumentation live, recall boundary from the real build, #457 closed. Remaining: 3–5 (panel, blind spots, labels).</div>
+          <div class="gates"><span class="gate free">gates cleared</span><span class="gate">L build + L verify</span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Ready for dev</h2><span class="ct">3</span></div>
+      <div class="stack">
+        <article class="card" data-epic="E2">
+          <div class="id">E2-S2a</div>
+          <div class="t">Activation reason in the server DTO</div>
+          <div class="m">Re-scoped 26 Aug — the engine half already exists; only outbound DTO plumbing remains.</div>
+          <div class="gates"><span class="gate free">ungated</span></div>
+        </article>
+        <article class="card" data-epic="E9">
+          <div class="id">E9-S7</div>
+          <div class="t">Surface recall's <code>no_key</code> reason</div>
+          <div class="m">#455 · client discards the field, so "no key" looks like "no matches".</div>
+          <div class="gates"><span class="gate hot">collides w/ E2-S2 t1b</span></div>
+        </article>
+        <article class="card" data-epic="E9">
+          <div class="id">E9-S9</div>
+          <div class="t">Group recall identity is positional</div>
+          <div class="m">#458 · reordering members orphans the chat's embeddings.</div>
+          <div class="gates"><span class="gate free">ungated</span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Design</h2><span class="ct">4</span></div>
+      <div class="stack">
+        <article class="card s-crit" data-epic="E8">
+          <div class="id">E8-S1</div>
+          <div class="t">Arch v2 — research + methodology pick</div>
+          <div class="m">Critical path. Everything in E8 waits on this.</div>
+        </article>
+        <article class="card" data-epic="E6">
+          <div class="id">E6-S1</div>
+          <div class="t">UI workshop — hero, sidebar, chat</div>
+          <div class="m">Approved mockups gate all of E6-S2/S3/S4.</div>
+        </article>
+        <article class="card" data-epic="E3">
+          <div class="id">E3-S1</div>
+          <div class="t">Cascade semantics design</div>
+          <div class="m">Gates E3-S2/S3, and E7-S2 builds on its override rails.</div>
+        </article>
+        <article class="card" data-epic="E1">
+          <div class="id">E1-S2</div>
+          <div class="t">Phase B output-gate design</div>
+          <div class="m">"Not yet" is an acceptable outcome — the red line holds either way.</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Gated</h2><span class="ct">19</span></div>
+      <div class="stack">
+        <article class="card s-warn" data-epic="E2"><div class="id">E2-S3</div><div class="t">Show-prompt toggle</div><div class="gates"><span class="gate">← E2-S2</span></div></article>
+        <article class="card s-warn" data-epic="E2"><div class="id">E2-S4</div><div class="t">Insights data API</div><div class="gates"><span class="gate">← E2-S2</span></div></article>
+        <article class="card s-warn" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry id crosswalk</div><div class="m">Ungated, scheduled 10.3 — hard-blocks E5-S1.</div></article>
+        <article class="card s-warn" data-epic="E3"><div class="id">E3-S2 · S3</div><div class="t">Defaults clarity · character overrides</div><div class="gates"><span class="gate">← E3-S1</span></div></article>
+        <article class="card s-warn" data-epic="E3"><div class="id">E3-S4</div><div class="t">Chat overrides</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate free">E4-S0 ✓</span></div></article>
+        <article class="card s-warn" data-epic="E4"><div class="id">E4-S1</div><div class="t">Memory pane</div><div class="gates"><span class="gate free">E4-S0 ✓</span></div></article>
+        <article class="card s-warn" data-epic="E4"><div class="id">E4-S2</div><div class="t">Lore scope + explainer</div><div class="gates"><span class="gate">← E2-S2</span><span class="gate">← E4-S1</span></div></article>
+        <article class="card s-warn" data-epic="E5"><div class="id">E5-S1</div><div class="t">Optimization diagnostics</div><div class="gates"><span class="gate">← E2-S4</span><span class="gate">← E2-S5</span><span class="gate free">E4-S0 ✓</span></div></article>
+        <article class="card s-warn" data-epic="E5"><div class="id">E5-S2</div><div class="t">Suggestions + batch apply</div><div class="gates"><span class="gate">← E5-S1</span></div></article>
+        <article class="card s-warn" data-epic="E6"><div class="id">E6-S2 · S3 · S4</div><div class="t">Hero · sidebar · chat layout</div><div class="gates"><span class="gate">← E6-S1</span></div></article>
+        <article class="card s-warn" data-epic="E7"><div class="id">E7-S1</div><div class="t">Wizard P1 — Creator Notes editor</div><div class="m">Scheduled 11.1, independent of Arch v2.</div></article>
+        <article class="card s-warn" data-epic="E7"><div class="id">E7-S2</div><div class="t">Wizard P2 — advanced settings</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate hot">← E8 gate</span></div></article>
+        <article class="card s-warn" data-epic="E8"><div class="id">E8-S2</div><div class="t">Probe battery + blind scoring</div><div class="gates"><span class="gate">← E8-S1</span></div></article>
+        <article class="card s-crit" data-epic="E8"><div class="id">E8-S3 → S6</div><div class="t">Schema · editor · migration · compiler</div><div class="gates"><span class="gate hot">← GO gate</span></div></article>
+        <article class="card s-warn" data-epic="E1"><div class="id">E1-S3</div><div class="t">Phase B impl (NSFW Scene)</div><div class="gates"><span class="gate">← E1-S2</span></div></article>
+        <article class="card s-warn" data-epic="E1"><div class="id">E1-S4</div><div class="t">Permission-widening decision</div><div class="gates"><span class="gate free">E1-S1 ✓</span><span class="gate">← E1-S2</span></div></article>
+        <article class="card s-warn" data-epic="E9"><div class="id">E9-S8</div><div class="t">Doc/comment hygiene sweep</div><div class="m">#456 — docs-only now that #458 is split out.</div></article>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Unscheduled · 12+</h2><span class="ct">7</span></div>
+      <div class="stack">
+        <article class="card" data-epic="E3"><div class="id">E3-S5</div><div class="t">Cascade polish</div></article>
+        <article class="card" data-epic="E4"><div class="id">E4-S3</div><div class="t">Lore authoring tools</div></article>
+        <article class="card" data-epic="E5"><div class="id">E5-S3</div><div class="t">Replay rig</div></article>
+        <article class="card" data-epic="E7"><div class="id">E7-S3</div><div class="t">Wizard P3</div></article>
+        <article class="card" data-epic="E8"><div class="id">E8-P4</div><div class="t">Arch v2 phase 4</div></article>
+        <article class="card" data-epic="E9">
+          <div class="id">E9-S3</div><div class="t">Tokenizer profiles + AI Horde</div>
+          <div class="m">Re-scoped 26 Aug — the providers shipped in April; the real work is <code>profileForProvider</code> cases.</div>
+        </article>
+        <article class="card" data-epic="E9"><div class="id">E9-S5</div><div class="t">Selfies C3 — Replicate alt backend</div><div class="m">Residual only; management half shipped.</div></article>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Deployed</h2><span class="ct">5</span></div>
+      <div class="stack">
+        <article class="card s-ok" data-epic="E4"><div class="id">E4-S0</div><div class="t">Client activation-engine repair</div><div class="m">26 Aug · #461 + backend #79 · 4 divergences closed, pinned by a 14-vector fixture.</div></article>
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S6</div><div class="t">Group macro substitution + blank-turn guard</div><div class="m">26 Aug · #465 · 4 review passes, 115 agents, 10 defects fixed, 6 filed.</div></article>
+        <article class="card s-ok" data-epic="E2"><div class="id">E2-S1</div><div class="t">RAG + Lorebook injection audit</div><div class="m">24 Aug · #449 · §8 taxonomy is now E2-S2's spec.</div></article>
+        <article class="card s-ok" data-epic="E1"><div class="id">E1-S1</div><div class="t">LP / scene-video provenance gate</div><div class="m">24 Aug · #446 · pipeline pilot 1.</div></article>
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S5</div><div class="t">Selfies C3 management</div><div class="m">24 Aug · shipped externally.</div></article>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Shipped pre-roadmap</h2><span class="ct">5</span></div>
+      <div class="stack">
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S1</div><div class="t">Phase 5.3 swap-vs-join card handling</div><div class="m">PR #59, April. Board said Ready for Dev for 4½ months.</div></article>
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S4</div><div class="t">Text-completion API</div><div class="m">Same class — stale backlog row, not work.</div></article>
+        <article class="card s-ok"><div class="id">10.1</div><div class="t">Local models</div><div class="m">#58, April.</div></article>
+        <article class="card s-ok"><div class="id">6.1</div><div class="t">Theme customization</div><div class="m">May.</div></article>
+        <article class="card s-ok" data-epic="E1"><div class="id">Selfies</div><div class="t">0–2.5 · Scene A · Studio C1/C2 · provenance</div><div class="m">23 Aug.</div></article>
+      </div>
+    </section>
+
+  </div>
+
+  <section class="focus">
+    <h2>E2-S2 — the one card in flight</h2>
+    <p class="sub">Token breakdown visualization. Running as the PLAN-leg pilot for the agent-team pipeline — the one stage with no artifact proving it had ever run.</p>
+
+    <div class="steps">
+      <div class="step done"><div class="sn">Task 0</div><div class="sv">Merged — PR #479</div></div>
+      <div class="step done"><div class="sn">Tasks 1+2</div><div class="sv">Merged — PR #481</div></div>
+      <div class="step done"><div class="sn">Task 1b</div><div class="sv">Deployed — closes #457</div></div>
+      <div class="step now"><div class="sn">Tasks 3–5</div><div class="sv">Panel UI · blind spots · labels</div></div>
+    </div>
+
+    <div class="tscroll">
+      <table>
+        <thead>
+          <tr><th>Harness</th><th>Round 1</th><th>Final</th><th>What changed</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Golden tests</td><td class="num">72</td><td class="num">142</td><td>8 fixtures added; a third golden per fixture pins fired-WI telemetry</td></tr>
+          <tr><td>Full suite</td><td class="num">1720</td><td class="num">1790</td><td>No production behaviour touched</td></tr>
+          <tr><td>Mutations caught</td><td class="num">14 / 70</td><td class="num up">70 / 70</td><td>Measured on both rounds — round-2 review then proved 18 further gaps in the harness’s <i>claims</i>; round 3 closes those</td></tr>
+          <tr><td>Production diff</td><td class="num">1 word</td><td class="num">1 word</td><td><code>export</code> on <code>chatStore.ts:966</code> — unchanged</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Filed, no story card</h2>
+    <p class="sub">Ten open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; three are new from this week; one is a tracking issue spanning nine independent gaps.</p>
+    <div class="issues">
+      <div class="issue new"><span class="n">#476</span> — Persona set to "In system prompt" is silently dropped from solo prompts. Found by E2-S2's own fixtures.</div>
+      <div class="issue new"><span class="n">#477</span> — Character's note rendering to whitespace ships a blank system message at every depth except 0.</div>
+      <div class="issue new"><span class="n">#478</span> — WI entries in disabled sections still execute their macros, including persisted setvar writes.</div>
+      <div class="issue"><span class="n">#454</span> — Group feature-parity debt. Nine gaps; each a product decision, not a bug queue.</div>
+      <div class="issue"><span class="n">#457</span> — <s>Recall-boundary pair</s> — CLOSED by PR #482, deployed 28 Aug.</div>
+      <div class="issue"><span class="n">#466 · #467 · #470</span> — Change emitted group text, so they oblige a golden re-cut when fixed.</div>
+      <div class="issue"><span class="n">#468 · #469 · #471</span> — Zero-turn prompt · image exemption vs fold · unguarded storage write.</div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 27 Aug 2026.</span>
+    <span>Counts exclude cards closed as already-shipped.</span>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var chips = Array.prototype.slice.call(document.querySelectorAll('.fchip'));
+    var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
+    var active = null;
+
+    function apply() {
+      cards.forEach(function (c) {
+        var hide = active && c.getAttribute('data-epic') !== active;
+        c.classList.toggle('dim', !!hide);
+      });
+      chips.forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-epic') === active));
+      });
+    }
+
+    chips.forEach(function (b) {
+      b.addEventListener('click', function () {
+        var e = b.getAttribute('data-epic');
+        active = (active === e) ? null : e;
+        apply();
+      });
+    });
+  })();
+</script>
