@@ -251,6 +251,14 @@ interface GenerationState {
    * previous session.
    */
   lastPromptBreakdown: PromptBreakdown | null;
+  /**
+   * Which message `lastPromptBreakdown` describes, so a sheet opened from a
+   * message's cost chip can tell "this is my build" from "the slot moved on
+   * without me" instead of silently showing whichever breakdown happens to
+   * be sitting there. Also not persisted, for the same reason as the
+   * breakdown itself.
+   */
+  lastPromptBreakdownMessageId: string | null;
 
   // Actions
   setSampler: (sampler: Partial<SamplerParams>) => void;
@@ -288,6 +296,15 @@ interface GenerationState {
 
   setLastTokenEstimate: (n: number) => void;
   setLastPromptBreakdown: (b: PromptBreakdown | null) => void;
+  /**
+   * Stamp `messageId` onto `lastPromptBreakdown`, but ONLY if `breakdown` is
+   * still the object sitting in the slot — an object-identity guard, not an
+   * equality one, so a concurrent turn that already replaced the slot with
+   * its OWN breakdown (group awaits `generateGroupTurn` per member; each
+   * publishes before the next starts) makes this a silent no-op instead of
+   * mis-tagging the new breakdown with the old call site's message id.
+   */
+  tagLastBreakdownMessage: (breakdown: PromptBreakdown, messageId: string) => void;
 
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
@@ -403,6 +420,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   promptOrder: mergePromptOrder(initial.promptOrder),
   lastTokenEstimate: 0,
   lastPromptBreakdown: null,
+  lastPromptBreakdownMessageId: null,
 
   setSampler: (patch) => {
     set((state) => {
@@ -750,7 +768,12 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   },
 
   setLastPromptBreakdown: (b) => {
-    set({ lastPromptBreakdown: b });
+    set({ lastPromptBreakdown: b, lastPromptBreakdownMessageId: null });
+  },
+
+  tagLastBreakdownMessage: (breakdown, messageId) => {
+    if (get().lastPromptBreakdown !== breakdown) return;
+    set({ lastPromptBreakdownMessageId: messageId });
   },
 
   resetUser: () => {
@@ -768,6 +791,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       promptOrder: mergePromptOrder(undefined),
       lastTokenEstimate: 0,
       lastPromptBreakdown: null,
+      lastPromptBreakdownMessageId: null,
     });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
