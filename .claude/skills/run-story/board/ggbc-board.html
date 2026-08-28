@@ -264,20 +264,20 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>27 Aug 2026</b><br>
-      main <b>0c90096e</b><br>
+      <b>28 Aug 2026</b><br>
+      main <b>561dc842</b><br>
       active <b>—</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
     <div class="tile"><div class="n">3</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">19</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
-    <div class="tile is-ok"><div class="n">5</div><div class="k">Deployed</div></div>
-    <div class="tile is-warn"><div class="n">11</div><div class="k">Open issues</div></div>
+    <div class="tile is-ok"><div class="n">6</div><div class="k">Deployed</div></div>
+    <div class="tile is-warn"><div class="n">10</div><div class="k">Open issues</div></div>
   </div>
 
   <div class="notices">
@@ -311,14 +311,9 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E2">
-          <div class="id">E2-S2</div>
-          <div class="t">Token breakdown visualization</div>
-          <div class="m">Tasks 0–2 + 1b deployed (PRs #479 #481 #482 + backend #81): instrumentation live, recall boundary from the real build, #457 closed. Remaining: 3–5 (panel, blind spots, labels).</div>
-          <div class="gates"><span class="gate free">gates cleared</span><span class="gate">L build + L verify</span></div>
-        </article>
+        <p style="font-size:12.5px;color:var(--muted);margin:2px 2px 0;">Nothing in flight — E2-S2 deployed 28 Aug.</p>
       </div>
     </section>
 
@@ -375,13 +370,13 @@
     <section class="col">
       <div class="colhead"><h2>Gated</h2><span class="ct">19</span></div>
       <div class="stack">
-        <article class="card s-warn" data-epic="E2"><div class="id">E2-S3</div><div class="t">Show-prompt toggle</div><div class="gates"><span class="gate">← E2-S2</span></div></article>
-        <article class="card s-warn" data-epic="E2"><div class="id">E2-S4</div><div class="t">Insights data API</div><div class="gates"><span class="gate">← E2-S2</span></div></article>
+        <article class="card s-warn" data-epic="E2"><div class="id">E2-S3</div><div class="t">Show-prompt toggle</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
+        <article class="card s-warn" data-epic="E2"><div class="id">E2-S4</div><div class="t">Insights data API</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
         <article class="card s-warn" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry id crosswalk</div><div class="m">Ungated, scheduled 10.3 — hard-blocks E5-S1.</div></article>
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S2 · S3</div><div class="t">Defaults clarity · character overrides</div><div class="gates"><span class="gate">← E3-S1</span></div></article>
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S4</div><div class="t">Chat overrides</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S1</div><div class="t">Memory pane</div><div class="gates"><span class="gate free">E4-S0 ✓</span></div></article>
-        <article class="card s-warn" data-epic="E4"><div class="id">E4-S2</div><div class="t">Lore scope + explainer</div><div class="gates"><span class="gate">← E2-S2</span><span class="gate">← E4-S1</span></div></article>
+        <article class="card s-warn" data-epic="E4"><div class="id">E4-S2</div><div class="t">Lore scope + explainer</div><div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate">← E4-S1</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S1</div><div class="t">Optimization diagnostics</div><div class="gates"><span class="gate">← E2-S4</span><span class="gate">← E2-S5</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S2</div><div class="t">Suggestions + batch apply</div><div class="gates"><span class="gate">← E5-S1</span></div></article>
         <article class="card s-warn" data-epic="E6"><div class="id">E6-S2 · S3 · S4</div><div class="t">Hero · sidebar · chat layout</div><div class="gates"><span class="gate">← E6-S1</span></div></article>
@@ -412,8 +407,9 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Deployed</h2><span class="ct">5</span></div>
+      <div class="colhead"><h2>Deployed</h2><span class="ct">6</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E2"><div class="id">E2-S2</div><div class="t">Token breakdown visualization</div><div class="m">28 Aug · #479 #481 #482 + backend #81 + #484 · closes #453/#457 · 6 review rounds, 35 defects fixed · PLAN-leg pilot.</div></article>
         <article class="card s-ok" data-epic="E4"><div class="id">E4-S0</div><div class="t">Client activation-engine repair</div><div class="m">26 Aug · #461 + backend #79 · 4 divergences closed, pinned by a 14-vector fixture.</div></article>
         <article class="card s-ok" data-epic="E9"><div class="id">E9-S6</div><div class="t">Group macro substitution + blank-turn guard</div><div class="m">26 Aug · #465 · 4 review passes, 115 agents, 10 defects fixed, 6 filed.</div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S1</div><div class="t">RAG + Lorebook injection audit</div><div class="m">24 Aug · #449 · §8 taxonomy is now E2-S2's spec.</div></article>
@@ -436,14 +432,14 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S2 — the one card in flight</h2>
-    <p class="sub">Token breakdown visualization. Running as the PLAN-leg pilot for the agent-team pipeline — the one stage with no artifact proving it had ever run.</p>
+    <h2>E2-S2 — closed 28 Aug</h2>
+    <p class="sub">Token breakdown visualization — DEPLOYED 28 Aug. Ran as the PLAN-leg pilot; the PLAN artifact now exists (twice). Six adversarial rounds converged at round 6 with zero confirmed findings.</p>
 
     <div class="steps">
       <div class="step done"><div class="sn">Task 0</div><div class="sv">Merged — PR #479</div></div>
       <div class="step done"><div class="sn">Tasks 1+2</div><div class="sv">Merged — PR #481</div></div>
       <div class="step done"><div class="sn">Task 1b</div><div class="sv">Deployed — closes #457</div></div>
-      <div class="step now"><div class="sn">Tasks 3–5</div><div class="sv">Panel UI · blind spots · labels</div></div>
+      <div class="step done"><div class="sn">Tasks 3–5</div><div class="sv">Deployed — PR #484, closes #453</div></div>
     </div>
 
     <div class="tscroll">
@@ -476,7 +472,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 27 Aug 2026.</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 28 Aug 2026.</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
