@@ -17,6 +17,13 @@
  * itself uses — is what lets that mismatch fall into the same "not owned"
  * state as any other stale slot, rather than rendering the newer swipe's
  * numbers under the older swipe's text.
+ *
+ * FOUR causes clear the slot's tag, not three (review round 3, R3-E/F6):
+ * a newer message, a swipe, a group speaker — and `impersonate`, which
+ * publishes its own breakdown (chatStore.ts) with no message to tag, so it
+ * always lands the sheet in this "not owned" branch for whatever message was
+ * previously current. The copy below names all four so it never states a
+ * cause that did not happen.
  */
 import { BottomSheet } from '../ui/BottomSheet';
 import { useGenerationStore } from '../../stores/generationStore';
@@ -64,7 +71,8 @@ export function PromptBreakdownSheet({ isOpen, onClose, messageId, swipeIndex }:
           <div className="py-4 text-sm text-[var(--color-text-secondary)] space-y-3">
             <p>
               Breakdown no longer available for this turn — the app keeps only the most recent
-              prompt build, and a newer message, swipe, or group speaker replaced it.
+              prompt build, and a newer message, swipe, group speaker, or impersonation draft
+              replaced it.
             </p>
             <button
               type="button"
