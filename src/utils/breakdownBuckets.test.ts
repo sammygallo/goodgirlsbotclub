@@ -582,12 +582,21 @@ describe('breakdown view — history badge', () => {
     // token-aware-off: 9 raw messages, messageCount 5, two of the last five
     // raw slots are system turns — windowSkew (review round 4) is 4 (7
     // non-system messages total, 3 survive the window). Badge string updated
-    // in review round 4 (R4-B/F3) to name the window and the drop; the old
-    // "Trim disabled (Message Count mode)" wording implied nothing was cut.
+    // in review round 4 (R4-B/F3) to name the drop; the old "Trim disabled
+    // (Message Count mode)" wording implied nothing was cut. Reworded AGAIN
+    // in review round 5 (R5-A/F1/F2/F9): round 4's "last N messages kept"
+    // wording claimed a KEPT count that `messageWindowSize` cannot supply —
+    // it is the raw window setting applied BEFORE the isSystem filter, so
+    // it overstated what actually reached the model (5 claimed vs 3 real
+    // history rows on this very fixture). The badge now names only what it
+    // actually measured: the window's own drop count and its own size, not
+    // a derived "kept" claim.
     const breakdown = runSolo('token-aware-off');
     expect(breakdown.flags.historyTrimmed).toBe(false);
     const view = computeBreakdownView(breakdown);
-    expect(view.badges.history).toBe('Trim disabled — last 5 messages kept (4 older dropped)');
+    expect(view.badges.history).toBe(
+      'Trim disabled (Message Count mode) — 4 older message(s) beyond the 5-message window'
+    );
   });
 
   it('historyTrimmed false wins over overBudget — checked FIRST, not OR-ed', () => {
@@ -663,24 +672,50 @@ describe('breakdown view — Message Count mode surfaces its window drop (review
     expect(breakdown.flags.messageWindowSize).toBe(5);
     const view = computeBreakdownView(breakdown);
     expect(view.badges.droppedFromWindow).toBe(4);
-    expect(view.badges.history).toBe('Trim disabled — last 5 messages kept (4 older dropped)');
+    expect(view.badges.history).toBe(
+      'Trim disabled (Message Count mode) — 4 older message(s) beyond the 5-message window'
+    );
   });
 
-  it('token-aware mode never surfaces a window drop (windowSkew is definitionally 0 on that path)', () => {
-    const view = computeBreakdownView(runSolo('all-sections'));
+  it("token-aware mode never surfaces a window drop (windowSkew is definitionally 0 on that path), and messageWindowSize is null (review round 5, R5-E/F10)", () => {
+    // KILLS: `messageWindowSize` staying non-null on the token-aware path
+    // (e.g. the ternary at chatStore.ts collapsing to an unconditional
+    // assignment) — unreachable through `historyBadge` today (it only reads
+    // the field when `!historyTrimmed`, and token-aware sets historyTrimmed
+    // true), so nothing but a direct flag assertion can catch it. The null
+    // is load-bearing for a future consumer per promptBreakdown.ts's own
+    // doc: "a panel must be able to tell 'windowed to 0' from 'never
+    // windowed'".
+    const breakdown = runSolo('all-sections');
+    expect(breakdown.flags.historyTrimmed).toBe(true);
+    expect(breakdown.flags.messageWindowSize, 'token-aware builds never windowed on message count').toBeNull();
+    expect(breakdown.flags.droppedByMessageWindow).toBe(0);
+    const view = computeBreakdownView(breakdown);
     expect(view.badges.droppedFromWindow).toBeUndefined();
   });
 
-  it('Message Count mode with nothing windowed out (window covers the whole chat): no drop badge, old wording stands', () => {
-    // `minimal` is a single-turn solo fixture — whatever mode it runs in,
-    // the window (if any) cannot have dropped anything from one turn.
-    const breakdown = runSolo('minimal');
-    if (!breakdown.flags.historyTrimmed) {
-      expect(breakdown.flags.droppedByMessageWindow).toBe(0);
-      const view = computeBreakdownView(breakdown);
-      expect(view.badges.droppedFromWindow).toBeUndefined();
-      expect(view.badges.history).toBe('Trim disabled (Message Count mode)');
-    }
+  it('Message Count mode with nothing windowed out (window covers the whole chat): no drop clause, plain wording stands (review round 5, R5-B/F3/F5/F8)', () => {
+    // KILLS: the `&&` guard in `historyBadge` inverting to `||` (or any
+    // other regression that emits the drop clause at
+    // droppedByMessageWindow === 0) — the exact "0 older message(s)" nonsense
+    // badge a shorter-than-its-window Message Count chat (the common case:
+    // a fresh chat under e.g. a 30-message window) would otherwise show.
+    //
+    // Hand-built with flags set EXPLICITLY and NO `if` guard around the
+    // assertions — the round-4 version of this test used
+    // `if (!breakdown.flags.historyTrimmed) { ... }` around `runSolo('minimal')`,
+    // but `minimal` never calls `withContext` so it runs under
+    // DEFAULT_CONTEXT_CONFIG's `tokenAware: true` (generationStore.ts) —
+    // `historyTrimmed` is always true there, the guard was always false, and
+    // the body never executed. The test passed asserting nothing. This
+    // version cannot do that: every assertion below always runs.
+    const breakdown = createPromptBreakdown('solo');
+    breakdown.flags.historyTrimmed = false;
+    breakdown.flags.messageWindowSize = 20;
+    breakdown.flags.droppedByMessageWindow = 0;
+    const view = computeBreakdownView(breakdown);
+    expect(view.badges.droppedFromWindow).toBeUndefined();
+    expect(view.badges.history).toBe('Trim disabled (Message Count mode)');
   });
 
   it('group is unaffected by this field — GROUP path unchanged, per the story brief', () => {
@@ -690,6 +725,53 @@ describe('breakdown view — Message Count mode surfaces its window drop (review
       expect(breakdown.flags.messageWindowSize, fx.name).toBeNull();
       expect(computeBreakdownView(breakdown).badges.droppedFromWindow, fx.name).toBeUndefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The badge never claims a kept count — review round 5, R5-A/F1/F2/F9
+// ---------------------------------------------------------------------------
+
+describe('breakdown view — the Message Count badge never claims a kept count (review round 5, R5-A/F1/F2/F9)', () => {
+  it('never renders the word "kept", in any mode, on any fixture', () => {
+    // KILLS: any wording that reintroduces a kept-count claim.
+    // `messageWindowSize` is the raw window setting (applied BEFORE the
+    // isSystem filter, chatStore.ts) and is not the number of messages that
+    // actually reached the model — a second mechanism (summary compaction)
+    // can drop still more without ever touching this collector's fields.
+    // This module cannot compute the true kept count from `flags` alone and
+    // must not claim one; the drill-down rows ARE the kept count, and any
+    // compaction-covered turns are disclosed by the Summary slice.
+    for (const fx of SOLO_FIXTURES) {
+      expect(computeBreakdownView(runSolo(fx.name)).badges.history, fx.name).not.toMatch(/kept/i);
+    }
+    for (const fx of GROUP_FIXTURES) {
+      expect(computeBreakdownView(runGroup(fx.name)).badges.history, fx.name).not.toMatch(/kept/i);
+    }
+  });
+
+  it("token-aware-off: the badge's interpolated numbers are EXACTLY flags.droppedByMessageWindow and flags.messageWindowSize, nothing derived", () => {
+    const breakdown = runSolo('token-aware-off');
+    const view = computeBreakdownView(breakdown);
+    expect(view.badges.history).toBe(
+      `Trim disabled (Message Count mode) — ${breakdown.flags.droppedByMessageWindow} older message(s) beyond the ${breakdown.flags.messageWindowSize}-message window`
+    );
+  });
+
+  it("fixed-window-summary-skew: same identity, on the fixture where a SECOND drop mechanism (summary compaction) also ran — the badge must still report only what it measured, not a kept count that compaction would falsify further", () => {
+    // 30 messages, messageCount 12, a summary covering the first 20
+    // non-system turns — windowSkew alone (18) is a sound measurement of
+    // the WINDOW's own drop; the badge naming only that (never a kept
+    // count) is what keeps it honest even though a second mechanism this
+    // module knows nothing about also reduced what reached the model.
+    const breakdown = runSolo('fixed-window-summary-skew');
+    expect(breakdown.flags.historyTrimmed).toBe(false);
+    expect(breakdown.flags.droppedByMessageWindow).toBeGreaterThan(0);
+    const view = computeBreakdownView(breakdown);
+    expect(view.badges.history).toBe(
+      `Trim disabled (Message Count mode) — ${breakdown.flags.droppedByMessageWindow} older message(s) beyond the ${breakdown.flags.messageWindowSize}-message window`
+    );
+    expect(view.badges.history).not.toMatch(/kept/i);
   });
 });
 
@@ -767,6 +849,17 @@ describe('breakdown view — world info summary', () => {
     expect(view.wi.evictedCount).toBe(1);
     expect(view.wi.emittedTokens).toBeGreaterThan(0);
     expect(view.wi.rawTokens).toBeGreaterThan(0);
+  });
+
+  it('gapExplanation is pinned verbatim — the "explains the gap" half of the §4.1 AC (review round 5, R5-C/F6)', () => {
+    // Same treatment R3-G/F10 gave PROMPT_SECTION_DESCRIPTIONS: a plain
+    // string field has no type-level protection against being emptied or
+    // reworded into something that no longer explains the emitted-vs-raw
+    // gap, so it has to be pinned by value.
+    const view = computeBreakdownView(runSolo('minimal'));
+    expect(view.wi.gapExplanation).toBe(
+      'The gap is macro expansion and the attribution wrapper the app adds before injecting each entry — both counted in what reaches the prompt, neither charged by the WI budget, which measures the raw entry text.'
+    );
   });
 
   // AC 9 (review round 1, M1/F1/F16): `buildWiSummary` must branch on
