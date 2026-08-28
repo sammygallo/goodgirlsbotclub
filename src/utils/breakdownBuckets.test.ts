@@ -79,6 +79,7 @@ import {
   type BucketId,
 } from './breakdownBuckets';
 import { PROMPT_SECTION_LABELS } from '../stores/generationStore';
+import { GROUP_HISTORY_WINDOW } from './groupHistoryWindow';
 
 function runSolo(name: string): PromptBreakdown {
   const fx = SOLO_FIXTURES.find((f) => f.name === name);
@@ -438,6 +439,12 @@ describe('breakdown view — drill-down rows are individually pinned', () => {
     // (`slice.tokens - messageOverheadPerMessage`) being skipped or applied
     // to the wrong stage.
     const b = createPromptBreakdown('solo');
+    // Token-aware (a trim actually ran) — the badge this test pins below is
+    // the trim-anchored string; review round 4 (R4-A/F1) made that badge
+    // mode-conditional, so a hand-built breakdown now has to say which mode
+    // it represents rather than getting it for free from the unconditional
+    // old string.
+    b.flags.historyTrimmed = true;
     const perMessage = b.messageOverheadPerMessage;
     addSlice(b, { stage: 'B', cls: 'history', messageId: 'm1', role: 'user' }, 14, 40);
     addSlice(b, { stage: 'B', cls: 'history', messageId: 'm2', role: 'assistant' }, 20, 60);
@@ -571,11 +578,16 @@ describe('breakdown view — Your message', () => {
 // ---------------------------------------------------------------------------
 
 describe('breakdown view — history badge', () => {
-  it('historyTrimmed false + solo: "Trim disabled", never "within budget"', () => {
+  it('historyTrimmed false + solo: "Trim disabled" (with the window drop named — R4-B/F3), never "within budget"', () => {
+    // token-aware-off: 9 raw messages, messageCount 5, two of the last five
+    // raw slots are system turns — windowSkew (review round 4) is 4 (7
+    // non-system messages total, 3 survive the window). Badge string updated
+    // in review round 4 (R4-B/F3) to name the window and the drop; the old
+    // "Trim disabled (Message Count mode)" wording implied nothing was cut.
     const breakdown = runSolo('token-aware-off');
     expect(breakdown.flags.historyTrimmed).toBe(false);
     const view = computeBreakdownView(breakdown);
-    expect(view.badges.history).toBe('Trim disabled (Message Count mode)');
+    expect(view.badges.history).toBe('Trim disabled — last 5 messages kept (4 older dropped)');
   });
 
   it('historyTrimmed false wins over overBudget — checked FIRST, not OR-ed', () => {
@@ -609,12 +621,21 @@ describe('breakdown view — history badge', () => {
     );
   });
 
-  it('group: "not trimmed", regardless of the fixture', () => {
+  it('group: "not trimmed", regardless of the fixture — derived from GROUP_HISTORY_WINDOW, not a hardcoded literal (review round 4, R4-E/F5)', () => {
+    // Asserted via the CONSTANT, not a literal `30`: the builder's single
+    // source of truth is GROUP_HISTORY_WINDOW (groupHistoryWindow.ts), and a
+    // literal here — even one that currently matches — is exactly the
+    // second-copy drift this module's own doc calls out
+    // (promptBreakdown.ts:212-213: "a second copy of the number is how the
+    // panel silently rots"). If the constant ever changes, this assertion
+    // changes with it instead of silently cementing the old value.
     for (const fx of GROUP_FIXTURES) {
       const breakdown = runGroup(fx.name);
       expect(breakdown.flags.historyTrimmed, fx.name).toBe(false);
       const view = computeBreakdownView(breakdown);
-      expect(view.badges.history, fx.name).toBe('History not trimmed (fixed 30-message window)');
+      expect(view.badges.history, fx.name).toBe(
+        `History not trimmed (fixed ${GROUP_HISTORY_WINDOW}-message window)`
+      );
     }
   });
 
@@ -623,6 +644,78 @@ describe('breakdown view — history badge', () => {
     expect(bites.badges.droppedFromHistory).toBeGreaterThan(0);
     const minimal = computeBreakdownView(runSolo('minimal'));
     expect(minimal.badges.droppedFromHistory).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Message Count mode: the window drop — review round 4, R4-B/F3
+// ---------------------------------------------------------------------------
+
+describe('breakdown view — Message Count mode surfaces its window drop (review round 4, R4-B/F3)', () => {
+  it("runSolo('token-aware-off'): 9 raw messages, 5-slot window — the view surfaces droppedFromWindow 4", () => {
+    // KILLS: chatStore recording windowSkew nowhere, or recording it but the
+    // view never reading `flags.droppedByMessageWindow`/`messageWindowSize`.
+    // Before this fix, Message Count mode's fixed window could silently
+    // discard messages with nothing on the one panel whose job is "what
+    // reached the model" disclosing it.
+    const breakdown = runSolo('token-aware-off');
+    expect(breakdown.flags.droppedByMessageWindow, 'the collector never recorded windowSkew').toBe(4);
+    expect(breakdown.flags.messageWindowSize).toBe(5);
+    const view = computeBreakdownView(breakdown);
+    expect(view.badges.droppedFromWindow).toBe(4);
+    expect(view.badges.history).toBe('Trim disabled — last 5 messages kept (4 older dropped)');
+  });
+
+  it('token-aware mode never surfaces a window drop (windowSkew is definitionally 0 on that path)', () => {
+    const view = computeBreakdownView(runSolo('all-sections'));
+    expect(view.badges.droppedFromWindow).toBeUndefined();
+  });
+
+  it('Message Count mode with nothing windowed out (window covers the whole chat): no drop badge, old wording stands', () => {
+    // `minimal` is a single-turn solo fixture — whatever mode it runs in,
+    // the window (if any) cannot have dropped anything from one turn.
+    const breakdown = runSolo('minimal');
+    if (!breakdown.flags.historyTrimmed) {
+      expect(breakdown.flags.droppedByMessageWindow).toBe(0);
+      const view = computeBreakdownView(breakdown);
+      expect(view.badges.droppedFromWindow).toBeUndefined();
+      expect(view.badges.history).toBe('Trim disabled (Message Count mode)');
+    }
+  });
+
+  it('group is unaffected by this field — GROUP path unchanged, per the story brief', () => {
+    for (const fx of GROUP_FIXTURES) {
+      const breakdown = runGroup(fx.name);
+      expect(breakdown.flags.droppedByMessageWindow, fx.name).toBe(0);
+      expect(breakdown.flags.messageWindowSize, fx.name).toBeNull();
+      expect(computeBreakdownView(breakdown).badges.droppedFromWindow, fx.name).toBeUndefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage-C drill-down badge — mode-conditional (review round 4, R4-A/F1/F6/F7)
+// ---------------------------------------------------------------------------
+
+describe('breakdown view — Stage-C drill-down badge is mode-conditional (review round 4, R4-A/F1/F6/F7)', () => {
+  it('Message Count mode: no Stage-C badge names "the trim" — there is no trim to have excluded it FROM', () => {
+    // KILLS: an unconditional 'not counted by the trim — sent after the
+    // history' badge, R3-B/F4's exact class of defect one section lower —
+    // round 3 fixed the reconciliation row's label and note but left this
+    // identical claim in the per-slice badge.
+    const v = computeBreakdownView(runSolo('token-aware-off'));
+    const badges = v.buckets.flatMap((b) => b.stageCSlices ?? []).map((s) => s.badge);
+    expect(badges.length, 'this fixture should carry at least one Stage-C slice').toBeGreaterThan(0);
+    for (const b of badges) {
+      expect(b, 'Message Count mode has no trim to be excluded from').not.toMatch(/trim/i);
+    }
+  });
+
+  it('token-aware mode: the trim-anchored badge IS present — the positive twin, so the wording cannot be deleted wholesale', () => {
+    const t = computeBreakdownView(runSolo('all-sections'));
+    expect(t.buckets.flatMap((b) => b.stageCSlices ?? []).map((s) => s.badge)).toContain(
+      'not counted by the trim — sent after the history'
+    );
   });
 });
 
