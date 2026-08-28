@@ -1126,6 +1126,13 @@ export interface PreparedConversation {
    *  — once, on the committing pass only. */
   variables: Record<string, string>;
   wiTimerOut?: WiScanOut;
+  /** How many non-system messages Message Count mode's fixed window
+   *  (`historyPool = visibleMessages.slice(-ctxConfig.messageCount)`) dropped
+   *  before `historyPool` was even built — 0 in token-aware mode, where the
+   *  full non-system list is used. Review round 4, R4-B/F3: threaded through
+   *  to `finish` so the breakdown collector can record it (see
+   *  `flags.droppedByMessageWindow`). */
+  windowSkew: number;
 }
 
 export interface FinishConversationOptions {
@@ -1907,6 +1914,7 @@ Choose the emotion that best matches how ${character.name} would feel based on t
     ctxChatFile,
     variables,
     wiTimerOut,
+    windowSkew,
   };
 }
 
@@ -1941,6 +1949,7 @@ export function finishConversationContext(
     ctxChatFile,
     variables,
     wiTimerOut,
+    windowSkew,
   } = prepared;
   const commit = opts?.commit !== false;
   const out = opts?.breakdownOut;
@@ -2172,6 +2181,15 @@ export function finishConversationContext(
     out.flags.overBudget = overBudget;
     out.flags.historyTrimmed = ctxConfig.tokenAware;
     out.flags.droppedFromHistory = droppedFromHistory;
+    // Review round 4, R4-B/F3: `windowSkew` is a direct measurement (not a
+    // mode test) — it is already 0 whenever tokenAware is on, because
+    // `historyPool` is the full non-system list on that path (see
+    // `prepareConversationContext`'s comment above `windowSkew`'s
+    // computation). `messageWindowSize`, like `responseReserve` above, IS a
+    // mode test: there is no non-null "window size" to report when this
+    // build never windowed on message count at all.
+    out.flags.droppedByMessageWindow = windowSkew;
+    out.flags.messageWindowSize = ctxConfig.tokenAware ? null : ctxConfig.messageCount;
     // The reserve is read at one place only — the trim call above — so with
     // `tokenAware` off it constrained nothing and there is no Reserved slice
     // to draw, exactly as in group.
