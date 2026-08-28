@@ -37,6 +37,20 @@ const BUCKET_COLORS: Record<BucketId, string> = {
 
 const OVERHEAD_COLOR = 'var(--color-border)';
 
+/**
+ * Row labels for the two headline reconciliation rows below — prose stems
+ * only, no digits. `trimmedMeterNote` / `fullPromptNote` (breakdownBuckets.ts)
+ * embed the RAW total inline for the italic explanation lower on the panel
+ * ("Counted by the trim: 12347 (what the in-chat meter tracks…)"); deriving a
+ * row LABEL from those by string-splitting on `' ('` used to keep the raw
+ * number in the label while the row's own value cell rendered the same total
+ * formatted — every total on the two headline rows appeared twice, once
+ * unformatted (review round 1, F7/F12). These constants are the fix: the
+ * label carries no number at all, so there is nothing left to duplicate.
+ */
+const TRIMMED_METER_LABEL = 'Counted by the trim';
+const FULL_PROMPT_LABEL = 'Full assembled prompt';
+
 function n(x: number): string {
   return x.toLocaleString();
 }
@@ -255,7 +269,7 @@ export function PromptBreakdownView({
         {reconciliation.stageC ? (
           <>
             <div className="flex justify-between font-medium text-[var(--color-text-primary)]">
-              <span>{reconciliation.stageC.trimmedMeterNote.split(' (')[0]}</span>
+              <span>{TRIMMED_METER_LABEL}</span>
               <span className="tabular-nums">{n(reconciliation.target)}</span>
             </div>
             <div className="flex justify-between">
@@ -267,7 +281,7 @@ export function PromptBreakdownView({
               <span className="tabular-nums">{n(reconciliation.stageC.afterHistoryOverhead)}</span>
             </div>
             <div className="flex justify-between font-medium text-[var(--color-text-primary)]">
-              <span>{reconciliation.stageC.fullPromptNote.split(' (')[0]}</span>
+              <span>{FULL_PROMPT_LABEL}</span>
               <span className="tabular-nums">{n(reconciliation.stageC.assembledTotal)}</span>
             </div>
             <p className="text-[11px] italic">{reconciliation.stageC.trimmedMeterNote}</p>
@@ -275,7 +289,7 @@ export function PromptBreakdownView({
           </>
         ) : (
           <div className="flex justify-between font-medium text-[var(--color-text-primary)]">
-            <span>Full assembled prompt</span>
+            <span>{FULL_PROMPT_LABEL}</span>
             <span className="tabular-nums">{n(reconciliation.target)}</span>
           </div>
         )}
