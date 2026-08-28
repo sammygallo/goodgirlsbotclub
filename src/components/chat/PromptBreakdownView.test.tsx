@@ -264,6 +264,21 @@ describe('PromptBreakdownView — headline reconciliation rows never duplicate t
       'Full assembled prompt'
     );
     expect(note.textContent, 'no digits').not.toMatch(/\d/);
+    // Review round 4 (R4-A/F1/F6/F7): round 3's version of this test never
+    // expanded a bucket, so the Stage-C drill-down badge (collapsed by
+    // default) was never in the DOM when the queries above ran — its own
+    // "no Counted by the trim row anywhere" claim was an overclaim. Expand
+    // the Instructions bucket (which holds this fixture's char_phi Stage-C
+    // slice) and check the badge itself.
+    fireEvent.click(screen.getByText('Instructions'));
+    expect(
+      screen.queryByText(/not counted by the trim/i),
+      'Message Count mode has no trim to have excluded this content FROM'
+    ).toBeNull();
+    // Exact match — the reconciliation bridge row's OWN text ("+ sent after
+    // the history (Stage C)") also contains this substring, so a loose regex
+    // would match both and throw on multiple elements.
+    expect(screen.getByText('sent after the history')).toBeTruthy();
   });
 
   it('token-aware mode (historyTrimmed true): the trim row and its trim-anchored note ARE present, "Before after-history sections" is not', () => {
@@ -272,9 +287,14 @@ describe('PromptBreakdownView — headline reconciliation rows never duplicate t
     expect(screen.getByText('Counted by the trim')).toBeTruthy();
     expect(screen.queryByText('Before after-history sections')).toBeNull();
     expect(screen.getByText(/what the in-chat meter tracks while token-aware trimming is on/i)).toBeTruthy();
+    // The positive twin (review round 4, R4-A): expanding the SAME bucket on
+    // a token-aware fixture keeps the trim-anchored badge — proves a fix
+    // can't satisfy the negative row above by deleting the wording wholesale.
+    fireEvent.click(screen.getByText('Instructions'));
+    expect(screen.getByText(/not counted by the trim — sent after the history/i)).toBeTruthy();
   });
 
-  it('the reconciliation rows pair the CORRECT label with the CORRECT value, and the Stage-C bridge reconciles on screen (review round 3, R3-C/F8, R3-D/F9)', () => {
+  it('the reconciliation rows pair the CORRECT label with the CORRECT value, and the whole block reconciles on screen (review round 3, R3-C/F8, R3-D/F9; extended round 4, R4-H/F10)', () => {
     // KILLS (R3-C): swapping the two headline rows' VALUE bindings while
     // leaving the labels in place. The block-level "both totals appear
     // somewhere" check above cannot see this — a swap keeps both formatted
@@ -285,6 +305,11 @@ describe('PromptBreakdownView — headline reconciliation rows never duplicate t
     // total to the assembled total — a deleted bridge row would leave the
     // panel showing the trim total immediately followed by the assembled
     // total with the gap between them accounted for by nothing on screen.
+    // KILLS (R4-H): deleting the "Separator + rounding" / "Message
+    // overhead" / "Conversation priming" rows above the bridge — the AC
+    // mandates these be shown as their own line "rather than silently
+    // absorbed"; breakdownBuckets.test.ts pins them at the view-model layer
+    // only, never that the RENDERER draws them.
     const b = soloWithBigTotals();
     render(<PromptBreakdownView view={computeBreakdownView(b)} />);
 
@@ -294,6 +319,10 @@ describe('PromptBreakdownView — headline reconciliation rows never duplicate t
       return Number(row!.textContent!.slice(label.length).replace(/,/g, ''));
     };
 
+    const bucketsValue = cell('Buckets');
+    const separatorValue = cell('Separator + rounding');
+    const messageOverheadValue = cell('Message overhead');
+    const primingValue = cell('Conversation priming');
     const trimValue = cell('Counted by the trim');
     const stageCValue = cell('+ sent after the history (Stage C)');
     const overheadValue = cell('After-history overhead');
@@ -303,10 +332,41 @@ describe('PromptBreakdownView — headline reconciliation rows never duplicate t
     expect(assembledValue, '"Full assembled prompt" must show the assembled total').toBe(4924);
     expect(stageCValue).toBe(110);
     expect(overheadValue).toBe(4);
+    expect(bucketsValue).toBe(4800);
+    expect(separatorValue).toBe(0);
+    expect(messageOverheadValue).toBe(12);
+    expect(primingValue).toBe(2);
+    expect(
+      bucketsValue + separatorValue + messageOverheadValue + primingValue,
+      'Buckets + the three itemized overhead rows should sum to the trim total, on screen'
+    ).toBe(trimValue);
     expect(
       trimValue + stageCValue,
       'trimTotal + stageC should equal assembledTotal, reconciled on screen'
     ).toBe(assembledValue);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reserved chip — review round 4, R4-D/F4
+// ---------------------------------------------------------------------------
+
+describe('PromptBreakdownView — Reserved chip has a visible label, not just a hover tooltip (review round 4, R4-D/F4)', () => {
+  it('renders a visible "Reserved" text label next to the value, plus title/aria-label for hover and assistive tech', () => {
+    // KILLS: a bare unlabeled number reachable only via `title` — which
+    // never fires on touch and is unreachable by keyboard/screen-reader.
+    const b = soloWithStageC();
+    b.flags.hasReservedSlice = true;
+    b.responseReserve = 2048;
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    expect(screen.getByText('Reserved')).toBeTruthy();
+    expect(screen.getByLabelText(/reserved for the response/i)).toBeTruthy();
+  });
+
+  it('absent when hasReservedSlice is false', () => {
+    const b = groupBasic();
+    render(<PromptBreakdownView view={computeBreakdownView(b)} />);
+    expect(screen.queryByText('Reserved')).toBeNull();
   });
 });
 
@@ -392,25 +452,26 @@ describe('PromptBreakdownSheet — ownership', () => {
 
   it('null slot: nothing has ever been published this session (F5 — a distinct cause from "moved on")', () => {
     // KILLS a single collapsed copy string: the null-slot case never had
-    // "a newer message, swipe, group speaker, or impersonation draft" replace
-    // anything — there was simply no breakdown this session (e.g. right
-    // after a reload, since lastPromptBreakdown is deliberately not
-    // persisted). Wording it as a replacement event misdiagnoses the cause,
+    // "a newer message, swipe, group speaker, or impersonation draft" come
+    // after anything — there was simply no breakdown this session (e.g.
+    // right after a reload, since lastPromptBreakdown is deliberately not
+    // persisted). Wording it as a causal event misdiagnoses the cause,
     // exactly as UsagePage's own null-state copy ("No prompt assembled yet
     // this session…") gets right.
     useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
     render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
     expect(screen.getByText(/no prompt assembled yet this session/i)).toBeTruthy();
     expect(screen.queryByText(/no longer available/)).toBeNull();
-    expect(screen.queryByText(/replaced it/)).toBeNull();
+    expect(screen.queryByText(/came after it/)).toBeNull();
   });
 
-  it('not-owned copy names all FOUR causes that clear the tag, including impersonate (review round 3, R3-E/F6)', () => {
-    // KILLS a copy regression back to the three-cause string: impersonate
-    // (chatStore.ts) publishes its own breakdown with no message to tag,
-    // clearing the slot's ownership with no newer message, swipe, or group
-    // speaker involved — the copy must not claim a cause that did not
-    // happen.
+  it('not-owned copy names all FOUR causes that can leave a turn without the most recent build, as EXAMPLES not an assertion (review round 3, R3-E/F6; reworded round 4, R4-C/F2 + R4-I)', () => {
+    // KILLS a copy regression back to the three-cause string, AND a
+    // regression back to asserting one of the four definitely happened
+    // (round 4: that framing is false whenever the turn was simply never
+    // built this session — nothing "replaced" a build that never existed).
+    // "usually because" states the fact (this isn't the most recent build)
+    // and offers the four as examples, not a claim.
     const b = soloWithStageC();
     useGenerationStore.setState({
       lastPromptBreakdown: b,
@@ -418,7 +479,31 @@ describe('PromptBreakdownSheet — ownership', () => {
     });
     render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
     expect(
-      screen.getByText(/a newer message, swipe, group speaker, or impersonation draft replaced it/)
+      screen.getByText(
+        /usually because a newer message, swipe, group speaker, or impersonation draft came after it/
+      )
     ).toBeTruthy();
+  });
+
+  it('the escape hatch no longer claims "the most recent turn\'s chip" — it points at Settings → Usage instead, which is true in every not-owned state (review round 4, R4-C/F2)', () => {
+    // KILLS the old chip-pointing instruction, which was FALSE in exactly
+    // the case R3-E's copy above names: a null tag (impersonate cleared it)
+    // means NO chip anywhere — including the most recent turn's own — can
+    // show the current build, so following the old advice was a dead end.
+    // UsagePage.tsx reads `lastPromptBreakdown` directly with no tag check,
+    // so it is accurate here and in the swipe-back case alike.
+    const b = soloWithStageC();
+    useGenerationStore.setState({
+      lastPromptBreakdown: b,
+      lastPromptBreakdownTag: null, // exactly what impersonate leaves behind
+    });
+    render(<PromptBreakdownSheet isOpen={true} onClose={() => {}} messageId="msg-1" swipeIndex={0} />);
+    expect(screen.getByText(/impersonation draft came after it/)).toBeTruthy();
+    expect(
+      screen.queryByText(/the most recent turn's chip still shows the current build/),
+      'with a null tag NO chip owns the build — this instruction is a dead end'
+    ).toBeNull();
+    expect(screen.getByText(/Settings → Usage/)).toBeTruthy();
+    expect(screen.getByText(/Last prompt breakdown/)).toBeTruthy();
   });
 });
