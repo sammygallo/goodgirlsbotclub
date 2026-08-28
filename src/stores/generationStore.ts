@@ -252,13 +252,21 @@ interface GenerationState {
    */
   lastPromptBreakdown: PromptBreakdown | null;
   /**
-   * Which message `lastPromptBreakdown` describes, so a sheet opened from a
-   * message's cost chip can tell "this is my build" from "the slot moved on
-   * without me" instead of silently showing whichever breakdown happens to
-   * be sitting there. Also not persisted, for the same reason as the
-   * breakdown itself.
+   * Which message (and which SWIPE of it) `lastPromptBreakdown` describes, so
+   * a sheet opened from a message's cost chip can tell "this is my build" from
+   * "the slot moved on without me" instead of silently showing whichever
+   * breakdown happens to be sitting there. Also not persisted, for the same
+   * reason as the breakdown itself.
+   *
+   * `swipeIndex` is part of the identity, not just `messageId` (E2-S2 review
+   * round 1, F6): `ChatMessage.id` is stable across every swipe of the same AI
+   * message, but swiping right and generating publishes a NEW breakdown under
+   * the SAME id — swiping back to an older swipe afterwards must not still
+   * read as "owned", or the sheet shows one swipe's numbers against another
+   * swipe's text. A message's current `swipeId` is what has to match this
+   * field's `swipeIndex` for the tag to still apply.
    */
-  lastPromptBreakdownMessageId: string | null;
+  lastPromptBreakdownTag: { messageId: string; swipeIndex: number } | null;
 
   // Actions
   setSampler: (sampler: Partial<SamplerParams>) => void;
@@ -297,14 +305,20 @@ interface GenerationState {
   setLastTokenEstimate: (n: number) => void;
   setLastPromptBreakdown: (b: PromptBreakdown | null) => void;
   /**
-   * Stamp `messageId` onto `lastPromptBreakdown`, but ONLY if `breakdown` is
-   * still the object sitting in the slot — an object-identity guard, not an
-   * equality one, so a concurrent turn that already replaced the slot with
-   * its OWN breakdown (group awaits `generateGroupTurn` per member; each
-   * publishes before the next starts) makes this a silent no-op instead of
-   * mis-tagging the new breakdown with the old call site's message id.
+   * Stamp `{ messageId, swipeIndex }` onto `lastPromptBreakdown`, but ONLY if
+   * `breakdown` is still the object sitting in the slot — an object-identity
+   * guard, not an equality one, so a concurrent turn that already replaced the
+   * slot with its OWN breakdown (group awaits `generateGroupTurn` per member;
+   * each publishes before the next starts) makes this a silent no-op instead
+   * of mis-tagging the new breakdown with the old call site's message id.
+   *
+   * `swipeIndex` is the swipe THIS breakdown describes — for a freshly
+   * created message that is always 0; for `swipeRight`'s generate-new path
+   * and `continueMessage` (which extends the CURRENT swipe rather than
+   * creating one) it is whatever swipe index the call site resolves. See the
+   * `lastPromptBreakdownTag` doc for why this has to be part of the identity.
    */
-  tagLastBreakdownMessage: (breakdown: PromptBreakdown, messageId: string) => void;
+  tagLastBreakdownMessage: (breakdown: PromptBreakdown, messageId: string, swipeIndex: number) => void;
 
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
@@ -420,7 +434,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   promptOrder: mergePromptOrder(initial.promptOrder),
   lastTokenEstimate: 0,
   lastPromptBreakdown: null,
-  lastPromptBreakdownMessageId: null,
+  lastPromptBreakdownTag: null,
 
   setSampler: (patch) => {
     set((state) => {
@@ -768,12 +782,12 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   },
 
   setLastPromptBreakdown: (b) => {
-    set({ lastPromptBreakdown: b, lastPromptBreakdownMessageId: null });
+    set({ lastPromptBreakdown: b, lastPromptBreakdownTag: null });
   },
 
-  tagLastBreakdownMessage: (breakdown, messageId) => {
+  tagLastBreakdownMessage: (breakdown, messageId, swipeIndex) => {
     if (get().lastPromptBreakdown !== breakdown) return;
-    set({ lastPromptBreakdownMessageId: messageId });
+    set({ lastPromptBreakdownTag: { messageId, swipeIndex } });
   },
 
   resetUser: () => {
@@ -791,7 +805,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       promptOrder: mergePromptOrder(undefined),
       lastTokenEstimate: 0,
       lastPromptBreakdown: null,
-      lastPromptBreakdownMessageId: null,
+      lastPromptBreakdownTag: null,
     });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
