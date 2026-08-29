@@ -11,7 +11,7 @@
 - **Your hierarchy maps cleanly, with one honest correction:** the PM is not an agent — it's the main-loop session (Fable) running a `/run-story` pipeline skill, because only the main loop can talk to you, hold memory, and enforce gates. Devs, adversarial reviewers, and QA become **named agent definitions** (`.claude/agents/*.md`) invoked by that pipeline.
 - **The team is mostly formalization, not invention.** The house already runs every role informally: `build-next-issue` is a dev loop, the 45-agent adversarial reviews are the review org, `/deploy-ggbc` is release engineering. This charter names the roles, pins their contracts, and chains them into one pipeline per roadmap story.
 - **Where the IRL metaphor breaks — and how we compensate:** real teammates persist; agents are ephemeral. All "team memory" therefore lives in documents — the roadmap, this charter, evidence bundles on PRs, and the memory dir. Reports aren't bureaucracy here; **they're the only institutional memory the team has.**
-- **Humans keep the two irreversible gates:** Sammy merges, Sammy approves deploys. The team never auto-merges or auto-deploys — same covenant as `build-next-issue`.
+- **Sammy keeps the irreversible gate: deploy.** Merge was delegated to the PM 2026-08-28 (D2) after the §7.3 probation verdict — the PM merges a `/run-story` story PR when §8's checklist is green and no escalation trigger fires, and stops and presents otherwise. **`/deploy-ggbc` still needs Sammy's explicit go, every time**, and because `:latest` is built from `main`, one deploy go ships every merged story sitting there — so the deploy request enumerates them all (§8). `build-next-issue` and `sprint-plan` keep the never-auto-merge covenant unchanged.
 - **v1.1 changes after self-critique:** the **story brief** becomes a first-class pipeline stage (ticket quality is the biggest lever on agent output — same as human teams); S/M non-trigger reviews reuse the **built-in `/code-review` skill** instead of a bespoke workflow (the bespoke org is reserved for trigger-list/L/XL stories where it earned its 11x record); **DoR/DoD** checklists gate entry and exit; and the **thin-agents / fat-skill** principle keeps the process defined in exactly one place.
 - **v1.2 change:** a **`postmortem`** role (§2) closes the loop the pipeline was leaking — capture was one unenforced DoD line, so both pilots' lessons ended up hand-copied into **four** unsynced places apiece (charter prose, executable code in `story-review.js`, a `MEMORY.md` index line, and a memory-file body). It runs at **pipeline exit — deployed *or* blocked** — proposes durable writes anchored to run evidence, and on designated runs audits memory for staleness. It **proposes; the PM applies**, gated on **blast radius** rather than on proposal kind, and its own bar is set against over-production, not under-. *Red-teamed pre-merge under §4.4 (36 findings → 7 confirmed / 3 plausible / 26 refuted); the confirmed defects are fixed in this version — see §10.*
 - **Build cost is small:** 4 agent files + 1 skill + 1 trigger-tier review workflow + this charter committed to docs. Pilot on E1-S1 (review/QA/deploy legs, code already written), then a small isolated feature for the full pipeline including the dev leg. (E9-S1 originally held that second slot; see §7 — it had already shipped.)
@@ -22,7 +22,7 @@
 
 ```mermaid
 flowchart TB
-    SAMMY["🧑‍💼 Sammy<br/>merge authority · deploy approval · design sign-off"]
+    SAMMY["🧑‍💼 Sammy<br/>deploy approval · design sign-off<br/>escalations · merge on trigger"]
     PM["PM / Orchestrator — Fable, main loop<br/>runs /run-story, assigns tiers, enforces gates,<br/>reports tokens, updates Kanban + memory"]
 
     SAMMY <-->|"approvals · blockers · reports"| PM
@@ -36,7 +36,7 @@ flowchart TB
     end
 
     PM --> PLAN --> DEV --> REV --> QA --> PM
-    PM -->|"after Sammy merges + approves"| DEPLOY["🚀 /deploy-ggbc<br/>existing skill, unchanged"]
+    PM -->|"after Sammy approves the deploy"| DEPLOY["🚀 /deploy-ggbc<br/>existing skill, unchanged"]
     DEPLOY --> PMORT --> PM
     PM -.->|"blocked-with-reason<br/>(any stage)"| PMORT
 ```
@@ -50,7 +50,7 @@ flowchart TB
 ### PM / Orchestrator — the main-loop session
 - **Substrate:** this session (or any future session) invoking **`/run-story <STORY-ID>`**. Not a subagent — the PM must talk to Sammy mid-flight, read/write memory, and enforce gates, which subagents cannot.
 - **Duties per story:** pull the story + acceptance criteria from `docs/product-roadmap-10.2-12.md`; **ground-truth the story's state with `gh` before acting** (branch/PR/deploy state — never trust the board's snapshot; this week's lesson ×3); verify its gate column; **compile the story brief** (§3) that every downstream agent receives; **print the delegation map before launching** — every agent's tier + one-line reasoning (your calibration preference); drive the pipeline; surface blockers to you instead of guessing; close with the evidence bundle, Kanban update, memory write, and **per-story token actuals vs the roadmap's size band**.
-- **Never:** merges, deploys without approval, or lets a finding ship unresolved-and-undocumented. Defaults to delegating implementation; may do trivial glue inline.
+- **May merge** a story PR under §8's checklist-and-triggers rule (D2, 2026-08-28). **Never:** deploys without approval, merges when any escalation trigger fires or is arguable, merges a change to the team's own governing documents, or lets a finding ship unresolved-and-undocumented. Defaults to delegating implementation; may do trivial glue inline.
 
 ### Planner — built-in `Plan` agent (v1)
 - **When:** M-size and larger build stories. S stories skip straight to dev.
@@ -75,7 +75,7 @@ flowchart TB
 - **Output:** the AC checklist, each item pass/fail + evidence link. An ambiguous criterion escalates to the PM rather than getting a charitable pass. **Model:** Sonnet — procedural, loud-failure work; judgment calls escalate.
 
 ### Release engineering — `/deploy-ggbc` (existing, unchanged) + a rollback line
-Invoked by the PM only after Sammy merges and says deploy. Deploy-order constraints from the story (e.g., backend-before-frontend) are restated in the PR body and honored. User-visible features get a release note to `#feature-releases` via the Discord MCP as part of story close. **Rollback playbook (previously implicit, now stated):** a bad deploy is answered with revert-PR + redeploy of the previous image tag, health-poll verified — never a hotfix-under-pressure on main; migration-bearing deploys get their rollback caveats written in the PR body *before* merge (the migration-0027 docstring pattern).
+Invoked by the PM only after Sammy says deploy (merge may have been the PM's own, per D2). Deploy-order constraints from the story (e.g., backend-before-frontend) are restated in the PR body and honored. User-visible features get a release note to `#feature-releases` via the Discord MCP as part of story close. **Rollback playbook (previously implicit, now stated):** a bad deploy is answered with revert-PR + redeploy of the previous image tag, health-poll verified — never a hotfix-under-pressure on main; migration-bearing deploys get their rollback caveats written in the PR body *before* merge (the migration-0027 docstring pattern).
 
 ### postmortem — `.claude/agents/postmortem.md`
 - **Why it exists:** the team is ephemeral and its documents are its only memory (§4.3) — but capture was one unenforced line in the DoD, run by the most exhausted context in the pipeline. It shows. The E1-S1 worktree-mutation lesson lives in **four** unsynced copies (`story-review.js`'s executable stance string, charter §2 above, a `MEMORY.md` index line, and a memory-file body); the E2-S1 dead-skeptics lesson has the same four. `feedback_workflow_empty_result_check_failures.md` was written only *after* that bug scored 21 unverified findings as confirmed. And memory has reached ~55 files behind a ~15KB always-loaded index, with at least one file grown past 15KB by appending rather than distilling.
@@ -110,7 +110,8 @@ Invoked by the PM only after Sammy merges and says deploy. Deploy-order constrai
   6  QA         qa-verifier walks AC with evidence on the final branch state.
   7  PR         Draft PR with the evidence bundle: AC checklist, review findings +
                 resolutions, QA report, deploy-order + rollback notes, token actuals.
-  8  HUMAN GATE Sammy reviews + merges. PM pings with a 5-line summary, then waits.
+  8  MERGE      PM merges on a green checklist with no trigger fired, then posts a merge
+                 notice. Escalates with a 5-line summary and waits when a trigger fires.
   9  DEPLOY     On Sammy's go → /deploy-ggbc → prod verification per its checklist.
  10  CLOSE      Definition of Done checked (below); Kanban table updated in docs,
                 postmortem at pipeline exit (§2) + ledger row, actuals to Sammy.
@@ -142,7 +143,7 @@ Inherited from roadmap §6 (single source of truth — not duplicated here): rev
 
 | Gate | When |
 |---|---|
-| **Merge** | Every PR. The team opens draft PRs with evidence; you merge. No exceptions in v1 (see open decision D2). |
+| **Merge** | **Delegated to the PM 2026-08-28 (D2).** The PM merges a `/run-story` story PR when `run-story` §8's checklist is green and no escalation trigger fires; it stops and presents otherwise, and you merge those. **Always yours regardless of checklist: any change that governs, gates, builds, tests, or ships the project** — `.claude/**` in full (every skill including `/deploy-ggbc`, workflows, agent contracts, settings), this charter, the roadmap's protocol sections, the memory dir, `.github/workflows/**`, `.gitignore`, and CI/release config. If it is unclear whether a file governs the pipeline, it does. **Exempt: the pipeline's own §10 bookkeeping commits** — ledger rows, Kanban status, board refreshes, close reports — which record what already happened. The exemption is per COMMIT, not per file: a commit carrying a rule change alongside records is not a records commit, and a `doc-edit` touching this surface always gets its own PR. You can pause the delegation at any time, for one story or in general. `build-next-issue` / `sprint-plan` PRs are out of scope and keep their own human gate. |
 | **Deploy approval** | Every prod deploy, invoked as `/deploy-ggbc` on your word. |
 | **Design sign-off** | Every design-first gate story (E1-S2, E3-S1, E6-S1, E8-S1/S3) and the Arch v2 GO/ITERATE decision. |
 | **Tier overrides** | You can override any delegation-map assignment before launch — that's the point of printing it. |
@@ -194,10 +195,10 @@ Task for that session (historical — the §6 manifest is built and the §7 pilo
 | # | Decision | Recommendation | Alternative |
 |---|---|---|---|
 | D1 | Where the PM lives | Main-loop session + `/run-story` skill (only the main loop can talk to you and hold memory) | — (a "PM subagent" can't do the job; not a real option) |
-| D2 | Merge authority | **Strictly you, every PR** (matches the build-next-issue covenant) | Pre-authorize team merge for S-size docs/test-only stories to cut your load — can add later once the team has a track record |
+| D2 | Merge authority | **Delegated to the team 2026-08-28**, after the §7.3 probation verdict: the PM merges a story PR when the §8 merge checklist is green and no escalation trigger fires; it stops and presents otherwise. **Deploy authority did NOT move** — every deploy still needs Sammy's explicit go. Sammy can pause the delegation at any time. Previously: strictly Sammy, every PR | Widen later to the `build-next-issue` / `sprint-plan` queues, which keep their own human gate for now; or narrow back to docs/test-only if a merge goes wrong |
 | D3 | Planner | Built-in Plan agent, prompt-loaded with house context | Custom `story-planner.md` now (only if v1 plans miss house patterns) |
 | D4 | Kanban home | Roadmap §7 table, PM-maintained | GitHub Projects (more tooling, better at >2 concurrent stories) |
-| D4a | Visual mirror of D4 (added 2026-08-27) | A published Artifact board, source at `.claude/skills/run-story/board/ggbc-board.html`, refreshed by the PM at PLAN/HUMAN GATE/CLOSE (`run-story` §3) — §7 stays the source of truth; the board is read-only convenience for Sammy | None yet in use |
+| D4a | Visual mirror of D4 (added 2026-08-27) | A published Artifact board, source at `.claude/skills/run-story/board/ggbc-board.html`, refreshed by the PM at PLAN/MERGE/CLOSE (`run-story` §3) — §7 stays the source of truth; the board is read-only convenience for Sammy | None yet in use |
 | D5 | Autonomous cadence | v1: you invoke `/run-story` per story | Later: scheduled PM loop drains Ready-for-Dev under the WIP limit — revisit after the pilots |
 
 ---
