@@ -46,7 +46,7 @@ Spawn the built-in `Plan` agent with the brief. Sanity-check the plan against th
 - Source lives at `.claude/skills/run-story/board/ggbc-board.html`, committed to the repo — never the scratchpad, which is session-scoped and gone by the next run. Read it, move this story's card to its new column/state, and leave every other card as last ground-truthed.
 - The file's own header comment carries the published artifact URL. Publish via the `Artifact` tool with that exact `url` so it updates in place — a fresh URL every run leaves Sammy with duplicate links to the same board.
 - **This is a mirror of roadmap §7, never a substitute for it** (§7's table is the Kanban source of truth per charter D4). If the two disagree, §7 wins and the board is what's wrong — fix the board, don't edit the roadmap to match a stale rendering.
-- Refresh again at HUMAN GATE (step 8) and CLOSE (step 10) so it tracks the story through merge and deploy, not just at kickoff.
+- Refresh again at MERGE (step 8) and CLOSE (step 10) so it tracks the story through merge and deploy, not just at kickoff.
 
 ### 4 · BUILD
 Spawn `story-dev` (model per the roadmap's tier column — Sonnet default, Opus for L/XL or named-risky seams; print your one-line reasoning). Verify its self-gate results are pasted counts, not claims.
