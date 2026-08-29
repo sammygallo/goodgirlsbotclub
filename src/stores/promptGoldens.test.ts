@@ -941,8 +941,12 @@ describe('prompt goldens — the harness pins what it claims to', () => {
     // MatchedEntry objects the build reports through `wiTimerOut.fired`.
     // Unlike `renderFired`'s STRING rendering, the live objects keep
     // whatever extra fields they carry at runtime, so this needs no change
-    // to that serializer — which would rewrite every existing server-path
-    // golden (129 files) for what this fixture alone requires.
+    // to that serializer. Teaching `renderFired` to print the two fields
+    // is a reasonable thing for a later story to want (E2-S5), but it is a
+    // harness-wide change, not a local one: `renderFired` is called by
+    // BOTH builders, so it owns every fixture's `.fired.txt`, and altering
+    // its per-entry format regenerates that whole set for what this one
+    // fixture needs. Deliberately out of scope here.
     resetStores();
     const fx = SOLO_FIXTURES.find((f) => f.name === 'server-matched-entries-grouped')!;
     const input = fx.setup();
