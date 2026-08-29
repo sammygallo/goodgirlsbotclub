@@ -70,11 +70,12 @@ AC checklist (from QA) · review findings + resolutions · gate results (counts)
 Refresh the board artifact (§3) first. Then run the **merge checklist**; every line must be true, and each is already produced by an earlier stage, so this is a read-off, not a new judgment:
 
 1. Every AC verified with evidence by `qa-verifier` — no PASS-with-caveat left unresolved.
-2. Every review finding ended **CONFIRMED-fixed**. (An ACCEPTED-with-reason finding is an escalation trigger — see below.)
+2. Every **confirmed** review finding ended **CONFIRMED-fixed**. Findings the skeptics REFUTED are a normal, healthy outcome and block nothing — they are not defects. (An ACCEPTED-with-reason finding *is* an escalation trigger — see below.)
 3. The final review round confirmed **zero** findings.
 4. CI green on the head commit, and the workflows actually fired (an empty checks list is not a pass — house rule).
 5. Deterministic gates pasted as counts, not claims; goldens byte-identical where the story has them.
 6. PR body carries the full evidence bundle (§7).
+7. **`main` is re-checked at merge time**: fetch, confirm the PR still merges cleanly and that nothing landed on `main` since the review round that would change the diff's meaning. A review verdict is only valid against the base it ran on; if `main` moved under a story in a way that touches its files, re-run a scoped round before merging.
 
 **ESCALATION TRIGGERS — any one fires, you STOP and present instead of merging.** These are questions about *which surface the diff touches*, not judgment calls about whether the risk materialized. When a trigger is arguable, it fired.
 
@@ -84,10 +85,13 @@ Refresh the board artifact (§3) first. Then run the **merge checklist**; every 
 - **Cross-repo contract.** Frontend and backend must land together, or a deploy-order window exists.
 - **Auth, permissions, or secrets** surface is touched.
 - **A standard was waived, not met.** Any finding closed ACCEPTED-with-reason, any AC marked deferred, any gate skipped with a rationale. If the team chose to accept less, Sammy decides — that is the whole point of "unless something is significantly off from dev standards."
-- **Review did not converge cleanly.** More rounds than the story's §5 risk class predicts, or a fix round that introduced a new defect twice or more — both signal the class was wrong and the estimate is not trustworthy.
+- **Review did not converge cleanly.** Two or more fix rounds each introduced a new defect, or the round count ran past what the story's band anticipated. Both signal the estimate was wrong, which means the risk was misjudged — and a misjudged risk is exactly what a human gate is for. (Once the §5 risk-class table lands, read the expected round count off it; until then, judge against the band on the card and say what you compared to.)
 - **Third-party or dependency surface**: a new dependency, a lockfile change, or a change to committed `node_modules`.
+- **The team's own governing documents.** THIS SKILL, `docs/agent-team.md`, `.claude/workflows/*`, `.claude/agents/*`, the memory directory, or the roadmap's protocol sections. **A pipeline that can merge edits to its own rules can widen its own authority, including deleting this trigger** — so these always stop, no matter how green the checklist, and that includes a change whose only effect is to make more things auto-mergeable. Docs commits that record what already happened (ledger rows, Kanban status, board refreshes) are not rule changes and do not fire this.
 
 **If nothing fires: merge it** (squash, house commit-message rules), then post the same 5-line summary you would have presented — what, evidence highlights, risk, deploy constraints — as a **merge notice**, prefixed with the checklist result and the one-line reason no trigger fired. The notice is not a request; it is the audit trail, and it must be specific enough that Sammy can decide to revert from it alone. State the revert command.
+
+**Say plainly in every merge notice that the story is now on `main` and will ship with the next deploy anyone approves.** The deploy gate does NOT gate deploy *content*: `:latest` is built from `main`, so a single "go" on some later story ships every merged story sitting there. That is the real cost of a wrong merge, and it is why the escalation triggers are surface-based rather than severity-based.
 
 **If a trigger fires:** name which one, present the 5-line summary, and wait. Do not re-ping. Sammy may also pause the delegation at any time, for one story or in general, by saying so — treat that as a standing instruction until lifted.
 
@@ -95,6 +99,8 @@ Refresh the board artifact (§3) first. Then run the **merge checklist**; every 
 
 ### 9 · DEPLOY — STOP, always (only on Sammy's explicit go)
 **This gate did not move.** A merged story sits on `main` until Sammy says deploy; the merge notice from §8 is what he decides from. Never infer deploy authority from merge authority, and never batch a deploy in with a merge because the story feels routine.
+
+**The deploy request must enumerate everything it would ship, not just this story.** Because the image is built from `main`, asking "deploy E-X?" actually asks "ship every merged-but-unshipped commit on `main`". Diff `main` against the deployed image's commit (the droplet's `.last-deployed`, §5.5 of `/deploy-ggbc`) and list every story in that window with its merge notice, so Sammy approves what is actually going out. If that window contains a story he has not seen a notice for, say so first.
 Invoke `/deploy-ggbc`. Honor the story's deploy-order constraints. Complete any `deferred-to-prod-verify` AC items now and record the evidence.
 
 ### 10 · CLOSE
