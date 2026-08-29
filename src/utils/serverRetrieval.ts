@@ -36,6 +36,7 @@
 import {
   api,
   type RetrievalContextEntryDTO,
+  type RetrievalContextActivationDTO,
 } from '../api/client';
 import {
   useWorldInfoStore,
@@ -47,6 +48,7 @@ import {
   type EntrySource,
   type EntryRevision,
   type MatchedEntry,
+  type WiActivationReason,
 } from '../stores/worldInfoStore';
 import { useCharacterStore } from '../stores/characterStore';
 import { useChatLoreConfigStore } from '../stores/chatLoreConfigStore';
@@ -325,6 +327,17 @@ const VALID_SOURCES = new Set<EntrySource>([
   'generated',
   'fork',
 ]);
+// Mirrors the backend's ActivationReason Literal (app/schemas/retrieval.py
+// in ggbc-backend) — an unrecognized value (a future reason an older
+// frontend build doesn't know about yet) is dropped to `undefined` rather
+// than passed through, same treatment as every other allowlisted field
+// below.
+const VALID_ACTIVATION_REASONS = new Set<WiActivationReason>([
+  'constant',
+  'keyword',
+  'semantic',
+  'sticky',
+]);
 
 function str(v: unknown, fallback: string): string {
   return typeof v === 'string' ? v : fallback;
@@ -361,10 +374,42 @@ function strArr(v: unknown): string[] {
  * `bookId`, not `bookName`; captureWiFired only reads `bookId`/`entry.id`)
  * that nothing renders or keys off it for this call path, so a real book
  * name isn't worth an extra GET /lorebooks round-trip here.
+ *
+ * `activations` is the sibling RetrievalContextDTO.activations map (absent
+ * on a pre-E2-S2a backend — see RetrievalContextDTO's doc comment), looked
+ * up by this entry's own (already-validated) id. `activationReason` is
+ * kept only when it is one of VALID_ACTIVATION_REASONS, else dropped to
+ * undefined — the allowlist, not RetrievalContextActivationDTO's `unknown`
+ * type, is what actually guards against an unrecognized wire value.
+ * `matchedKeyCount` is kept ONLY alongside a resolved `'keyword'` reason
+ * (deliberate client-side narrowing — see MatchedEntry's own doc comment):
+ * an incoherent pairing like `{activationReason: 'semantic',
+ * matchedKeyCount: 3}` surfaces the reason but drops the count, rather
+ * than propagating a count next to a reason it doesn't belong with.
  */
-function dtoToMatchedEntry(dto: RetrievalContextEntryDTO): MatchedEntry | null {
+function dtoToMatchedEntry(
+  dto: RetrievalContextEntryDTO,
+  activations: Record<string, RetrievalContextActivationDTO> | undefined
+): MatchedEntry | null {
   if (typeof dto.id !== 'string' || !dto.id) return null;
   if (typeof dto.lorebook_id !== 'string' || !dto.lorebook_id) return null;
+
+  // Keyed by the SAME validated `dto.id` used everywhere below — never a
+  // pre-guard raw value — so the lookup key can't diverge from the id this
+  // MatchedEntry actually ends up carrying.
+  const activation = activations?.[dto.id];
+  const rawReason = activation?.activationReason;
+  const activationReason = VALID_ACTIVATION_REASONS.has(rawReason as WiActivationReason)
+    ? (rawReason as WiActivationReason)
+    : undefined;
+  const rawCount = activation?.matchedKeyCount;
+  const matchedKeyCount =
+    activationReason === 'keyword' &&
+    typeof rawCount === 'number' &&
+    Number.isFinite(rawCount) &&
+    rawCount >= 1
+      ? rawCount
+      : undefined;
 
   const position = VALID_POSITIONS.has(dto.position as WorldInfoPosition)
     ? (dto.position as WorldInfoPosition)
@@ -418,7 +463,8 @@ function dtoToMatchedEntry(dto: RetrievalContextEntryDTO): MatchedEntry | null {
     entry,
     bookId: dto.lorebook_id,
     bookName: '',
-    matchedKeyCount: undefined,
+    matchedKeyCount,
+    activationReason,
   };
 }
 
@@ -501,7 +547,14 @@ export async function tryServerRetrieval(
     }
     const matchedEntries: MatchedEntry[] = [];
     for (const rawEntry of dto.entries) {
-      const matched = dtoToMatchedEntry(rawEntry);
+      // LANDMINE (do not "fix"): `dto.activations` is intentionally NOT
+      // required by the malformed-response guard above. Requiring it would
+      // make a pre-E2-S2a backend (which never sends the key at all) fall
+      // through to `return null` -> the client-side scan takes over the
+      // whole turn, which is not "behaves as today" and breaks the old-
+      // backend compatibility contract. A malformed/missing value is
+      // guarded HERE, at the point of use, instead.
+      const matched = dtoToMatchedEntry(rawEntry, dto.activations);
       if (matched) matchedEntries.push(matched);
     }
     return {

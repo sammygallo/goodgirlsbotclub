@@ -176,14 +176,15 @@ on every run):
 
 ## Coverage
 
-Solo (27 fixtures): baseline · all sections · reordered + disabled promptOrder
+Solo (28 fixtures): baseline · all sections · reordered + disabled promptOrder
 · empty system block · trim bites · trim over budget · token-aware off ·
 at-depth interleave · at-depth 0 · at-depth overflow · image-only + blank
 assistant turn · macro writes · recall present/absent · persona after_char ·
 persona in_prompt · pure chat mode · linked style · summary compaction floor ·
 hidden messages · world-info scan options · world-info budget eviction ·
-server-matched entries · card overrides disabled · fixed window + summary skew
-· world-info sections disabled · world-info blank guards.
+server-matched entries · server-matched entries grouped · card overrides
+disabled · fixed window + summary skew · world-info sections disabled ·
+world-info blank guards.
 
 Group (16 fixtures): swap · join (+ recall) · swap + scenario override · join +
 scenario override · blank user turn kept (folded) / dropped (unfolded) /

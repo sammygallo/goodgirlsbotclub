@@ -978,6 +978,17 @@ export function bookToCharacterBookV2(book: WorldInfoBook): CharacterBookV2 {
 
 // ---- Keyword scanning ----------------------------------------------------
 
+/**
+ * Why an entry activated. Mirrors the backend's `ActivationReason` Literal
+ * (app/schemas/retrieval.py in ggbc-backend) exactly — kept as a separate
+ * declaration rather than imported, same as every other wire-shape type
+ * this store re-declares client-side (see the module's DTO-normalization
+ * boundary in serverRetrieval.ts, which is the only writer of this field).
+ * Client-side scans (scanMessagesForEntries) never set this at all — it is
+ * populated ONLY on the server-retrieval path.
+ */
+export type WiActivationReason = 'constant' | 'keyword' | 'semantic' | 'sticky';
+
 export interface MatchedEntry {
   entry: WorldInfoEntry;
   bookId: string;
@@ -985,9 +996,23 @@ export interface MatchedEntry {
   /**
    * Number of primary keys that matched when this entry activated by
    * keyword scan. Absent for constant entries, sticky carry-overs, and
-   * related-entry pull-ins. Used as a deterministic group tiebreaker.
+   * related-entry pull-ins on the CLIENT scan path. Now also populated on
+   * server-path turns (see serverRetrieval.ts's dtoToMatchedEntry), but
+   * ONLY for `activationReason === 'keyword'` firings — still absent for
+   * `constant`, `sticky`, and `semantic` on both paths. Used as a
+   * deterministic group tiebreaker (see pickDeterministicWinner below),
+   * which is reachable only from scanMessagesForEntries, so a server-
+   * supplied value never actually enters that tiebreak.
    */
   matchedKeyCount?: number;
+  /**
+   * Set ONLY on the server-retrieval path (see serverRetrieval.ts) —
+   * undefined for every entry scanMessagesForEntries produces. Never use
+   * its presence/absence to infer WHICH ENGINE produced this entry;
+   * `breakdown.wi.activationSource` is the only correct source for that
+   * (see promptBreakdown.ts / breakdownBuckets.ts).
+   */
+  activationReason?: WiActivationReason;
 }
 
 /**

@@ -1465,6 +1465,70 @@ export const SOLO_FIXTURES: SoloFixture[] = [
   },
 
   {
+    name: 'server-matched-entries-grouped',
+    matrix: 'E2-S2a — not a task-0 cell; regression pin only',
+    what:
+      'NOT an AC test — E2-S2a adds `activationReason`/`matchedKeyCount` to ' +
+      'MatchedEntry, and this pins a fact that was already true before that ' +
+      'story and must stay true after it: two server-supplied MatchedEntry ' +
+      'objects that share a non-empty `group` both still reach the prompt. ' +
+      'chatStore.ts:1309 takes entries straight from `serverMatchedEntries` ' +
+      'to `wiByPosition` with no call to resolveGroups/pickDeterministicWinner ' +
+      'in between — those only run inside scanMessagesForEntries, which this ' +
+      'branch skips entirely. The two entries also carry different ' +
+      '`activationReason`/`matchedKeyCount` values, but neither field ' +
+      'renders into any of the three goldens this fixture produces — ' +
+      '`renderFired` prints only `bookId/entry.id`, the prompt golden is ' +
+      'entry content, and the variables golden is macro writes — so this ' +
+      'golden text does NOT pin a field-dropping/field-swapping regression ' +
+      'in that pass-through. The direct assertion in promptGoldens.test.ts\'s ' +
+      '"the harness pins what it claims to" block (search ' +
+      '`server-matched-entries-grouped`) is what actually pins those two ' +
+      'fields, by reading them straight off the `MatchedEntry` objects the ' +
+      'build reports through `wiTimerOut.fired`.',
+    // Reuses the sibling fixture's :1080 key (stable per PINS_ANCHORS,
+    // not a live line number — see the README's 'pins anchors are keys'
+    // section) rather than adding a new one: both fixtures cite the exact
+    // same construct.
+    pins: ':1080 the ?? branch (no group resolution on this path)',
+    setup: () => {
+      return {
+        messages: [mkMsg('sg1', 'What do the archive notes say?')],
+        character: IVY_MINIMAL,
+        serverMatchedEntries: [
+          {
+            entry: mkEntry('3f1c9a20-0000-4000-8000-000000000021', {
+              content: 'Server lore: the archive is locked after dusk.',
+              position: 'before_char',
+              group: 'archive-notes',
+            }),
+            bookId: '7b2e4d10-0000-4000-8000-000000000022',
+            bookName: 'Server-side lorebook',
+            activationReason: 'keyword',
+            matchedKeyCount: 3,
+          },
+          {
+            entry: mkEntry('3f1c9a20-0000-4000-8000-000000000023', {
+              content: 'Server lore: the archive key hangs by the north door.',
+              position: 'before_char',
+              group: 'archive-notes',
+            }),
+            bookId: '7b2e4d10-0000-4000-8000-000000000022',
+            bookName: 'Server-side lorebook',
+            // NOT `matchedKeyCount: 1` — dtoToMatchedEntry (serverRetrieval.ts)
+            // keeps matchedKeyCount ONLY alongside a resolved 'keyword'
+            // reason, so a 'sticky' entry carrying a count is a pairing
+            // production can never actually emit. Omitted, matching what
+            // dtoToMatchedEntry would really produce here (see MatchedEntry's
+            // own doc comment in worldInfoStore.ts).
+            activationReason: 'sticky',
+          },
+        ],
+      };
+    },
+  },
+
+  {
     name: 'card-overrides-disabled',
     matrix: 'R2: C21 — respectCharacterOverride / respectCharacterPHI',
     what:
