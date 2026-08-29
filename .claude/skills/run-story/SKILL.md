@@ -9,7 +9,7 @@ You are the PM defined in `docs/agent-team.md`. Execute exactly ONE story per in
 
 ## Hard rules (non-negotiable)
 
-- **You never merge and never deploy without Sammy's explicit go in chat.** The pipeline runs autonomously up to the HUMAN GATE, then stops and presents.
+- **You may MERGE a story PR yourself once every gate below is green and no ESCALATION TRIGGER fires (§8). You NEVER deploy without Sammy's explicit go.** Merge authority was delegated 2026-08-28 (charter D2); deploy was not. Merging is cheap to undo — a revert PR — and deploy is what users see.
 - **Review runs on the branch BEFORE the PR is marked ready** — never alongside, never after.
 - **WIP limit:** if 2 stories are already in flight (open team PRs not yet merged), stop and tell Sammy instead of starting a third.
 - **Blocked-with-reason beats a lowered bar.** Never weaken an acceptance criterion to pass it. **A blocked story still runs the postmortem before you exit, and still appends its `docs/agent-team-log.md` row** — a falsified premise is the highest-value lesson the pipeline produces, and it is exactly the run that never reaches CLOSE, so the ledger is its only evidence.
@@ -65,14 +65,40 @@ Spawn `qa-verifier` with the brief on the final branch state. Ambiguous-AC escal
 Open a DRAFT PR per repo, then mark ready once the evidence bundle is complete in the body:
 AC checklist (from QA) · review findings + resolutions · gate results (counts) · deploy order + rollback notes · token actuals so far. House rules: "Closes #N" when issue-linked; footer `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 
-### 8 · HUMAN GATE — STOP
-Present to Sammy: 5-line summary per PR (what, evidence highlights, risk, deploy constraints, recommendation). Refresh the board artifact (§3) alongside it — the card that moved to "Review"/"PR" should already be visible when Sammy reads the summary. Wait for merge. Do not proceed, do not re-ping.
+### 8 · MERGE — self-serve, with escalation triggers
 
-### 9 · DEPLOY (only on Sammy's explicit go)
+Refresh the board artifact (§3) first. Then run the **merge checklist**; every line must be true, and each is already produced by an earlier stage, so this is a read-off, not a new judgment:
+
+1. Every AC verified with evidence by `qa-verifier` — no PASS-with-caveat left unresolved.
+2. Every review finding ended **CONFIRMED-fixed**. (An ACCEPTED-with-reason finding is an escalation trigger — see below.)
+3. The final review round confirmed **zero** findings.
+4. CI green on the head commit, and the workflows actually fired (an empty checks list is not a pass — house rule).
+5. Deterministic gates pasted as counts, not claims; goldens byte-identical where the story has them.
+6. PR body carries the full evidence bundle (§7).
+
+**ESCALATION TRIGGERS — any one fires, you STOP and present instead of merging.** These are questions about *which surface the diff touches*, not judgment calls about whether the risk materialized. When a trigger is arguable, it fired.
+
+- **Vision divergence.** The delivered thing differs from what the story's AC described, the story's premise turned out false, scope grew beyond the AC, or the change alters user-visible product direction that the roadmap does not already approve.
+- **Safety red line.** Anything touching media-generation provenance, the NCII red line, or content-safety gates (§6.1, §6.8) — regardless of how clean the review was.
+- **Hard to reverse.** Schema migrations, changes to the shape of persisted user data, deletions, or anything a revert PR alone would not undo.
+- **Cross-repo contract.** Frontend and backend must land together, or a deploy-order window exists.
+- **Auth, permissions, or secrets** surface is touched.
+- **A standard was waived, not met.** Any finding closed ACCEPTED-with-reason, any AC marked deferred, any gate skipped with a rationale. If the team chose to accept less, Sammy decides — that is the whole point of "unless something is significantly off from dev standards."
+- **Review did not converge cleanly.** More rounds than the story's §5 risk class predicts, or a fix round that introduced a new defect twice or more — both signal the class was wrong and the estimate is not trustworthy.
+- **Third-party or dependency surface**: a new dependency, a lockfile change, or a change to committed `node_modules`.
+
+**If nothing fires: merge it** (squash, house commit-message rules), then post the same 5-line summary you would have presented — what, evidence highlights, risk, deploy constraints — as a **merge notice**, prefixed with the checklist result and the one-line reason no trigger fired. The notice is not a request; it is the audit trail, and it must be specific enough that Sammy can decide to revert from it alone. State the revert command.
+
+**If a trigger fires:** name which one, present the 5-line summary, and wait. Do not re-ping. Sammy may also pause the delegation at any time, for one story or in general, by saying so — treat that as a standing instruction until lifted.
+
+**Cost signals are reported, never blocking:** if the run exceeded its §5 class budget, say so in the merge notice with the round count. An overrun is information, not a defect.
+
+### 9 · DEPLOY — STOP, always (only on Sammy's explicit go)
+**This gate did not move.** A merged story sits on `main` until Sammy says deploy; the merge notice from §8 is what he decides from. Never infer deploy authority from merge authority, and never batch a deploy in with a merge because the story feels routine.
 Invoke `/deploy-ggbc`. Honor the story's deploy-order constraints. Complete any `deferred-to-prod-verify` AC items now and record the evidence.
 
 ### 10 · CLOSE
-**Definition of Done** — all true: every AC verified with evidence · findings all resolved/accepted-with-reason · deployed + prod-verified (or explicitly parked by Sammy) · roadmap §7 Kanban table updated (docs commit, may batch with other doc changes) · **board artifact (§3) refreshed to match §7 and republished to its stored URL** · **POSTMORTEM run, its `verdict` pasted verbatim into the close report, and its proposals applied-or-declined** (see below) · **PLAN ABSORPTION done if this story produced ground truth** (see below) · **token actuals reported to Sammy as FOUR numbers — build / verification / plan absorption / postmortem — vs the story's band, one line per pipeline stage, with the review-round count stated next to the verification number (here and in the ledger row): rounds are the cost driver neither headline number explains (E2-S2: 6 rounds, ~24× the verify band)**. The fourth exists so a skipped postmortem is detectable: a stage that ran costs tokens, and a close report showing no postmortem spend is a skip, not a clean run. (Roadmap §5/§6.5 still define three *story* cost categories; postmortem is pipeline overhead. Flag the taxonomy mismatch at the next plan absorption rather than editing the approved roadmap unilaterally.)
+**Definition of Done** — all true: every AC verified with evidence · findings all resolved/accepted-with-reason · merged (self-serve per §8, or by Sammy after an escalation) · deployed + prod-verified on Sammy's go (or explicitly parked by Sammy) · roadmap §7 Kanban table updated (docs commit, may batch with other doc changes) · **board artifact (§3) refreshed to match §7 and republished to its stored URL** · **POSTMORTEM run, its `verdict` pasted verbatim into the close report, and its proposals applied-or-declined** (see below) · **PLAN ABSORPTION done if this story produced ground truth** (see below) · **token actuals reported to Sammy as FOUR numbers — build / verification / plan absorption / postmortem — vs the story's band, one line per pipeline stage, with the review-round count stated next to the verification number (here and in the ledger row): rounds are the cost driver neither headline number explains (E2-S2: 6 rounds, ~24× the verify band)**. The fourth exists so a skipped postmortem is detectable: a stage that ran costs tokens, and a close report showing no postmortem spend is a skip, not a clean run. (Roadmap §5/§6.5 still define three *story* cost categories; postmortem is pipeline overhead. Flag the taxonomy mismatch at the next plan absorption rather than editing the approved roadmap unilaterally.)
 
 **PLAN ABSORPTION (step 10b, only for knowledge-producing stories).** If the deliverable was knowledge rather than code — an audit, a research pass, a design validation, a red-teamed spec — then before closing, re-check the roadmap against what the story proved. Other stories were written on premises this one may have just falsified. **Correct every document that carries a falsified premise, named individually — not just the roadmap.** This clause said "the roadmap", singular, and that is the rule that failed: E9-S4 was found during E2-S1's absorption on 2026-08-24, the correction went to the repo docs, and the memory row that produced it (`project_roadmap_status.md` 10.3) was left standing — so the same file produced E9-S1 two days later, and a sweep then found a third dead row (10.2) already loaded into live story E9-S3. A premise typically has several carriers: the memory file, the tracked `ROADMAP.md`, this roadmap, and any handoff doc. Grep the claim, not the file you happen to have open. Run the absorption as a workflow (lenses over roadmap + deliverable → refute-first verifier per proposed change → completeness critic), apply the upheld changes in one docs PR, and file any defect the deliverable surfaced that no issue covers. Do NOT skip because the story "only wrote a doc": E2-S1's absorption found an epic whose entire premise had died (E4 planned to port a UI that no longer exists) and a backlog story already shipped. Roadmap §5 defines the cost category; report it separately.
 

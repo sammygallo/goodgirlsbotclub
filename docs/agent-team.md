@@ -194,7 +194,7 @@ Task for that session (historical — the §6 manifest is built and the §7 pilo
 | # | Decision | Recommendation | Alternative |
 |---|---|---|---|
 | D1 | Where the PM lives | Main-loop session + `/run-story` skill (only the main loop can talk to you and hold memory) | — (a "PM subagent" can't do the job; not a real option) |
-| D2 | Merge authority | **Strictly you, every PR** (matches the build-next-issue covenant) | Pre-authorize team merge for S-size docs/test-only stories to cut your load — can add later once the team has a track record |
+| D2 | Merge authority | **Delegated to the team 2026-08-28**, after the §7.3 probation verdict: the PM merges a story PR when the §8 merge checklist is green and no escalation trigger fires; it stops and presents otherwise. **Deploy authority did NOT move** — every deploy still needs Sammy's explicit go. Sammy can pause the delegation at any time. Previously: strictly Sammy, every PR | Widen later to the `build-next-issue` / `sprint-plan` queues, which keep their own human gate for now; or narrow back to docs/test-only if a merge goes wrong |
 | D3 | Planner | Built-in Plan agent, prompt-loaded with house context | Custom `story-planner.md` now (only if v1 plans miss house patterns) |
 | D4 | Kanban home | Roadmap §7 table, PM-maintained | GitHub Projects (more tooling, better at >2 concurrent stories) |
 | D4a | Visual mirror of D4 (added 2026-08-27) | A published Artifact board, source at `.claude/skills/run-story/board/ggbc-board.html`, refreshed by the PM at PLAN/HUMAN GATE/CLOSE (`run-story` §3) — §7 stays the source of truth; the board is read-only convenience for Sammy | None yet in use |
