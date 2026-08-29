@@ -7,9 +7,15 @@
 #   `wiByPosition` with no call to resolveGroups/pickDeterministicWinner in
 #   between — those only run inside scanMessagesForEntries, which this branch
 #   skips entirely. The two entries also carry different
-#   `activationReason`/`matchedKeyCount` values specifically so a
-#   field-dropping or field-swapping regression in that pass-through would be
-#   visible in the golden, not just entry count.
+#   `activationReason`/`matchedKeyCount` values, but neither field renders
+#   into any of the three goldens this fixture produces — `renderFired`
+#   prints only `bookId/entry.id`, the prompt golden is entry content, and
+#   the variables golden is macro writes — so this golden text does NOT pin a
+#   field-dropping/field-swapping regression in that pass-through. The direct
+#   assertion in promptGoldens.test.ts's "the harness pins what it claims to"
+#   block (search `server-matched-entries-grouped`) is what actually pins
+#   those two fields, by reading them straight off the `MatchedEntry` objects
+#   the build reports through `wiTimerOut.fired`.
 # pins: :1080 the ?? branch (no group resolution on this path)
 # entries: 2
 # overBudget: false

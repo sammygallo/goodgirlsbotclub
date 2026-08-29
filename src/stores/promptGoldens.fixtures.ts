@@ -1476,9 +1476,16 @@ export const SOLO_FIXTURES: SoloFixture[] = [
       'to `wiByPosition` with no call to resolveGroups/pickDeterministicWinner ' +
       'in between — those only run inside scanMessagesForEntries, which this ' +
       'branch skips entirely. The two entries also carry different ' +
-      '`activationReason`/`matchedKeyCount` values specifically so a ' +
-      'field-dropping or field-swapping regression in that pass-through ' +
-      'would be visible in the golden, not just entry count.',
+      '`activationReason`/`matchedKeyCount` values, but neither field ' +
+      'renders into any of the three goldens this fixture produces — ' +
+      '`renderFired` prints only `bookId/entry.id`, the prompt golden is ' +
+      'entry content, and the variables golden is macro writes — so this ' +
+      'golden text does NOT pin a field-dropping/field-swapping regression ' +
+      'in that pass-through. The direct assertion in promptGoldens.test.ts\'s ' +
+      '"the harness pins what it claims to" block (search ' +
+      '`server-matched-entries-grouped`) is what actually pins those two ' +
+      'fields, by reading them straight off the `MatchedEntry` objects the ' +
+      'build reports through `wiTimerOut.fired`.',
     // Reuses the sibling fixture's :1080 key (stable per PINS_ANCHORS,
     // not a live line number — see the README's 'pins anchors are keys'
     // section) rather than adding a new one: both fixtures cite the exact
@@ -1508,8 +1515,13 @@ export const SOLO_FIXTURES: SoloFixture[] = [
             }),
             bookId: '7b2e4d10-0000-4000-8000-000000000022',
             bookName: 'Server-side lorebook',
+            // NOT `matchedKeyCount: 1` — dtoToMatchedEntry (serverRetrieval.ts)
+            // keeps matchedKeyCount ONLY alongside a resolved 'keyword'
+            // reason, so a 'sticky' entry carrying a count is a pairing
+            // production can never actually emit. Omitted, matching what
+            // dtoToMatchedEntry would really produce here (see MatchedEntry's
+            // own doc comment in worldInfoStore.ts).
             activationReason: 'sticky',
-            matchedKeyCount: 1,
           },
         ],
       };

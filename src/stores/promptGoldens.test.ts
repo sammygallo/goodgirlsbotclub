@@ -924,4 +924,43 @@ describe('prompt goldens — the harness pins what it claims to', () => {
       'the two orderings produce the same history — the mutation is unobservable'
     ).not.toEqual(filterThenSlice);
   });
+
+  it('server-matched-entries-grouped actually pins activationReason/matchedKeyCount per entry', () => {
+    // DEFECT B (E2-S2a fix round 1): the fixture's `what` field used to
+    // CLAIM that a field-dropping/field-swapping regression in the solo
+    // pass-through loop (chatStore.ts:1309) "would be visible in the
+    // golden" — it was not. `renderFired` above only ever prints
+    // `bookId/entry.id` (see its own `ids()` helper), the prompt golden
+    // renders `entry.content`, and the variables golden holds macro writes;
+    // none of the three goldens this fixture produces reads
+    // `activationReason`/`matchedKeyCount` at all. Reshaping each
+    // MatchedEntry in that pass-through to `{entry, bookId, bookName}` —
+    // erasing both new fields — left every golden AND the full suite green.
+    //
+    // This is the actual pin: read the fields straight off the real
+    // MatchedEntry objects the build reports through `wiTimerOut.fired`.
+    // Unlike `renderFired`'s STRING rendering, the live objects keep
+    // whatever extra fields they carry at runtime, so this needs no change
+    // to that serializer — which would rewrite every existing server-path
+    // golden (129 files) for what this fixture alone requires.
+    resetStores();
+    const fx = SOLO_FIXTURES.find((f) => f.name === 'server-matched-entries-grouped')!;
+    const input = fx.setup();
+    const wiOut = mkWiOut(input.messages, input.wiTimers);
+    buildConversationContext(
+      input.messages,
+      input.character,
+      input.availableEmotions,
+      wiOut,
+      input.ragContext,
+      input.serverMatchedEntries
+    );
+    const triples = (wiOut.fired ?? []).map(
+      (m) => [m.entry.id, m.activationReason, m.matchedKeyCount] as const
+    );
+    expect(triples).toEqual([
+      ['3f1c9a20-0000-4000-8000-000000000021', 'keyword', 3],
+      ['3f1c9a20-0000-4000-8000-000000000023', 'sticky', undefined],
+    ]);
+  });
 });
