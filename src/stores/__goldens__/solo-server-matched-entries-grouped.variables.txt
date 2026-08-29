@@ -1,0 +1,24 @@
+# solo/server-matched-entries-grouped   [E2-S2a — not a task-0 cell; regression pin only]
+# what: NOT an AC test — E2-S2a adds `activationReason`/`matchedKeyCount` to
+#   MatchedEntry, and this pins a fact that was already true before that
+#   story and must stay true after it: two server-supplied MatchedEntry
+#   objects that share a non-empty `group` both still reach the prompt.
+#   chatStore.ts:1309 takes entries straight from `serverMatchedEntries` to
+#   `wiByPosition` with no call to resolveGroups/pickDeterministicWinner in
+#   between — those only run inside scanMessagesForEntries, which this branch
+#   skips entirely. The two entries also carry different
+#   `activationReason`/`matchedKeyCount` values, but neither field renders
+#   into any of the three goldens this fixture produces — `renderFired`
+#   prints only `bookId/entry.id`, the prompt golden is entry content, and
+#   the variables golden is macro writes — so this golden text does NOT pin a
+#   field-dropping/field-swapping regression in that pass-through. The direct
+#   assertion in promptGoldens.test.ts's "the harness pins what it claims to"
+#   block (search `server-matched-entries-grouped`) is what actually pins
+#   those two fields, by reading them straight off the `MatchedEntry` objects
+#   the build reports through `wiTimerOut.fired`.
+# pins: :1080 the ?? branch (no group resolution on this path)
+# A count above 1 here means a macro executed more than once.
+══════════════════════════════════════════════════════════════════════════
+(no variables written by this build)
+══════════════════════════════════════════════════════════════════════════
+0 key(s)

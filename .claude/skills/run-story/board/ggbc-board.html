@@ -265,18 +265,18 @@
     </div>
     <div class="stamp">
       <b>29 Aug 2026</b><br>
-      main <b>dc389a4e</b><br>
-      active <b>E2-S2a</b>
+      main <b>0b86865c</b><br>
+      active <b>—</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
     <div class="tile"><div class="n">2</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">19</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
-    <div class="tile is-ok"><div class="n">6</div><div class="k">Deployed</div></div>
+    <div class="tile is-ok"><div class="n">7</div><div class="k">Deployed</div></div>
     <div class="tile is-warn"><div class="n">10</div><div class="k">Open issues</div></div>
   </div>
 
@@ -311,14 +311,9 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E2">
-          <div class="id">E2-S2a</div>
-          <div class="t">Activation reason in the server DTO</div>
-          <div class="m">29 Aug · backend <b>#82</b> + frontend <b>#490</b> · 3 review rounds converged at zero · all 4 ACs mutation-verified. Retires E2-S2's "reason unavailable (server-path turn)" blind spot.</div>
-          <div class="gates"><span class="gate hot">cross-repo — at merge gate</span></div>
-        </article>
+        <p style="font-size:12.5px;color:var(--muted);margin:2px 2px 0;">Nothing in flight — E2-S2a deployed 29 Aug.</p>
       </div>
     </section>
 
@@ -406,8 +401,9 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Deployed</h2><span class="ct">6</span></div>
+      <div class="colhead"><h2>Deployed</h2><span class="ct">7</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E2"><div class="id">E2-S2a</div><div class="t">Activation reason in the server DTO</div><div class="m">29 Aug · backend #82 + frontend #490, shipped together · 3 rounds converged at zero, QA 4/4 mutation-verified · additive DTO, no migration.</div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S2</div><div class="t">Token breakdown visualization</div><div class="m">28 Aug · #479 #481 #482 + backend #81 + #484 · closes #453/#457 · ~17 review rounds over 4 PR loops (final loop: 6 rounds, 35 defects) · PLAN-leg pilot.</div></article>
         <article class="card s-ok" data-epic="E4"><div class="id">E4-S0</div><div class="t">Client activation-engine repair</div><div class="m">26 Aug · #461 + backend #79 · 4 divergences closed, pinned by a 14-vector fixture.</div></article>
         <article class="card s-ok" data-epic="E9"><div class="id">E9-S6</div><div class="t">Group macro substitution + blank-turn guard</div><div class="m">26 Aug · #465 · 4 review passes, 115 agents, 10 defects fixed, 6 filed.</div></article>
@@ -431,26 +427,25 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S2a — at the merge gate</h2>
-    <p class="sub">The activation engine has computed <i>why</i> each lore entry fired since Phase 2, then discarded it one line before the wire. Now it reaches the client. Additive, no migration, no UI — the rendered drill-down needs E2-S5's id crosswalk, still Backlog.</p>
+    <h2>E2-S2a — closed 29 Aug</h2>
+    <p class="sub">Shipped both halves together at 21:53Z, prod-verified. The activation engine had computed <i>why</i> each lore entry fired since Phase 2 and discarded it one line before the wire; it now reaches <code>MatchedEntry</code>. No UI — the rendered drill-down still waits on E2-S5's id crosswalk.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Build</div><div class="sv">2 repos, +667 lines</div></div>
-      <div class="step done"><div class="sn">Review r1</div><div class="sv">2 defects</div></div>
-      <div class="step done"><div class="sn">Review r2</div><div class="sv">2 defects — from r1's fix</div></div>
-      <div class="step done"><div class="sn">Review r3</div><div class="sv">0 confirmed — converged</div></div>
-      <div class="step done"><div class="sn">QA</div><div class="sv">4 / 4 AC pass</div></div>
-      <div class="step now"><div class="sn">Merge gate</div><div class="sv">Cross-repo trigger — Sammy</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">3 rounds → 0 confirmed</div></div>
+      <div class="step done"><div class="sn">QA</div><div class="sv">4 / 4 AC mutation-verified</div></div>
+      <div class="step done"><div class="sn">Merge</div><div class="sv">#82 + #490</div></div>
+      <div class="step done"><div class="sn">Deploy</div><div class="sv">/health 200, 2nd poll</div></div>
     </div>
 
     <div class="tscroll">
       <table>
-        <thead><tr><th>Round</th><th>Confirmed</th><th>Refuted</th><th>What it found</th></tr></thead>
+        <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>1 — full</td><td class="num">2</td><td class="num">1</td><td>A golden fixture claiming coverage it did not have · no test pinning <i>which</i> reason belonged to <i>which</i> entry</td></tr>
-          <tr><td>2 — full, scoped to the fix</td><td class="num">2</td><td class="num">1</td><td>Two false claims <b>introduced by round 1's fix</b> — the same defect class that fix was written to close</td></tr>
-          <tr><td>3 — full, scoped to the fix</td><td class="num up">0</td><td class="num">4</td><td>Converged</td></tr>
-          <tr><td>Verification cost</td><td class="num">~3.5M</td><td></td><td>Band for this class is 3.2–9.5M — <b>at the floor</b>. First story priced on the #487 model</td></tr>
+          <tr><td>Build</td><td class="num">~0.64M</td><td>M + 2 rework rounds</td><td>Under</td></tr>
+          <tr><td>Verification</td><td class="num">~3.5M / 3 rounds</td><td>3.2–9.5M</td><td class="up">On band, at the floor — first story priced on the #487 model</td></tr>
+          <tr><td>Absorption</td><td class="num">~0</td><td>n/a</td><td>Code story; no premises falsified</td></tr>
+          <tr><td>Postmortem</td><td class="num">~0.09M</td><td>0.1–0.3M</td><td>Under</td></tr>
+          <tr><td>Defects found</td><td class="num">4</td><td></td><td><b>All four were false coverage claims in test prose.</b> The production DTO was correct at first commit and no fix round ever touched it</td></tr>
         </tbody>
       </table>
     </div>

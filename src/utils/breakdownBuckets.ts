@@ -428,6 +428,11 @@ function buildWiSummary(breakdown: PromptBreakdown): WiSummary {
   // AC 9: rendered instead of budget/evicted, never inferred from
   // `matchedKeyCount`'s absence — that field belongs to the scan report, not
   // to this breakdown, and a server-path turn has no scan report at all.
+  // Since E2-S2a a per-entry reason is available directly
+  // (MatchedEntry.activationReason) instead of inferred; `matchedKeyCount`'s
+  // absence still distinguishes nothing (undefined for `semantic`,
+  // `constant` AND `sticky` alike), and its presence now only ever means
+  // `keyword`.
   if (breakdown.wi.activationSource === 'server') {
     return { ...base, unavailableNote: 'Activation details unavailable (server-path turn)' };
   }

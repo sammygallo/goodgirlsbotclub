@@ -281,7 +281,11 @@ export interface PromptBreakdown {
     /**
      * Where the activation decision came from. AC 9: the drill-down renders
      * "reason unavailable (server-path turn)" off THIS, and never infers a
-     * reason from the absence of `matchedKeyCount`.
+     * reason from the absence of `matchedKeyCount`. Since E2-S2a a
+     * per-entry reason is available directly (MatchedEntry.activationReason)
+     * instead of inferred; `matchedKeyCount`'s absence still distinguishes
+     * nothing (undefined for `semantic`, `constant` AND `sticky` alike),
+     * and its presence now only ever means `keyword`.
      */
     activationSource: 'server' | 'client';
   };
