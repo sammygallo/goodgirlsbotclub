@@ -1,6 +1,6 @@
 ---
 name: run-story
-description: "Execute ONE roadmap story through the GGBC agent-team pipeline (intake → brief → plan → build → review → QA → PR → human gate → deploy → close). Use when the user says /run-story <STORY-ID> (e.g. /run-story E2-S1), 'run story X', 'execute the next story', or 'start the pilot'. Story IDs and acceptance criteria live in docs/product-roadmap-10.2-12.md; the team charter is docs/agent-team.md."
+description: "Execute ONE roadmap story through the GGBC agent-team pipeline (intake → brief → plan → build → review → QA → PR → merge → deploy → close). Use when the user says /run-story <STORY-ID> (e.g. /run-story E2-S1), 'run story X', 'execute the next story', or 'start the pilot'. Story IDs and acceptance criteria live in docs/product-roadmap-10.2-12.md; the team charter is docs/agent-team.md."
 ---
 
 # Run a roadmap story — PM/orchestrator pipeline
