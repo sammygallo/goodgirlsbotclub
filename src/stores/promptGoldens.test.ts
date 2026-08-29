@@ -541,7 +541,7 @@ describe('prompt goldens — the harness pins what it claims to', () => {
     // wrong (it claimed 17 group fixtures against 16) from the moment round 2
     // added fixtures without re-counting, and nothing could tell. Update these
     // when you add a fixture — and update the README in the same commit.
-    expect(SOLO_FIXTURES.length, 'README "Solo (N fixtures)"').toBe(27);
+    expect(SOLO_FIXTURES.length, 'README "Solo (N fixtures)"').toBe(28);
     expect(GROUP_FIXTURES.length, 'README "Group (N fixtures)"').toBe(16);
     // Round-3 review: the literals above alone let the README's prose drift —
     // a dev bumps toBe(N) per the failure message and never opens the README.

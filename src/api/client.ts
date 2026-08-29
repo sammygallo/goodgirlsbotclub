@@ -551,11 +551,40 @@ export interface RetrievalContextEntryDTO {
   // category, relatedIds, source, revisions, createdAt, updatedAt
 }
 
-/** Response for POST /retrieval/context — see RetrievalContextEntryDTO. */
+/**
+ * Per-entry activation detail from POST /retrieval/context
+ * (EntryActivationOut), keyed by entry id in RetrievalContextDTO.activations.
+ * `activationReason` is deliberately typed `unknown`, not a union of the
+ * known reason strings — the ALLOWLIST in serverRetrieval.ts is the runtime
+ * guard against an unrecognized value, not this type, so a backend that
+ * ships a fifth reason ahead of an old frontend build still compiles here
+ * and degrades to "unrecognized" at the allowlist instead of at `tsc`.
+ *
+ * `matchedKeyCount: null` IS THE WIRE SHAPE, not a theoretical one — same
+ * convention as RetrievalMessagesDTO.reason below: EntryActivationOut sets
+ * it via a plain `= None` default and the route serializes without
+ * `exclude_none`, so e.g. a `"semantic"` firing carries a literal
+ * `"matchedKeyCount": null` on the wire, never an absent key.
+ */
+export interface RetrievalContextActivationDTO {
+  activationReason?: unknown;
+  matchedKeyCount?: number | null;
+}
+
+/**
+ * Response for POST /retrieval/context — see RetrievalContextEntryDTO.
+ * `activations` is optional: a backend that predates it (or a stripping
+ * proxy) simply omits the key, and every consumer must keep working when
+ * it's absent — see serverRetrieval.ts's dtoToMatchedEntry, which is
+ * guarded at the point of use rather than here, so an absent `activations`
+ * degrades to "no activation detail" instead of the whole response being
+ * rejected as malformed.
+ */
 export interface RetrievalContextDTO {
   entries: RetrievalContextEntryDTO[];
   turnNo: number;
   activatedEntryIds: string[];
+  activations?: Record<string, RetrievalContextActivationDTO>;
 }
 
 /** One chunk from POST /retrieval/messages (Phase 2 of the

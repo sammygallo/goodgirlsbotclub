@@ -336,6 +336,177 @@ describe('tryServerRetrieval — network path', () => {
     expect(result).toBeNull();
     expect(getRetrievalContext).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------
+  // E2-S2a — activationReason / matchedKeyCount sourced from the DTO's
+  // additive `activations` map (RetrievalContextDTO.activations), keyed by
+  // entry id. See dtoToMatchedEntry's own doc comment for the narrowing
+  // rules these pin.
+  // -------------------------------------------------------------------
+
+  it('AC 3 — behaves like today against a response with no `activations` key at all (pre-E2-S2a backend)', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ac3-entry-1', lorebook_id: 'ac3-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ac3-entry-1'],
+      // no `activations` key at all — the malformed-response guard must
+      // NOT require it (see the LANDMINE comment at the call site).
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-no-activations-key.jsonl');
+
+    // Non-null, with a real entry, is load-bearing: a null result (the
+    // client-side-scan fallback) would ALSO read as "both fields
+    // undefined" if only the field assertions below were checked, silently
+    // passing a broken AC-3 guard.
+    expect(result).not.toBeNull();
+    expect(result!.matchedEntries).toHaveLength(1);
+    expect(result!.matchedEntries[0].activationReason).toBeUndefined();
+    expect(result!.matchedEntries[0].matchedKeyCount).toBeUndefined();
+  });
+
+  it('reads a keyword firing from `activations`, never from the entry object itself', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'kw-entry-1', lorebook_id: 'kw-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['kw-entry-1'],
+      activations: {
+        'kw-entry-1': { activationReason: 'keyword', matchedKeyCount: 2 },
+      },
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-keyword-activation.jsonl');
+
+    expect(result).not.toBeNull();
+    const [matched] = result!.matchedEntries;
+    expect(matched.activationReason).toBe('keyword');
+    expect(matched.matchedKeyCount).toBe(2);
+  });
+
+  it('reads a semantic firing, converting the wire `matchedKeyCount: null` to undefined', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'sem-entry-1', lorebook_id: 'sem-book-1', keys: [], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: [],
+      activations: {
+        'sem-entry-1': { activationReason: 'semantic', matchedKeyCount: null },
+      },
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-semantic-activation.jsonl');
+
+    expect(result).not.toBeNull();
+    const [matched] = result!.matchedEntries;
+    expect(matched.activationReason).toBe('semantic');
+    // Not toBeFalsy() — 0 is also falsy, and an implementation that
+    // invented a wrong `0` count would pass that weaker assertion.
+    expect(matched.matchedKeyCount).toBeUndefined();
+  });
+
+  it('drops an unrecognized activationReason and its count together', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'unk-entry-1', lorebook_id: 'unk-book-1', keys: [], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: [],
+      activations: {
+        'unk-entry-1': { activationReason: 'telepathy', matchedKeyCount: 4 },
+      },
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-unknown-reason.jsonl');
+
+    expect(result).not.toBeNull();
+    const [matched] = result!.matchedEntries;
+    expect(matched.activationReason).toBeUndefined();
+    expect(matched.matchedKeyCount).toBeUndefined();
+  });
+
+  it('narrows an incoherent matchedKeyCount to undefined while keeping a valid reason', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [
+        { id: 'inc-entry-1', lorebook_id: 'inc-book-1', keys: [], content: 'c' },
+        { id: 'inc-entry-2', lorebook_id: 'inc-book-1', keys: ['k'], content: 'c' },
+      ],
+      turnNo: 3,
+      activatedEntryIds: [],
+      activations: {
+        // A count next to a non-'keyword' reason — a semantic firing has
+        // no keyword hit to show a count for.
+        'inc-entry-1': { activationReason: 'semantic', matchedKeyCount: 3 },
+        // A 'keyword' reason whose count is 0 — entry_match_count treats a
+        // zero count as no hit at all server-side, so this shouldn't
+        // happen, but the client narrows it defensively rather than
+        // trusting the wire.
+        'inc-entry-2': { activationReason: 'keyword', matchedKeyCount: 0 },
+      },
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-incoherent-count.jsonl');
+
+    expect(result).not.toBeNull();
+    const [first, second] = result!.matchedEntries;
+    expect(first.activationReason).toBe('semantic');
+    expect(first.matchedKeyCount).toBeUndefined();
+    expect(second.activationReason).toBe('keyword');
+    expect(second.matchedKeyCount).toBeUndefined();
+  });
+
+  it('treats a malformed `activations` value (a string) as absent rather than throwing', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'mal-str-entry-1', lorebook_id: 'mal-book-1', keys: [], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: [],
+      activations: 'nope',
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-malformed-activations-string.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(result!.matchedEntries).toHaveLength(1);
+    expect(result!.matchedEntries[0].activationReason).toBeUndefined();
+    expect(result!.matchedEntries[0].matchedKeyCount).toBeUndefined();
+  });
+
+  it('treats a malformed `activations` value (an array) as absent rather than throwing', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'mal-arr-entry-1', lorebook_id: 'mal-book-1', keys: [], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: [],
+      activations: [],
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-malformed-activations-array.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(result!.matchedEntries).toHaveLength(1);
+    expect(result!.matchedEntries[0].activationReason).toBeUndefined();
+    expect(result!.matchedEntries[0].matchedKeyCount).toBeUndefined();
+  });
+
+  it('keys `activations` lookups by entry id, not array position', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [
+        { id: '', lorebook_id: 'idx-book-1' }, // malformed -> dropped by the existing id guard
+        { id: 'idx-entry-2', lorebook_id: 'idx-book-1', keys: ['k'], content: 'c' },
+      ],
+      turnNo: 3,
+      activatedEntryIds: [],
+      activations: {
+        'idx-entry-2': { activationReason: 'keyword', matchedKeyCount: 1 },
+      },
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-keyed-by-id-not-index.jsonl');
+
+    expect(result).not.toBeNull();
+    // The survivor is at index 0 of the OUTPUT array (the malformed first
+    // entry was dropped) but entries[1] on the wire. A lookup keyed by
+    // array position instead of id would miss it here.
+    expect(result!.matchedEntries).toHaveLength(1);
+    expect(result!.matchedEntries[0].entry.id).toBe('idx-entry-2');
+    expect(result!.matchedEntries[0].activationReason).toBe('keyword');
+    expect(result!.matchedEntries[0].matchedKeyCount).toBe(1);
+  });
 });
 
 describe('commitServerRetrieval', () => {

@@ -1,0 +1,27 @@
+# solo/server-matched-entries-grouped   [E2-S2a — not a task-0 cell; regression pin only]
+# what: NOT an AC test — E2-S2a adds `activationReason`/`matchedKeyCount` to
+#   MatchedEntry, and this pins a fact that was already true before that
+#   story and must stay true after it: two server-supplied MatchedEntry
+#   objects that share a non-empty `group` both still reach the prompt.
+#   chatStore.ts:1309 takes entries straight from `serverMatchedEntries` to
+#   `wiByPosition` with no call to resolveGroups/pickDeterministicWinner in
+#   between — those only run inside scanMessagesForEntries, which this branch
+#   skips entirely. The two entries also carry different
+#   `activationReason`/`matchedKeyCount` values specifically so a
+#   field-dropping or field-swapping regression in that pass-through would be
+#   visible in the golden, not just entry count.
+# pins: :1080 the ?? branch (no group resolution on this path)
+# wiTimerOut.currentTurn (in): 0
+# wiTimerOut.timers (in): (fresh chat — no seeded timers)
+# serverMatchedEntries (in): 2 entr(ies) — the local scan is SKIPPED
+# toasts: (none raised by this build)
+══════════════════════════════════════════════════════════════════════════
+fired          = 7b2e4d10-0000-4000-8000-000000000022/3f1c9a20-0000-4000-8000-000000000021, 7b2e4d10-0000-4000-8000-000000000022/3f1c9a20-0000-4000-8000-000000000023
+trimmedAtDepth = (none)
+activated      = (none)
+══════════════════════════════════════════════════════════════════════════
+scanReport.budget           = 0
+scanReport.pinnedTokens     = 0
+scanReport.totalTokens      = 0
+scanReport.pinnedOverBudget = false
+scanReport.dropped          = (none)

@@ -1116,7 +1116,11 @@ export interface PreparedConversation {
   wiScanReport: WorldInfoScanReport;
   /** Which activation engine produced this turn's entries. AC 9's data: the
    *  drill-down says "reason unavailable (server-path turn)" off THIS, and
-   *  never infers it from a missing `matchedKeyCount`. */
+   *  never infers it from a missing `matchedKeyCount`. Since E2-S2a a
+   *  per-entry reason IS available (MatchedEntry.activationReason) — read
+   *  that instead; `matchedKeyCount`'s absence still distinguishes nothing
+   *  (undefined for `semantic`, `constant` AND `sticky` alike), and its
+   *  presence now only ever means `keyword`. */
   activationSource: 'server' | 'client';
   tokenProfile: TokenizerProfile;
   genState: ReturnType<typeof useGenerationStore.getState>;

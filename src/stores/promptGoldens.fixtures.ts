@@ -1465,6 +1465,58 @@ export const SOLO_FIXTURES: SoloFixture[] = [
   },
 
   {
+    name: 'server-matched-entries-grouped',
+    matrix: 'E2-S2a — not a task-0 cell; regression pin only',
+    what:
+      'NOT an AC test — E2-S2a adds `activationReason`/`matchedKeyCount` to ' +
+      'MatchedEntry, and this pins a fact that was already true before that ' +
+      'story and must stay true after it: two server-supplied MatchedEntry ' +
+      'objects that share a non-empty `group` both still reach the prompt. ' +
+      'chatStore.ts:1309 takes entries straight from `serverMatchedEntries` ' +
+      'to `wiByPosition` with no call to resolveGroups/pickDeterministicWinner ' +
+      'in between — those only run inside scanMessagesForEntries, which this ' +
+      'branch skips entirely. The two entries also carry different ' +
+      '`activationReason`/`matchedKeyCount` values specifically so a ' +
+      'field-dropping or field-swapping regression in that pass-through ' +
+      'would be visible in the golden, not just entry count.',
+    // Reuses the sibling fixture's :1080 key (stable per PINS_ANCHORS,
+    // not a live line number — see the README's 'pins anchors are keys'
+    // section) rather than adding a new one: both fixtures cite the exact
+    // same construct.
+    pins: ':1080 the ?? branch (no group resolution on this path)',
+    setup: () => {
+      return {
+        messages: [mkMsg('sg1', 'What do the archive notes say?')],
+        character: IVY_MINIMAL,
+        serverMatchedEntries: [
+          {
+            entry: mkEntry('3f1c9a20-0000-4000-8000-000000000021', {
+              content: 'Server lore: the archive is locked after dusk.',
+              position: 'before_char',
+              group: 'archive-notes',
+            }),
+            bookId: '7b2e4d10-0000-4000-8000-000000000022',
+            bookName: 'Server-side lorebook',
+            activationReason: 'keyword',
+            matchedKeyCount: 3,
+          },
+          {
+            entry: mkEntry('3f1c9a20-0000-4000-8000-000000000023', {
+              content: 'Server lore: the archive key hangs by the north door.',
+              position: 'before_char',
+              group: 'archive-notes',
+            }),
+            bookId: '7b2e4d10-0000-4000-8000-000000000022',
+            bookName: 'Server-side lorebook',
+            activationReason: 'sticky',
+            matchedKeyCount: 1,
+          },
+        ],
+      };
+    },
+  },
+
+  {
     name: 'card-overrides-disabled',
     matrix: 'R2: C21 — respectCharacterOverride / respectCharacterPHI',
     what:
