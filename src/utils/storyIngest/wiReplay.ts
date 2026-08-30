@@ -18,7 +18,7 @@
 // caller propagates that into the checkpoint so the review UI can say so
 // rather than presenting a guess as a measurement.
 
-import { sanitizeWiFired, wiFiredKey, type WiFiredMap } from '../wiFired';
+import { sanitizeWiFired, wiFiredKey, looksLikeLegacyWiFiredKey, type WiFiredMap } from '../wiFired';
 import type { IngestMessage } from './types';
 
 /** The subset of a world-info entry the replay needs. Structural copy so
@@ -46,8 +46,23 @@ export interface ReplayResult {
   /** True when any part of this map came from replay rather than
    *  captured telemetry. */
   approximate: boolean;
-  /** Entries that never fired by either route. */
+  /** Active entries confirmed to have never fired: the (deliberately
+   *  over-inclusive) replay scan found no keyword hit, AND telemetry
+   *  coverage for this chat has no known gaps. Disjoint from
+   *  notObservable — an entry is in exactly one of the two, never both. */
   neverFired: string[];
+  /** Active entries this pass cannot make a never-fired claim about,
+   *  because `capturedFired` carried at least one pre-cutover key
+   *  (looksLikeLegacyWiFiredKey) that doesn't match any CURRENTLY active
+   *  entry — real telemetry sitting under an id this pass can't place. An
+   *  apparent miss might be that orphaned key's actual entry rather than a
+   *  fact, and there's no way to tell which one, so the whole never-fired
+   *  verdict for this chat is downgraded rather than risk a false claim
+   *  for an arbitrary subset. Empty whenever `capturedFired` carries no
+   *  such residue — the ordinary post-cutover case, and this field's
+   *  entire reason for existing is Gap 1 (id-crosswalk) coverage, not a
+   *  general "replay didn't run" signal: `approximate` already owns that. */
+  notObservable: string[];
 }
 
 function keyMatches(haystack: string, key: string, caseSensitive: boolean): boolean {
@@ -166,11 +181,26 @@ export function replayWorldInfo(
     }
   }
 
-  const neverFired = active
+  // A captured key that (a) looks pre-cutover and (b) doesn't match any
+  // CURRENTLY active entry's key is orphaned residue: real telemetry this
+  // pass can't place. See notObservable's own doc comment for why that
+  // downgrades the WHOLE chat's never-fired verdict rather than a guessed
+  // subset of it. Checked against `captured` (the raw input), not `fired`
+  // (the union) — every captured key already lands in `fired` regardless
+  // of shape (the loop above), so this is purely "does the key's OWN
+  // active-entry match exist," independent of whether IT reads as fired.
+  const activeKeys = new Set(active.map((e) => wiFiredKey(e.bookId, e.id)));
+  const hasUnplacedLegacyResidue = Object.keys(captured).some(
+    (key) => !activeKeys.has(key) && looksLikeLegacyWiFiredKey(key)
+  );
+
+  const missing = active
     .map((e) => wiFiredKey(e.bookId, e.id))
     .filter((key) => !fired[key]);
+  const neverFired = hasUnplacedLegacyResidue ? [] : missing;
+  const notObservable = hasUnplacedLegacyResidue ? missing : [];
 
-  return { fired, approximate: replayed, neverFired };
+  return { fired, approximate: replayed, neverFired, notObservable };
 }
 
 /**
