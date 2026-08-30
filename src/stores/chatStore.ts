@@ -3442,17 +3442,22 @@ function captureWiFired(
   // Only persist telemetry for entries the local store can resolve by id.
   //
   // This guard once existed because the two id schemes were genuinely
-  // disjoint: before the memory-consolidation cutover (2026-08-23), local
+  // disjoint: before the native-CRUD cutover (77e689d2, 2026-08-07), local
   // books lived in the stm_worldinfo blob under generateId('wibook')/('wi')
   // ids while the server minted its own UUIDs, so a server-path firing
   // could never be recorded at all. That is no longer true, and this
   // comment asserted the opposite for far too long — it was written on
-  // 2026-08-06 (9ced3e43, server-side lore retrieval) and the cutover
-  // landed 17 days later. Native /lorebooks is now the system of record
-  // (see worldInfoStore.ts's PersistedShape docstring), `books` is
-  // populated ONLY from that fetch, and both normalizers adopt the
-  // server's primary key verbatim — normalizeNativeBook and
-  // normalizeNativeEntry each do `id: String(dto.id)`. The backend
+  // 2026-08-06 (9ced3e43, server-side lore retrieval) and was falsified
+  // the very NEXT DAY by 77e689d2, which introduced normalizeNativeBook
+  // and `set({ books: nativeBooks })` in one commit. (The later blob-strip
+  // package #71/#435/#74, 2026-08-23, is hygiene on top — not the
+  // convergence; see docs/legacy-id-strip-scoping.md, which names
+  // 77e689d2 "the 2026-08-07 cutover commit".) Native /lorebooks is now
+  // the system of record (see worldInfoStore.ts's PersistedShape
+  // docstring), `books` is populated ONLY from that fetch, and both
+  // normalizers adopt the server's primary key verbatim —
+  // normalizeNativeBook and normalizeNativeEntry each do
+  // `id: String(dto.id)`. The backend
   // activation engine ranks those same lorebook_entries rows
   // (_activation.py imports LorebookEntry), so on a server-path turn
   // dtoToMatchedEntry's entry.id IS the local entry's id and this filter
