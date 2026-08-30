@@ -3456,15 +3456,25 @@ function captureWiFired(
   // activation engine ranks those same lorebook_entries rows
   // (_activation.py imports LorebookEntry), so on a server-path turn
   // dtoToMatchedEntry's entry.id IS the local entry's id and this filter
-  // passes. Both halves are pinned by committed tests — serverRetrieval
-  // .test.ts ('srv-entry-1') and worldInfoStore.test.ts's native-bootstrap
-  // case ('native-entry-1') — which go red if either side regresses to a
-  // divergent scheme.
+  // passes. Two committed tests pin the CLIENT half of that: each
+  // normalizer forwards its DTO's id unchanged — serverRetrieval.test.ts
+  // ('srv-entry-1') and worldInfoStore.test.ts's native-bootstrap case
+  // ('native-entry-1'). Be precise about what that does NOT cover: they
+  // use different fixtures and neither asserts the two ids come from the
+  // same row, so if the backend ever emitted a synthetic id from
+  // POST /retrieval/context while GET /lorebooks/{id} kept the primary
+  // key, both stay green and this filter would silently resume dropping
+  // every server-path firing. Closing that hole with a real regression
+  // test is one of E2-S5's acceptance criteria.
   //
-  // The filter still earns its place, for entries the local store has not
-  // fetched: a turn racing fetchPrefs, an entry created on another device
-  // since the last sync, a shared book absent from sharedBooks. Recording
-  // one of those would not be inert — the story-bible replay
+  // The filter still earns its place for entries the local store has not
+  // fetched. One case can actually happen: an entry created on another
+  // device since this client last ran fetchPrefs. The shared-book case
+  // cannot, in the opposite direction to the obvious guess — an active
+  // shared-origin book makes the chat ineligible for server retrieval
+  // outright (serverRetrieval.ts condition 4b), so the server path never
+  // activates over one. Recording an unresolvable entry would not be
+  // inert — the story-bible replay
   // (src/utils/storyIngest/wiReplay.ts) builds its lookup keys from LOCAL
   // entry ids, so an unresolvable key would sit unreachable, discarding
   // the real measured telemetry, while the entry's own key falls back to
