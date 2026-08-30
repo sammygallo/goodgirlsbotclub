@@ -13,13 +13,20 @@
  * green while this filter silently resumed dropping every server-path
  * firing.
  *
- * This file closes that hole: ONE fixture id ('srv-entry-1'/'srv-book-1')
- * seeds BOTH halves — the local store's native-bootstrapped entry (as a
- * real GET /lorebooks fetch would populate it) AND the mocked
- * POST /retrieval/context response `dtoToMatchedEntry` normalizes — then
- * drives a REAL sendMessage() turn (api stubbed at the network edge only,
- * same house style as chatStore.callSites.test.ts) and asserts the firing
- * survives all the way into getWiFiredForChat.
+ * This file pins the CLIENT half of that contract: ONE fixture id
+ * ('srv-entry-1'/'srv-book-1') seeds BOTH halves — the local store's
+ * native-bootstrapped entry (as a real GET /lorebooks fetch would populate
+ * it) AND the mocked POST /retrieval/context response `dtoToMatchedEntry`
+ * normalizes — then drives a REAL sendMessage() turn (api stubbed at the
+ * network edge only, same house style as chatStore.callSites.test.ts) and
+ * asserts the firing survives all the way into getWiFiredForChat. What
+ * this file does NOT close: a genuine BACKEND id divergence (the server
+ * actually returning two different ids for one row) is invisible here by
+ * construction — the mock below supplies both ids itself, so they agree
+ * unconditionally. Closing THAT needs a ggbc-backend contract test
+ * asserting POST /retrieval/context entries[].id equals the
+ * lorebook_entries primary key GET /lorebooks/{id} returns; filed as
+ * follow-up scope, not covered by this file.
  *
  * The local entry is deliberately given a non-matching key and
  * `constant: false`, so it CANNOT fire via the local keyword scanner on
@@ -72,7 +79,7 @@ const { useChatStore, getWiFiredForChat } = await import('./chatStore');
 const { useCharacterStore } = await import('./characterStore');
 const { useChatLoreConfigStore } = await import('./chatLoreConfigStore');
 const { usePersonaStore } = await import('./personaStore');
-const { useWorldInfoStore } = await import('./worldInfoStore');
+const { useWorldInfoStore, remapLegacyBookId } = await import('./worldInfoStore');
 const { useChatHistoryRagStore } = await import('./chatHistoryRagStore');
 const { api } = await import('../api/client');
 const { wiFiredKey } = await import('../utils/wiFired');
@@ -140,10 +147,16 @@ describe('server-path firing survives captureWiFired (AC3)', () => {
     vi.spyOn(api, 'importFromDatabank').mockResolvedValue({ imported: [], skipped: [], entry_count: 0 });
     const getRetrievalContext = vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
       // SAME id as the local bootstrap above — the "same row" this test
-      // exists to pin. lorebook_id / id are the only fields
-      // dtoToMatchedEntry actually READS at runtime; server_ts is here only
-      // because RetrievalContextEntryDTO's TYPE requires it (tsc -b, which
-      // — unlike plain vitest — typechecks this file, catches its absence).
+      // exists to pin. id / lorebook_id are the only fields
+      // dtoToMatchedEntry VALIDATES — it returns null without them
+      // (serverRetrieval.ts). Everything else it reads (content, comment,
+      // enabled, position, ...~20 more) is defaulted via str()/bool()/
+      // num(), which is why this sparse fixture is safe: those defaults
+      // happen to be the values this test wants (enabled: true,
+      // position: 'before_char', etc.), not because the fields go unread.
+      // server_ts is here only because RetrievalContextEntryDTO's TYPE
+      // requires it (tsc -b, which — unlike plain vitest — typechecks this
+      // file, catches its absence).
       entries: [
         {
           id: 'srv-entry-1',
@@ -185,13 +198,118 @@ describe('server-path firing survives captureWiFired (AC3)', () => {
   });
 });
 
+// Legacy-shaped ids for the AC4 fixture below — a fix-round finding (E2-S5)
+// caught an earlier version of this block never driving a real
+// fetchPrefs/buildLegacyIdRemap, so getWiFiredForChat's remapped view and
+// wiFiredByFile's raw view were byte-identical and the persistence
+// assertion could not distinguish buildChatPayload reading the wrong one.
+// Same literal shape as wiFired.test.ts's own LEGACY_BOOK/LEGACY_ENTRY.
+const LEGACY_BOOK = 'wibook_1777000000000_aaaaaa';
+const LEGACY_ENTRY = 'wi_1777000000001_bbbbbb';
+
+// DTO shapes for the mocked native-fetch responses fetchPrefs's
+// buildLegacyIdRemap leg consumes — same fixture shape as
+// chatStore.wiFiredLegacyRemap.test.ts's own mkEntryDto/mkBookDto, kept
+// local to this file since each wi_fired suite owns its own api mocks.
+function mkEntryDto(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'dto-entry',
+    lorebook_id: 'dto-book',
+    server_ts: 1,
+    keys: [],
+    content: '',
+    comment: '',
+    enabled: true,
+    constant: false,
+    caseSensitive: false,
+    position: 'before_char',
+    depth: 4,
+    order: 100,
+    keysSecondary: [],
+    selective: false,
+    selectiveLogic: 'AND_ANY',
+    scanDepth: null,
+    probability: 100,
+    useProbability: false,
+    group: '',
+    groupOverride: false,
+    groupWeight: 100,
+    preventRecursion: false,
+    excludeRecursion: false,
+    sticky: 0,
+    cooldown: 0,
+    delay: 0,
+    critical: false,
+    category: '',
+    relatedIds: [],
+    source: 'manual',
+    revisions: [],
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  };
+}
+
+function mkBookDto(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'dto-book',
+    ownerHandle: 'alice',
+    server_ts: 1,
+    name: 'DTO Book',
+    ownerCharacterAvatar: null,
+    autoExtracted: false,
+    visibility: 'private',
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  };
+}
+
+/**
+ * Drives a real worldInfoStore.fetchPrefs() so remapLegacyBookId(LEGACY_BOOK)
+ * resolves for real — same harness shape (and the same 'Shared Lore' /
+ * comment:'c' / content:'text' / keys:['a'] signature fixture) as
+ * chatStore.wiFiredLegacyRemap.test.ts's own seedMigratedBook(), duplicated
+ * per that file's "each suite owns its own api mocks" convention.
+ */
+async function seedMigratedBook(): Promise<void> {
+  useWorldInfoStore.setState({
+    books: [
+      mkBook(LEGACY_BOOK, [mkEntry(LEGACY_ENTRY, { comment: 'c', content: 'text', keys: ['a'] })], {
+        name: 'Shared Lore',
+      }),
+    ],
+  });
+  vi.spyOn(api, 'listLorebooks').mockResolvedValue([mkBookDto({ id: 'uuid-book-1', name: 'Shared Lore' })] as never);
+  vi.spyOn(api, 'getLorebook').mockResolvedValue({
+    ...mkBookDto({ id: 'uuid-book-1', name: 'Shared Lore' }),
+    entries: [
+      mkEntryDto({ id: 'uuid-entry-1', lorebook_id: 'uuid-book-1', comment: 'c', content: 'text', keys: ['a'] }),
+    ],
+  } as never);
+  vi.spyOn(api, 'listSharedWorldInfoBooks').mockResolvedValue([] as never);
+  vi.spyOn(api, 'importLorebooksFromBlob').mockResolvedValue({ imported: [], skipped: [], entry_count: 0 } as never);
+
+  await useWorldInfoStore.getState().fetchPrefs();
+  expect(remapLegacyBookId(LEGACY_BOOK)).toBe('uuid-book-1');
+}
+
 describe('buildChatPayload persistence is unaffected by the read-time remap (AC4)', () => {
   const CHAT_FILE = 'persist-unaffected.jsonl';
   const CHAR = mkChar({ name: 'Ivy', avatar: 'ivy-persist.png' });
-  const LEGACY_KEY = wiFiredKey('wibook_1777000000000_aaaaaa', 'wi_1777000000001_bbbbbb');
+  const LEGACY_KEY = wiFiredKey(LEGACY_BOOK, LEGACY_ENTRY);
 
   it('saves the RAW (un-remapped) wi_fired map — getWiFiredForChat\'s remap is read-time only', async () => {
     resetStores();
+    useWorldInfoStore.getState().resetUser();
+
+    // Drive a REAL fetchPrefs first, so the two views this test compares
+    // actually differ. Without this, getWiFiredForChat's remapped view and
+    // wiFiredByFile's raw view are byte-identical and the assertion below
+    // cannot tell buildChatPayload apart from a mutation that reads the
+    // wrong one (see the header comment history on this block).
+    await seedMigratedBook();
+
     // loadChat hydrates wiFiredByFile straight from a synthetic header —
     // lighter than driving a full generation just to seed a pre-existing
     // legacy key.
@@ -202,11 +320,12 @@ describe('buildChatPayload persistence is unaffected by the read-time remap (AC4
     });
     await useChatStore.getState().loadChat(CHAR.avatar, CHAT_FILE);
 
-    // getWiFiredForChat's own read-time view keeps the legacy key (no
-    // migration map loaded in this test) — establishing the same state
-    // AC1's coverage tests pin, so this test's persistence claim is about
-    // something that's actually still legacy-shaped at save time.
-    expect(getWiFiredForChat(CHAT_FILE)?.[LEGACY_KEY]).toBeDefined();
+    // getWiFiredForChat's read-time view now genuinely DIFFERS from
+    // wiFiredByFile's raw one — the remap is live, so this is the state in
+    // which the two views could actually be mistaken for each other.
+    expect(getWiFiredForChat(CHAT_FILE)).toEqual({
+      [wiFiredKey('uuid-book-1', 'uuid-entry-1')]: { first_turn: 0, last_turn: 2, count: 4 },
+    });
 
     useCharacterStore.setState({ selectedCharacter: CHAR });
     useChatLoreConfigStore.setState({ configs: {} });
@@ -222,11 +341,17 @@ describe('buildChatPayload persistence is unaffected by the read-time remap (AC4
     expect(save, 'sendMessage never saved the chat').toHaveBeenCalled();
     // chatData is saveChat's 3rd positional arg; chatData[0] is the header
     // buildChatPayload assembles from wiFiredByFile directly (chatStore.ts)
-    // — NOT from getWiFiredForChat's remapped view.
+    // — NOT from getWiFiredForChat's remapped view. See that read site's
+    // own comment for why that must stay true (AC4).
     const [, , chatData] = save.mock.calls[0] as [string, string, Array<Record<string, unknown>>];
+    const persistedFired = chatData[0].wi_fired as Record<string, unknown> | undefined;
     expect(
-      (chatData[0].wi_fired as Record<string, unknown> | undefined)?.[LEGACY_KEY],
+      persistedFired?.[LEGACY_KEY],
       'the persisted header must still carry the RAW legacy key — captureWiFired/buildChatPayload must not change what gets persisted (AC4)'
     ).toEqual({ first_turn: 0, last_turn: 2, count: 4 });
+    expect(
+      persistedFired?.[wiFiredKey('uuid-book-1', 'uuid-entry-1')],
+      'the persisted header must NOT carry the remapped native key — that would be the exact silent migration AC4 forbids'
+    ).toBeUndefined();
   });
 });

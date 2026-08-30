@@ -206,21 +206,57 @@ describe('remapWiFiredKeys', () => {
     expect(out.partial, 'an unresolved legacy-shaped key must flag partial coverage').toBe(true);
   });
 
-  it('flags partial when only ONE half resolves', () => {
-    const bookOnly = remapWiFiredKeys(
+  it('a legacy book half that resolves next to a plain-native entry half is fully resolved, not partial', () => {
+    // 'e1' isn't legacy-shaped, so its lookup miss is the ordinary
+    // post-cutover case, not an unresolved remap — see
+    // looksLikeLegacyWiFiredKey. NOT a "one half resolves, one doesn't"
+    // case: neither half is actually left unresolved-and-legacy-shaped
+    // here, which is why this alone cannot pin the book-half conjunct in
+    // remapWiFiredKeys — see the BOOK-half test below for that.
+    const out = remapWiFiredKeys(
       { [`${LEGACY_BOOK}:e1`]: { first_turn: 0, last_turn: 0, count: 1 } },
       (id) => (id === LEGACY_BOOK ? 'native-book-1' : null),
       () => null
     );
-    expect(bookOnly.map).toEqual({ 'native-book-1:e1': { first_turn: 0, last_turn: 0, count: 1 } });
-    expect(bookOnly.partial).toBe(false); // 'e1' isn't legacy-shaped — nothing unresolved
+    expect(out.map).toEqual({ 'native-book-1:e1': { first_turn: 0, last_turn: 0, count: 1 } });
+    expect(out.partial).toBe(false);
+  });
 
-    const entryOnly = remapWiFiredKeys(
+  it('flags partial from the ENTRY half alone: legacy-shaped and unresolved, next to a plain-native book half', () => {
+    // 'b1' isn't legacy-shaped and never resolves either, but that's
+    // irrelevant to the book conjunct (it only fires for a legacy-SHAPED
+    // unresolved id) — so partial here can only come from the entry half,
+    // isolating that conjunct.
+    const out = remapWiFiredKeys(
       { [`b1:${LEGACY_ENTRY}`]: { first_turn: 0, last_turn: 0, count: 1 } },
       () => null,
       () => null
     );
-    expect(entryOnly.partial, 'the unresolved legacy entry half must still be caught').toBe(true);
+    expect(out.partial, 'the unresolved legacy entry half must still be caught').toBe(true);
+  });
+
+  it('flags partial from the BOOK half alone: legacy-shaped and unresolved, even though the entry half resolves', () => {
+    // The book-half conjunct in isolation — every other case in this file
+    // either resolves the book or gives it a non-legacy shape, so deleting
+    // `(!mappedBook && LEGACY_BOOK_ID_RE.test(bookId)) ||` from
+    // remapWiFiredKeys leaves them all green. Here the entry half DOES
+    // resolve, so only the book conjunct can produce `partial: true`. This
+    // is also the reachable production case: buildLegacyIdRemap
+    // (worldInfoStore.ts) remaps books and entries independently, so a key
+    // whose entry half maps while its book half doesn't is a real state,
+    // not a hypothetical.
+    const out = remapWiFiredKeys(
+      { [`${LEGACY_BOOK}:${LEGACY_ENTRY}`]: { first_turn: 4, last_turn: 9, count: 7 } },
+      () => null,
+      (id) => (id === LEGACY_ENTRY ? 'native-entry-1' : null)
+    );
+    expect(out.map).toEqual({
+      [`${LEGACY_BOOK}:native-entry-1`]: { first_turn: 4, last_turn: 9, count: 7 },
+    });
+    expect(
+      out.partial,
+      'an unresolved legacy BOOK half must flag partial even when the entry half resolves'
+    ).toBe(true);
   });
 
   it('models pre-readiness (T2): every legacy key unresolved reports partial, not silent success', () => {

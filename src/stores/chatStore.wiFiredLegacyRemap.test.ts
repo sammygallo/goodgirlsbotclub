@@ -70,6 +70,22 @@ import type { WorldInfoBook, WorldInfoEntry } from './worldInfoStore';
 
 const AVATAR = 'legacy-remap-char.png';
 
+/**
+ * Legacy-shaped ids for seedMigratedBook's "old" book/entry — a fix-round
+ * finding (E2-S5) caught this file using non-shaped placeholders
+ * ('wibook_old_1'/'wi_old_1') here, under which a pre-readiness read (the
+ * remap map genuinely empty) and a post-readiness-but-unresolved read look
+ * IDENTICAL to remapWiFiredKeys's partial computation, because neither id
+ * matches LEGACY_BOOK_ID_RE/LEGACY_ENTRY_ID_RE — so a test asserting
+ * `partial: true` in the unresolved state couldn't discriminate a real
+ * regression from a vacuous one. Same literal shape as wiFired.test.ts's
+ * own LEGACY_BOOK/LEGACY_ENTRY. buildLegacyIdRemap's matching is purely
+ * (scope, name) + content-signature — never id-shape — so using a
+ * realistic id here does not change which book seedMigratedBook resolves.
+ */
+const LEGACY_BOOK = 'wibook_1777000000000_aaaaaa';
+const LEGACY_ENTRY = 'wi_1777000000001_bbbbbb';
+
 function mkEntry(id: string, over: Partial<WorldInfoEntry> = {}): WorldInfoEntry {
   return {
     ...DEFAULT_ENTRY,
@@ -171,7 +187,7 @@ beforeEach(() => {
 async function seedMigratedBook(): Promise<void> {
   useWorldInfoStore.setState({
     books: [
-      mkBook('wibook_old_1', [mkEntry('wi_old_1', { comment: 'c', content: 'text', keys: ['a'] })], {
+      mkBook(LEGACY_BOOK, [mkEntry(LEGACY_ENTRY, { comment: 'c', content: 'text', keys: ['a'] })], {
         name: 'Shared Lore',
       }),
     ],
@@ -190,14 +206,14 @@ async function seedMigratedBook(): Promise<void> {
 
   // Sanity check on the primitive every test below depends on — if this
   // ever stops holding, both tests fail for a confusing reason.
-  expect(remapLegacyBookId('wibook_old_1')).toBe('uuid-book-1');
+  expect(remapLegacyBookId(LEGACY_BOOK)).toBe('uuid-book-1');
 }
 
 describe('getWiFiredForChat — legacy-id remap (E2-S5 Gap 1, AC1)', () => {
   it('folds a pre-cutover key onto its current native id once the remap map is populated', async () => {
     await seedMigratedBook();
     const chatFile = 'legacy-remap-resolved.jsonl';
-    const legacyKey = wiFiredKey('wibook_old_1', 'wi_old_1');
+    const legacyKey = wiFiredKey(LEGACY_BOOK, LEGACY_ENTRY);
     vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
       header: { wi_fired: { [legacyKey]: { first_turn: 0, last_turn: 3, count: 5 } } },
       messages: [],
@@ -209,9 +225,50 @@ describe('getWiFiredForChat — legacy-id remap (E2-S5 Gap 1, AC1)', () => {
     expect(getWiFiredForChat(chatFile)).toEqual({
       [wiFiredKey('uuid-book-1', 'uuid-entry-1')]: { first_turn: 0, last_turn: 3, count: 5 },
     });
+    // Genuinely discriminating now that seedMigratedBook's ids are
+    // legacy-shaped (LEGACY_BOOK/LEGACY_ENTRY): if resolution silently
+    // failed, this key would still be legacy-shaped and unresolved, and
+    // partial would flip true. Under the OLD 'wibook_old_1'-style
+    // placeholder this assertion passed even with no remap at all, since
+    // neither id matched the shape check either way.
     expect(isWiFiredCoveragePartial(chatFile), 'a fully-resolved chat must not read as partial coverage').toBe(
       false
     );
+  });
+
+  it('the SAME chat file reads un-remapped+partial before fetchPrefs, then remapped+full after it (no caching across the readiness boundary)', async () => {
+    // The whole point of remappedWiFired's "recompute fresh, never cache"
+    // design (chatStore.ts) — a per-fileName memo would freeze the verdict
+    // from the FIRST read below and never pick up seedMigratedBook's remap.
+    // Mirrors login's real ordering: the UI restores the last chat (loadChat)
+    // while worldInfoStore.fetchPrefs() is still fire-and-forget in flight.
+    const chatFile = 'legacy-remap-readiness-boundary.jsonl';
+    const legacyKey = wiFiredKey(LEGACY_BOOK, LEGACY_ENTRY);
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
+      header: { wi_fired: { [legacyKey]: { first_turn: 1, last_turn: 4, count: 6 } } },
+      messages: [],
+      server_ts: 1,
+    });
+
+    // Pre-readiness: resetUser() in beforeEach already leaves the remap
+    // map empty, and fetchPrefs has not run yet in this test.
+    await useChatStore.getState().loadChat(AVATAR, chatFile);
+    expect(
+      getWiFiredForChat(chatFile),
+      'pre-readiness must read the RAW legacy key, not drop or pre-emptively remap it'
+    ).toEqual({ [legacyKey]: { first_turn: 1, last_turn: 4, count: 6 } });
+    expect(isWiFiredCoveragePartial(chatFile), 'pre-readiness must read as partial coverage').toBe(true);
+
+    // Readiness now resolves for real.
+    await seedMigratedBook();
+
+    // A memoized remappedWiFired (cached by fileName on the FIRST read
+    // above) would still return the frozen pre-readiness verdict here —
+    // this must recompute to see it.
+    expect(getWiFiredForChat(chatFile), 'post-readiness must fold onto the native id').toEqual({
+      [wiFiredKey('uuid-book-1', 'uuid-entry-1')]: { first_turn: 1, last_turn: 4, count: 6 },
+    });
+    expect(isWiFiredCoveragePartial(chatFile), 'post-readiness must no longer read as partial').toBe(false);
   });
 
   it('KEEPS a legacy key with no known remap rather than dropping it, and flags partial coverage (T1/T2)', async () => {
@@ -220,7 +277,7 @@ describe('getWiFiredForChat — legacy-id remap (E2-S5 Gap 1, AC1)', () => {
     // readiness gate hasn't resolved yet" look like from the caller's side
     // (remapLegacyBookId/remapLegacyEntryId return null either way).
     const chatFile = 'legacy-remap-unresolved.jsonl';
-    const legacyKey = wiFiredKey('wibook_1777000000000_aaaaaa', 'wi_1777000000001_bbbbbb');
+    const legacyKey = wiFiredKey(LEGACY_BOOK, LEGACY_ENTRY);
     vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
       header: { wi_fired: { [legacyKey]: { first_turn: 2, last_turn: 6, count: 9 } } },
       messages: [],
