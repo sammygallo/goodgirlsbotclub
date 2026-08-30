@@ -3439,22 +3439,39 @@ function captureWiFired(
   currentTurn: number
 ) {
   if (!chatFile || !wiOut.fired || wiOut.fired.length === 0) return;
-  // A server-path turn's wiOut.fired entries come from
-  // serverRetrieval.ts's dtoToMatchedEntry, whose entry.id/bookId are the
-  // backend's own freshly-minted UUIDs (LorebookEntryOut.id/lorebook_id).
-  // That scheme is permanently disjoint from the legacy wibook_/wi_-
-  // prefixed ids every local WorldInfoBook/WorldInfoEntry still uses
-  // (import-from-blob only preserves a genuine UUID id from the source
-  // blob; the client's own id generator never produces one) — there is no
-  // crosswalk back to the local id anywhere. Recording a fired entry under
-  // an id the local store doesn't recognize wouldn't be inert: the
-  // story-bible replay (src/utils/storyIngest/wiReplay.ts) builds its
-  // lookup keys from the LOCAL entry ids, so a mismatched-scheme key would
-  // sit unreachable — discarding the real measured telemetry — while the
-  // local entry's own key falls back to an approximate keyword replay, or
-  // gets wrongly marked as never having fired. Until entries carry a
-  // stable cross-scheme id, only persist telemetry for entries the local
-  // store can actually resolve by id.
+  // Only persist telemetry for entries the local store can resolve by id.
+  //
+  // This guard once existed because the two id schemes were genuinely
+  // disjoint: before the memory-consolidation cutover (2026-08-23), local
+  // books lived in the stm_worldinfo blob under generateId('wibook')/('wi')
+  // ids while the server minted its own UUIDs, so a server-path firing
+  // could never be recorded at all. That is no longer true, and this
+  // comment asserted the opposite for far too long — it was written on
+  // 2026-08-06 (9ced3e43, server-side lore retrieval) and the cutover
+  // landed 17 days later. Native /lorebooks is now the system of record
+  // (see worldInfoStore.ts's PersistedShape docstring), `books` is
+  // populated ONLY from that fetch, and both normalizers adopt the
+  // server's primary key verbatim — normalizeNativeBook and
+  // normalizeNativeEntry each do `id: String(dto.id)`. The backend
+  // activation engine ranks those same lorebook_entries rows
+  // (_activation.py imports LorebookEntry), so on a server-path turn
+  // dtoToMatchedEntry's entry.id IS the local entry's id and this filter
+  // passes. Both halves are pinned by committed tests — serverRetrieval
+  // .test.ts ('srv-entry-1') and worldInfoStore.test.ts's native-bootstrap
+  // case ('native-entry-1') — which go red if either side regresses to a
+  // divergent scheme.
+  //
+  // The filter still earns its place, for entries the local store has not
+  // fetched: a turn racing fetchPrefs, an entry created on another device
+  // since the last sync, a shared book absent from sharedBooks. Recording
+  // one of those would not be inert — the story-bible replay
+  // (src/utils/storyIngest/wiReplay.ts) builds its lookup keys from LOCAL
+  // entry ids, so an unresolvable key would sit unreachable, discarding
+  // the real measured telemetry, while the entry's own key falls back to
+  // an approximate keyword replay or is wrongly marked as never fired.
+  // What it drops is therefore a coverage gap, not a scheme mismatch;
+  // teaching wiReplay a "not observable" state distinct from neverFired
+  // is E2-S5's remaining scope.
   const localEntryIds = new Set(
     useWorldInfoStore
       .getState()

@@ -264,8 +264,8 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>29 Aug 2026</b><br>
-      main <b>0b86865c</b><br>
+      <b>30 Aug 2026</b><br>
+      main <b>4b3f8fe6</b><br>
       active <b>—</b>
     </div>
   </header>
@@ -366,7 +366,7 @@
       <div class="stack">
         <article class="card s-warn" data-epic="E2"><div class="id">E2-S3</div><div class="t">Show-prompt toggle</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
         <article class="card s-warn" data-epic="E2"><div class="id">E2-S4</div><div class="t">Insights data API</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
-        <article class="card s-warn" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry id crosswalk</div><div class="m">Ungated, scheduled 10.3 — hard-blocks E5-S1.</div></article>
+        <article class="card s-warn" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry coverage</div><div class="m">Re-scoped 30 Aug — the id-crosswalk premise was falsified at intake. Still hard-blocks E5-S1.</div></article>
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S2 · S3</div><div class="t">Defaults clarity · character overrides</div><div class="gates"><span class="gate">← E3-S1</span></div></article>
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S4</div><div class="t">Chat overrides</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S1</div><div class="t">Memory pane</div><div class="gates"><span class="gate free">E4-S0 ✓</span></div></article>
@@ -428,7 +428,7 @@
 
   <section class="focus">
     <h2>E2-S2a — closed 29 Aug</h2>
-    <p class="sub">Shipped both halves together at 21:53Z, prod-verified. The activation engine had computed <i>why</i> each lore entry fired since Phase 2 and discarded it one line before the wire; it now reaches <code>MatchedEntry</code>. No UI — the rendered drill-down still waits on E2-S5's id crosswalk.</p>
+    <p class="sub">Shipped both halves together at 21:53Z, prod-verified. The activation engine had computed <i>why</i> each lore entry fired since Phase 2 and discarded it one line before the wire; it now reaches <code>MatchedEntry</code>. No UI — the rendered drill-down still waits on E2-S5, whose scope was corrected on 30 Aug (it was never an id crosswalk).</p>
 
     <div class="steps">
       <div class="step done"><div class="sn">Review</div><div class="sv">3 rounds → 0 confirmed</div></div>
