@@ -3348,6 +3348,14 @@ function buildChatPayload(
   // Story-state phase 0: round-trip the accumulated WI fired-state. The
   // header is rebuilt from scratch on every save, so anything not re-emitted
   // here is lost — the map was hydrated from the previous header at load.
+  // MUST stay wiFiredByFile.get(...), never getWiFiredForChat(...) — the
+  // latter's legacy-id remap (E2-S5 Gap 1) is a read-time-only view by
+  // design (see its own doc comment), and persisting it instead would
+  // silently, irreversibly migrate every legacy wi_fired key on the chat's
+  // next save (AC4). Pinned by
+  // chatStore.wiFiredServerPath.test.ts's AC4 case, which drives a real
+  // legacy-id remap and asserts the saved header still carries the
+  // UN-remapped key.
   const wiFired = wiFiredByFile.get(currentChatFile);
 
   const chatData: unknown[] = [
@@ -3441,14 +3449,33 @@ const wiFiredByFile = new Map<string, WiFiredMap>();
  * remapWiFiredKeys doc comment), AND would sidestep the T2 readiness gate:
  * caching a remap taken before worldInfoStore's legacyIdRemapReady() has
  * resolved would freeze in a "no known remap" verdict for every legacy key
- * that was actually just not-yet-loaded. Recomputing here means a call
- * before readiness correctly reports `partial: true` (remapLegacyBookId/
- * remapLegacyEntryId return null for everything pre-readiness, and every
- * pre-cutover key matches looksLikeLegacyWiFiredKey, so nothing is silently
- * read as "resolved, nothing missing") and a call after readiness
- * transparently picks up the real mapping — self-correcting on the next
- * read, never silently-nothing. These maps are chat-sized (tens of
- * entries), so recomputing costs nothing worth caching for.
+ * that was actually just not-yet-loaded. Pinned by
+ * chatStore.wiFiredLegacyRemap.test.ts's readiness-boundary case: one chat
+ * file read before AND after fetchPrefs, which fails under a per-fileName
+ * memo.
+ *
+ * Why a live call is safe at every point along that boundary — corrected
+ * from an earlier revision of this comment, which claimed
+ * remapLegacyBookId/remapLegacyEntryId "return null for everything
+ * pre-readiness." They do not: worldInfoStore's fetchPrefs calls
+ * buildLegacyIdRemap (populating the maps synchronously) well BEFORE its
+ * later `await fetchSharedBooks()` leg and the legacyIdRemapReady() gate
+ * opening, so a call in that window sees real, non-null answers despite
+ * readiness not having resolved. What actually makes any pre-readiness read
+ * safe is that the maps only ever exist in one of two states in a session:
+ * EMPTY (before this session's first buildLegacyIdRemap call, or after
+ * resetUser/clearLegacyIdRemap — every legacy-shaped key then reports
+ * `partial: true` via the shape check below, never a silent "resolved"),
+ * or FINAL (from the instant buildLegacyIdRemap returns onward — its
+ * output depends only on the old/new book snapshots it was called with,
+ * never on fetchSharedBooks or anything else fetchPrefs does afterward, so
+ * it cannot change again before legacyIdRemapReady() resolves). There is no
+ * partially-populated state in between for a call to observe. Recomputing
+ * here means a call during EMPTY correctly reports partial, and a call
+ * during FINAL — whether or not legacyIdRemapReady() has resolved yet —
+ * transparently returns the real mapping; a cache taken during EMPTY is
+ * exactly what would freeze the wrong verdict. These maps are chat-sized
+ * (tens of entries), so recomputing costs nothing worth caching for.
  */
 function remappedWiFired(fileName: string): WiFiredRemapResult | undefined {
   const raw = wiFiredByFile.get(fileName);
@@ -3460,13 +3487,19 @@ function remappedWiFired(fileName: string): WiFiredRemapResult | undefined {
  * A chat's WI fired-state telemetry, with any pre-cutover
  * `wibook_x:wi_y` keys (fa3cd1bf, 12 days before the native-CRUD cutover
  * 77e689d2) folded onto their current native id — remap-or-keep, per T1:
- * a key with no confident remap is returned UNCHANGED, never dropped, so
- * this is always a superset view of what wiFiredByFile holds, never a
- * lossy one. Does NOT affect what gets persisted — buildChatPayload reads
- * wiFiredByFile directly (see its own comment above), so captureWiFired's
- * write path and the `wi_fired` header field are byte-for-byte unchanged
- * by this function's existence (AC4). See isWiFiredCoveragePartial for
- * whether this view is known-incomplete.
+ * a key with no confident remap is returned UNCHANGED, never dropped, so no
+ * telemetry is ever discarded. That is NOT the same as this being a
+ * superset view of what wiFiredByFile holds, though (an earlier revision of
+ * this comment claimed it was): when two keys DO remap onto the same
+ * current key — a pre-cutover key and its post-cutover successor for the
+ * same entry — remapWiFiredKeys merges them into one row (summed count;
+ * see its own doc comment in wiFired.ts), so the output key SET can be
+ * smaller than the input's even though no observation was lost. Does NOT
+ * affect what gets persisted — buildChatPayload reads wiFiredByFile
+ * directly (see its own comment above, at the `wiFiredByFile.get(...)`
+ * line), so captureWiFired's write path and the `wi_fired` header field are
+ * byte-for-byte unchanged by this function's existence (AC4). See
+ * isWiFiredCoveragePartial for whether this view is known-incomplete.
  */
 export function getWiFiredForChat(fileName: string): WiFiredMap | undefined {
   return remappedWiFired(fileName)?.map;
@@ -3523,8 +3556,16 @@ function captureWiFired(
   // same row, so if the backend ever emitted a synthetic id from
   // POST /retrieval/context while GET /lorebooks/{id} kept the primary
   // key, both stay green and this filter would silently resume dropping
-  // every server-path firing. Closing that hole with a real regression
-  // test is one of E2-S5's acceptance criteria.
+  // every server-path firing. Pinned against THAT gap (E2-S5 AC3) by
+  // src/stores/chatStore.wiFiredServerPath.test.ts, which seeds ONE
+  // fixture id into both the local native bootstrap and the mocked
+  // POST /retrieval/context response and drives a real sendMessage turn —
+  // proving this filter passes a same-row id through end to end. What that
+  // file's own header comment is careful NOT to claim: a genuine BACKEND
+  // id divergence (the server actually returning two different ids for one
+  // row) is invisible to a frontend test whose mock supplies both ids
+  // itself; closing that needs a ggbc-backend contract test instead, filed
+  // as follow-up scope rather than covered here.
   //
   // The filter still earns its place for entries the local store has not
   // fetched. One case can actually happen: an entry created on another
