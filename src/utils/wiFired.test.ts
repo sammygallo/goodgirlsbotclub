@@ -4,8 +4,17 @@ import {
   sanitizeWiFired,
   mergeWiFiredMaps,
   wiFiredKey,
+  looksLikeLegacyWiFiredKey,
+  remapWiFiredKeys,
   type WiFiredMap,
 } from './wiFired';
+
+// Realistic pre-cutover ids — same shape as worldInfoStore's own
+// LEGACY_BOOK_ID_RE/LEGACY_ENTRY_ID_RE test fixtures
+// (worldInfoStore.legacyDropGate.test.ts): a 13-digit ms timestamp plus a
+// 1-6 char base36 suffix.
+const LEGACY_BOOK = 'wibook_1777000000000_aaaaaa';
+const LEGACY_ENTRY = 'wi_1777000000001_bbbbbb';
 
 describe('wiFiredKey', () => {
   it('joins book and entry ids', () => {
@@ -124,6 +133,146 @@ describe('mergeWiFiredMaps', () => {
     const only: WiFiredMap = { 'b:e': { first_turn: 0, last_turn: 3, count: 2 } };
     expect(mergeWiFiredMaps(only, {})).toEqual(only);
     expect(mergeWiFiredMaps({}, only)).toEqual(only);
+  });
+});
+
+describe('looksLikeLegacyWiFiredKey', () => {
+  it('is true when the book half matches the pre-cutover shape', () => {
+    expect(looksLikeLegacyWiFiredKey(`${LEGACY_BOOK}:e1`)).toBe(true);
+  });
+
+  it('is true when the entry half matches the pre-cutover shape', () => {
+    expect(looksLikeLegacyWiFiredKey(`b1:${LEGACY_ENTRY}`)).toBe(true);
+  });
+
+  it('is true when both halves match', () => {
+    expect(looksLikeLegacyWiFiredKey(`${LEGACY_BOOK}:${LEGACY_ENTRY}`)).toBe(true);
+  });
+
+  it('is false for a plain native-shaped key', () => {
+    expect(looksLikeLegacyWiFiredKey('b1:e1')).toBe(false);
+  });
+
+  it('is false for the chat-local synthetic book prefix — same "wibook_" start, different shape', () => {
+    // worldInfoComposition.ts's CHAT_LOCAL_BOOK_PREFIX ('wibook_chatlocal__')
+    // shares the legacy scheme's prefix but not its timestamp+suffix tail —
+    // a naive prefix check would misflag it as unresolved-legacy.
+    expect(looksLikeLegacyWiFiredKey('wibook_chatlocal__some-chat.jsonl:e1')).toBe(false);
+  });
+
+  it('is false for a key with no colon separator', () => {
+    expect(looksLikeLegacyWiFiredKey('not-a-composite-key')).toBe(false);
+  });
+});
+
+describe('remapWiFiredKeys', () => {
+  it('remaps both halves when both are known, and reports full coverage', () => {
+    const map: WiFiredMap = {
+      [`${LEGACY_BOOK}:${LEGACY_ENTRY}`]: { first_turn: 2, last_turn: 5, count: 3 },
+    };
+    const out = remapWiFiredKeys(
+      map,
+      (id) => (id === LEGACY_BOOK ? 'native-book-1' : null),
+      (id) => (id === LEGACY_ENTRY ? 'native-entry-1' : null)
+    );
+    expect(out.map).toEqual({
+      'native-book-1:native-entry-1': { first_turn: 2, last_turn: 5, count: 3 },
+    });
+    expect(out.partial).toBe(false);
+  });
+
+  it('leaves an already-native key unchanged and does NOT flag it partial', () => {
+    // No remap found for either half (remapBookId/remapEntryId both return
+    // null), but neither half LOOKS legacy — the common post-cutover case,
+    // where null just means "nothing to remap," not "couldn't resolve."
+    const map: WiFiredMap = { 'b1:e1': { first_turn: 0, last_turn: 0, count: 1 } };
+    const out = remapWiFiredKeys(map, () => null, () => null);
+    expect(out.map).toEqual(map);
+    expect(out.partial).toBe(false);
+  });
+
+  it('KEEPS an unresolvable legacy key rather than dropping it, and flags partial coverage (T1/T2)', () => {
+    // The core regression this function exists to prevent: a cheap wrong
+    // implementation that silently drops an unmapped legacy key (or that
+    // omits the shape check and never sets `partial`) must fail this.
+    const map: WiFiredMap = {
+      [`${LEGACY_BOOK}:${LEGACY_ENTRY}`]: { first_turn: 4, last_turn: 9, count: 7 },
+    };
+    const out = remapWiFiredKeys(map, () => null, () => null);
+    expect(
+      out.map[`${LEGACY_BOOK}:${LEGACY_ENTRY}`],
+      'an unresolved legacy key must be KEPT, never dropped'
+    ).toEqual({ first_turn: 4, last_turn: 9, count: 7 });
+    expect(out.partial, 'an unresolved legacy-shaped key must flag partial coverage').toBe(true);
+  });
+
+  it('flags partial when only ONE half resolves', () => {
+    const bookOnly = remapWiFiredKeys(
+      { [`${LEGACY_BOOK}:e1`]: { first_turn: 0, last_turn: 0, count: 1 } },
+      (id) => (id === LEGACY_BOOK ? 'native-book-1' : null),
+      () => null
+    );
+    expect(bookOnly.map).toEqual({ 'native-book-1:e1': { first_turn: 0, last_turn: 0, count: 1 } });
+    expect(bookOnly.partial).toBe(false); // 'e1' isn't legacy-shaped — nothing unresolved
+
+    const entryOnly = remapWiFiredKeys(
+      { [`b1:${LEGACY_ENTRY}`]: { first_turn: 0, last_turn: 0, count: 1 } },
+      () => null,
+      () => null
+    );
+    expect(entryOnly.partial, 'the unresolved legacy entry half must still be caught').toBe(true);
+  });
+
+  it('models pre-readiness (T2): every legacy key unresolved reports partial, not silent success', () => {
+    // Simulates calling before worldInfoStore's legacyIdRemapReady() has
+    // resolved — remapLegacyBookId/remapLegacyEntryId return null for
+    // everything until then. The failure mode this guards is "the gate
+    // wasn't ready and every legacy key silently read as needing no remap."
+    const map: WiFiredMap = {
+      [`${LEGACY_BOOK}:${LEGACY_ENTRY}`]: { first_turn: 0, last_turn: 0, count: 1 },
+    };
+    const preReadiness = (_id: string) => null;
+    const out = remapWiFiredKeys(map, preReadiness, preReadiness);
+    expect(out.partial).toBe(true);
+    expect(Object.keys(out.map)).toEqual([`${LEGACY_BOOK}:${LEGACY_ENTRY}`]);
+  });
+
+  it('merges two keys that remap onto the same current key: sums count, spans first/last turn', () => {
+    // Distinct from mergeWiFiredMaps's max-count union of two OBSERVATIONS
+    // of the same generations — here two DIFFERENT keys (a pre-cutover id
+    // and its post-cutover successor) describe DISJOINT generations, so
+    // counts add rather than take a high-water mark.
+    const map: WiFiredMap = {
+      [`${LEGACY_BOOK}:${LEGACY_ENTRY}`]: { first_turn: 0, last_turn: 2, count: 3 },
+      'native-book-1:native-entry-1': { first_turn: 10, last_turn: 15, count: 4 },
+    };
+    const out = remapWiFiredKeys(
+      map,
+      (id) => (id === LEGACY_BOOK ? 'native-book-1' : null),
+      (id) => (id === LEGACY_ENTRY ? 'native-entry-1' : null)
+    );
+    expect(out.map).toEqual({
+      'native-book-1:native-entry-1': { first_turn: 0, last_turn: 15, count: 7 },
+    });
+    expect(out.partial).toBe(false);
+  });
+
+  it('passes a malformed (colon-less) key through unchanged instead of throwing', () => {
+    const map: WiFiredMap = { malformed: { first_turn: 1, last_turn: 1, count: 1 } };
+    const out = remapWiFiredKeys(map, () => null, () => null);
+    expect(out.map).toEqual(map);
+    expect(out.partial).toBe(false);
+  });
+
+  it('does not mutate the input map', () => {
+    const map: WiFiredMap = { 'b1:e1': { first_turn: 0, last_turn: 0, count: 1 } };
+    const snapshot = JSON.parse(JSON.stringify(map));
+    remapWiFiredKeys(
+      map,
+      () => 'other-book',
+      () => 'other-entry'
+    );
+    expect(map).toEqual(snapshot);
   });
 });
 
