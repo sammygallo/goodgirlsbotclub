@@ -574,25 +574,39 @@ Expected:
 
 Skip this step if no web repos were deployed in this run (intake-only deploys have no user-facing feature ship).
 
-The droplet keeps `/opt/goodgirlsbotclub/.last-deployed` as a marker. Walk the merge commits in the window since the previous deploy and DM the requester for each PR that closed an intake-linked issue.
+The droplet keeps `/opt/goodgirlsbotclub/.last-deployed` as a marker. Read the window it defines, then ask `.claude/scripts/deploy-notify-prs.sh` which PRs merged inside it, and DM the requester for each PR that closed an intake-linked issue.
+
+**The PR extraction is a tested script, not a pipeline written here.** It used to be inline, as `git log --merges | grep -oE "pull request #[0-9]+"`, and it could not see a single merge this project makes: `--merges` keeps only 2+-parent commits, while step 2 above mandates `gh pr merge --squash`, which produces a one-parent commit titled `<title> (#N)`. It therefore found nothing on every run, and silently — an empty PR list is indistinguishable from "no intake-linked features shipped", which is the common case. Run `.claude/scripts/deploy-notify-prs.test.sh` if you change it; case 1 plants a squash merge and goes red against the old pipeline.
 
 ```bash
-# Read the previous deploy marker, compute merged PRs in the window, update the marker
-MERGED_PRS=$(ssh root@159.89.180.146 '
+# 1. Read the previous marker and the current HEAD off the droplet, then
+#    advance the marker. Two lines out: PREV, then CURR.
+WINDOW=$(ssh root@159.89.180.146 '
   cd /opt/goodgirlsbotclub
   PREV=$(cat .last-deployed 2>/dev/null || echo "")
   CURR=$(git rev-parse HEAD)
-  if [ -n "$PREV" ] && [ "$PREV" != "$CURR" ]; then
-    git log "$PREV..$CURR" --merges --pretty=format:"%s" \
-      | grep -oE "pull request #[0-9]+" \
-      | grep -oE "[0-9]+" \
-      | sort -u
-  fi
+  echo "$PREV"
+  echo "$CURR"
   echo "$CURR" > .last-deployed
 ')
+PREV=$(echo "$WINDOW" | sed -n 1p)
+CURR=$(echo "$WINDOW" | sed -n 2p)
+
+# 2. Resolve the PR list LOCALLY. The droplet deploys from `main`, so a fetch
+#    is enough for this checkout to hold both endpoints.
+if [ -z "$PREV" ] || [ "$PREV" = "$CURR" ]; then
+  echo "no deploy window (first run, or nothing new shipped)"
+  MERGED_PRS=""
+else
+  git fetch -q origin main
+  MERGED_PRS=$(.claude/scripts/deploy-notify-prs.sh "$PREV" "$CURR") || {
+    echo "PR extraction FAILED for $PREV..$CURR — investigate before assuming nobody needs notifying" >&2
+    MERGED_PRS=""
+  }
+fi
 
 if [ -z "$MERGED_PRS" ]; then
-  echo "no merged PRs in this deploy window (first run or no changes)"
+  echo "no merged PRs in this deploy window"
 else
   for PR in $MERGED_PRS; do
     PR_URL="https://github.com/sammygallo/goodgirlsbotclub/pull/$PR"
@@ -609,6 +623,8 @@ fi
 ```
 
 The CLI no-ops if the GH issue isn't linked to an intake request, so PRs that came from non-intake issues (refactors, your own ideas) won't trigger noise. **First run after adding this step:** `.last-deployed` won't exist, so the whole loop is skipped — expected. Next deploy onward works normally.
+
+**Known tradeoff, deliberately left as-is:** the marker advances in step 1, *before* any DM is sent, so a failure in the notify loop loses those notifications rather than retrying them next deploy. The alternative — advancing only after a clean loop — trades that for duplicate DMs whenever the loop dies partway, which is the more visible harm to a subscriber. Neither is free; changing it is a product call, not a bug fix.
 
 ### 5.6. Post a release note to `#feature-releases`
 
