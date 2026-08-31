@@ -365,9 +365,24 @@ function strArr(v: unknown): string[] {
  * synchronously (`wiByPosition[unrecognized]` is undefined, `.push` throws),
  * which would defeat the entire fallback design. Every other field is
  * defensively coerced to the type WorldInfoEntry declares, defaulting to
- * DEFAULT_ENTRY-equivalent values on a mismatch, but only `position` can
- * actually crash downstream, so it's the one validated against an
- * allowlist rather than just type-checked.
+ * DEFAULT_ENTRY-equivalent values on a mismatch. FOUR fields get more than
+ * a type check, each validated against an allowlist that rewrites an
+ * unrecognized value to a documented default: `activationReason`
+ * (VALID_ACTIVATION_REASONS), `position` (VALID_POSITIONS),
+ * `selectiveLogic` (VALID_SELECTIVE_LOGIC) and `source` (VALID_SOURCES).
+ * Only `position` can actually CRASH downstream (wiByPosition indexing);
+ * the other three are allowlisted because their consumers assume the
+ * literal union, not because they are crash-capable — do not read the
+ * crash rationale as the criterion for adding the next one.
+ *
+ * This paragraph previously said `position` was "the one validated against
+ * an allowlist". That was false the day it was written (9ced3e43,
+ * 2026-08-06 — the same commit already contained VALID_SELECTIVE_LOGIC and
+ * VALID_SOURCES) and stood for 24 days. It is called out here because that
+ * same commit also wrote the `captureWiFired` crosswalk comment whose rot
+ * generated roadmap story E2-S5, and this claim was found by E2-S5's own
+ * review round 4 — pointed at by a comment that had just told readers to
+ * trust this docblock over a summary.
  *
  * `bookName` is set to '' — confirmed by reading every downstream consumer
  * of MatchedEntry.bookName in chatStore.ts (wrapWiContent keys off

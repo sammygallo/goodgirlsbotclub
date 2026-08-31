@@ -151,15 +151,16 @@ describe('server-path firing survives captureWiFired (AC3)', () => {
       // makes dtoToMatchedEntry return NULL (serverRetrieval.ts); every
       // other field it reads has some safe fallback, so this sparse
       // fixture is valid. Deliberately NOT restating which fields are
-      // allowlisted vs coerced vs cast — that partition has now been
-      // written wrongly three times in this story's review rounds (it is
-      // at least six mechanisms across ~30 fields, including strArr(), a
-      // bare typeof-ternary to null for scanDepth, and an UNVALIDATED
-      // cast for revisions). Read dtoToMatchedEntry for the per-field
-      // contract; do not trust a summary of it here. What matters is only
-      // that those fallbacks happen to be the values this test wants
-      // (enabled: true, position: 'before_char'), not that the fields go
-      // unread.
+      // allowlisted vs coerced vs cast: that partition was written here
+      // three times (once by the build commit, twice by review fix
+      // rounds) and was wrong all three times. Read dtoToMatchedEntry for
+      // the per-field contract.
+      //
+      // This test does NOT depend on any particular fallback VALUE — it
+      // asserts only that the firing is recorded under the local entry
+      // id. Mutating `position`'s fallback to 'after_char' leaves it
+      // green, and `enabled` is supplied explicitly below, so its default
+      // never runs. An earlier version of this comment claimed otherwise.
       // server_ts is here only because RetrievalContextEntryDTO's TYPE
       // requires it (tsc -b, which — unlike plain vitest — typechecks this
       // file, catches its absence).
