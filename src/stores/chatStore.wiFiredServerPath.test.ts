@@ -148,14 +148,18 @@ describe('server-path firing survives captureWiFired (AC3)', () => {
     const getRetrievalContext = vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
       // SAME id as the local bootstrap above — the "same row" this test
       // exists to pin. id / lorebook_id are the only fields whose absence
-      // makes dtoToMatchedEntry return NULL (serverRetrieval.ts). Other
-      // fields are still validated — `position`, `selectiveLogic` and
-      // `source` are each checked against an allowlist and fall back to a
-      // documented default (VALID_POSITIONS, serverRetrieval.ts:414) — and
-      // the rest (content, comment, enabled, ...) are coerced via
-      // str()/bool()/num(). Either way this sparse fixture is safe: those defaults
-      // happen to be the values this test wants (enabled: true,
-      // position: 'before_char', etc.), not because the fields go unread.
+      // makes dtoToMatchedEntry return NULL (serverRetrieval.ts); every
+      // other field it reads has some safe fallback, so this sparse
+      // fixture is valid. Deliberately NOT restating which fields are
+      // allowlisted vs coerced vs cast — that partition has now been
+      // written wrongly three times in this story's review rounds (it is
+      // at least six mechanisms across ~30 fields, including strArr(), a
+      // bare typeof-ternary to null for scanDepth, and an UNVALIDATED
+      // cast for revisions). Read dtoToMatchedEntry for the per-field
+      // contract; do not trust a summary of it here. What matters is only
+      // that those fallbacks happen to be the values this test wants
+      // (enabled: true, position: 'before_char'), not that the fields go
+      // unread.
       // server_ts is here only because RetrievalContextEntryDTO's TYPE
       // requires it (tsc -b, which — unlike plain vitest — typechecks this
       // file, catches its absence).
