@@ -361,15 +361,24 @@ function strArr(v: unknown): string[] {
  *
  * `entry.position` is validated against the exact literal set
  * buildConversationContext indexes `wiByPosition` with
- * (chatStore.ts:~1029-1038) — an unrecognized value there would throw
+ * (chatStore.ts's `wiByPosition[m.entry.position]` indexing — named, not
+ * line-cited, because the previous citation here had drifted ~320 lines)
+ * — an unrecognized value there would throw
  * synchronously (`wiByPosition[unrecognized]` is undefined, `.push` throws),
  * which would defeat the entire fallback design. Every other field is
- * defensively coerced to the type WorldInfoEntry declares, defaulting to
- * DEFAULT_ENTRY-equivalent values on a mismatch. FOUR fields get more than
- * a type check, each validated against an allowlist that rewrites an
- * unrecognized value to a documented default: `activationReason`
- * (VALID_ACTIVATION_REASONS), `position` (VALID_POSITIONS),
- * `selectiveLogic` (VALID_SELECTIVE_LOGIC) and `source` (VALID_SOURCES).
+ * handled by one of several mechanisms. Four are allowlist-validated,
+ * rewriting an unrecognized value to a documented default:
+ * `activationReason` (VALID_ACTIVATION_REASONS), `position`
+ * (VALID_POSITIONS), `selectiveLogic` (VALID_SELECTIVE_LOGIC) and `source`
+ * (VALID_SOURCES). The rest use str/bool/num coercion, `strArr` (which
+ * element-filters), a typeof-ternary, or — for `revisions` — a SHALLOW
+ * `Array.isArray` cast whose elements are never validated at all.
+ *
+ * **No closed partition of the field set is stated here on purpose.** Four
+ * successive attempts to summarize this contract (one in the build commit,
+ * three in review fix rounds) were each confirmed false by a later round;
+ * the enumeration above is illustrative, not exhaustive. Read the
+ * construction below for the per-field truth.
  * Only `position` can actually CRASH downstream (wiByPosition indexing);
  * the other three are allowlisted because their consumers assume the
  * literal union, not because they are crash-capable — do not read the
