@@ -359,39 +359,30 @@ function strArr(v: unknown): string[] {
  * this one entry, don't crash the whole turn) when the entry is missing an
  * id or lorebook_id.
  *
- * `entry.position` is validated against the exact literal set
- * buildConversationContext indexes `wiByPosition` with
- * (chatStore.ts's `wiByPosition[m.entry.position]` indexing — named, not
- * line-cited, because the previous citation here had drifted ~320 lines)
- * — an unrecognized value there would throw
- * synchronously (`wiByPosition[unrecognized]` is undefined, `.push` throws),
- * which would defeat the entire fallback design. Every other field is
- * handled by one of several mechanisms. Four are allowlist-validated,
- * rewriting an unrecognized value to a documented default:
- * `activationReason` (VALID_ACTIVATION_REASONS), `position`
- * (VALID_POSITIONS), `selectiveLogic` (VALID_SELECTIVE_LOGIC) and `source`
- * (VALID_SOURCES). The rest use str/bool/num coercion, `strArr` (which
- * element-filters), a typeof-ternary, or — for `revisions` — a SHALLOW
- * `Array.isArray` cast whose elements are never validated at all.
+ * `entry.position` is validated against VALID_POSITIONS, which is exactly
+ * the key set of the `wiByPosition` record in chatStore.ts. To find that
+ * record, grep chatStore.ts for the expression
+ * `wiByPosition[m.entry.position].push(m)` — quoted as a greppable
+ * expression on purpose, rather than as a line number or an enclosing
+ * function name, because both of those have gone stale here before. An
+ * unrecognized position would throw synchronously at that expression
+ * (`wiByPosition[unrecognized]` is undefined, so `.push` throws), which
+ * would defeat the entire fallback design; that is why an unrecognized
+ * value is rewritten to 'before_char' rather than passed through.
  *
- * **No closed partition of the field set is stated here on purpose.** Four
- * successive attempts to summarize this contract (one in the build commit,
- * three in review fix rounds) were each confirmed false by a later round;
- * the enumeration above is illustrative, not exhaustive. Read the
- * construction below for the per-field truth.
- * Only `position` can actually CRASH downstream (wiByPosition indexing);
- * the other three are allowlisted because their consumers assume the
- * literal union, not because they are crash-capable — do not read the
- * crash rationale as the criterion for adding the next one.
+ * Fields are handled by a mix of mechanisms: allowlist validation
+ * (`activationReason`, `position`, `selectiveLogic`, `source`), str/bool/num
+ * coercion, `strArr` element-filtering, a typeof-ternary, and — for
+ * `revisions` — a shallow `Array.isArray` cast whose elements are never
+ * validated at all.
  *
- * This paragraph previously said `position` was "the one validated against
- * an allowlist". That was false the day it was written (9ced3e43,
- * 2026-08-06 — the same commit already contained VALID_SELECTIVE_LOGIC and
- * VALID_SOURCES) and stood for 24 days. It is called out here because that
- * same commit also wrote the `captureWiFired` crosswalk comment whose rot
- * generated roadmap story E2-S5, and this claim was found by E2-S5's own
- * review round 4 — pointed at by a comment that had just told readers to
- * trust this docblock over a summary.
+ * **That list is illustrative, not a closed partition, deliberately.**
+ * Previous attempts to state this contract exhaustively were each later
+ * found to be false. Read the construction below for the per-field truth.
+ * Note also that `position` is the only allowlisted field that can CRASH a
+ * downstream consumer; the other three are allowlisted because their
+ * consumers assume the literal union, so do not read the crash rationale as
+ * the criterion for adding the next allowlist.
  *
  * `bookName` is set to '' — confirmed by reading every downstream consumer
  * of MatchedEntry.bookName in chatStore.ts (wrapWiContent keys off
