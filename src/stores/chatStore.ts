@@ -3466,11 +3466,16 @@ const wiFiredByFile = new Map<string, WiFiredMap>();
  * EMPTY (before this session's first buildLegacyIdRemap call, or after
  * resetUser/clearLegacyIdRemap — every legacy-shaped key then reports
  * `partial: true` via the shape check below, never a silent "resolved"),
- * or FINAL (from the instant buildLegacyIdRemap returns onward — its
- * output depends only on the old/new book snapshots it was called with,
- * never on fetchSharedBooks or anything else fetchPrefs does afterward, so
- * it cannot change again before legacyIdRemapReady() resolves). There is no
- * partially-populated state in between for a call to observe. Recomputing
+ * or FINAL (from the instant buildLegacyIdRemap returns — its output
+ * depends only on the old/new book snapshots it was called with, never on
+ * fetchSharedBooks or anything else fetchPrefs does afterward). FINAL is
+ * not permanent: a logout during fetchPrefs's awaited fetchSharedBooks leg
+ * (worldInfoStore.ts:3990, before the gate resolves at :3998) runs
+ * resetUser -> clearLegacyIdRemap and returns the maps to EMPTY. That is
+ * harmless here precisely BECAUSE nothing is cached — EMPTY is the
+ * conservative state, reporting partial rather than a silent "resolved".
+ * What matters is that there is no partially-populated state in between
+ * for a call to observe: every observable state is EMPTY or FINAL. Recomputing
  * here means a call during EMPTY correctly reports partial, and a call
  * during FINAL — whether or not legacyIdRemapReady() has resolved yet —
  * transparently returns the real mapping; a cache taken during EMPTY is
@@ -3564,8 +3569,8 @@ function captureWiFired(
   // file's own header comment is careful NOT to claim: a genuine BACKEND
   // id divergence (the server actually returning two different ids for one
   // row) is invisible to a frontend test whose mock supplies both ids
-  // itself; closing that needs a ggbc-backend contract test instead, filed
-  // as follow-up scope rather than covered here.
+  // itself; closing that needs a ggbc-backend contract test instead,
+  // filed as ggbc-backend#83.
   //
   // The filter still earns its place for entries the local store has not
   // fetched. One case can actually happen: an entry created on another

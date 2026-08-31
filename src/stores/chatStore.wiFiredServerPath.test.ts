@@ -25,8 +25,8 @@
  * construction — the mock below supplies both ids itself, so they agree
  * unconditionally. Closing THAT needs a ggbc-backend contract test
  * asserting POST /retrieval/context entries[].id equals the
- * lorebook_entries primary key GET /lorebooks/{id} returns; filed as
- * follow-up scope, not covered by this file.
+ * lorebook_entries primary key GET /lorebooks/{id} returns — filed as
+ * ggbc-backend#83, not covered by this file.
  *
  * The local entry is deliberately given a non-matching key and
  * `constant: false`, so it CANNOT fire via the local keyword scanner on
@@ -147,11 +147,13 @@ describe('server-path firing survives captureWiFired (AC3)', () => {
     vi.spyOn(api, 'importFromDatabank').mockResolvedValue({ imported: [], skipped: [], entry_count: 0 });
     const getRetrievalContext = vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
       // SAME id as the local bootstrap above — the "same row" this test
-      // exists to pin. id / lorebook_id are the only fields
-      // dtoToMatchedEntry VALIDATES — it returns null without them
-      // (serverRetrieval.ts). Everything else it reads (content, comment,
-      // enabled, position, ...~20 more) is defaulted via str()/bool()/
-      // num(), which is why this sparse fixture is safe: those defaults
+      // exists to pin. id / lorebook_id are the only fields whose absence
+      // makes dtoToMatchedEntry return NULL (serverRetrieval.ts). Other
+      // fields are still validated — `position`, `selectiveLogic` and
+      // `source` are each checked against an allowlist and fall back to a
+      // documented default (VALID_POSITIONS, serverRetrieval.ts:414) — and
+      // the rest (content, comment, enabled, ...) are coerced via
+      // str()/bool()/num(). Either way this sparse fixture is safe: those defaults
       // happen to be the values this test wants (enabled: true,
       // position: 'before_char', etc.), not because the fields go unread.
       // server_ts is here only because RetrievalContextEntryDTO's TYPE

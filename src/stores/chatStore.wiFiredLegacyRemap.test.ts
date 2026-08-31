@@ -73,12 +73,13 @@ const AVATAR = 'legacy-remap-char.png';
 /**
  * Legacy-shaped ids for seedMigratedBook's "old" book/entry — a fix-round
  * finding (E2-S5) caught this file using non-shaped placeholders
- * ('wibook_old_1'/'wi_old_1') here, under which a pre-readiness read (the
- * remap map genuinely empty) and a post-readiness-but-unresolved read look
- * IDENTICAL to remapWiFiredKeys's partial computation, because neither id
- * matches LEGACY_BOOK_ID_RE/LEGACY_ENTRY_ID_RE — so a test asserting
- * `partial: true` in the unresolved state couldn't discriminate a real
- * regression from a vacuous one. Same literal shape as wiFired.test.ts's
+ * ('wibook_old_1'/'wi_old_1'), which neither LEGACY_BOOK_ID_RE nor
+ * LEGACY_ENTRY_ID_RE matches. remapWiFiredKeys's `partial` conjunct is
+ * therefore false on both halves for such a key, so `partial` was always
+ * FALSE regardless of whether the remap worked. That made the RESOLVED
+ * case's `partial === false` assertion vacuous — it passed with no remap
+ * at all (see the inline note at that assertion). It did NOT make a
+ * `partial: true` assertion vacuous: that one could not pass at all. Same literal shape as wiFired.test.ts's
  * own LEGACY_BOOK/LEGACY_ENTRY. buildLegacyIdRemap's matching is purely
  * (scope, name) + content-signature — never id-shape — so using a
  * realistic id here does not change which book seedMigratedBook resolves.
@@ -178,8 +179,9 @@ beforeEach(() => {
 /**
  * Drives a real worldInfoStore.fetchPrefs() so remapLegacyBookId/
  * remapLegacyEntryId are populated exactly like a real login: one old-id
- * book ('wibook_old_1', containing entry 'wi_old_1') gets matched onto its
- * native-fetched counterpart ('uuid-book-1' / 'uuid-entry-1') by
+ * book (LEGACY_BOOK, containing entry LEGACY_ENTRY — see their docblock
+ * above for why the shape matters) gets matched onto its native-fetched
+ * counterpart ('uuid-book-1' / 'uuid-entry-1') by
  * (scope, name) + content signature — same fixture shape as
  * legacyIdRemap.test.ts's seedMigratedBook, kept local to this file since
  * each suite owns its own api mocks.
