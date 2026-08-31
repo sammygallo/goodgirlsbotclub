@@ -264,14 +264,15 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>30 Aug 2026</b><br>
-      main <b>2e569254</b><br>
-      active <b>E2-S5</b>
+      <b>31 Aug 2026</b><br>
+      main <b>2b3efa30</b><br>
+      active <b>none</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">2</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">18</div><div class="k">Gated</div></div>
@@ -311,9 +312,15 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry coverage</div><div class="m">Re-scoped 30 Aug — the id-crosswalk premise was falsified at intake. Now: remap pre-cutover telemetry + give wiReplay a "not observable" state.</div><div class="gates"><span class="gate free">ungated</span></div></article>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">1</span></div>
+      <div class="stack">
+        <article class="card s-ok" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry coverage</div><div class="m">Merged 31 Aug, <code>2b3efa30</code> (<a href="https://github.com/sammygallo/goodgirlsbotclub/pull/500">#500</a>). Read-time remap of pre-cutover <code>wi_fired</code> keys + a "not observable" replay state. Re-scoped 30 Aug after the id-crosswalk premise was falsified at intake. <b>6 review rounds, ~30 findings, zero behavior defects.</b> Not yet deployed — ships with the next approved deploy.</div><div class="gates"><span class="gate free">unblocks E5-S1</span></div></article>
       </div>
     </section>
 
