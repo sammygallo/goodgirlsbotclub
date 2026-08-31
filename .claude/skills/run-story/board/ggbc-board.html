@@ -377,7 +377,7 @@
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S4</div><div class="t">Chat overrides</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S1</div><div class="t">Memory pane</div><div class="gates"><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S2</div><div class="t">Lore scope + explainer</div><div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate">← E4-S1</span></div></article>
-        <article class="card s-warn" data-epic="E5"><div class="id">E5-S1</div><div class="t">Optimization diagnostics</div><div class="gates"><span class="gate">← E2-S4</span><span class="gate">← E2-S5</span><span class="gate free">E4-S0 ✓</span></div></article>
+        <article class="card s-warn" data-epic="E5"><div class="id">E5-S1</div><div class="t">Optimization diagnostics</div><div class="gates"><span class="gate">← E2-S4</span><span class="gate free">E2-S5 ✓</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S2</div><div class="t">Suggestions + batch apply</div><div class="gates"><span class="gate">← E5-S1</span></div></article>
         <article class="card s-warn" data-epic="E6"><div class="id">E6-S2 · S3 · S4</div><div class="t">Hero · sidebar · chat layout</div><div class="gates"><span class="gate">← E6-S1</span></div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S1</div><div class="t">Wizard P1 — Creator Notes editor</div><div class="m">Scheduled 11.1, independent of Arch v2.</div></article>
@@ -433,25 +433,25 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S2a — closed 29 Aug</h2>
-    <p class="sub">Shipped both halves together at 21:53Z, prod-verified. The activation engine had computed <i>why</i> each lore entry fired since Phase 2 and discarded it one line before the wire; it now reaches <code>MatchedEntry</code>. No UI — the rendered drill-down still waits on E2-S5, whose scope was corrected on 30 Aug (it was never an id crosswalk).</p>
+    <h2>E2-S5 — merged 31 Aug, not yet deployed</h2>
+    <p class="sub">Telemetry <i>coverage</i>, not the id crosswalk the card was written for — that premise died at the 2026-08-07 cutover and was corrected at intake. <code>wi_fired</code> shipped twelve days before that cutover, so maps from that window carry legacy keys nothing remapped; they read as never-fired, the exact false signal E5-S1 must not build "unused entry" findings on. Now remapped at read time (remap-or-keep, never cached, never written back) and <code>wiReplay</code> can finally say <i>not observable</i> instead of <i>never fired</i>. <b>Sits on <code>main</code>; ships with the next approved deploy.</b></p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Review</div><div class="sv">3 rounds → 0 confirmed</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">6 rounds · ~30 findings</div></div>
       <div class="step done"><div class="sn">QA</div><div class="sv">4 / 4 AC mutation-verified</div></div>
-      <div class="step done"><div class="sn">Merge</div><div class="sv">#82 + #490</div></div>
-      <div class="step done"><div class="sn">Deploy</div><div class="sv">/health 200, 2nd poll</div></div>
+      <div class="step done"><div class="sn">Merge</div><div class="sv">#500 → 2b3efa30</div></div>
+      <div class="step now"><div class="sn">Deploy</div><div class="sv">awaiting Sammy's go</div></div>
     </div>
 
     <div class="tscroll">
       <table>
         <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">~0.64M</td><td>M + 2 rework rounds</td><td>Under</td></tr>
-          <tr><td>Verification</td><td class="num">~3.5M / 3 rounds</td><td>3.2–9.5M</td><td class="up">On band, at the floor — first story priced on the #487 model</td></tr>
-          <tr><td>Absorption</td><td class="num">~0</td><td>n/a</td><td>Code story; no premises falsified</td></tr>
-          <tr><td>Postmortem</td><td class="num">~0.09M</td><td>0.1–0.3M</td><td>Under</td></tr>
-          <tr><td>Defects found</td><td class="num">4</td><td></td><td><b>All four were false coverage claims in test prose.</b> The production DTO was correct at first commit and no fix round ever touched it</td></tr>
+          <tr><td>Build</td><td class="num">~1.2M</td><td>S–M</td><td>Prior session; two gaps, one new util</td></tr>
+          <tr><td>Verification</td><td class="num">~12M / 6 rounds</td><td>1.6–4.8M</td><td><b>~3× over.</b> The escalation trigger that stopped this story at the gate</td></tr>
+          <tr><td>Absorption</td><td class="num">~0</td><td>n/a</td><td>Code story; the premise correction was its own run (#496)</td></tr>
+          <tr><td>Defects found</td><td class="num">~30</td><td></td><td><b>28 were false claims in PROSE. Zero were behavior defects</b> — production logic never moved after round 1</td></tr>
+          <tr><td>The one that mattered</td><td class="num">AC4</td><td></td><td>Had <b>no guard at all</b>. Persisting the remapped view would silently rewrite users' stored telemetry, and the whole suite stayed green</td></tr>
         </tbody>
       </table>
     </div>
@@ -473,7 +473,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 28 Aug 2026.</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 31 Aug 2026.</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
