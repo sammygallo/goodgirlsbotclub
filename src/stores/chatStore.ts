@@ -30,6 +30,8 @@ import {
   scanMessagesForEntries,
   loadWiTimers,
   saveWiTimers,
+  remapLegacyBookId,
+  remapLegacyEntryId,
   type WorldInfoPosition,
   type MatchedEntry,
   type WorldInfoScanReport,
@@ -44,7 +46,9 @@ import {
   recordWiFired,
   sanitizeWiFired,
   mergeWiFiredMaps,
+  remapWiFiredKeys,
   type WiFiredMap,
+  type WiFiredRemapResult,
 } from '../utils/wiFired';
 import {
   generateMessageId,
@@ -3344,6 +3348,14 @@ function buildChatPayload(
   // Story-state phase 0: round-trip the accumulated WI fired-state. The
   // header is rebuilt from scratch on every save, so anything not re-emitted
   // here is lost — the map was hydrated from the previous header at load.
+  // MUST stay wiFiredByFile.get(...), never getWiFiredForChat(...) — the
+  // latter's legacy-id remap (E2-S5 Gap 1) is a read-time-only view by
+  // design (see its own doc comment), and persisting it instead would
+  // silently, irreversibly migrate every legacy wi_fired key on the chat's
+  // next save (AC4). Pinned by
+  // chatStore.wiFiredServerPath.test.ts's AC4 case, which drives a real
+  // legacy-id remap and asserts the saved header still carries the
+  // UN-remapped key.
   const wiFired = wiFiredByFile.get(currentChatFile);
 
   const chatData: unknown[] = [
@@ -3428,8 +3440,88 @@ const chatServerTsByFile = new Map<string, number>();
 // reload. Keyed by file name, like chatServerTsByFile.
 const wiFiredByFile = new Map<string, WiFiredMap>();
 
+/**
+ * Read-time legacy-id remap of a chat's captured telemetry (E2-S5 Gap 1),
+ * shared by getWiFiredForChat and isWiFiredCoveragePartial below. Computed
+ * fresh on every call rather than cached or written back into
+ * `wiFiredByFile` — a persisted migration would trade away reversibility
+ * for a telemetry map that doesn't need it (see wiFired.ts's
+ * remapWiFiredKeys doc comment), AND would sidestep the T2 readiness gate:
+ * caching a remap taken before worldInfoStore's legacyIdRemapReady() has
+ * resolved would freeze in a "no known remap" verdict for every legacy key
+ * that was actually just not-yet-loaded. Pinned by
+ * chatStore.wiFiredLegacyRemap.test.ts's readiness-boundary case: one chat
+ * file read before AND after fetchPrefs, which fails under a per-fileName
+ * memo.
+ *
+ * Why a live call is safe at every point along that boundary — corrected
+ * from an earlier revision of this comment, which claimed
+ * remapLegacyBookId/remapLegacyEntryId "return null for everything
+ * pre-readiness." They do not: worldInfoStore's fetchPrefs calls
+ * buildLegacyIdRemap (populating the maps synchronously) well BEFORE its
+ * later `await fetchSharedBooks()` leg and the legacyIdRemapReady() gate
+ * opening, so a call in that window sees real, non-null answers despite
+ * readiness not having resolved. What actually makes any pre-readiness read
+ * safe is that the maps only ever exist in one of two states in a session:
+ * EMPTY (before this session's first buildLegacyIdRemap call, or after
+ * resetUser/clearLegacyIdRemap — every legacy-shaped key then reports
+ * `partial: true` via the shape check below, never a silent "resolved"),
+ * or FINAL (from the instant buildLegacyIdRemap returns — its output
+ * depends only on the old/new book snapshots it was called with, never on
+ * fetchSharedBooks or anything else fetchPrefs does afterward). FINAL is
+ * not permanent: a logout during fetchPrefs's awaited fetchSharedBooks leg
+ * (worldInfoStore.ts:3990, before the gate resolves at :3998) runs
+ * resetUser -> clearLegacyIdRemap and returns the maps to EMPTY. That is
+ * harmless here precisely BECAUSE nothing is cached — EMPTY is the
+ * conservative state, reporting partial rather than a silent "resolved".
+ * What matters is that there is no partially-populated state in between
+ * for a call to observe: every observable state is EMPTY or FINAL. Recomputing
+ * here means a call during EMPTY correctly reports partial, and a call
+ * during FINAL — whether or not legacyIdRemapReady() has resolved yet —
+ * transparently returns the real mapping; a cache taken during EMPTY is
+ * exactly what would freeze the wrong verdict. These maps are chat-sized
+ * (tens of entries), so recomputing costs nothing worth caching for.
+ */
+function remappedWiFired(fileName: string): WiFiredRemapResult | undefined {
+  const raw = wiFiredByFile.get(fileName);
+  if (!raw) return undefined;
+  return remapWiFiredKeys(raw, remapLegacyBookId, remapLegacyEntryId);
+}
+
+/**
+ * A chat's WI fired-state telemetry, with any pre-cutover
+ * `wibook_x:wi_y` keys (fa3cd1bf, 12 days before the native-CRUD cutover
+ * 77e689d2) folded onto their current native id — remap-or-keep, per T1:
+ * a key with no confident remap is returned UNCHANGED, never dropped, so no
+ * telemetry is ever discarded. That is NOT the same as this being a
+ * superset view of what wiFiredByFile holds, though (an earlier revision of
+ * this comment claimed it was): when two keys DO remap onto the same
+ * current key — a pre-cutover key and its post-cutover successor for the
+ * same entry — remapWiFiredKeys merges them into one row (summed count;
+ * see its own doc comment in wiFired.ts), so the output key SET can be
+ * smaller than the input's even though no observation was lost. Does NOT
+ * affect what gets persisted — buildChatPayload reads wiFiredByFile
+ * directly (see its own comment above, at the `wiFiredByFile.get(...)`
+ * line), so captureWiFired's write path and the `wi_fired` header field are
+ * byte-for-byte unchanged by this function's existence (AC4). See
+ * isWiFiredCoveragePartial for whether this view is known-incomplete.
+ */
 export function getWiFiredForChat(fileName: string): WiFiredMap | undefined {
-  return wiFiredByFile.get(fileName);
+  return remappedWiFired(fileName)?.map;
+}
+
+/**
+ * True when getWiFiredForChat's remap could not place at least one
+ * pre-cutover key among this chat's current entries (AC1's "or flag
+ * partial-coverage" branch) — e.g. the legacy id's server-recorded
+ * successor is itself gone, or worldInfoStore's remap map hasn't finished
+ * loading yet (T2). Callers that turn "never fired" into a finding (the
+ * future E5-S1 audit; wiReplay.ts's own notObservable today) should read a
+ * `true` here as "this chat's absence-of-firing signal cannot be trusted
+ * as a fact" rather than as a low/zero trigger count.
+ */
+export function isWiFiredCoveragePartial(fileName: string): boolean {
+  return remappedWiFired(fileName)?.partial ?? false;
 }
 
 /** Fold one generation's injected WI entries into the chat's telemetry. */
@@ -3469,8 +3561,16 @@ function captureWiFired(
   // same row, so if the backend ever emitted a synthetic id from
   // POST /retrieval/context while GET /lorebooks/{id} kept the primary
   // key, both stay green and this filter would silently resume dropping
-  // every server-path firing. Closing that hole with a real regression
-  // test is one of E2-S5's acceptance criteria.
+  // every server-path firing. Pinned against THAT gap (E2-S5 AC3) by
+  // src/stores/chatStore.wiFiredServerPath.test.ts, which seeds ONE
+  // fixture id into both the local native bootstrap and the mocked
+  // POST /retrieval/context response and drives a real sendMessage turn —
+  // proving this filter passes a same-row id through end to end. What that
+  // file's own header comment is careful NOT to claim: a genuine BACKEND
+  // id divergence (the server actually returning two different ids for one
+  // row) is invisible to a frontend test whose mock supplies both ids
+  // itself; closing that needs a ggbc-backend contract test instead,
+  // filed as ggbc-backend#83.
   //
   // The filter still earns its place for entries the local store has not
   // fetched. One case can actually happen: an entry created on another
@@ -3484,9 +3584,16 @@ function captureWiFired(
   // entry ids, so an unresolvable key would sit unreachable, discarding
   // the real measured telemetry, while the entry's own key falls back to
   // an approximate keyword replay or is wrongly marked as never fired.
-  // What it drops is therefore a coverage gap, not a scheme mismatch;
-  // teaching wiReplay a "not observable" state distinct from neverFired
-  // is E2-S5's remaining scope.
+  // What it drops is therefore a coverage gap, not a scheme mismatch — and
+  // a narrower one than the pre-cutover wi_fired keys E2-S5 fixes
+  // elsewhere: those are keyed but MISFILED (wiFired.ts's
+  // remapWiFiredKeys, Gap 1, folds them onto their native id at read time;
+  // wiReplay.ts's notObservable field, Gap 2, downgrades neverFired's
+  // confidence when a captured key can't be placed among current entries
+  // at all), while an entry dropped HERE for being unfetched never reaches
+  // wiFiredByFile in the first place, leaving no key for either mechanism
+  // to see. Still accepted as rare for the reason two paragraphs up (the
+  // shared-book case can't happen).
   const localEntryIds = new Set(
     useWorldInfoStore
       .getState()

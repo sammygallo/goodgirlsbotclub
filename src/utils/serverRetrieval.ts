@@ -359,15 +359,30 @@ function strArr(v: unknown): string[] {
  * this one entry, don't crash the whole turn) when the entry is missing an
  * id or lorebook_id.
  *
- * `entry.position` is validated against the exact literal set
- * buildConversationContext indexes `wiByPosition` with
- * (chatStore.ts:~1029-1038) — an unrecognized value there would throw
- * synchronously (`wiByPosition[unrecognized]` is undefined, `.push` throws),
- * which would defeat the entire fallback design. Every other field is
- * defensively coerced to the type WorldInfoEntry declares, defaulting to
- * DEFAULT_ENTRY-equivalent values on a mismatch, but only `position` can
- * actually crash downstream, so it's the one validated against an
- * allowlist rather than just type-checked.
+ * `entry.position` is validated against VALID_POSITIONS, which is exactly
+ * the key set of the `wiByPosition` record in chatStore.ts. To find that
+ * record, grep chatStore.ts for the expression
+ * `wiByPosition[m.entry.position].push(m)` — quoted as a greppable
+ * expression on purpose, rather than as a line number or an enclosing
+ * function name, because both of those have gone stale here before. An
+ * unrecognized position would throw synchronously at that expression
+ * (`wiByPosition[unrecognized]` is undefined, so `.push` throws), which
+ * would defeat the entire fallback design; that is why an unrecognized
+ * value is rewritten to 'before_char' rather than passed through.
+ *
+ * Fields are handled by a mix of mechanisms: allowlist validation
+ * (`activationReason`, `position`, `selectiveLogic`, `source`), str/bool/num
+ * coercion, `strArr` element-filtering, a typeof-ternary, and — for
+ * `revisions` — a shallow `Array.isArray` cast whose elements are never
+ * validated at all.
+ *
+ * **That list is illustrative, not a closed partition, deliberately.**
+ * Previous attempts to state this contract exhaustively were each later
+ * found to be false. Read the construction below for the per-field truth.
+ * Note also that `position` is the only allowlisted field that can CRASH a
+ * downstream consumer; the other three are allowlisted because their
+ * consumers assume the literal union, so do not read the crash rationale as
+ * the criterion for adding the next allowlist.
  *
  * `bookName` is set to '' — confirmed by reading every downstream consumer
  * of MatchedEntry.bookName in chatStore.ts (wrapWiContent keys off

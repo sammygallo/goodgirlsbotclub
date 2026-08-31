@@ -175,6 +175,95 @@ describe('captured telemetry beats replay', () => {
   });
 });
 
+// Realistic pre-cutover ids — same shape as worldInfoStore's own
+// LEGACY_BOOK_ID_RE/LEGACY_ENTRY_ID_RE test fixtures
+// (worldInfoStore.legacyDropGate.test.ts).
+const LEGACY_KEY = 'wibook_1777000000000_aaaaaa:wi_1777000000001_bbbbbb';
+
+describe('notObservable — orphaned pre-cutover captured keys (E2-S5 Gap 2)', () => {
+  it('downgrades neverFired to notObservable when a captured key looks legacy and matches no active entry', () => {
+    const out = replayWorldInfo(
+      TRANSCRIPT,
+      [entry({ keys: ['nothing-matches'] })], // b1:e1 — would otherwise never-fire
+      { capturedFired: { [LEGACY_KEY]: { first_turn: 0, last_turn: 0, count: 1 } } }
+    );
+    expect(out.neverFired, 'a chat with unplaced legacy residue must not assert never-fired').toEqual([]);
+    expect(out.notObservable).toEqual(['b1:e1']);
+  });
+
+  it('covers every currently-missing active entry, not just one', () => {
+    const out = replayWorldInfo(
+      TRANSCRIPT,
+      [
+        entry({ id: 'e1', keys: ['nothing-matches'] }),
+        entry({ id: 'e2', keys: ['also-nothing'] }),
+      ],
+      { capturedFired: { [LEGACY_KEY]: { first_turn: 0, last_turn: 0, count: 1 } } }
+    );
+    expect(out.neverFired).toEqual([]);
+    expect(out.notObservable.sort()).toEqual(['b1:e1', 'b1:e2']);
+  });
+
+  it('leaves neverFired alone when captured telemetry has no legacy-shaped residue', () => {
+    // A ordinary post-cutover capturedFired map, unrelated to the entry
+    // that never fires — the common case, and existing callers' neverFired
+    // reads must not regress.
+    const out = replayWorldInfo(
+      TRANSCRIPT,
+      [entry({ keys: ['nothing-matches'] })],
+      { capturedFired: { 'other-book:other-entry': { first_turn: 0, last_turn: 0, count: 1 } } }
+    );
+    expect(out.neverFired).toEqual(['b1:e1']);
+    expect(out.notObservable).toEqual([]);
+  });
+
+  it('does not treat a legacy-shaped key as orphaned when it matches an active entry exactly', () => {
+    // The entry itself still carries its pre-cutover id (never migrated) —
+    // the captured key IS placed, so there is nothing unobservable about
+    // it. A SECOND, genuinely-never-fired entry ('e2') is what makes this
+    // test able to fail: with only one (firing) entry, `missing` would be
+    // empty regardless of whether the placement guard exists at all, so
+    // this row would pass even with the guard deleted (caught in review by
+    // mutation-testing the guard away — it left this original one-entry
+    // version green).
+    const [legacyBookId, legacyEntryId] = LEGACY_KEY.split(':');
+    const out = replayWorldInfo(
+      TRANSCRIPT,
+      [
+        entry({ id: legacyEntryId, bookId: legacyBookId, keys: ['nothing-matches'] }),
+        entry({ id: 'e2', keys: ['also-nothing'] }),
+      ],
+      { capturedFired: { [LEGACY_KEY]: { first_turn: 0, last_turn: 0, count: 5 } } }
+    );
+    expect(out.fired[LEGACY_KEY].count).toBe(5);
+    expect(
+      out.neverFired,
+      "a placed legacy key must not downgrade an unrelated entry's neverFired verdict"
+    ).toEqual(['b1:e2']);
+    expect(out.notObservable).toEqual([]);
+  });
+
+  it('is empty (not the whole active set) when capturedFired is absent entirely', () => {
+    // No captured telemetry at all is NOT itself a partial-coverage signal
+    // — the replay scan still confidently watched the whole transcript.
+    const out = replayWorldInfo(TRANSCRIPT, [entry({ keys: ['nothing-matches'] })]);
+    expect(out.neverFired).toEqual(['b1:e1']);
+    expect(out.notObservable).toEqual([]);
+  });
+
+  it('leaves approximate meaning what it always meant — untouched by notObservable', () => {
+    // AC2: approximate must not be overloaded to also carry the
+    // never-fired/not-observable distinction.
+    const out = replayWorldInfo(TRANSCRIPT, [entry()], {
+      capturedFired: { [LEGACY_KEY]: { first_turn: 0, last_turn: 0, count: 1 } },
+    });
+    // b1:e1 fires via keyword match (replay), so approximate is still
+    // driven purely by whether replay contributed to `fired` — unrelated
+    // to the unplaced legacy residue this describe block is about.
+    expect(out.approximate).toBe(true);
+  });
+});
+
 describe('replaySupported', () => {
   it('refuses group chats — they never scan world info at all', () => {
     expect(replaySupported(false)).toBe(true);
