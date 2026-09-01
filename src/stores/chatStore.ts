@@ -884,6 +884,22 @@ function ragAbortAfter(ms: number): { signal: AbortSignal; cancel: () => void } 
   return { signal: controller.signal, cancel: () => clearTimeout(timeoutId) };
 }
 
+// E9-S7 (#455): the `no_key` hint fires once per app session, not once per
+// chat and not on every degraded turn — a user who leaves chat memory on
+// without an embeddings key would otherwise get the toast again on every
+// message they send. Module-level flag, same shape as
+// chatHistoryRagStore.ts's `backfillTriggeredThisSession`: no per-chat key,
+// because this is a global "have we told them yet" latch, not something
+// keyed to which chat is open. Reset only for tests.
+let noKeyHintShownThisSession = false;
+
+/** Test-only: clears the once-per-session latch above so each test starts
+ *  from a clean slate instead of leaking state from an earlier test in the
+ *  same run. Not called from production code. */
+export function _resetNoKeyHintForTests(): void {
+  noKeyHintShownThisSession = false;
+}
+
 /**
  * Phase 2 of the memory-consolidation plan — RAG helper.
  * Extracts the last user message from `messages` and queries the
@@ -961,9 +977,9 @@ export async function resolveRagContext(
 
     // The server's degradation code for this call (ggbc-backend#81,
     // app/routers/retrieval.py). Read as a switch over KNOWN values with an
-    // explicit default because a second consumer is already queued: E9-S7
-    // (#455) surfaces `"no_key"` as a UI hint and must be able to add a case
-    // rather than rewrite this read.
+    // explicit default — E9-S7 (#455) is the consumer that arm was reserved
+    // for: it surfaces `"no_key"` as a UI hint via its own case below,
+    // added without touching the shared `null`/`undefined` arm.
     //
     // SEMANTICS — do not misread this: a NULL (or absent) reason means only
     // "the id you sent resolved to a live message in the persisted chat". It is NOT a
@@ -995,6 +1011,25 @@ export async function resolveRagContext(
             'window (newest few messages excluded by count) and may duplicate ' +
             'raw history this turn'
         );
+        break;
+      case 'no_key':
+        // Chat memory is on but there is no embeddings key on file, so the
+        // server ran no search at all (it returns chunks: [] alongside this
+        // reason, though nothing below may rely on that — chunks are still
+        // read generically after the switch). Without this arm the user sees
+        // recall silently find nothing, indistinguishable from an ordinary
+        // no-matches turn. Toast once per session, not once per turn — see
+        // `noKeyHintShownThisSession` above.
+        console.warn(
+          '[resolveRagContext] no embeddings key on file — recall skipped this turn'
+        );
+        if (!noKeyHintShownThisSession) {
+          noKeyHintShownThisSession = true;
+          showToastGlobal(
+            'Chat memory is on, but no embedding key is set, so recall found nothing. Add one under Settings → My Keys → Embeddings.',
+            'warning'
+          );
+        }
         break;
       default:
         // A reason this build does not know about. Recall still applies; a
