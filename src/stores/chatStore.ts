@@ -1020,8 +1020,8 @@ export async function resolveRagContext(
         // ordinary no-matches turn. The warning describes the SERVER's
         // state (no provider resolved), not a client-side guess about why —
         // the client never checks for a key itself; it only reads what the
-        // server reported. Toast once per session, not on every degraded
-        // call — see `noKeyHintShownThisSession` above.
+        // server reported. Toast once per session, not on every no_key
+        // response — see `noKeyHintShownThisSession` above.
         console.warn(
           '[resolveRagContext] server reported no_key — no embeddings ' +
             'provider resolved, so no recall search ran this turn'

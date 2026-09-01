@@ -273,10 +273,8 @@ describe('resolveRagContext — the server degradation reason', () => {
     // mock — `vi.restoreAllMocks()` above does not touch it, and now that
     // two tests below reach the `no_key` arm, whichever ran first would
     // otherwise "use up" the toast for the other. `resetUser()` clears it
-    // (chatStore's own production reset path, not a test-only export) —
-    // this call is what proves that; whether `authStore.resetAllUserState()`
-    // in turn calls `resetUser()` on logout is a separate fact this file
-    // does not exercise.
+    // — chatStore's own production reset path, not a test-only export; the
+    // 're-arms' test further down is what asserts that reset.
     useChatStore.getState().resetUser();
     useChatHistoryRagStore.setState({ enabled: true });
     useChatStore.setState({ groupChats: [] });
@@ -423,15 +421,10 @@ describe('resolveRagContext — the server degradation reason', () => {
     // is the same contract for the `no_key` latch.
     //
     // KILLS: deleting the `noKeyHintShownThisSession = false;` line from
-    // chatStore.ts's `resetUser`. Reproduced two ways, and both matter:
-    // run this file ALONE and the failure lands on the SECOND assertion
-    // below (2 expected, 1 actual — the mutation's direct effect, this
-    // test's own two turns). Run the FULL FILE and it instead fails on the
-    // FIRST assertion (1 expected, 0 actual): the preceding toast test
-    // already set the latch, `beforeEach`'s `resetUser()` no longer clears
-    // it without the deleted line, and this test's first no_key turn finds
-    // it already spent. Either way the mutation is caught; which assertion
-    // catches it depends on run order.
+    // chatStore.ts's `resetUser`. Which assertion below catches it depends on
+    // run order: run only this test (`-t`) and the SECOND fails (2 expected,
+    // 1 actual); run the whole file and the earlier no_key test's leftover
+    // latch fails the FIRST instead (1 expected, 0 actual).
     vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({
       chunks: [CHUNK],
       reason: 'no_key',
