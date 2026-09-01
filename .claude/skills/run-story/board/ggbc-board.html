@@ -317,7 +317,7 @@
         <article class="card s-live" data-epic="E9">
           <div class="id">E9-S7</div>
           <div class="t">Surface recall's <code>no_key</code> reason</div>
-          <div class="m">#455 · started 1 Sep on <code>claude/e9-s7-recall-no-key-hint</code>. Premise re-verified at intake: <code>retrieval.py</code> still returns <code>no_key</code> and the client switch has no arm for it. Build on Sonnet (card said Haiku — the pinning test's kill-prose is where the last three stories bled). S · standard review.</div>
+          <div class="m">#455 · started 1 Sep on <code>claude/e9-s7-recall-no-key-hint</code>. Premise re-verified at intake: <code>retrieval.py</code> still returns <code>no_key</code> and the client switch has no arm for it. Build on Sonnet (card said Haiku — the pinning test's kill-prose is where the last three stories bled). S · standard review (the skill loaded at xhigh; kept). In review, round 3 done.</div>
           <div class="gates"><span class="gate free">ungated — E2-S2 shipped, t1b collision is dead</span></div>
         </article>
       </div>
@@ -438,18 +438,18 @@
 
     <div class="steps">
       <div class="step done"><div class="sn">Intake</div><div class="sv">premise verified in both repos</div></div>
-      <div class="step now"><div class="sn">Build</div><div class="sv">story-dev · Sonnet</div></div>
-      <div class="step"><div class="sn">Review</div><div class="sv">standard tier · medium</div></div>
+      <div class="step done"><div class="sn">Build</div><div class="sv">story-dev · Sonnet · 1 feat + 3 fix commits</div></div>
+      <div class="step now"><div class="sn">Review</div><div class="sv">3 rounds so far (1 Sep) · 0 behavior defects after round 1</div></div>
       <div class="step"><div class="sn">QA</div><div class="sv">4 AC</div></div>
       <div class="step"><div class="sn">Merge</div><div class="sv">self-serve unless a trigger fires</div></div>
     </div>
 
     <div class="tscroll">
       <table>
-        <thead><tr><th>Stage</th><th>Plan</th><th>Band</th><th>Note</th></tr></thead>
+        <thead><tr><th>Stage</th><th>Plan → so far</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">Sonnet</td><td>S</td><td>Card said Haiku; overridden because the test rows argue every kill in prose, and prose is where fix rounds have been spent</td></tr>
-          <tr><td>Verification</td><td class="num">/code-review medium</td><td>S · 1 task-PR</td><td>No trigger-list hit: reads an already-typed DTO field, no orchestration or contract change</td></tr>
+          <tr><td>Build</td><td class="num">Sonnet → ~0.22M est.</td><td>S</td><td>Card said Haiku; overridden because the test rows argue every kill in prose, and prose is where fix rounds have been spent. Every kill mutation run and reverted, red lines pasted</td></tr>
+          <tr><td>Verification</td><td class="num">medium planned → skill loaded at <b>xhigh</b>; 3 rounds, ~3.3M est. so far</td><td>S · 1 task-PR</td><td>No trigger-list hit. Round 1: 3 confirmed defects (latch never reset on logout · toast named a page no role can reach · assertion bound only the word "embedding"). Rounds 2–3: prose and hygiene only; two reviewers re-ran the F1 kill mutation independently. Filed #501 and #502 for pre-existing defects found on the way</td></tr>
           <tr><td>Absorption</td><td class="num">n/a</td><td></td><td>Code story. E4-S2 task 3 duplicates this fix "if E9-S7 has not shipped" — annotated at close</td></tr>
           <tr><td>Postmortem</td><td class="num">CURATE</td><td></td><td>Fifth pipeline exit since the counter started — the first CURATE run</td></tr>
         </tbody>
