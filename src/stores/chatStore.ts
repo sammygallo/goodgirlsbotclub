@@ -890,15 +890,11 @@ function ragAbortAfter(ms: number): { signal: AbortSignal; cancel: () => void } 
 // message they send. Module-level flag, same shape as
 // chatHistoryRagStore.ts's `backfillTriggeredThisSession`: no per-chat key,
 // because this is a global "have we told them yet" latch, not something
-// keyed to which chat is open. Reset only for tests.
+// keyed to which chat is open. Cleared by `resetUser()` below on
+// logout/user switch, same as `backfillTriggeredThisSession` is cleared by
+// chatHistoryRagStore.ts's own `resetUser` — otherwise the next account on
+// a shared browser would silently inherit "already told you".
 let noKeyHintShownThisSession = false;
-
-/** Test-only: clears the once-per-session latch above so each test starts
- *  from a clean slate instead of leaking state from an earlier test in the
- *  same run. Not called from production code. */
-export function _resetNoKeyHintForTests(): void {
-  noKeyHintShownThisSession = false;
-}
 
 /**
  * Phase 2 of the memory-consolidation plan — RAG helper.
@@ -977,9 +973,12 @@ export async function resolveRagContext(
 
     // The server's degradation code for this call (ggbc-backend#81,
     // app/routers/retrieval.py). Read as a switch over KNOWN values with an
-    // explicit default — E9-S7 (#455) is the consumer that arm was reserved
-    // for: it surfaces `"no_key"` as a UI hint via its own case below,
-    // added without touching the shared `null`/`undefined` arm.
+    // explicit default so a reason this build has never heard of stays
+    // silent rather than being misread as one of the known ones. E9-S7
+    // (#455) is the case that reservation was made for: it added its own
+    // `case 'no_key'` below rather than rewriting this read or routing
+    // through `default:`, leaving the shared `null`/`undefined` arm and the
+    // silent-unknown behavior of `default:` untouched.
     //
     // SEMANTICS — do not misread this: a NULL (or absent) reason means only
     // "the id you sent resolved to a live message in the persisted chat". It is NOT a
@@ -1013,20 +1012,25 @@ export async function resolveRagContext(
         );
         break;
       case 'no_key':
-        // Chat memory is on but there is no embeddings key on file, so the
-        // server ran no search at all (it returns chunks: [] alongside this
-        // reason, though nothing below may rely on that — chunks are still
-        // read generically after the switch). Without this arm the user sees
-        // recall silently find nothing, indistinguishable from an ordinary
-        // no-matches turn. Toast once per session, not once per turn — see
+        // The server could not resolve an embeddings provider, so it ran no
+        // search at all (it returns chunks: [] alongside this reason, though
+        // nothing below may rely on that — chunks are still read generically
+        // after the switch, same as every other arm). Without this case the
+        // user sees recall silently find nothing, indistinguishable from an
+        // ordinary no-matches turn. The warning describes the SERVER's
+        // state (no provider resolved), not a client-side guess about why —
+        // the client never checks for a key itself; it only reads what the
+        // server reported. Toast once per session, not once per turn — see
         // `noKeyHintShownThisSession` above.
         console.warn(
-          '[resolveRagContext] no embeddings key on file — recall skipped this turn'
+          '[resolveRagContext] server reported no_key — no embeddings ' +
+            'provider resolved, so no recall search ran this turn'
         );
         if (!noKeyHintShownThisSession) {
           noKeyHintShownThisSession = true;
           showToastGlobal(
-            'Chat memory is on, but no embedding key is set, so recall found nothing. Add one under Settings → My Keys → Embeddings.',
+            "Chat memory is on, but no embeddings key is set, so the server " +
+              "can't search past chats. Add one under Settings → AI Settings.",
             'warning'
           );
         }
@@ -6010,6 +6014,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try { localStorage.removeItem(AUTHOR_NOTES_KEY); } catch { /* ignore */ }
     try { localStorage.removeItem(GROUP_CHATS_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
+    // E9-S7 (#455): the next account must see its own no_key hint, not
+    // inherit "already told you" from whoever was logged in before — same
+    // reasoning as chatHistoryRagStore.ts's `backfillTriggeredThisSession`
+    // reset in its own `resetUser`.
+    noKeyHintShownThisSession = false;
   },
 
   fetchPrefs: async () => {

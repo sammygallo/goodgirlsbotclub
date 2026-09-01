@@ -80,7 +80,6 @@ class MemoryStorage {
 globalThis.localStorage = new MemoryStorage() as unknown as Storage;
 
 const {
-  _resetNoKeyHintForTests,
   buildGroupConversationContext,
   finishConversationContext,
   groupRecallBoundary,
@@ -270,16 +269,19 @@ describe('resolveRagContext — the server degradation reason', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    // The once-per-session `no_key` toast latch is module state, not a
+    // mock — `vi.restoreAllMocks()` above does not touch it, and now that
+    // two tests below reach the `no_key` arm, whichever ran first would
+    // otherwise "use up" the toast for the other. `resetUser()` is chatStore's
+    // own production reset path (also exercised directly by the F1
+    // regression test further down) rather than a test-only export, so this
+    // reset doubles as coverage that it's wired into the real reset path.
+    useChatStore.getState().resetUser();
     useChatHistoryRagStore.setState({ enabled: true });
     useChatStore.setState({ groupChats: [] });
     useCharacterStore.setState({
       selectedCharacter: { name: 'Ivy', avatar: 'ivy.png' } as never,
     });
-    // The once-per-session toast latch is module state, not a mock —
-    // `vi.restoreAllMocks()` above does not touch it. Without this reset,
-    // whichever `no_key` test runs first would "use up" the toast and every
-    // later test in this file would see it silent.
-    _resetNoKeyHintForTests();
     // `showToastGlobal` is a plain `vi.fn()` from the top-of-file
     // `vi.mock('../components/ui/Toast', ...)` factory, not a `vi.spyOn` —
     // `restoreAllMocks()` above has no original implementation to restore it
@@ -377,6 +379,9 @@ describe('resolveRagContext — the server degradation reason', () => {
     // mock deliberately returns a non-empty CHUNK to prove the client reads
     // whatever chunks come back rather than assuming the reason implies
     // emptiness; an early return would drop it and `out` would be null.
+    // KILLS: the console.warn text drifting onto the `boundary_not_found`
+    // arm's wording (or vice versa) — the content assertion below pins
+    // `no_key` on the warning, not just a call count.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({
       chunks: [CHUNK],
@@ -385,9 +390,14 @@ describe('resolveRagContext — the server degradation reason', () => {
 
     const first = await resolveRagContext(messages, CHAT, 'b17');
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no_key'));
     expect(showToastGlobal).toHaveBeenCalledTimes(1);
+    // Binds BOTH the missing thing (embeddings key) and the reachable page
+    // (AI Settings — My Keys is unreachable for every role, see F2/#455
+    // review) — not the arrow glyph between them, which is a rendering
+    // detail rather than the fact this hint exists to convey.
     expect(showToastGlobal).toHaveBeenCalledWith(
-      expect.stringContaining('embedding'),
+      expect.stringMatching(/embeddings key[\s\S]*AI Settings/),
       'warning'
     );
     expect(first).toContain('It went with the ledger.');
@@ -399,6 +409,44 @@ describe('resolveRagContext — the server degradation reason', () => {
     expect(warn).toHaveBeenCalledTimes(2);
     expect(showToastGlobal).toHaveBeenCalledTimes(1);
     expect(second).toContain('It went with the ledger.');
+  });
+
+  it('re-arms the no_key hint on resetUser (logout / user switch)', async () => {
+    // F1 (E9-S7 review round 1): `authStore.resetAllUserState()` calls
+    // `useChatStore.getState().resetUser()` on logout and on every active-
+    // handle switch (authStore.ts). Before this fix, the once-per-session
+    // latch outlived that reset, so a second account signing in on the same
+    // browser session — one that has never seen the hint — would silently
+    // get nothing were it also missing a key. `backfillTriggeredThisSession`
+    // in chatHistoryRagStore.ts already resets on its own `resetUser`; this
+    // is the same contract for the `no_key` latch.
+    //
+    // KILLS: deleting the `noKeyHintShownThisSession = false;` line from
+    // chatStore.ts's `resetUser` — the second toast below drops back to 1
+    // total call instead of 2.
+    vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({
+      chunks: [CHUNK],
+      reason: 'no_key',
+    });
+
+    await resolveRagContext(messages, CHAT, 'b17');
+    expect(showToastGlobal).toHaveBeenCalledTimes(1);
+
+    useChatStore.getState().resetUser();
+    // chatStore's `resetUser` already sets `groupChats: []` as part of its
+    // own reset (asserting that isn't this test's job) — re-set it anyway,
+    // defensively, so this test does not depend on that detail. It does NOT
+    // touch characterStore (that is `authStore.resetAllUserState`'s job, via
+    // a separate `useCharacterStore.getState().resetUser()` call this test
+    // never invokes), so `selectedCharacter` survives on its own; re-set it
+    // too only so this test reads the same way a real second login would.
+    useChatStore.setState({ groupChats: [] });
+    useCharacterStore.setState({
+      selectedCharacter: { name: 'Ivy', avatar: 'ivy.png' } as never,
+    });
+
+    await resolveRagContext(messages, CHAT, 'b17');
+    expect(showToastGlobal).toHaveBeenCalledTimes(2);
   });
 
   it('is silent and non-fatal on a reason this build does not know', async () => {
