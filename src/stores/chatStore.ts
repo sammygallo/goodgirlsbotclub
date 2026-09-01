@@ -1020,8 +1020,8 @@ export async function resolveRagContext(
         // ordinary no-matches turn. The warning describes the SERVER's
         // state (no provider resolved), not a client-side guess about why —
         // the client never checks for a key itself; it only reads what the
-        // server reported. Toast once per session, not once per turn — see
-        // `noKeyHintShownThisSession` above.
+        // server reported. Toast once per session, not on every degraded
+        // call — see `noKeyHintShownThisSession` above.
         console.warn(
           '[resolveRagContext] server reported no_key — no embeddings ' +
             'provider resolved, so no recall search ran this turn'
@@ -6014,11 +6014,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try { localStorage.removeItem(AUTHOR_NOTES_KEY); } catch { /* ignore */ }
     try { localStorage.removeItem(GROUP_CHATS_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
-    // E9-S7 (#455): the next account must see its own no_key hint, not
-    // inherit "already told you" from whoever was logged in before — same
-    // reasoning as chatHistoryRagStore.ts's `backfillTriggeredThisSession`
-    // reset in its own `resetUser`.
-    noKeyHintShownThisSession = false;
+    noKeyHintShownThisSession = false; // E9-S7 (#455) — see the latch's own comment
   },
 
   fetchPrefs: async () => {

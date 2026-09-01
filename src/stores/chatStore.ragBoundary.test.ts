@@ -272,10 +272,11 @@ describe('resolveRagContext — the server degradation reason', () => {
     // The once-per-session `no_key` toast latch is module state, not a
     // mock — `vi.restoreAllMocks()` above does not touch it, and now that
     // two tests below reach the `no_key` arm, whichever ran first would
-    // otherwise "use up" the toast for the other. `resetUser()` is chatStore's
-    // own production reset path (also exercised directly by the F1
-    // regression test further down) rather than a test-only export, so this
-    // reset doubles as coverage that it's wired into the real reset path.
+    // otherwise "use up" the toast for the other. `resetUser()` clears it
+    // (chatStore's own production reset path, not a test-only export) —
+    // this call is what proves that; whether `authStore.resetAllUserState()`
+    // in turn calls `resetUser()` on logout is a separate fact this file
+    // does not exercise.
     useChatStore.getState().resetUser();
     useChatHistoryRagStore.setState({ enabled: true });
     useChatStore.setState({ groupChats: [] });
@@ -422,8 +423,15 @@ describe('resolveRagContext — the server degradation reason', () => {
     // is the same contract for the `no_key` latch.
     //
     // KILLS: deleting the `noKeyHintShownThisSession = false;` line from
-    // chatStore.ts's `resetUser` — the second toast below drops back to 1
-    // total call instead of 2.
+    // chatStore.ts's `resetUser`. Reproduced two ways, and both matter:
+    // run this file ALONE and the failure lands on the SECOND assertion
+    // below (2 expected, 1 actual — the mutation's direct effect, this
+    // test's own two turns). Run the FULL FILE and it instead fails on the
+    // FIRST assertion (1 expected, 0 actual): the preceding toast test
+    // already set the latch, `beforeEach`'s `resetUser()` no longer clears
+    // it without the deleted line, and this test's first no_key turn finds
+    // it already spent. Either way the mutation is caught; which assertion
+    // catches it depends on run order.
     vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({
       chunks: [CHUNK],
       reason: 'no_key',
@@ -433,18 +441,8 @@ describe('resolveRagContext — the server degradation reason', () => {
     expect(showToastGlobal).toHaveBeenCalledTimes(1);
 
     useChatStore.getState().resetUser();
-    // chatStore's `resetUser` already sets `groupChats: []` as part of its
-    // own reset (asserting that isn't this test's job) — re-set it anyway,
-    // defensively, so this test does not depend on that detail. It does NOT
-    // touch characterStore (that is `authStore.resetAllUserState`'s job, via
-    // a separate `useCharacterStore.getState().resetUser()` call this test
-    // never invokes), so `selectedCharacter` survives on its own; re-set it
-    // too only so this test reads the same way a real second login would.
-    useChatStore.setState({ groupChats: [] });
-    useCharacterStore.setState({
-      selectedCharacter: { name: 'Ivy', avatar: 'ivy.png' } as never,
-    });
-
+    // resetUser() does not touch characterStore, so `selectedCharacter` is
+    // still set from beforeEach — nothing to re-establish here.
     await resolveRagContext(messages, CHAT, 'b17');
     expect(showToastGlobal).toHaveBeenCalledTimes(2);
   });

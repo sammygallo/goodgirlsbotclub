@@ -434,7 +434,7 @@
 
   <section class="focus">
     <h2>E9-S7 — in progress since 1 Sep</h2>
-    <p class="sub">The smallest card on the board, and a real user-facing gap: <code>POST /retrieval/messages</code> already says <code>reason: "no_key"</code> when chat memory is on but no embedding key resolves, and the client throws the field away — so a user who switched recall on without a key sees exactly what "nothing relevant found" looks like. The fix is one arm in <code>resolveRagContext</code>'s switch plus a once-per-session hint pointing at Settings → My Keys → Embeddings. The test file already pins the gap by this story's name. Closes #455.</p>
+    <p class="sub">The smallest card on the board, and a real user-facing gap: <code>POST /retrieval/messages</code> already says <code>reason: "no_key"</code> when chat memory is on but no embedding key resolves, and the client throws the field away — so a user who switched recall on without a key sees exactly what "nothing relevant found" looks like. The fix is one arm in <code>resolveRagContext</code>'s switch plus a once-per-session hint pointing at Settings → AI Settings. The test file already pins the gap by this story's name. Closes #455.</p>
 
     <div class="steps">
       <div class="step done"><div class="sn">Intake</div><div class="sv">premise verified in both repos</div></div>
