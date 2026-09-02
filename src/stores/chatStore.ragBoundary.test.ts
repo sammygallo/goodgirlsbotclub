@@ -90,6 +90,7 @@ const {
 const { useChatHistoryRagStore } = await import('./chatHistoryRagStore');
 const { useCharacterStore } = await import('./characterStore');
 const { api } = await import('../api/client');
+const { showToastGlobal } = await import('../components/ui/Toast');
 const { groupHistoryWindow } = await import('../utils/groupHistoryWindow');
 const {
   GROUP_FIXTURES,
@@ -268,11 +269,23 @@ describe('resolveRagContext — the server degradation reason', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    // The once-per-session `no_key` toast latch is module state, not a
+    // mock — `vi.restoreAllMocks()` above does not touch it, and now that
+    // two tests below reach the `no_key` arm, whichever ran first would
+    // otherwise "use up" the toast for the other. `resetUser()` clears it
+    // — chatStore's own production reset path, not a test-only export; the
+    // 're-arms' test further down is what asserts that reset.
+    useChatStore.getState().resetUser();
     useChatHistoryRagStore.setState({ enabled: true });
     useChatStore.setState({ groupChats: [] });
     useCharacterStore.setState({
       selectedCharacter: { name: 'Ivy', avatar: 'ivy.png' } as never,
     });
+    // `showToastGlobal` is a plain `vi.fn()` from the top-of-file
+    // `vi.mock('../components/ui/Toast', ...)` factory, not a `vi.spyOn` —
+    // `restoreAllMocks()` above has no original implementation to restore it
+    // to, so its call history survives across tests unless cleared here.
+    vi.mocked(showToastGlobal).mockClear();
   });
 
   it('forwards the caller\'s boundary verbatim', () => {
@@ -349,26 +362,93 @@ describe('resolveRagContext — the server degradation reason', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('is silent and non-fatal on a reason this build does not know', async () => {
-    // E9-S7 (#455): when you add `case 'no_key':` to the switch, THIS row's
-    // no-warning expectation must change with it — it currently pins no_key
-    // falling through to the silent default.
-    // Forward compatibility with a newer server, and the seam E9-S7 (#455)
-    // extends: it adds a `case 'no_key'` to the same switch rather than
-    // rewriting the read. KILLS: an if/else that treats "not undefined" as
-    // "boundary_not_found" (every future code would warn about a lost
-    // boundary), and any `throw` / early return on an unknown value, which
-    // would drop recall the server actually returned.
+  it('hints at the embedding-key setting on no_key, once per session', async () => {
+    // E9-S7 (#455): recall-without-a-key used to be indistinguishable from
+    // recall-that-found-nothing. This is the row that used to pin `no_key`
+    // as silent (it fell through to the unknown-reason `default:` arm before
+    // this task gave it its own case) — it now asserts the opposite.
+    //
+    // KILLS (a): removing the `showToastGlobal` call from the `no_key` arm —
+    // the toast assertion on the first turn goes from 1 call to 0.
+    // KILLS (b): removing the once-per-session guard — the SECOND no_key
+    // turn below would toast again instead of staying at 1 total call.
+    // KILLS (c): a `no_key` arm that returns early instead of falling out of
+    // the switch into the normal chunk-reading code below it — the server
+    // returns `chunks: []` alongside `no_key` in production, but this test's
+    // mock deliberately returns a non-empty CHUNK to prove the client reads
+    // whatever chunks come back rather than assuming the reason implies
+    // emptiness; an early return would drop it and `out` would be null.
+    // KILLS: the console.warn text drifting onto the `boundary_not_found`
+    // arm's wording (or vice versa) — the content assertion below pins
+    // `no_key` on the warning, not just a call count.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({
       chunks: [CHUNK],
       reason: 'no_key',
     });
-    const out = await resolveRagContext(messages, CHAT, 'b17');
-    expect(warn).not.toHaveBeenCalled();
-    expect(out).toContain('It went with the ledger.');
 
-    warn.mockClear();
+    const first = await resolveRagContext(messages, CHAT, 'b17');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no_key'));
+    expect(showToastGlobal).toHaveBeenCalledTimes(1);
+    // Binds BOTH the missing thing (embeddings key) and the reachable page
+    // (AI Settings — My Keys is unreachable for every role, see F2/#455
+    // review) — not the arrow glyph between them, which is a rendering
+    // detail rather than the fact this hint exists to convey.
+    expect(showToastGlobal).toHaveBeenCalledWith(
+      expect.stringMatching(/embeddings key[\s\S]*AI Settings/),
+      'warning'
+    );
+    expect(first).toContain('It went with the ledger.');
+
+    // A second no_key turn in the same session: console.warn is per-turn
+    // (matching the boundary_not_found arm's style) so it fires again, but
+    // the toast is a one-time session hint and must not.
+    const second = await resolveRagContext(messages, CHAT, 'b17');
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(showToastGlobal).toHaveBeenCalledTimes(1);
+    expect(second).toContain('It went with the ledger.');
+  });
+
+  it('re-arms the no_key hint on resetUser (logout / user switch)', async () => {
+    // F1 (E9-S7 review round 1): `authStore.resetAllUserState()` calls
+    // `useChatStore.getState().resetUser()` on logout and on every active-
+    // handle switch (authStore.ts). Before this fix, the once-per-session
+    // latch outlived that reset, so a second account signing in on the same
+    // browser session — one that has never seen the hint — would silently
+    // get nothing were it also missing a key. `backfillTriggeredThisSession`
+    // in chatHistoryRagStore.ts already resets on its own `resetUser`; this
+    // is the same contract for the `no_key` latch.
+    //
+    // KILLS: deleting the `noKeyHintShownThisSession = false;` line from
+    // chatStore.ts's `resetUser`. Which assertion below catches it depends on
+    // run order: run only this test (`-t`) and the SECOND fails (2 expected,
+    // 1 actual); run the whole file and the earlier no_key test's leftover
+    // latch fails the FIRST instead (1 expected, 0 actual).
+    vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({
+      chunks: [CHUNK],
+      reason: 'no_key',
+    });
+
+    await resolveRagContext(messages, CHAT, 'b17');
+    expect(showToastGlobal).toHaveBeenCalledTimes(1);
+
+    useChatStore.getState().resetUser();
+    // resetUser() does not touch characterStore, so `selectedCharacter` is
+    // still set from beforeEach — nothing to re-establish here.
+    await resolveRagContext(messages, CHAT, 'b17');
+    expect(showToastGlobal).toHaveBeenCalledTimes(2);
+  });
+
+  it('is silent and non-fatal on a reason this build does not know', async () => {
+    // The unknown-reason case must stay exactly as it was before E9-S7 gave
+    // `no_key` its own arm: forward compatibility with a newer server that
+    // sends a reason this build has never heard of. KILLS: an if/else that
+    // treats "not undefined" as "boundary_not_found" (every future code
+    // would warn about a lost boundary), any `throw` / early return on an
+    // unknown value (would drop recall the server actually returned), and a
+    // `default:` arm that starts toasting — only `no_key` gets the hint.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({
       chunks: [CHUNK],
       reason: 'something_invented_next_year',
@@ -377,6 +457,7 @@ describe('resolveRagContext — the server degradation reason', () => {
       'It went with the ledger.'
     );
     expect(warn).not.toHaveBeenCalled();
+    expect(showToastGlobal).not.toHaveBeenCalled();
   });
 });
 

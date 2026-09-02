@@ -264,20 +264,20 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>31 Aug 2026</b><br>
-      main <b>2b3efa30</b><br>
-      active <b>none</b>
+      <b>1 Sep 2026</b><br>
+      main <b>2721c9d9</b><br>
+      active <b>E9-S7 — at the merge gate</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
-    <div class="tile"><div class="n">2</div><div class="k">Ready for dev</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
+    <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile"><div class="n">1</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">18</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
-    <div class="tile is-ok"><div class="n">7</div><div class="k">Deployed</div></div>
+    <div class="tile is-ok"><div class="n">8</div><div class="k">Deployed</div></div>
     <div class="tile is-warn"><div class="n">11</div><div class="k">Open issues</div></div>
   </div>
 
@@ -312,27 +312,26 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
       <div class="stack">
-      </div>
-    </section>
-
-    <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">1</span></div>
-      <div class="stack">
-        <article class="card s-ok" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry coverage</div><div class="m">Merged 31 Aug, <code>2b3efa30</code> (<a href="https://github.com/sammygallo/goodgirlsbotclub/pull/500">#500</a>). Read-time remap of pre-cutover <code>wi_fired</code> keys + a "not observable" replay state. Re-scoped 30 Aug after the id-crosswalk premise was falsified at intake. <b>6 review rounds, ~30 findings, zero behavior defects.</b> Not yet deployed — ships with the next approved deploy.</div><div class="gates"><span class="gate free">unblocks E5-S1</span></div></article>
-      </div>
-    </section>
-
-    <section class="col">
-      <div class="colhead"><h2>Ready for dev</h2><span class="ct">2</span></div>
-      <div class="stack">
-        <article class="card" data-epic="E9">
+        <article class="card s-live" data-epic="E9">
           <div class="id">E9-S7</div>
           <div class="t">Surface recall's <code>no_key</code> reason</div>
-          <div class="m">#455 · client discards the field, so "no key" looks like "no matches".</div>
-          <div class="gates"><span class="gate hot">collides w/ E2-S2 t1b</span></div>
+          <div class="m">#455 · started 1 Sep on <code>claude/e9-s7-recall-no-key-hint</code>. Premise re-verified at intake: <code>retrieval.py</code> still returns <code>no_key</code> and the client switch has no arm for it. Build on Sonnet (card said Haiku — the pinning test's kill-prose is where the last three stories bled). S · standard review (the code-review skill loaded at xhigh; kept). Review converged at round 19, QA 4/4; held at the merge gate for Sammy — the "review did not converge cleanly" trigger fired.</div>
+          <div class="gates"><span class="gate free">ungated — E2-S2 shipped, t1b collision is dead</span></div>
         </article>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">0</span></div>
+      <div class="stack">
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="colhead"><h2>Ready for dev</h2><span class="ct">1</span></div>
+      <div class="stack">
         <article class="card" data-epic="E9">
           <div class="id">E9-S9</div>
           <div class="t">Group recall identity is positional</div>
@@ -407,8 +406,9 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Deployed</h2><span class="ct">7</span></div>
+      <div class="colhead"><h2>Deployed</h2><span class="ct">8</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry coverage</div><div class="m">31 Aug · <code>2b3efa30</code> (<a href="https://github.com/sammygallo/goodgirlsbotclub/pull/500">#500</a>). Read-time remap of pre-cutover <code>wi_fired</code> keys + a "not observable" replay state. Re-scoped 30 Aug after the id-crosswalk premise was falsified at intake. <b>6 review rounds, ~30 findings, zero behavior defects.</b> <b>Deployed 1 Sep</b> (sync deploy of <code>main</code>, frontend image <code>9474fbfa</code>).</div><div class="gates"><span class="gate free">unblocks E5-S1</span></div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S2a</div><div class="t">Activation reason in the server DTO</div><div class="m">29 Aug · backend #82 + frontend #490, shipped together · 3 rounds converged at zero, QA 4/4 mutation-verified · additive DTO, no migration.</div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S2</div><div class="t">Token breakdown visualization</div><div class="m">28 Aug · #479 #481 #482 + backend #81 + #484 · closes #453/#457 · ~17 review rounds over 4 PR loops (final loop: 6 rounds, 35 defects) · PLAN-leg pilot.</div></article>
         <article class="card s-ok" data-epic="E4"><div class="id">E4-S0</div><div class="t">Client activation-engine repair</div><div class="m">26 Aug · #461 + backend #79 · 4 divergences closed, pinned by a 14-vector fixture.</div></article>
@@ -433,25 +433,25 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S5 — merged 31 Aug, not yet deployed</h2>
-    <p class="sub">Telemetry <i>coverage</i>, not the id crosswalk the card was written for — that premise died at the 2026-08-07 cutover and was corrected at intake. <code>wi_fired</code> shipped twelve days before that cutover, so maps from that window carry legacy keys nothing remapped; they read as never-fired, the exact false signal E5-S1 must not build "unused entry" findings on. Now remapped at read time (remap-or-keep, never cached, never written back) and <code>wiReplay</code> can finally say <i>not observable</i> instead of <i>never fired</i>. <b>Sits on <code>main</code>; ships with the next approved deploy.</b></p>
+    <h2>E9-S7 — in progress since 1 Sep</h2>
+    <p class="sub">The smallest card on the board, and a real user-facing gap: <code>POST /retrieval/messages</code> already says <code>reason: "no_key"</code> when chat memory is on but no embedding key resolves, and the client throws the field away — so a user who switched recall on without a key sees exactly what "nothing relevant found" looks like. The fix is one arm in <code>resolveRagContext</code>'s switch: a console.warn on each <code>no_key</code> response plus a once-per-session toast pointing at Settings → AI Settings, with the session latch cleared on logout/user switch (review round 1 added that reset). The test file already pins the gap by this story's name. Closes #455.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Review</div><div class="sv">6 rounds · ~30 findings</div></div>
-      <div class="step done"><div class="sn">QA</div><div class="sv">4 / 4 AC mutation-verified</div></div>
-      <div class="step done"><div class="sn">Merge</div><div class="sv">#500 → 2b3efa30</div></div>
-      <div class="step now"><div class="sn">Deploy</div><div class="sv">awaiting Sammy's go</div></div>
+      <div class="step done"><div class="sn">Intake</div><div class="sv">premise verified in both repos</div></div>
+      <div class="step done"><div class="sn">Build</div><div class="sv">story-dev · Sonnet · 1 feat, 1 fix, 2 chore commits</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">19 rounds · round 1 found the code defects · rounds 2–19 prose and hygiene only</div></div>
+      <div class="step done"><div class="sn">QA</div><div class="sv">4 / 4 AC · kill mutation re-run, red line pasted</div></div>
+      <div class="step now"><div class="sn">Merge</div><div class="sv">escalated — "review did not converge cleanly" fired; awaiting Sammy</div></div>
     </div>
 
     <div class="tscroll">
       <table>
-        <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
+        <thead><tr><th>Stage</th><th>Plan → so far</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">~1.2M</td><td>S–M</td><td>Prior session; two gaps, one new util</td></tr>
-          <tr><td>Verification</td><td class="num">~12M / 6 rounds</td><td>1.6–4.8M</td><td><b>~3× over.</b> The escalation trigger that stopped this story at the gate</td></tr>
-          <tr><td>Absorption</td><td class="num">~0</td><td>n/a</td><td>Code story; the premise correction was its own run (#496)</td></tr>
-          <tr><td>Defects found</td><td class="num">~30</td><td></td><td><b>28 were false claims in PROSE. Zero were behavior defects</b> — production logic never moved after round 1</td></tr>
-          <tr><td>The one that mattered</td><td class="num">AC4</td><td></td><td>Had <b>no guard at all</b>. Persisting the remapped view would silently rewrite users' stored telemetry, and the whole suite stayed green</td></tr>
+          <tr><td>Build</td><td class="num">Sonnet → ~0.22M est.</td><td>S</td><td>Card said Haiku; overridden because the test rows argue every kill in prose, and prose is where fix rounds have been spent</td></tr>
+          <tr><td>Verification</td><td class="num">medium → <b>xhigh</b></td><td>S · 1 task-PR</td><td>No trigger-list hit. Planned medium; the code-review skill loaded at xhigh and was kept — "Never economize on verifiers" (roadmap §6.3). 19 rounds, ~19M est. Round 1 confirmed one runtime-state defect (latch never reset on logout), one copy defect (toast named a page no role can reach) and one coverage gap (toast assertion bound only the word "embedding"), all fixed before round 2. Rounds 2–3: comment and test hygiene on the code. Rounds 4–19: the PM's own board and ledger prose, each fix round drawing a new prose finding until round 19 confirmed none. Filed #501, #502 and #503 for pre-existing defects found on the way; rowed the E2-S5 deployed exit the ledger was missing</td></tr>
+          <tr><td>Absorption</td><td class="num">n/a</td><td></td><td>Code story. E4-S2 task 3 duplicates this fix "if E9-S7 has not shipped" — annotated at close</td></tr>
+          <tr><td>Postmortem</td><td class="num">CURATE</td><td></td><td>Sixth pipeline exit since the counter started (the ledger counts E2-S5's deployed exit as #5) — the first CURATE run</td></tr>
         </tbody>
       </table>
     </div>
@@ -473,7 +473,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 31 Aug 2026.</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 1 Sep 2026.</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
