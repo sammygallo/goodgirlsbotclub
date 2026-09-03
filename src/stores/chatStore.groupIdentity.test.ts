@@ -7,11 +7,13 @@
  * (`(character_avatar, file_name)`), orphaning the old row and its message
  * embeddings with no cascade. The fix freezes the identity at creation as
  * `GroupChatInfo.identityAvatar`, written in FOUR places (`startNewGroupChat`,
- * `convertCurrentToGroup`, `migrateGroupChat`'s backfill, and — round 3 H5 —
- * `reconcileGroupIdentities`, which runs on incoming sync data BEFORE
- * `migrateGroupChat` and may overwrite only a MISSING or EMPTY incoming
- * identity with this client's own local one; it never touches a non-empty
- * incoming identity) and read through exactly two helpers
+ * `convertCurrentToGroup`, `migrateGroupChat`'s backfill, and — round 3 H5,
+ * rule corrected round 5 J2 — `reconcileGroupIdentities`, which runs on
+ * incoming sync data BEFORE `migrateGroupChat` and overwrites an incoming
+ * identity — MISSING, EMPTY, or a disagreeing NON-EMPTY value — with this
+ * client's OWN local one whenever this client has a non-empty local
+ * witness for the file; it only leaves the incoming value alone when this
+ * client has no local witness at all) and read through exactly two helpers
  * (`groupIdentityAvatar`, `resolveGroupIdentityAvatar`) — neither exported,
  * so every test below drives a real store action and asserts on what
  * actually got sent/loaded, per this repo's house style
@@ -78,8 +80,9 @@ class MemoryStorage {
 const memoryStorage = new MemoryStorage();
 globalThis.localStorage = memoryStorage as unknown as Storage;
 
-const { useChatStore } = await import('./chatStore');
+const { useChatStore, resolveRagContext } = await import('./chatStore');
 const { useCharacterStore } = await import('./characterStore');
+const { useChatHistoryRagStore } = await import('./chatHistoryRagStore');
 const { api } = await import('../api/client');
 
 import type { ChatMessage, GroupChatInfo } from './chatStore';
@@ -675,6 +678,90 @@ describe('warnPositionalFallback: the roster-slot-0 degraded path', () => {
 // ---------------------------------------------------------------------------
 
 describe('persistTruncatingEdit resolves identity from the registry too', () => {
+  it("a group's record deleted WITHOUT any navigation still saves under the frozen identity, never as a fork (J1, review round 5)", async () => {
+    // Round 5 J1 (MAJOR — the FOURTH consecutive fix-introduced defect in
+    // this predicate; approach changed instead of patched again). Round
+    // 4's `isGroupChatMode && groupIdentityByFile.has(...)` assumed group
+    // mode stays true while a group file is open. It does not:
+    // re-selecting the character that was selected before the group was
+    // entered (`characterStore.selectCharacter`) flips
+    // `isGroupChatMode` back to FALSE while the group transcript stays
+    // open on `currentChatFile` (ChatView's clear-chat effect doesn't
+    // reload — its own tracked "last group mode" can never observe a true
+    // it didn't itself just set). With the record then deleted, round 4's
+    // AND reads false -> SOLO arm -> `selectedCharacter` is non-null (it's
+    // the re-selected character) -> the GROUP transcript gets saved as
+    // SOLO under that character's avatar with no `is_group_chat` header:
+    // a FORK, worse than round 3's silent drop.
+    // KILLS: the round-4 predicate
+    // (`charState.isGroupChatMode && groupIdentityByFile.has(currentChatFile)`)
+    // — mode is false below (mirroring `selectCharacter`'s real effect)
+    // yet the memo for 'g.jsonl' is still warm (nothing solo-loaded this
+    // file to clear it), so that reverted code takes the SOLO arm and
+    // calls api.saveChat with 'a.png' — the exact fork this fix closes.
+    const charB = mkChar('B', 'b.png');
+    const charA = mkChar('A', 'a.png');
+    const record = mkGroupChat({
+      fileName: 'g.jsonl',
+      characterAvatars: ['b.png', 'a.png'],
+      characterNames: ['B', 'A'],
+      identityAvatar: 'b.png',
+    });
+    useChatStore.setState({ groupChats: [record], currentChatFile: null, messages: [] });
+    useCharacterStore.setState({ characters: [charB, charA] });
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({ header: null, messages: [], server_ts: 1 });
+
+    // Warm the memo the same way a real load does.
+    await useChatStore.getState().loadGroupChat(record);
+
+    // The sidebar trash icon; currentChatFile is untouched — no navigation.
+    useChatStore.getState().deleteGroupChat('g.jsonl');
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')).toBeNull();
+
+    // The user re-selects character A (the group's OWN identity member) —
+    // this is `characterStore.selectCharacter`'s exact effect, inlined so
+    // this test doesn't need to mock `api.getCharacter`. Crucially,
+    // `currentChatFile` is NOT touched — the group transcript stays open.
+    useCharacterStore.setState({
+      selectedCharacter: charA,
+      isGroupChatMode: false,
+      groupChatCharacters: [],
+    });
+    expect(useChatStore.getState().currentChatFile).toBe('g.jsonl');
+
+    const msg = mkMsg('to be deleted');
+    useChatStore.setState({ messages: [msg] });
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    useChatStore.getState().deleteMessage(msg.id);
+    // No loader ran for 'g.jsonl' as part of this scenario (that's the
+    // whole point — no navigation happened), so there is nothing to
+    // `vi.waitFor` a save against with certainty: `groupChatCharacters`
+    // was just emptied by the re-selection above, so the fixed code's
+    // GROUP branch finds an empty roster and safely drops the edit rather
+    // than fabricating one — the same "safe no-op over corruption" trade
+    // established by round 3's H1 test. What matters is what did NOT
+    // happen: verified by asserting after a macrotask flush.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Verified: exactly 0 calls happen here — `characterStore
+    // .selectCharacter`'s real effect empties `groupChatCharacters`, and
+    // `persistTruncatingEdit`'s group branch has no OTHER roster source
+    // once the registry record is gone, so it safely drops rather than
+    // fabricating one. The for-loop below is still the right assertion
+    // shape: it's what would have caught the round-4 predicate's actual
+    // corruption (a real call under 'a.png', asserted above in this
+    // test's own KILLS comment and confirmed by the mutation run), and it
+    // stays meaningful if a future change gives this branch another
+    // roster source.
+    for (const call of saveSpy.mock.calls) {
+      expect(call[0]).not.toBe('a.png');
+      expect(call[0]).toBe('b.png');
+      const header = call[2][0] as { is_group_chat?: boolean };
+      expect(header.is_group_chat).toBe(true);
+    }
+  });
+
   it('deleteMessage saves under the frozen identity with allow_truncate', async () => {
     // KILLS: a save call site that resolves the avatar from
     // `chars[0].avatar` (the live-roster reconstruction persistTruncatingEdit
@@ -822,27 +909,28 @@ describe('persistTruncatingEdit resolves identity from the registry too', () => 
     }
   });
 
-  it("a file reopened as SOLO after its group record was deleted saves correctly, not as a stale group (I1, review round 4)", async () => {
-    // Round 4 I1 (MAJOR — introduced by the H1 fix): the memo never
-    // expires (only resetUser clears it), so a file that was a group
-    // earlier this session and is later reopened as a genuinely different
-    // SOLO chat (deleteGroupChat leaves the server row itself intact,
-    // which can then top the identity character's own chat list and get
-    // auto-loaded as solo) would still read "group" forever under a
-    // memo-only check. The fix needs BOTH signals live: mode AND the memo.
-    // KILLS: reverting to `groupIdentityByFile.has(currentChatFile)` alone
-    // (dropping `charState.isGroupChatMode &&`) — mode is false below
-    // (mirroring the sidebar's real solo-select flow) yet the memo for
-    // 'g.jsonl' is still warm from the earlier loadGroupChat call, so that
-    // reverted code takes the GROUP branch: roster = groupChatCharacters =
-    // [] -> the truncating edit is silently dropped instead of saving the
-    // solo chat under 'a.png'.
+  it("a file reopened as SOLO via loadChat saves correctly, not as a stale group (J1, review round 5)", async () => {
+    // Round 5 J1: this scenario is what motivated round 4's (now-removed)
+    // `isGroupChatMode &&` clause — a file that was a group earlier this
+    // session and is later reopened as a genuinely different SOLO chat
+    // (deleteGroupChat leaves the server row itself intact, which can then
+    // top the identity character's own chat list and get auto-loaded as
+    // solo). The round-5 fix handles it differently: `loadChat` (the SOLO
+    // loader) now clears this file's memo entry itself, as part of loading
+    // it — so the predicate can go back to the memo alone without also
+    // needing a mode flag that round 4 proved isn't reliably live.
+    // KILLS: removing `groupIdentityByFile.delete(fileName);` from
+    // `loadChat` — the memo for 'g.jsonl' would still answer 'a.png''s
+    // group identity ('b.png', below) after the solo reopen, and BOTH the
+    // save (via persistTruncatingEdit) and recall (via resolveRagContext,
+    // asserted below) would incorrectly keep treating 'g.jsonl' as a
+    // group.
     const charA = mkChar('A', 'a.png');
     const record = mkGroupChat({
       fileName: 'g.jsonl',
       characterAvatars: ['b.png', 'a.png'],
       characterNames: ['B', 'A'],
-      identityAvatar: 'a.png',
+      identityAvatar: 'b.png',
     });
     useChatStore.setState({ groupChats: [record], currentChatFile: null, messages: [] });
     vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({ header: null, messages: [], server_ts: 1 });
@@ -856,7 +944,7 @@ describe('persistTruncatingEdit resolves identity from the registry too', () => 
 
     // The identity character's chat list now tops 'g.jsonl' as a plain
     // solo chat (still a real row under 'a.png' on the server) and the
-    // user opens it — a genuine solo load, exiting group mode.
+    // user opens it via the real SOLO loader.
     useCharacterStore.setState({
       selectedCharacter: charA,
       isGroupChatMode: false,
@@ -874,6 +962,16 @@ describe('persistTruncatingEdit resolves identity from the registry too', () => 
     expect(saveSpy.mock.calls[0][0]).toBe('a.png');
     const header = saveSpy.mock.calls[0][2][0] as { is_group_chat?: boolean };
     expect(header.is_group_chat).toBeUndefined();
+
+    // Behavioral proof the memo itself was cleared (not just that this one
+    // save call happened to resolve correctly): recall for this file must
+    // now fall through to selectedCharacter, exactly like a chat that was
+    // never a group at all.
+    useChatHistoryRagStore.setState({ enabled: true });
+    const recallSpy = vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ chunks: [] });
+    await resolveRagContext([mkMsg('hello there')], 'g.jsonl', null);
+    expect(recallSpy).toHaveBeenCalledTimes(1);
+    expect(recallSpy.mock.calls[0][0]).toBe('a.png');
   });
 
   it("the memo being warm for a DIFFERENT file doesn't make an unrelated open group-mode chat save as a group (I2, review round 4)", async () => {
@@ -1088,24 +1186,25 @@ describe('migrateGroupChat backfills identityAvatar for pre-#458 records', () =>
     expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
   });
 
-  it("the incoming identity is kept even when the local record disagrees (H3, review round 3)", async () => {
-    // Round 3 H3: reconcileGroupIdentities must NEVER prefer the local
-    // registry over an incoming record that already carries its OWN
-    // non-empty identity — the local-preference rescue exists only for a
-    // record that's missing one, not as a general "local wins" rule. If it
-    // won unconditionally, a stale/lagging local copy could overwrite a
-    // genuinely newer, correct identity written by another (upgraded)
-    // device.
-    // KILLS: reordering the preference so local wins over a non-empty
-    // incoming identity — the result below would be 'b.png' (local)
-    // instead of 'a.png' (incoming).
+  it("the LOCAL identity wins even when an incoming record disagrees with its own non-empty value (J2, review round 5)", async () => {
+    // Round 3 H3 shipped the OPPOSITE rule (incoming-wins-unless-empty) on
+    // the theory that a stale local copy shouldn't override a "genuinely
+    // newer" incoming value. Round 5 J2 (MAJOR) corrects that: this
+    // device's own frozen identity must never move on account of what a
+    // sync payload says, full stop — there is no way for this client to
+    // tell whether an incoming disagreement is a newer correct value or
+    // just another device's own (possibly positional) guess, so trusting
+    // the network over this device's own witness is not sound either way.
+    // KILLS: preferring a non-empty incoming identity over a non-empty
+    // local one (the exact H3 rule this replaces) — the result below
+    // would be 'a.png' (incoming) instead of 'b.png' (local).
     useChatStore.setState({
       groupChats: [
         mkGroupChat({
           fileName: 'g.jsonl',
           characterAvatars: ['a.png', 'b.png'],
           characterNames: ['A', 'B'],
-          identityAvatar: 'b.png', // local thinks it's 'b.png'
+          identityAvatar: 'b.png', // this device's own frozen identity
         }),
       ],
     });
@@ -1114,7 +1213,7 @@ describe('migrateGroupChat backfills identityAvatar for pre-#458 records', () =>
       fileName: 'g.jsonl',
       characterNames: ['A', 'B'],
       characterAvatars: ['a.png', 'b.png'],
-      identityAvatar: 'a.png', // incoming already has its own (different) identity
+      identityAvatar: 'a.png', // another device's disagreeing identity
       lastMessage: '',
       createdAt: 0,
     };
@@ -1129,26 +1228,27 @@ describe('migrateGroupChat backfills identityAvatar for pre-#458 records', () =>
 
     await useChatStore.getState().fetchPrefs();
 
-    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('b.png');
   });
 
-  it("an incoming identityAvatar of '' is treated as missing, not as a real (empty) value (H3, review round 3)", async () => {
-    // Round 3 H3: `typeof incomingIdentity === 'string' && incomingIdentity
-    // !== ''` must NOT be simplified to `??` — `??` only falls through on
-    // null/undefined, so an incoming `identityAvatar: ''` (present, but
-    // empty) would read as "already has one" and skip the local-preference
-    // rescue entirely, same failure shape as REQUIRED KILL d for
-    // migrateGroupChat's own backfill.
-    // KILLS: reconcileGroupIdentities using
-    // `incomingIdentity ?? localByFile.get(rec.fileName)` instead of the
-    // explicit non-empty-string check — `??` treats the incoming '' as
-    // already-present and passes the RECORD THROUGH UNCHANGED (still
-    // carrying identityAvatar: ''), so the local-preference rescue never
-    // fires; `migrateGroupChat`'s OWN slot-0 backfill then runs on that
-    // still-empty field and derives 'b.png' (this fixture's
-    // characterAvatars[0]) — a silent positional fork, the exact #458
-    // harm, not 'a.png'. Verified: the result below comes back 'b.png',
-    // not ''.
+  it("the LOCAL identity also wins when the incoming record's own identity is merely empty, not just disagreeing (companion to the local-wins test)", async () => {
+    // Round 5 J2 changed the rule to unconditional local-wins, so this
+    // scenario (incoming empty, local present) now resolves the SAME way
+    // as the sibling "LOCAL identity wins" test above (incoming = a real
+    // disagreeing value) — both just return the local identity. Verified
+    // empirically that this specific input shape does NOT by itself
+    // distinguish local-wins from round 3 H3's old rule (incoming-wins-
+    // unless-empty): both rules rescue an EMPTY incoming value from local,
+    // so this test alone would pass under either. Kept anyway as an
+    // explicit input-shape check, alongside the sibling test which DOES
+    // distinguish the two rules (a non-empty disagreeing incoming value).
+    // KILLS: a hybrid that rescues only a missing/empty incoming from
+    // local but still lets a genuinely non-empty DISAGREEING incoming win
+    // — that mutation fails the sibling local-wins test, not this one;
+    // this test instead pins that the '' case specifically still resolves
+    // to 'a.png' under the actual (non-hybrid) implementation, catching an
+    // accidental reintroduction of rescue-only behavior at this exact
+    // input shape too.
     useChatStore.setState({
       groupChats: [
         mkGroupChat({
@@ -1223,4 +1323,59 @@ describe('a reorder round-trips identityAvatar through both persistence layers',
     }
   });
 
+  it('the server-apply arm never calls patchServerKey on its own, even when it repairs an identity via reconciliation (J3, review round 5)', async () => {
+    // Round 5 J3: the server-apply arm's read-only property (it must never
+    // become an unconditional writer of its own accord — see that arm's
+    // own comment for why) had no negative test — re-adding a
+    // `schedulePersist()` call there left the whole 2042-test suite green.
+    // This pins the absence directly, using the same "local has an
+    // identity, incoming doesn't" setup the removed H4 re-upload used to
+    // fire from, so a reintroduction at that exact call site is caught.
+    // KILLS: adding `schedulePersist();` anywhere in the server-apply arm
+    // (e.g. right after `_persistEnabled = true;`) — patchServerKey would
+    // then be called after the debounce below.
+    vi.useFakeTimers();
+    try {
+      useChatStore.setState({
+        groupChats: [
+          mkGroupChat({
+            fileName: 'g.jsonl',
+            characterAvatars: ['b.png', 'a.png'],
+            characterNames: ['B', 'A'],
+            identityAvatar: 'a.png',
+          }),
+        ],
+      });
+
+      const incomingWithoutIdentity = {
+        fileName: 'g.jsonl',
+        characterNames: ['B', 'A'],
+        characterAvatars: ['b.png', 'a.png'],
+        lastMessage: '',
+        createdAt: 0,
+        // no identityAvatar field at all — a pre-#458 device's round-trip.
+      };
+      getSettingsBlob.mockResolvedValueOnce({
+        stm_chat_state: {
+          authorNotes: {},
+          chatVariables: {},
+          groupChats: [incomingWithoutIdentity],
+          _ts: 999,
+        },
+      });
+
+      await useChatStore.getState().fetchPrefs();
+      // Confirm the repair actually happened — this test is meaningless if
+      // reconciliation didn't do anything for `patchServerKey` to
+      // (wrongly) publish.
+      expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
+
+      // schedulePersist debounces 300ms — advance well past it.
+      vi.advanceTimersByTime(1000);
+
+      expect(patchServerKey).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

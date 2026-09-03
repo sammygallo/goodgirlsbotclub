@@ -396,42 +396,45 @@ function migrateGroupChat(raw: Partial<GroupChatInfo> & {
  * slot 0 is — moving the frozen identity via sync, with a record present
  * so `warnPositionalFallback` never fires. #458, reintroduced sideways.
  *
- * Preference order per incoming record, applied BEFORE `migrateGroupChat`:
- * (1) the incoming record already carries a non-empty `identityAvatar` —
- * trust it as-is, `migrateGroupChat` is a no-op backfill for it anyway;
- * (2) otherwise, THIS client's own local registry entry for the same
- * `fileName`, if it has one — a local record's identity is frozen and
- * therefore a better witness than a fresh positional guess; (3) otherwise,
- * the record is genuinely unknown to this client and `migrateGroupChat`'s
- * ordinary slot-0 backfill is the best available answer, same as it
- * always was.
+ * Round 5 J2 (MAJOR): the rule is LOCAL-WINS, not incoming-wins. Preference
+ * order per incoming record, applied BEFORE `migrateGroupChat`: (1) THIS
+ * client's own local registry entry for the file, if it has a non-empty
+ * one — wins UNCONDITIONALLY, even over an incoming record that also
+ * carries its own (different) non-empty identity, because this device's
+ * frozen identity must never move on account of what another device's
+ * sync payload says; (2) otherwise (no local witness at all — the file is
+ * genuinely unknown to this client, or this client's own copy of it has
+ * no identity of its own either), the incoming record's own identity is
+ * used as-is, real or empty, and `migrateGroupChat`'s ordinary slot-0
+ * backfill applies to whatever is still missing after that.
  *
  * Round 3 H3: an earlier version also consulted the last-known-good memo
- * (`groupIdentityByFile`) as a fourth level between (2) and (3), on the
- * theory that a group opened this session but not yet in the local
+ * (`groupIdentityByFile`) as a level between what are now (1) and (2), on
+ * the theory that a group opened this session but not yet in the local
  * registry could still be recognized. Removed — `fetchPrefs` runs only at
  * checkAuth/register/login, before any group chat in this session could
  * possibly be open, so the memo is provably always empty at the point
  * this function runs and the level was dead code in production.
  *
- * Honest limit, NOT fixable client-side (round 4 I3): this repairs LOCAL
- * state only — `fetchPrefs`'s server-apply arm does not re-upload the
- * result, and must not. Nothing on `GroupChatInfo` distinguishes a FROZEN
- * identity (written by `startNewGroupChat`/`convertCurrentToGroup`, or an
- * earlier `identityAvatar` this function itself already trusted) from a
- * POSITIONAL BACKFILL GUESS (`migrateGroupChat`'s slot-0 fallback) — so a
- * "repair" built from this client's own local copy might itself be a
- * guess, and publishing it would make this function's own incoming-wins
- * rule apply on every OTHER device, overwriting THEIR frozen values with
- * OUR guess. Fixing forward (each client trusting its own local witness,
- * never the network) is sound; publishing sideways is not. The mixed-
- * version window this whole function exists for — one device still on
- * the pre-#458 bundle — closes on its own once that device reloads and
- * starts writing `identityAvatar` like every other client; it is not
- * something this client can close on the other device's behalf. A real
- * fix needs a server-side key independent of any avatar (so a client can
- * tell which side of a future conflict is actually authoritative) —
- * out of scope here, filed as a follow-up.
+ * Honest limit, NOT fixable client-side (round 5 J2, correcting round 4's
+ * I3 comment here, which overclaimed containment): this function's repair
+ * is NOT read-only-safe by virtue of never being re-uploaded — round 4
+ * removed a dedicated re-upload call, but this device's OWN registry,
+ * including any slot-0 backfill guess it independently made, is still
+ * published by the very next ORDINARY save of this section (an author
+ * note, a chat variable edit, a roster change — anything that calls
+ * `schedulePersist`), because `fetchPrefs` assigns the post-migrate array
+ * straight into `_latestSnapshot.groupChats`. What local-wins actually
+ * prevents is narrower and still real: sync can no longer CHANGE an
+ * identity this device has already frozen (or already resolved and
+ * trusted) — it can only be silently overwritten by this device's OWN
+ * later local mutations, never by another device's disagreeing copy. The
+ * two devices may therefore each keep publishing a DIFFERENT identity for
+ * the same group during a mixed-version window (one still on the
+ * pre-#458 bundle, or one that resolved a different slot-0 guess before
+ * either had a real one), and nothing client-side can say which, if
+ * either, is right — there is no server-side key recording that. The real
+ * fix needs one: filed as `sammygallo/ggbc-backend#84`.
  *
  * A small pure function (no store reads) so it's testable on its own
  * inputs; `fetchPrefs`'s server-apply arm is its only caller.
@@ -441,17 +444,18 @@ function reconcileGroupIdentities(
   localByFile: Map<string, string>
 ): GroupChatInfo[] {
   return incoming.map((rec) => {
-    const incomingIdentity = (rec as Partial<GroupChatInfo>).identityAvatar;
-    // Deliberately NOT `??`: an incoming `identityAvatar: ''` is present
-    // (not null/undefined) but still a MISSING identity for this
-    // function's purposes — `??` would pass it through as "already has
-    // one" and skip the local-preference rescue entirely.
-    if (typeof incomingIdentity === 'string' && incomingIdentity !== '') {
-      return rec;
-    }
-    const preferred = localByFile.get(rec.fileName);
-    if (!preferred) return rec;
-    return { ...rec, identityAvatar: preferred };
+    // Round 5 J2: LOCAL-WINS, unconditionally, whenever this client has a
+    // non-empty identity of its own for the file — never the other way
+    // around. `localByFile` only ever holds non-empty identities (see the
+    // call site), so a present entry here IS this device's frozen (or at
+    // least previously-resolved) witness for that file, and it must not
+    // move just because a sync payload disagrees — see this function's
+    // own doc comment for why "incoming wins" was unsound. An incoming
+    // record's own identity (real or empty/missing) is used as-is only
+    // when this client has NO local witness for the file at all.
+    const local = localByFile.get(rec.fileName);
+    if (!local) return rec;
+    return rec.identityAvatar === local ? rec : { ...rec, identityAvatar: local };
   });
 }
 
@@ -1099,6 +1103,13 @@ export async function resolveRagContext(
   // identity is empty/corrupt (G5), and when the record is gone entirely.
   // Only when NEITHER a record NOR a memo entry exists for this file is it
   // treated as genuinely solo.
+  //
+  // Round 5 J1: no logic change needed here — the memo is now cleared by
+  // the SOLO loaders (`loadChat`/`startNewChat`) as part of loading their
+  // file, so a file genuinely reopened as solo has no memo entry left to
+  // read by the time recall runs, and correctly falls through to
+  // `selectedCharacter` below. See persistTruncatingEdit's comment for the
+  // full loader-invariant writeup.
   const groupChat = useChatStore.getState().getGroupChatByFile(chatFile);
   const memoIdentity = groupIdentityByFile.get(chatFile);
   const characterAvatar = groupChat
@@ -3975,25 +3986,43 @@ async function persistTruncatingEdit() {
   // is wrong — it's a GLOBAL flag, not keyed to `currentChatFile`.
   //
   // Round 4 I1 (MAJOR): branching on `groupIdentityByFile.has(currentChatFile)`
-  // alone is ALSO wrong — the memo never expires (only `resetUser` clears
-  // it), so a file that was a group earlier THIS SESSION and is later
-  // reopened as a genuinely different SOLO chat (`deleteGroupChat` leaves
-  // the server row itself intact, which can then top the identity
-  // character's chat list and get auto-loaded as solo) would still read
-  // "group" forever. The signal must be BOTH file-keyed AND live — mode
-  // true AND a memo entry for THIS file. This condition distinguishes all
-  // three cases: (a) a failed solo->group conversion — mode true, memo
-  // cold for the solo file (never warmed, since the conversion never
-  // reached `startNewGroupChat`'s success path) -> SOLO branch, a safe
-  // no-op since `selectedCharacter` is null; (b) the OPEN group's record
-  // deleted mid-session — mode true, memo warm for this file (from the
-  // load/creation that opened it) -> GROUP branch, saved under the frozen
-  // identity; (c) this file reopened later as solo — mode now false
-  // (loading a solo chat exits group mode) -> SOLO branch, saved under
-  // `selectedCharacter`, regardless of what the memo still remembers about
-  // this file name from earlier in the session.
-  const isGroup =
-    !!groupChat || (charState.isGroupChatMode && groupIdentityByFile.has(currentChatFile));
+  // alone is ALSO wrong on its own — the memo never expires (only
+  // `resetUser` clears it), so round 4 added `charState.isGroupChatMode &&`
+  // back in, on the assumption that a group chat staying open keeps mode
+  // true.
+  //
+  // Round 5 J1 (MAJOR, 4th consecutive fix-introduced defect here —
+  // approach changed instead of patched again): that assumption is false.
+  // Re-selecting the character that was selected before the group was
+  // entered flips `isGroupChatMode` back to false (`characterStore
+  // .selectCharacter`) while the group transcript stays open on
+  // `currentChatFile` (ChatView's clear-chat effect early-returns on
+  // `sameChar && sameMode`, since its own tracked "last group mode" can
+  // never observe a true it didn't itself just set). With the record
+  // deleted, `isGroupChatMode && memo.has(...)` then reads false — SOLO
+  // arm — and the GROUP transcript gets saved under a solo header: a
+  // fork, worse than the silent drop round 3 introduced.
+  //
+  // The fix drops the mode flag entirely and goes back to the memo alone
+  // — but now the memo itself is made trustworthy: it says what a file was
+  // last LOADED OR CREATED AS in this session, an invariant the LOADERS
+  // themselves own (not read out of an unrelated, session-global UI flag).
+  // The two solo loaders (`loadChat`, `startNewChat`) delete their file's
+  // memo entry; the group loaders/creators
+  // (`loadGroupChat`/`startNewGroupChat`/`convertCurrentToGroup`) already
+  // `.set` theirs. This condition distinguishes all three cases: (a) a
+  // failed solo->group conversion — no group loader ever ran for the solo
+  // file, so its memo (if any) is whatever the LAST loader for this file
+  // left it as; for a chat that has always been solo, that's cold -> SOLO
+  // branch, a safe no-op since `selectedCharacter` is null; (b) the OPEN
+  // group's record deleted mid-session — memo still warm from the
+  // load/creation that opened this file, and nothing has reloaded it since
+  // -> GROUP branch, saved under the frozen identity, regardless of
+  // whatever `isGroupChatMode` happens to read right now; (c) this file
+  // reopened later via `loadChat` (a genuine solo re-open) — the SOLO
+  // loader cleared this file's memo entry as part of that call -> SOLO
+  // branch, saved under `selectedCharacter`.
+  const isGroup = !!groupChat || groupIdentityByFile.has(currentChatFile);
   if (isGroup) {
     // Prefer the registry record's roster when it still exists (it's the
     // authoritative source); fall back to characterStore's live roster —
@@ -4833,6 +4862,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadChat: async (avatarUrl: string, fileName: string) => {
     set({ isLoading: true, error: null, currentChatFile: fileName });
+    // Round 5 J1 (#458 follow-up): the memo says what a file was last
+    // LOADED OR CREATED AS in this session — owned by the loaders, not
+    // inferred from `characterStore.isGroupChatMode` (a global flag that
+    // does NOT reliably track which file is open; see
+    // persistTruncatingEdit's own comment for why). `loadChat` is the SOLO
+    // loader: clear any stale memo entry for this file BEFORE the fetch,
+    // regardless of whether the fetch itself succeeds — the act of solo-
+    // loading this file is what the invariant tracks, not the network
+    // outcome.
+    groupIdentityByFile.delete(fileName);
     try {
       const { header, messages: rawMessages, server_ts } = await api.getChatWithHeader(avatarUrl, fileName);
       const messages = ensureUniqueMessageIds(rawMessages.map(normalizeMessage));
@@ -4914,6 +4953,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     const fileName = await api.createChat(character.name);
+    // Round 5 J1: `startNewChat` is also a SOLO loader — see loadChat's
+    // comment. `createChat` mints a fresh name, so a collision is
+    // vanishingly unlikely, but the invariant is "this loader clears its
+    // own file," not "clears only when it thinks it's needed."
+    groupIdentityByFile.delete(fileName);
     set({ messages, currentChatFile: fileName, error: null });
   },
 
@@ -6371,22 +6415,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       _latestSnapshot.chatVariables = chatVariables;
       set({ authorNotes, groupChats, chatVariables });
       _persistEnabled = true;
-      // Round 4 I3: an earlier version of this fix also re-uploaded a
-      // reconciliation repair through `schedulePersist()`. Removed — it was
-      // unsound. (a) The PUT publishes `migrateGroupChat`'s slot-0 GUESSES
-      // for every record this client has no frozen witness for (the
-      // payload is the whole post-migrate array; `identitiesRepaired` only
-      // gated WHETHER to upload, never WHAT), and `reconcileGroupIdentities`'
-      // own incoming-wins rule would then make every OTHER device adopt
-      // those guesses over its own frozen values on ITS next fetchPrefs.
-      // (b) the local witness this client repairs FROM may itself be a
-      // slot-0 guess, not a frozen identity — nothing on `GroupChatInfo`
-      // distinguishes the two, so "repaired from local" is not "verified
-      // correct." (c) it turned a read-only boot path into a whole-section
-      // last-writer-wins WRITER with a 300ms window that could clobber a
-      // concurrent device's `authorNotes`/`chatVariables` edits via the
-      // shallow 409 merge in `patchServerKey`. See `reconcileGroupIdentities`'s
-      // own doc comment for what this leaves genuinely unfixed and why.
+      // Round 4 I3 / round 5 J2: an earlier version of this fix also
+      // re-uploaded a reconciliation repair through `schedulePersist()`
+      // immediately, right here. Removed — NOT because this leaves the
+      // repair unpublished: it doesn't. This device's own registry,
+      // including any slot-0 backfill guess it independently made, still
+      // goes out with the very next ORDINARY save of this section (an
+      // author note, a chat variable edit, a roster change), because the
+      // `groupChats` assigned to `_latestSnapshot` above IS the post-
+      // migrate array — see `reconcileGroupIdentities`'s own doc comment
+      // for exactly what that does and doesn't fix. Removed instead
+      // because doing it EAGERLY, right here, was itself the problem:
+      // (a) this arm exists to APPLY what the server already sent — a
+      // boot-time read path becoming an unconditional WRITER in the same
+      // call is a materially bigger blast radius than every other write
+      // path in this file, all of which are triggered by an actual local
+      // user action, not by merely checking for updates; (b) it fired on
+      // EVERY fetchPrefs call whose incoming payload needed a repair, each
+      // opening its own 300ms window that could clobber a concurrent
+      // device's `authorNotes`/`chatVariables` edit via the shallow 409
+      // merge in `patchServerKey` — a cost paid on every login/tab-focus,
+      // not just when the user actually changes something.
     } catch {
       // Network failure — keep local. Future mutations will mark LOCAL_TS_KEY
       // dirty and the next fetchPrefs will detect the local-newer case.
