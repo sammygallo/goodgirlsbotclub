@@ -264,16 +264,16 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>2 Sep 2026</b><br>
-      main <b>f4b7eda2</b><br>
-      active <b>none</b>
+      <b>3 Sep 2026</b><br>
+      main <b>37447003</b><br>
+      active <b>E9-S9</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
     <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
-    <div class="tile"><div class="n">1</div><div class="k">Ready for dev</div></div>
+    <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">18</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
@@ -312,8 +312,14 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E9">
+          <div class="id">E9-S9</div>
+          <div class="t">Group recall identity is positional</div>
+          <div class="m">#458 · started 3 Sep on <code>claude/e9-s9-group-recall-identity</code>. Premise verified: a group's server identity is (first roster avatar, file name), so a reorder makes the next save land on a new chat row and strands the old row's embeddings. Plan (3-design judge panel, unanimous): freeze <code>identityAvatar</code> on the group record at creation, backfill from slot 0 for existing records, one reader for save/load/recall/beacon. Frontend-only. S–M · Sonnet build · standard review at high.</div>
+          <div class="gates"><span class="gate free">ungated</span><span class="gate">persisted-record field → merge escalation expected</span></div>
+        </article>
       </div>
     </section>
 
@@ -324,14 +330,8 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Ready for dev</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>Ready for dev</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card" data-epic="E9">
-          <div class="id">E9-S9</div>
-          <div class="t">Group recall identity is positional</div>
-          <div class="m">#458 · reordering members orphans the chat's embeddings.</div>
-          <div class="gates"><span class="gate free">ungated</span></div>
-        </article>
       </div>
     </section>
 
@@ -428,26 +428,26 @@
   </div>
 
   <section class="focus">
-    <h2>E9-S7 — deployed 2 Sep, closed</h2>
-    <p class="sub">The smallest card on the board shipped: when the server answers <code>no_key</code>, the client now logs a warning on each such response and shows one toast per app session pointing at Settings → AI Settings, with the latch cleared on logout. What the run is remembered for is its review: 19 rounds and ~19M against a class budget of one ≤0.3M pass, sixteen of them over the PM's own board and ledger prose. The first CURATE postmortem turned that into four <code>run-story</code> amendments, red-teamed in design mode and merged on Sammy's go as <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/505">#505</a> (<code>f4b7eda2</code>), and a 261-claim staleness sweep of the memory directory handed to Sammy as a batch.</p>
+    <h2>E9-S9 — in progress since 3 Sep</h2>
+    <p class="sub">A group chat's server identity is the tuple (first roster avatar, file name). Dragging a member to the top rewrites the roster in place, so the next save creates a new chat row under a new tuple; the old row keeps the <code>message_embeddings</code> and becomes unreachable, and recall goes quiet until the worker re-embeds from scratch on the user's key. Removing the first member does the same. The fix freezes the identity on the record instead of deriving it from roster position: no backend change, no migration, existing groups keep the row they load today. Closes #458.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Build</div><div class="sv">Sonnet · on band</div></div>
-      <div class="step done"><div class="sn">Review</div><div class="sv">19 rounds · 1 runtime defect, round 1</div></div>
-      <div class="step done"><div class="sn">QA</div><div class="sv">4 / 4 AC · kill mutation re-run red</div></div>
-      <div class="step done"><div class="sn">Merge</div><div class="sv">#504 → 473c8aa2 · Sammy's go at the gate</div></div>
-      <div class="step done"><div class="sn">Deploy</div><div class="sv">2 Sep · image 3aea98b8</div></div>
-      <div class="step done"><div class="sn">Postmortem</div><div class="sv">CURATE · ledger row 2 Sep</div></div>
+      <div class="step done"><div class="sn">Intake</div><div class="sv">premise verified in both repos</div></div>
+      <div class="step done"><div class="sn">Plan</div><div class="sv">3 designs · 3 judges · frozen identity field won 106–91–54</div></div>
+      <div class="step now"><div class="sn">Build</div><div class="sv">story-dev · Sonnet</div></div>
+      <div class="step"><div class="sn">Review</div><div class="sv">standard tier · high</div></div>
+      <div class="step"><div class="sn">QA</div><div class="sv">4 AC</div></div>
+      <div class="step"><div class="sn">Merge</div><div class="sv">escalation expected: persisted-record shape</div></div>
     </div>
 
     <div class="tscroll">
       <table>
-        <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
+        <thead><tr><th>Stage</th><th>Plan</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">~0.22M est.</td><td>S</td><td>Initial ~95k inside the S letter; ~125k rework across three code rounds</td></tr>
-          <tr><td>Verification</td><td class="num">~19.5M est. / 19 rounds</td><td>≤0.3M</td><td><b>~63× over.</b> Round 1: latch never reset on logout, toast named an unreachable page, weak assertion. Rounds 2–3: comments and tests. Rounds 4–19: the PM's own board and ledger prose — the postmortem's subject</td></tr>
-          <tr><td>Absorption</td><td class="num">~0</td><td>n/a</td><td>Code story; roadmap close-out was bookkeeping</td></tr>
-          <tr><td>Postmortem</td><td class="num">~21M est.</td><td>unpriced</td><td>CAPTURE + first CURATE (53/56 files swept, 261 stale claims verified, none applied mechanically) + design red-team of #505; two usage-limit kills, both resumed</td></tr>
+          <tr><td>Plan</td><td class="num">~0.83M</td><td>M</td><td>Judge panel; the cascade design failed AC1 by construction and would re-embed on every drag</td></tr>
+          <tr><td>Build</td><td class="num">Sonnet</td><td>S–M</td><td>One PR: the field, three writers, one reader, six call sites, two new test files</td></tr>
+          <tr><td>Verification</td><td class="num">/code-review high</td><td>1 task-PR</td><td>Echoed level and target checked before finders launch (E9-S7 rule)</td></tr>
+          <tr><td>Postmortem</td><td class="num">CAPTURE</td><td></td><td>CURATE not due: exit #1 since the first CURATE row</td></tr>
         </tbody>
       </table>
     </div>
@@ -469,7 +469,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 2 Sep 2026.</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 3 Sep 2026.</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
