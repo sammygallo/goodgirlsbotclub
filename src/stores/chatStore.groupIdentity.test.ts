@@ -821,6 +821,102 @@ describe('persistTruncatingEdit resolves identity from the registry too', () => 
       expect(call[0]).toBe('solo.png');
     }
   });
+
+  it("a file reopened as SOLO after its group record was deleted saves correctly, not as a stale group (I1, review round 4)", async () => {
+    // Round 4 I1 (MAJOR — introduced by the H1 fix): the memo never
+    // expires (only resetUser clears it), so a file that was a group
+    // earlier this session and is later reopened as a genuinely different
+    // SOLO chat (deleteGroupChat leaves the server row itself intact,
+    // which can then top the identity character's own chat list and get
+    // auto-loaded as solo) would still read "group" forever under a
+    // memo-only check. The fix needs BOTH signals live: mode AND the memo.
+    // KILLS: reverting to `groupIdentityByFile.has(currentChatFile)` alone
+    // (dropping `charState.isGroupChatMode &&`) — mode is false below
+    // (mirroring the sidebar's real solo-select flow) yet the memo for
+    // 'g.jsonl' is still warm from the earlier loadGroupChat call, so that
+    // reverted code takes the GROUP branch: roster = groupChatCharacters =
+    // [] -> the truncating edit is silently dropped instead of saving the
+    // solo chat under 'a.png'.
+    const charA = mkChar('A', 'a.png');
+    const record = mkGroupChat({
+      fileName: 'g.jsonl',
+      characterAvatars: ['b.png', 'a.png'],
+      characterNames: ['B', 'A'],
+      identityAvatar: 'a.png',
+    });
+    useChatStore.setState({ groupChats: [record], currentChatFile: null, messages: [] });
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({ header: null, messages: [], server_ts: 1 });
+
+    // Warm the memo the same way a real load does.
+    await useChatStore.getState().loadGroupChat(record);
+
+    // The sidebar trash icon; the server row itself is untouched.
+    useChatStore.getState().deleteGroupChat('g.jsonl');
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')).toBeNull();
+
+    // The identity character's chat list now tops 'g.jsonl' as a plain
+    // solo chat (still a real row under 'a.png' on the server) and the
+    // user opens it — a genuine solo load, exiting group mode.
+    useCharacterStore.setState({
+      selectedCharacter: charA,
+      isGroupChatMode: false,
+      groupChatCharacters: [],
+    });
+    await useChatStore.getState().loadChat('a.png', 'g.jsonl');
+    const msg = mkMsg('to be deleted');
+    useChatStore.setState({ messages: [msg] });
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    useChatStore.getState().deleteMessage(msg.id);
+    await vi.waitFor(() => expect(saveSpy).toHaveBeenCalled());
+
+    expect(saveSpy.mock.calls[0][0]).toBe('a.png');
+    const header = saveSpy.mock.calls[0][2][0] as { is_group_chat?: boolean };
+    expect(header.is_group_chat).toBeUndefined();
+  });
+
+  it("the memo being warm for a DIFFERENT file doesn't make an unrelated open group-mode chat save as a group (I2, review round 4)", async () => {
+    // Round 4 I2: the "keyed to currentChatFile" property had no coverage
+    // — mutating the predicate to `groupIdentityByFile.size > 0` (any memo
+    // entry anywhere unlocks the group branch for whatever file happens to
+    // be open) left the whole suite green.
+    // KILLS: that exact mutation — the memo below is warm only for
+    // 'g.jsonl', but `currentChatFile` is 's.jsonl' (a solo file with no
+    // record or memo entry of its own); `size > 0` would still take the
+    // group branch and call api.saveChat with is_group_chat true under
+    // 'b.png' (groupChatCharacters slot 0, via the slot-0 fallback since
+    // 's.jsonl' has no resolvable identity of its own).
+    const charB = mkChar('B', 'b.png');
+    const charC = mkChar('C', 'c.png');
+    const record = mkGroupChat({
+      fileName: 'g.jsonl',
+      characterAvatars: ['b.png', 'a.png'],
+      identityAvatar: 'a.png',
+    });
+    useChatStore.setState({ groupChats: [record] });
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({ header: null, messages: [], server_ts: 1 });
+
+    // Warm the memo for 'g.jsonl' only.
+    await useChatStore.getState().loadGroupChat(record);
+
+    // A DIFFERENT, unrelated chat is now open, staged as a group (mode
+    // true) but with no record and no memo entry of ITS OWN.
+    useCharacterStore.setState({
+      selectedCharacter: null,
+      isGroupChatMode: true,
+      groupChatCharacters: [charB, charC],
+    });
+    const msg = mkMsg('to be deleted');
+    useChatStore.setState({ currentChatFile: 's.jsonl', messages: [msg] });
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    useChatStore.getState().deleteMessage(msg.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(saveSpy).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1045,8 +1141,14 @@ describe('migrateGroupChat backfills identityAvatar for pre-#458 records', () =>
     // migrateGroupChat's own backfill.
     // KILLS: reconcileGroupIdentities using
     // `incomingIdentity ?? localByFile.get(rec.fileName)` instead of the
-    // explicit non-empty-string check — the result below would be ''
-    // instead of 'a.png'.
+    // explicit non-empty-string check — `??` treats the incoming '' as
+    // already-present and passes the RECORD THROUGH UNCHANGED (still
+    // carrying identityAvatar: ''), so the local-preference rescue never
+    // fires; `migrateGroupChat`'s OWN slot-0 backfill then runs on that
+    // still-empty field and derives 'b.png' (this fixture's
+    // characterAvatars[0]) — a silent positional fork, the exact #458
+    // harm, not 'a.png'. Verified: the result below comes back 'b.png',
+    // not ''.
     useChatStore.setState({
       groupChats: [
         mkGroupChat({
@@ -1121,58 +1223,4 @@ describe('a reorder round-trips identityAvatar through both persistence layers',
     }
   });
 
-  it('a repaired identity from server-apply reconciliation is re-uploaded (H4, review round 3)', async () => {
-    // Round 3 H4: reconcileGroupIdentities (G4) repairs LOCAL state only.
-    // Without re-uploading, the shared stm_chat_state blob stays
-    // field-less forever and every OTHER upgraded device keeps
-    // re-deriving (and forking) the identity from slot 0 on ITS next
-    // fetchPrefs — #458, reintroduced through the far side of the very
-    // sync channel G4 patched from this client's own side.
-    // KILLS: removing the `if (identitiesRepaired) schedulePersist();`
-    // call (or the `identitiesRepaired` computation feeding it) —
-    // patchServerKey would never be called at all.
-    vi.useFakeTimers();
-    try {
-      useChatStore.setState({
-        groupChats: [
-          mkGroupChat({
-            fileName: 'g.jsonl',
-            characterAvatars: ['b.png', 'a.png'],
-            characterNames: ['B', 'A'],
-            identityAvatar: 'a.png',
-          }),
-        ],
-      });
-
-      const incomingWithoutIdentity = {
-        fileName: 'g.jsonl',
-        characterNames: ['B', 'A'],
-        characterAvatars: ['b.png', 'a.png'],
-        lastMessage: '',
-        createdAt: 0,
-        // no identityAvatar field at all — a pre-#458 device's round-trip.
-      };
-      getSettingsBlob.mockResolvedValueOnce({
-        stm_chat_state: {
-          authorNotes: {},
-          chatVariables: {},
-          groupChats: [incomingWithoutIdentity],
-          _ts: 999,
-        },
-      });
-
-      await useChatStore.getState().fetchPrefs();
-      expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
-
-      // schedulePersist debounces 300ms.
-      vi.advanceTimersByTime(300);
-
-      expect(patchServerKey).toHaveBeenCalled();
-      const lastCall = patchServerKey.mock.calls[patchServerKey.mock.calls.length - 1];
-      const payload = lastCall[1] as { groupChats: GroupChatInfo[] };
-      expect(payload.groupChats.find((g) => g.fileName === 'g.jsonl')?.identityAvatar).toBe('a.png');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });

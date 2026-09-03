@@ -18,7 +18,7 @@
 | Client entry | `tryServerRetrieval` (`serverRetrieval.ts:452`) → `serverMatchedEntries`; local fallback = `scanMessagesForEntries` | `resolveRagContext` (chatStore.ts) → `ragCtx` string |
 | Backend | `POST /retrieval/context`; SQL/RRF stage `_retrieval.py` (k=60, cos-dist ≤ 0.3 at `:95,:102`) then the Python activation engine `_activation.py` | `POST /retrieval/messages`, `message_embeddings` (migration 0026), pure cosine, `limit=k` |
 | Threshold | cos-dist ≤ 0.3 | `_MESSAGE_SIMILARITY_FLOOR = 0.5` → `_MAX_MESSAGE_COSINE_DISTANCE = 1.0 - floor` (`retrieval.py:401-402`; **note `:398` is the comment warning not to confuse this with the lorebook 0.3**) |
-| k / budget | budget = `wiState.tokenBudget` (default 1024), passed to the server (`serverRetrieval.ts:485-492`) | k hardcoded 3 (`chatStore.ts:921`); **no token budget** |
+| k / budget | budget = `wiState.tokenBudget` (default 1024), passed to the server (`serverRetrieval.ts:485-492`) | k hardcoded 3 (the 4th argument of the `api.getRetrievalMessages` call in `resolveRagContext`, chatStore.ts); **no token budget** |
 | Opt-in | always-on when eligible | `stm_rag_settings.enabled`, re-checked server-side (`retrieval.py:494`) |
 | Group chats | **never** (`serverRetrieval.ts:32-34`, by design) | yes (identity = `GroupChatInfo.identityAvatar`, frozen at creation, E9-S9/#458 2026-09; readers `groupIdentityAvatar` / `resolveGroupIdentityAvatar` in chatStore.ts) |
 | Prompt slot | the `wi_*` position sections + `at_depth` | the single `rag_context` section (solo) / flat-system tail (group) |
