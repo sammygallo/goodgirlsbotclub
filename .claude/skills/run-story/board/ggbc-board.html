@@ -265,7 +265,7 @@
     </div>
     <div class="stamp">
       <b>2 Sep 2026</b><br>
-      main <b>0ee37eee</b><br>
+      main <b>f4b7eda2</b><br>
       active <b>none</b>
     </div>
   </header>
@@ -402,7 +402,7 @@
     <section class="col">
       <div class="colhead"><h2>Deployed</h2><span class="ct">9</span></div>
       <div class="stack">
-        <article class="card s-ok" data-epic="E9"><div class="id">E9-S7</div><div class="t">Surface recall's <code>no_key</code> reason</div><div class="m">1 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/504">#504</a> → <code>473c8aa2</code>, deployed 2 Sep · closes #455 · QA 4/4 · 19 review rounds (one code round with 3 confirmed defects; 16 rounds on the PM's own bookkeeping prose) · merged on Sammy's go after the "did not converge" trigger fired · first CURATE postmortem → <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/505">#505</a>.</div></article>
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S7</div><div class="t">Surface recall's <code>no_key</code> reason</div><div class="m">1 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/504">#504</a> → <code>473c8aa2</code>, deployed 2 Sep · closes #455 · QA 4/4 · 19 review rounds (one code round with 3 confirmed defects; 16 rounds on the PM's own bookkeeping prose) · merged on Sammy's go after the "did not converge" trigger fired · first CURATE postmortem → <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/505">#505</a>, merged 2 Sep.</div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry coverage</div><div class="m">31 Aug · <code>2b3efa30</code> (<a href="https://github.com/sammygallo/goodgirlsbotclub/pull/500">#500</a>). Read-time remap of pre-cutover <code>wi_fired</code> keys + a "not observable" replay state. Re-scoped 30 Aug after the id-crosswalk premise was falsified at intake. <b>6 review rounds, ~30 findings, zero behavior defects.</b> <b>Deployed 1 Sep</b> (sync deploy of <code>main</code>, frontend image <code>9474fbfa</code>).</div><div class="gates"><span class="gate free">unblocks E5-S1</span></div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S2a</div><div class="t">Activation reason in the server DTO</div><div class="m">29 Aug · backend #82 + frontend #490, shipped together · 3 rounds converged at zero, QA 4/4 mutation-verified · additive DTO, no migration.</div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S2</div><div class="t">Token breakdown visualization</div><div class="m">28 Aug · #479 #481 #482 + backend #81 + #484 · closes #453/#457 · ~17 review rounds over 4 PR loops (final loop: 6 rounds, 35 defects) · PLAN-leg pilot.</div></article>
@@ -429,7 +429,7 @@
 
   <section class="focus">
     <h2>E9-S7 — deployed 2 Sep, closed</h2>
-    <p class="sub">The smallest card on the board shipped: when the server answers <code>no_key</code>, the client now logs a warning on each such response and shows one toast per app session pointing at Settings → AI Settings, with the latch cleared on logout. What the run is remembered for is its review: 19 rounds and ~19M against a class budget of one ≤0.3M pass, sixteen of them over the PM's own board and ledger prose. The first CURATE postmortem turned that into four <code>run-story</code> amendments, red-teamed in design mode and waiting on Sammy as <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/505">#505</a>, and a 261-claim staleness sweep of the memory directory handed to Sammy as a batch.</p>
+    <p class="sub">The smallest card on the board shipped: when the server answers <code>no_key</code>, the client now logs a warning on each such response and shows one toast per app session pointing at Settings → AI Settings, with the latch cleared on logout. What the run is remembered for is its review: 19 rounds and ~19M against a class budget of one ≤0.3M pass, sixteen of them over the PM's own board and ledger prose. The first CURATE postmortem turned that into four <code>run-story</code> amendments, red-teamed in design mode and merged on Sammy's go as <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/505">#505</a> (<code>f4b7eda2</code>), and a 261-claim staleness sweep of the memory directory handed to Sammy as a batch.</p>
 
     <div class="steps">
       <div class="step done"><div class="sn">Build</div><div class="sv">Sonnet · on band</div></div>
