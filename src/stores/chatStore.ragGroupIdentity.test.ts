@@ -69,7 +69,8 @@ describe('resolveRagContext — group identity resolution', () => {
   });
 
   it('carries identityAvatar as characterAvatar, not roster slot 0 or the current speaker', async () => {
-    // KILLS: `groupChat.characterAvatars[0]` (the pre-#458 read) — slot 0 is
+    // KILLS (REQUIRED KILL c): resolveRagContext reverted to
+    // `groupChat.characterAvatars[0]` (the pre-#458 read) — slot 0 is
     // Marcus here (matches selectedCharacter too, deliberately, to prove
     // neither the roster's first slot nor the solo fallback is what supplied
     // the avatar), so a slot-0 implementation reports 'marcus.png' and this

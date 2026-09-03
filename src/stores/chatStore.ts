@@ -912,6 +912,38 @@ function ragAbortAfter(ms: number): { signal: AbortSignal; cancel: () => void } 
 // a shared browser would silently inherit "already told you".
 let noKeyHintShownThisSession = false;
 
+// E9-S9 (#458): the two readers of `identityAvatar`. Not exported — every
+// caller either already has the `GroupChatInfo` record (use
+// `groupIdentityAvatar`) or only has the chat file name and needs a registry
+// lookup (`resolveGroupIdentityAvatar`). Both fold `''` to `null` so a
+// corrupt/never-set record never silently degrades to slot 0.
+function groupIdentityAvatar(g: GroupChatInfo): string | null {
+  return g.identityAvatar ? g.identityAvatar : null;
+}
+
+// Review round 1 F3 (#458 follow-up): `deleteGroupChat` (the sidebar trash
+// icon) can remove the OPEN group's registry record without touching
+// `currentChatFile` — it only filters the array. Without a memo, the very
+// next save after that delete would find no record, fall through to
+// `warnPositionalFallback`'s roster-slot-0 read, and fork the chat onto a
+// new server tuple: the exact #458 harm, reachable through a normal UI
+// gesture. This last-known-good memo survives the record's deletion.
+// Populated here (whenever a record is actually resolved), and explicitly
+// at `loadGroupChat`/`startNewGroupChat`/`convertCurrentToGroup` so it's
+// warm even before any save has run through this function. Cleared in
+// `resetUser` so the next account on a shared browser never inherits it.
+const groupIdentityByFile = new Map<string, string>();
+
+function resolveGroupIdentityAvatar(fileName: string): string | null {
+  const groupChat = useChatStore.getState().getGroupChatByFile(fileName);
+  if (groupChat) {
+    const identity = groupIdentityAvatar(groupChat);
+    if (identity) groupIdentityByFile.set(fileName, identity);
+    return identity;
+  }
+  return groupIdentityByFile.get(fileName) ?? null;
+}
+
 /**
  * Phase 2 of the memory-consolidation plan — RAG helper.
  * Extracts the last user message from `messages` and queries the
@@ -951,21 +983,6 @@ let noKeyHintShownThisSession = false;
  * server then falls back to excluding a fixed tail count, which can return
  * chunks the prompt already contains.
  */
-
-// E9-S9 (#458): the two readers of `identityAvatar`. Not exported — every
-// caller either already has the `GroupChatInfo` record (use
-// `groupIdentityAvatar`) or only has the chat file name and needs a registry
-// lookup (`resolveGroupIdentityAvatar`). Both fold `''` to `null` so a
-// corrupt/never-set record never silently degrades to slot 0.
-function groupIdentityAvatar(g: GroupChatInfo): string | null {
-  return g.identityAvatar ? g.identityAvatar : null;
-}
-
-function resolveGroupIdentityAvatar(fileName: string): string | null {
-  const groupChat = useChatStore.getState().getGroupChatByFile(fileName);
-  return groupChat ? groupIdentityAvatar(groupChat) : null;
-}
-
 export async function resolveRagContext(
   messages: ChatMessage[],
   chatFile: string | undefined,
@@ -3495,12 +3512,14 @@ function buildChatPayload(
     })),
   ];
 
-  // E9-S9 (#458): the group identity comes from the registry record, not
-  // roster position — this one call site covers every group save (the
-  // immediate save + finally flush in sendGroupMessage, forceGroupMemberTalk's
-  // flush, persistTruncatingEdit, and the page-unload beacon, which calls
-  // this same function with `lastSaveContext`). The slot-0 fallback fires
-  // only when the registry entry is gone while the chat is still open.
+  // E9-S9 (#458): the group identity comes from the registry record (or,
+  // once the record is gone, the last-known-good memo — F3, review round
+  // 1), not roster position — this one call site covers every group save
+  // (the immediate save + finally flush in sendGroupMessage,
+  // forceGroupMemberTalk's flush, persistTruncatingEdit, and the
+  // page-unload beacon, which calls this same function with
+  // `lastSaveContext`). The slot-0 fallback fires only when a group has
+  // NEITHER a live registry record NOR a memo entry for its file name.
   const avatarUrl = isGroupChat && groupCharacters
     ? (resolveGroupIdentityAvatar(currentChatFile) ?? warnPositionalFallback(groupCharacters[0].avatar))
     : character.avatar;
@@ -3870,9 +3889,14 @@ async function persistTruncatingEdit() {
 // as every other save path, which resolves the server identity from the
 // registry (`resolveGroupIdentityAvatar`) rather than from `lastSaveContext`'s
 // `groupCharacters` array — so a roster reorder mid-generation can't race
-// this flush into addressing the wrong row. Roster edits are themselves
-// refused while `isSending` (see GroupChatControls.tsx), so the registry
-// entry this reads can't change out from under an in-flight unload either.
+// this flush into addressing the wrong row. Roster edits (reorder/add/
+// remove) are themselves refused while `isSending` (see
+// GroupChatControls.tsx), so those can't change the identity out from under
+// an in-flight unload. Deleting the whole record (the sidebar trash icon,
+// NOT gated on `isSending`) is a separate case, covered by
+// `resolveGroupIdentityAvatar`'s last-known-good memo (F3, review round 1)
+// rather than by this guard — only a chat with neither a live record nor a
+// memo entry falls back to roster slot 0.
 function flushChatOnUnload() {
   if (typeof window === 'undefined') return;
   const state = useChatStore.getState();
@@ -4432,6 +4456,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const updatedGroupChats = [...groupChats, newGroupChat];
     saveGroupChatsToStorage(updatedGroupChats);
     set({ groupChats: updatedGroupChats });
+    // F3: warm the memo at creation, before any save has run through
+    // resolveGroupIdentityAvatar.
+    groupIdentityByFile.set(currentChatFile, currentCharacter.avatar);
 
     // Switch characterStore into group mode with all members
     await useCharacterStore.getState().setGroupChatCharacters(allCharacters.map((c) => c.avatar));
@@ -4705,6 +4732,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ isLoading: false, error: 'Group chat record is missing its server identity' });
         return;
       }
+      // F3: warm the memo so a delete of this record (while it stays the
+      // open chat) can't drop straight to the slot-0 fallback.
+      groupIdentityByFile.set(groupChat.fileName, avatarUrl);
       const { header, messages: rawMessages, server_ts } = await api.getChatWithHeader(avatarUrl, groupChat.fileName);
       const messages = ensureUniqueMessageIds(rawMessages.map(normalizeMessage));
       chatServerTsByFile.set(groupChat.fileName, server_ts);
@@ -4752,6 +4782,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   startNewGroupChat: async (characters: CharacterInfo[]) => {
+    // Review round 1 F1 (#458 follow-up): an empty roster is reachable —
+    // the sidebar renders saved groups before characters load (or after a
+    // failed fetch / every member card deleted), `setGroupChatCharacters`
+    // skips unknown avatars while still flipping `isGroupChatMode: true`,
+    // and ChatView's New-chat / Delete-messages call this with
+    // `groupChatCharacters` unguarded. `characters[0].avatar` below would
+    // throw AFTER `api.createChat` already ran, orphaning a server file
+    // with no group record ever created for it. Bail BEFORE createChat.
+    if (characters.length === 0) {
+      set({ error: 'Group has no loaded members' });
+      return;
+    }
     const messages: ChatMessage[] = [];
 
     messages.push(createMessage({
@@ -4807,6 +4849,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
     const updatedGroupChats = [...groupChats, newGroupChat];
     saveGroupChatsToStorage(updatedGroupChats);
+    // F3: warm the memo at creation, before any save has run through
+    // resolveGroupIdentityAvatar.
+    groupIdentityByFile.set(fileName, characters[0].avatar);
 
     set({
       messages,
@@ -6104,6 +6149,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     clearLocalTs(LOCAL_TS_KEY);
     noKeyHintShownThisSession = false; // E9-S7 (#455) — see the latch's own comment
     positionalFallbackWarnedThisSession = false; // E9-S9 (#458) — see warnPositionalFallback's own comment
+    groupIdentityByFile.clear(); // F3 (#458 follow-up) — see the memo's own comment
   },
 
   fetchPrefs: async () => {

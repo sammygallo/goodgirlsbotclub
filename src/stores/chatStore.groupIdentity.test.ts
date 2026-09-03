@@ -134,6 +134,11 @@ beforeEach(() => {
   getSettingsBlob.mockResolvedValue({});
   patchServerKey.mockReset();
   patchServerKey.mockResolvedValue(undefined);
+  // F4 (review round 1): resetUser() clears groupIdentityByFile (the F3
+  // memo) and re-arms positionalFallbackWarnedThisSession, in addition to
+  // the store fields this suite already needed reset — a plain setState
+  // could leave either module-private latch dirty from a prior test.
+  useChatStore.getState().resetUser();
   useChatStore.setState({
     groupChats: [],
     messages: [],
@@ -250,6 +255,26 @@ describe('creation freezes identityAvatar', () => {
     const record = useChatStore.getState().getGroupChatByFile('solo.jsonl');
     expect(record?.identityAvatar).toBe('c.png');
   });
+
+  it('startNewGroupChat([]) bails before api.createChat, sets an error, and never dereferences characters[0]', async () => {
+    // Review round 1 F1: an empty roster is reachable in production (the
+    // sidebar renders saved groups before characters load, or after every
+    // member card is deleted; setGroupChatCharacters skips unknown avatars
+    // while still flipping isGroupChatMode true; ChatView's New-chat /
+    // Delete-messages call startNewGroupChat(groupChatCharacters) with no
+    // length guard). Before the fix, `characters[0].avatar` threw AFTER
+    // api.createChat had already run, orphaning a server file.
+    // KILLS: removing the `characters.length === 0` guard — createChat gets
+    // called and/or the call throws instead of resolving with an error set.
+    const createChatSpy = vi.spyOn(api, 'createChat');
+    const priorFile = useChatStore.getState().currentChatFile;
+
+    await expect(useChatStore.getState().startNewGroupChat([])).resolves.toBeUndefined();
+
+    expect(createChatSpy).not.toHaveBeenCalled();
+    expect(useChatStore.getState().currentChatFile).toBe(priorFile);
+    expect(useChatStore.getState().error).toBe('Group has no loaded members');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -333,6 +358,143 @@ describe('group saves resolve identity from the registry, not the roster argumen
     await useChatStore.getState().loadGroupChat(record);
     expect(loadSpy).toHaveBeenCalledWith('ghost.png', 'ghost.jsonl');
   });
+
+  it("deleteGroupChat on the OPEN chat doesn't fall back to slot 0 on the next send (F3 memo)", async () => {
+    // Review round 1 F3: deleteGroupChat only filters the registry array —
+    // it doesn't touch currentChatFile, exit group mode, or clear messages.
+    // Without a last-known-good memo, the very next save after deleting the
+    // OPEN group's record would find no record, fall to
+    // warnPositionalFallback's roster-slot-0 read, and fork the chat onto a
+    // new server tuple — the exact #458 harm, reachable through a normal UI
+    // gesture (the sidebar trash icon).
+    // KILLS: removing the memo read from resolveGroupIdentityAvatar — after
+    // the delete below the registry has no record for 'g.jsonl', so a
+    // memo-less resolveGroupIdentityAvatar returns null and buildChatPayload
+    // falls to groupCharacters[0].avatar = 'b.png' on the second send.
+    const charA = mkChar('A', 'a.png');
+    const charB = mkChar('B', 'b.png');
+    useChatStore.setState({
+      currentChatFile: 'g.jsonl',
+      messages: [],
+      isSending: false,
+      groupChats: [
+        mkGroupChat({
+          fileName: 'g.jsonl',
+          characterAvatars: ['b.png', 'a.png'],
+          characterNames: ['B', 'A'],
+          identityAvatar: 'a.png',
+        }),
+      ],
+    });
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Prime the memo: one send while the record still exists.
+    await useChatStore.getState().sendGroupMessage('hi', [charB, charA]);
+    expect(saveSpy.mock.calls.every((call) => call[0] === 'a.png')).toBe(true);
+
+    // The sidebar trash icon on the OPEN chat: registry entry gone,
+    // currentChatFile/messages/group mode untouched — exactly what
+    // deleteGroupChat does today.
+    useChatStore.getState().deleteGroupChat('g.jsonl');
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')).toBeNull();
+    expect(useChatStore.getState().currentChatFile).toBe('g.jsonl');
+
+    saveSpy.mockClear();
+    await useChatStore.getState().sendGroupMessage('hi again', [charB, charA]);
+
+    expect(saveSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of saveSpy.mock.calls) {
+      expect(call[0]).toBe('a.png');
+    }
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('[E9-S9]'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// warnPositionalFallback and its call site (review round 1 F4 — zero
+// coverage before this: the reviewer mutated the fallback to return '' and
+// removed both the latch and the resetUser reset, and all 2024 tests
+// stayed green)
+// ---------------------------------------------------------------------------
+
+describe('warnPositionalFallback: the roster-slot-0 degraded path', () => {
+  it('is used (and warned about exactly once) across multiple sends when a group has no record and no memo', async () => {
+    // No groupChats record for 'g.jsonl' and (thanks to beforeEach's
+    // resetUser()) no memo entry either, so resolveGroupIdentityAvatar
+    // returns null on every call and buildChatPayload must fall back to
+    // warnPositionalFallback(groupCharacters[0].avatar).
+    // KILLS: warnPositionalFallback mutated to return '' — every saveChat
+    // arg0 below would be '' instead of 'b.png'.
+    // KILLS: the `positionalFallbackWarnedThisSession` latch removed (warn
+    // unconditionally) — the second send below would add a second
+    // '[E9-S9]' warning, so the count assertion goes from 1 to 2 (or more).
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const charA = mkChar('A', 'a.png');
+    const charB = mkChar('B', 'b.png');
+    useChatStore.setState({
+      currentChatFile: 'g.jsonl',
+      messages: [],
+      isSending: false,
+      groupChats: [], // no registry record at all
+    });
+
+    await useChatStore.getState().sendGroupMessage('hi', [charB, charA]);
+    await useChatStore.getState().sendGroupMessage('hi again', [charB, charA]);
+
+    // Each send is Fix#1 + finally-flush, so >=4 saves across both sends.
+    expect(saveSpy.mock.calls.length).toBeGreaterThanOrEqual(4);
+    for (const call of saveSpy.mock.calls) {
+      expect(call[0]).toBe('b.png'); // roster slot 0 — the intended degraded answer
+    }
+    const e9s9Warnings = warnSpy.mock.calls.filter(
+      (args) => typeof args[0] === 'string' && args[0].includes('[E9-S9]')
+    );
+    expect(e9s9Warnings).toHaveLength(1);
+  });
+
+  it('resetUser() re-arms the latch so the next fallback warns again', async () => {
+    // KILLS: the `positionalFallbackWarnedThisSession = false` reset
+    // removed from resetUser() — the second send below (after resetUser())
+    // would add zero new '[E9-S9]' warnings instead of exactly one.
+    vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const countE9S9 = () =>
+      warnSpy.mock.calls.filter(
+        (args) => typeof args[0] === 'string' && args[0].includes('[E9-S9]')
+      ).length;
+
+    const charA = mkChar('A', 'a.png');
+    const charB = mkChar('B', 'b.png');
+    useChatStore.setState({
+      currentChatFile: 'g.jsonl',
+      messages: [],
+      isSending: false,
+      groupChats: [],
+    });
+    await useChatStore.getState().sendGroupMessage('hi', [charB, charA]);
+    expect(countE9S9()).toBe(1);
+
+    // Logout/user-switch: resetUser() clears the registry, the memo, AND
+    // (per this test) must re-arm the warn latch.
+    useChatStore.getState().resetUser();
+    warnSpy.mockClear();
+    useChatStore.setState({
+      currentChatFile: 'g2.jsonl',
+      messages: [],
+      isSending: false,
+      groupChats: [],
+    });
+
+    await useChatStore.getState().sendGroupMessage('hi', [charB, charA]);
+    expect(countE9S9()).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -344,11 +506,10 @@ describe('persistTruncatingEdit resolves identity from the registry too', () => 
     // KILLS: a save call site that resolves the avatar from
     // `chars[0].avatar` (the live-roster reconstruction persistTruncatingEdit
     // builds for ITS OWN `character` argument) rather than letting
-    // buildChatPayload resolve it from the registry — chars[0] here is
-    // whichever of A/B sorts first in characterAvatars ('a.png'), so a
-    // roster-order bug and the correct answer coincide unless the record's
-    // identity is the one still standing after a reorder; the reorder below
-    // moves 'a.png' out of slot 0 to separate the two.
+    // buildChatPayload resolve it from the registry — `chars[0]` here is
+    // 'b.png' (characterAvatars[0] in the record below), while the frozen
+    // identity is 'a.png', so that wrong implementation reports 'b.png' and
+    // this goes red on the very first assertion.
     const charA = mkChar('A', 'a.png');
     const charB = mkChar('B', 'b.png');
     useCharacterStore.setState({ characters: [charA, charB] });
@@ -404,6 +565,10 @@ describe('loadGroupChat resolves against the frozen identity', () => {
   it('sets an error and never calls the server when identityAvatar is empty', async () => {
     // A corrupt/never-set record must fail loudly, not silently degrade to
     // slot 0 (which could load a completely unrelated chat's row).
+    // KILLS (REQUIRED KILL e, second case): loadGroupChat reverted to
+    // `groupChat.characterAvatars[0]` — the record below has a non-empty
+    // characterAvatars, so that implementation would happily call
+    // getChatWithHeader with the slot-0 avatar and never set `error`.
     const getSpy = vi
       .spyOn(api, 'getChatWithHeader')
       .mockResolvedValue({ header: null, messages: [], server_ts: 5 });
@@ -467,6 +632,10 @@ describe('migrateGroupChat backfills identityAvatar for pre-#458 records', () =>
   });
 
   it('via the server-apply path (fetchPrefs)', async () => {
+    // KILLS: the fetchPrefs server-apply branch reading `stored.groupChats`
+    // directly instead of `.map(migrateGroupChat)` — the legacy fixture
+    // below has no `identityAvatar` field at all, so an unmigrated record
+    // would leave it `undefined`, not backfilled to 'x.png'.
     const legacy = {
       fileName: 'server-legacy.jsonl',
       characterNames: ['X', 'Y'],
