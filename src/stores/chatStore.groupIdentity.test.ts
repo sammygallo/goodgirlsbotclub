@@ -414,6 +414,175 @@ describe('group saves resolve identity from the registry, not the roster argumen
 });
 
 // ---------------------------------------------------------------------------
+// Each explicit memo warm, in isolation (review round 2 G3 — zero coverage
+// before this: with all three `groupIdentityByFile.set(...)` warm lines
+// deleted, the full 2029-test suite stayed green, because both F3 tests
+// primed the memo through a SEND, which itself warms the memo via
+// buildChatPayload's own resolveGroupIdentityAvatar call — never isolating
+// loadGroupChat's/startNewGroupChat's/convertCurrentToGroup's own warm)
+// ---------------------------------------------------------------------------
+
+describe('each explicit memo warm has its own coverage (G3, review round 2)', () => {
+  it('loadGroupChat warms the memo on its own (no prior save)', async () => {
+    // KILLS: deleting `groupIdentityByFile.set(groupChat.fileName, avatarUrl);`
+    // inside loadGroupChat — the memo is empty at delete time below, so the
+    // send afterward falls to warnPositionalFallback's roster-slot-0 avatar
+    // ('b.png') instead of the frozen 'a.png'.
+    const charA = mkChar('A', 'a.png');
+    const charB = mkChar('B', 'b.png');
+    const record = mkGroupChat({
+      fileName: 'g.jsonl',
+      characterAvatars: ['b.png', 'a.png'],
+      characterNames: ['B', 'A'],
+      identityAvatar: 'a.png',
+    });
+    useChatStore.setState({
+      groupChats: [record],
+      currentChatFile: null,
+      messages: [],
+      isSending: false,
+    });
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
+      header: null,
+      messages: [],
+      server_ts: 1,
+    });
+
+    await useChatStore.getState().loadGroupChat(record);
+
+    useChatStore.getState().deleteGroupChat('g.jsonl');
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')).toBeNull();
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await useChatStore.getState().sendGroupMessage('hi', [charB, charA]);
+
+    expect(saveSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of saveSpy.mock.calls) {
+      expect(call[0]).toBe('a.png');
+    }
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('[E9-S9]'));
+  });
+
+  it('startNewGroupChat warms the memo on its own (no prior save)', async () => {
+    // KILLS: deleting `groupIdentityByFile.set(fileName, characters[0].avatar);`
+    // inside startNewGroupChat.
+    const charA = mkChar('A', 'a.png');
+    const charB = mkChar('B', 'b.png');
+
+    await useChatStore.getState().startNewGroupChat([charA, charB]);
+    const fileName = useChatStore.getState().currentChatFile!;
+    expect(fileName).toBeTruthy();
+
+    useChatStore.getState().deleteGroupChat(fileName);
+    expect(useChatStore.getState().getGroupChatByFile(fileName)).toBeNull();
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await useChatStore.getState().sendGroupMessage('hi', [charB, charA]);
+
+    expect(saveSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of saveSpy.mock.calls) {
+      expect(call[0]).toBe('a.png');
+    }
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('[E9-S9]'));
+  });
+
+  it('convertCurrentToGroup warms the memo on its own (no prior save)', async () => {
+    // KILLS: deleting
+    // `groupIdentityByFile.set(currentChatFile, currentCharacter.avatar);`
+    // inside convertCurrentToGroup.
+    useChatStore.setState({ currentChatFile: 'solo.jsonl', messages: [] });
+    const charC = mkChar('C', 'c.png');
+    const charD = mkChar('D', 'd.png');
+
+    await useChatStore.getState().convertCurrentToGroup(charC, [charD]);
+
+    useChatStore.getState().deleteGroupChat('solo.jsonl');
+    expect(useChatStore.getState().getGroupChatByFile('solo.jsonl')).toBeNull();
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await useChatStore.getState().sendGroupMessage('hi', [charD, charC]);
+
+    expect(saveSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of saveSpy.mock.calls) {
+      expect(call[0]).toBe('c.png');
+    }
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('[E9-S9]'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A live record with its OWN identity corrupted (empty), distinct from the
+// record being gone entirely — resolveGroupIdentityAvatar must fall to the
+// memo here too (G5, review round 2)
+// ---------------------------------------------------------------------------
+
+describe('resolveGroupIdentityAvatar falls to the memo for a live-but-corrupt record (G5)', () => {
+  it("a record with an empty identityAvatar resolves through the memo, not straight to slot 0", async () => {
+    // Before this fix: resolveGroupIdentityAvatar returned EARLY the
+    // moment a live record was found, even when that record's own
+    // identityAvatar was '' — never consulting the memo, which is a
+    // strictly better witness for this file than a corrupt-but-present
+    // record. The two flushChatOnUnload/buildChatPayload comments already
+    // claimed the fallback fires only when NEITHER a record NOR a memo
+    // entry exists; this closes the gap between that claim and the code.
+    // KILLS: restoring the early return (`if (groupChat) { const identity
+    // = groupIdentityAvatar(groupChat); if (identity) memo.set(...); return
+    // identity; }`) — with the record's identity corrupted to '' below,
+    // that reverted code returns null regardless of the memo, and
+    // buildChatPayload falls to warnPositionalFallback's slot-0 avatar
+    // ('b.png') instead of the memoized 'a.png'.
+    const charA = mkChar('A', 'a.png');
+    const charB = mkChar('B', 'b.png');
+    const record = mkGroupChat({
+      fileName: 'g.jsonl',
+      characterAvatars: ['b.png', 'a.png'],
+      characterNames: ['B', 'A'],
+      identityAvatar: 'a.png',
+    });
+    useChatStore.setState({
+      groupChats: [record],
+      currentChatFile: null,
+      messages: [],
+      isSending: false,
+    });
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
+      header: null,
+      messages: [],
+      server_ts: 1,
+    });
+
+    // Prime the memo with the record's real identity.
+    await useChatStore.getState().loadGroupChat(record);
+
+    // Corrupt the LIVE record's own identity (still present in the
+    // registry, just empty) — distinct from deleteGroupChat, which removes
+    // the record entirely.
+    useChatStore.setState({ groupChats: [{ ...record, identityAvatar: '' }] });
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await useChatStore.getState().sendGroupMessage('hi', [charB, charA]);
+
+    expect(saveSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of saveSpy.mock.calls) {
+      expect(call[0]).toBe('a.png');
+    }
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('[E9-S9]'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // warnPositionalFallback and its call site (review round 1 F4 — zero
 // coverage before this: the reviewer mutated the fallback to return '' and
 // removed both the latch and the resetUser reset, and all 2024 tests
@@ -527,6 +696,56 @@ describe('persistTruncatingEdit resolves identity from the registry too', () => 
         }),
       ],
     });
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    useChatStore.getState().deleteMessage(msg.id);
+    await vi.waitFor(() => expect(saveSpy).toHaveBeenCalled());
+
+    expect(saveSpy.mock.calls[0][0]).toBe('a.png');
+    expect(saveSpy.mock.calls[0][4]).toBe(true); // allow_truncate
+  });
+
+  it("deleteMessage still persists after deleteGroupChat removes the OPEN group's record (G2, review round 2)", async () => {
+    // Before this fix: persistTruncatingEdit picked its solo-vs-group
+    // branch from `getGroupChatByFile(currentChatFile)` alone. After
+    // deleteGroupChat removes the OPEN group's record, that lookup returns
+    // null, so the old code took the SOLO arm — selectedCharacter is null
+    // in group mode — and returned WITHOUT saving. Message delete and
+    // hide-from-AI would silently persist nothing in exactly the window F3
+    // declared covered.
+    // KILLS (G2): reverting the branch condition to `if (groupChat)` —
+    // after the delete below, groupChat is null, so that condition takes
+    // the solo arm and api.saveChat is never called.
+    const charA = mkChar('A', 'a.png');
+    const charB = mkChar('B', 'b.png');
+    useCharacterStore.setState({ characters: [charA, charB] });
+
+    const record = mkGroupChat({
+      fileName: 'g.jsonl',
+      characterAvatars: ['b.png', 'a.png'],
+      characterNames: ['B', 'A'],
+      identityAvatar: 'a.png',
+    });
+    useChatStore.setState({ groupChats: [record] });
+
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
+      header: null,
+      messages: [],
+      server_ts: 1,
+    });
+    // Real UI flow (Sidebar's handleGroupChatSelect): enter group mode,
+    // THEN load — this is also what warms the F3 memo for 'g.jsonl'.
+    await useCharacterStore.getState().setGroupChatCharacters(['b.png', 'a.png']);
+    await useChatStore.getState().loadGroupChat(record);
+
+    const msg = mkMsg('to be deleted');
+    useChatStore.setState({ messages: [msg] });
+
+    // The sidebar trash icon on the OPEN chat.
+    useChatStore.getState().deleteGroupChat('g.jsonl');
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')).toBeNull();
+    expect(useCharacterStore.getState().isGroupChatMode).toBe(true);
 
     const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
 
@@ -656,6 +875,55 @@ describe('migrateGroupChat backfills identityAvatar for pre-#458 records', () =>
 
     const record = useChatStore.getState().getGroupChatByFile('server-legacy.jsonl');
     expect(record?.identityAvatar).toBe('x.png');
+  });
+
+  it('the server-apply path prefers the LOCAL identity when the incoming record is missing it (G4, review round 2)', async () => {
+    // Review round 2 G4: `groupChats` syncs as a whole-section blob
+    // (whole-section PUT/GET, not per-field). A device still on the
+    // pre-#458 bundle would round-trip this section WITHOUT
+    // `identityAvatar` at all — it doesn't know the field exists, and
+    // rebuilds the blob from its own fixed key list. If this (upgraded)
+    // client ran that incoming record straight through migrateGroupChat's
+    // ordinary backfill, it would re-derive the identity from the
+    // INCOMING record's own slot 0 ('b.png' below) — silently moving this
+    // client's frozen identity ('a.png') via sync, with a record present
+    // so no fallback warning ever fires. The "unknown locally" half of
+    // this behavior (ordinary slot-0 backfill still applies) is the
+    // preceding test's 'server-legacy.jsonl' case.
+    // KILLS: removing the local-identity preference from
+    // reconcileGroupIdentities (or from fetchPrefs's wiring of it) — the
+    // identity below would come back 'b.png' instead of 'a.png'.
+    useChatStore.setState({
+      groupChats: [
+        mkGroupChat({
+          fileName: 'g.jsonl',
+          characterAvatars: ['b.png', 'a.png'],
+          characterNames: ['B', 'A'],
+          identityAvatar: 'a.png',
+        }),
+      ],
+    });
+
+    const incomingWithoutIdentity = {
+      fileName: 'g.jsonl',
+      characterNames: ['B', 'A'],
+      characterAvatars: ['b.png', 'a.png'],
+      lastMessage: '',
+      createdAt: 0,
+      // no identityAvatar field at all — a pre-#458 device's round-trip.
+    };
+    getSettingsBlob.mockResolvedValueOnce({
+      stm_chat_state: {
+        authorNotes: {},
+        chatVariables: {},
+        groupChats: [incomingWithoutIdentity],
+        _ts: 999,
+      },
+    });
+
+    await useChatStore.getState().fetchPrefs();
+
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
   });
 });
 

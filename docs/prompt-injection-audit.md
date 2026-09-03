@@ -20,7 +20,7 @@
 | Threshold | cos-dist ≤ 0.3 | `_MESSAGE_SIMILARITY_FLOOR = 0.5` → `_MAX_MESSAGE_COSINE_DISTANCE = 1.0 - floor` (`retrieval.py:401-402`; **note `:398` is the comment warning not to confuse this with the lorebook 0.3**) |
 | k / budget | budget = `wiState.tokenBudget` (default 1024), passed to the server (`serverRetrieval.ts:485-492`) | k hardcoded 3 (`chatStore.ts:921`); **no token budget** |
 | Opt-in | always-on when eligible | `stm_rag_settings.enabled`, re-checked server-side (`retrieval.py:494`) |
-| Group chats | **never** (`serverRetrieval.ts:32-34`, by design) | yes (identity = `GroupChatInfo.identityAvatar`, frozen at creation, E9-S9/#458 2026-09; `chatStore.ts:206`, readers at `:960-967`) |
+| Group chats | **never** (`serverRetrieval.ts:32-34`, by design) | yes (identity = `GroupChatInfo.identityAvatar`, frozen at creation, E9-S9/#458 2026-09; readers `groupIdentityAvatar` / `resolveGroupIdentityAvatar` in chatStore.ts) |
 | Prompt slot | the `wi_*` position sections + `at_depth` | the single `rag_context` section (solo) / flat-system tail (group) |
 
 Shared only: the embedding provider chain (openai `text-embedding-3-small` → gemini `embedding-001` → cohere `embed-v4.0`, `embeddings_catalog.py:78-101`, dim 1536), the `embedding_jobs` queue and its polling worker, enqueued from `save_chat` (`chats.py:305-307`) plus two read-path sites. Staleness is checked three ways (worker diff, read-path opportunistic re-enqueue, query-time `content_hash` + model filter) and message text is always read live from the chat row, so a stale vector can never surface stale prose.

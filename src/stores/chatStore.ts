@@ -384,6 +384,56 @@ function migrateGroupChat(raw: Partial<GroupChatInfo> & {
   };
 }
 
+/**
+ * Review round 2 G4 (#458 follow-up): `groupChats` round-trips through the
+ * `stm_chat_state` server blob (whole-section PUT/GET, not per-field), so a
+ * device still running the pre-#458 bundle can write the section back
+ * without ever having heard of `identityAvatar` — it rebuilds the blob from
+ * its own fixed key list and simply omits a field it doesn't know exists.
+ * If this (upgraded) client then ran the incoming record straight through
+ * `migrateGroupChat`'s ordinary backfill, it would re-derive the identity
+ * from whatever the OTHER device's CURRENT (possibly reordered) roster
+ * slot 0 is — moving the frozen identity via sync, with a record present
+ * so `warnPositionalFallback` never fires. #458, reintroduced sideways.
+ *
+ * Preference order per incoming record, applied BEFORE `migrateGroupChat`:
+ * (1) the incoming record already carries a non-empty `identityAvatar` —
+ * trust it as-is, `migrateGroupChat` is a no-op backfill for it anyway;
+ * (2) otherwise, THIS client's own local registry entry for the same
+ * `fileName`, if it has one — a local record's identity is frozen and
+ * therefore a better witness than a fresh positional guess; (3) otherwise,
+ * this client's own last-known-good memo (`groupIdentityByFile`) for that
+ * file; (4) otherwise, the record is genuinely unknown to this client and
+ * `migrateGroupChat`'s ordinary slot-0 backfill is the best available
+ * answer, same as it always was.
+ *
+ * Honest limit, not fixable client-side: if the OTHER device ALSO
+ * reordered before writing the field-less blob back, this client's own
+ * local copy is only a TIE-BREAKER (its own last-known frozen identity),
+ * not a guarantee of correctness — there is no server-side key recording
+ * which device's slot-0 guess, if either, is right. This closes the
+ * "silently wrong with no signal" failure mode; it cannot close "wrong
+ * without any local information to prefer."
+ *
+ * A small pure function (no store reads) so it's testable on its own
+ * inputs; `fetchPrefs`'s server-apply arm is its only caller.
+ */
+function reconcileGroupIdentities(
+  incoming: GroupChatInfo[],
+  localByFile: Map<string, string>,
+  memo: Map<string, string>
+): GroupChatInfo[] {
+  return incoming.map((rec) => {
+    const incomingIdentity = (rec as Partial<GroupChatInfo>).identityAvatar;
+    if (typeof incomingIdentity === 'string' && incomingIdentity !== '') {
+      return rec;
+    }
+    const preferred = localByFile.get(rec.fileName) || memo.get(rec.fileName);
+    if (!preferred) return rec;
+    return { ...rec, identityAvatar: preferred };
+  });
+}
+
 function sanitizeTalkativenessOverrides(
   raw: unknown
 ): Record<string, number> {
@@ -936,11 +986,15 @@ const groupIdentityByFile = new Map<string, string>();
 
 function resolveGroupIdentityAvatar(fileName: string): string | null {
   const groupChat = useChatStore.getState().getGroupChatByFile(fileName);
-  if (groupChat) {
-    const identity = groupIdentityAvatar(groupChat);
-    if (identity) groupIdentityByFile.set(fileName, identity);
+  const identity = groupChat ? groupIdentityAvatar(groupChat) : null;
+  if (identity) {
+    groupIdentityByFile.set(fileName, identity);
     return identity;
   }
+  // Review round 2 G5 (#458 follow-up): falls through to the memo whether
+  // the record is gone OR present-but-corrupt (empty identityAvatar) — a
+  // live record with no identity of its own is a WORSE witness than a
+  // previously-seen good one for this same file, not a better one.
   return groupIdentityByFile.get(fileName) ?? null;
 }
 
@@ -1004,10 +1058,22 @@ export async function resolveRagContext(
   // chats fall back to the currently selected character; a GROUP chat with a
   // null identity must NOT fall through to it — that's a different chat's
   // character.
+  //
+  // Review round 2 G1 (#458 follow-up): `deleteGroupChat` on the OPEN group
+  // removes the registry record without leaving group mode, so
+  // `getGroupChatByFile` returns null even though this is very much still
+  // a group chat — falling straight to `selectedCharacter` (which is null
+  // in group mode) would silently kill recall for the rest of the session
+  // with no warning. The last-known-good memo (F3, review round 1) is
+  // checked on BOTH arms below: when a live record exists but its own
+  // identity is empty/corrupt (G5), and when the record is gone entirely.
+  // Only when NEITHER a record NOR a memo entry exists for this file is it
+  // treated as genuinely solo.
   const groupChat = useChatStore.getState().getGroupChatByFile(chatFile);
+  const memoIdentity = groupIdentityByFile.get(chatFile);
   const characterAvatar = groupChat
-    ? (groupIdentityAvatar(groupChat) ?? '')
-    : (useCharacterStore.getState().selectedCharacter?.avatar ?? '');
+    ? (groupIdentityAvatar(groupChat) ?? memoIdentity ?? '')
+    : (memoIdentity ?? useCharacterStore.getState().selectedCharacter?.avatar ?? '');
   if (!characterAvatar) return null;
 
   const { signal, cancel } = ragAbortAfter(RAG_MESSAGES_TIMEOUT_MS);
@@ -3512,14 +3578,15 @@ function buildChatPayload(
     })),
   ];
 
-  // E9-S9 (#458): the group identity comes from the registry record (or,
-  // once the record is gone, the last-known-good memo — F3, review round
-  // 1), not roster position — this one call site covers every group save
-  // (the immediate save + finally flush in sendGroupMessage,
+  // E9-S9 (#458): the group identity comes from the registry record, or
+  // (once the record is gone, or present with a corrupt/empty identity —
+  // G5, review round 2) the last-known-good memo (F3, review round 1), not
+  // roster position — this one call site covers every group save (the
+  // immediate save + finally flush in sendGroupMessage,
   // forceGroupMemberTalk's flush, persistTruncatingEdit, and the
   // page-unload beacon, which calls this same function with
-  // `lastSaveContext`). The slot-0 fallback fires only when a group has
-  // NEITHER a live registry record NOR a memo entry for its file name.
+  // `lastSaveContext`). The slot-0 fallback fires only when a group has NO
+  // usable identity from EITHER source — see `resolveGroupIdentityAvatar`.
   const avatarUrl = isGroupChat && groupCharacters
     ? (resolveGroupIdentityAvatar(currentChatFile) ?? warnPositionalFallback(groupCharacters[0].avatar))
     : character.avatar;
@@ -3866,12 +3933,28 @@ async function persistTruncatingEdit() {
   if (!currentChatFile) return;
   const charState = useCharacterStore.getState();
   const groupChat = getGroupChatByFile(currentChatFile);
-  if (groupChat) {
-    const chars = groupChat.characterAvatars
-      .map((av) => charState.characters.find((c) => c.avatar === av))
-      .filter((c): c is CharacterInfo => !!c);
-    if (chars.length === 0) return;
-    await saveChatToBackend(messages, chars[0], currentChatFile, true, chars, true);
+  // Review round 2 G2 (#458 follow-up): branch on whether this is a GROUP
+  // chat (registry record OR characterStore still in group mode), not on
+  // whether the registry record still exists. `deleteGroupChat` (F3) can
+  // remove the OPEN group's record while `isGroupChatMode` stays true —
+  // the pre-fix `if (groupChat)` branch took the SOLO arm in that window,
+  // found `selectedCharacter` null (it's nulled by group mode), and
+  // returned without saving: message delete and hide-from-AI silently
+  // persisted nothing in exactly the window F3 declared covered.
+  const isGroup = !!groupChat || charState.isGroupChatMode;
+  if (isGroup) {
+    // Prefer the registry record's roster when it still exists (it's the
+    // authoritative source); fall back to characterStore's live roster —
+    // the same one sendGroupMessage/forceGroupMemberTalk already use —
+    // when the record is gone. Either way, buildChatPayload resolves the
+    // actual server identity itself (registry, then the F3/G5 memo).
+    const roster = groupChat
+      ? groupChat.characterAvatars
+          .map((av) => charState.characters.find((c) => c.avatar === av))
+          .filter((c): c is CharacterInfo => !!c)
+      : charState.groupChatCharacters;
+    if (roster.length === 0) return;
+    await saveChatToBackend(messages, roster[0], currentChatFile, true, roster, true);
   } else {
     const character = charState.selectedCharacter;
     if (!character) return;
@@ -3894,9 +3977,10 @@ async function persistTruncatingEdit() {
 // GroupChatControls.tsx), so those can't change the identity out from under
 // an in-flight unload. Deleting the whole record (the sidebar trash icon,
 // NOT gated on `isSending`) is a separate case, covered by
-// `resolveGroupIdentityAvatar`'s last-known-good memo (F3, review round 1)
-// rather than by this guard — only a chat with neither a live record nor a
-// memo entry falls back to roster slot 0.
+// `resolveGroupIdentityAvatar`'s last-known-good memo (F3, review round 1;
+// also consulted for a live record with a corrupt/empty identity — G5,
+// review round 2) rather than by this guard — see that function for
+// exactly when it falls back to roster slot 0 instead.
 function flushChatOnUnload() {
   if (typeof window === 'undefined') return;
   const state = useChatStore.getState();
@@ -6202,8 +6286,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         stored.authorNotes && typeof stored.authorNotes === 'object'
           ? stored.authorNotes
           : {};
+      // G4: reconcile BEFORE migrateGroupChat's backfill — see that
+      // function's own doc comment for why an incoming record missing
+      // identityAvatar is not automatically safe to backfill from its own
+      // slot 0 here (a pre-#458 device can round-trip the whole blob).
+      const localIdentityByFile = new Map(
+        get()
+          .groupChats.filter((g) => g.identityAvatar)
+          .map((g) => [g.fileName, g.identityAvatar])
+      );
       const groupChats = Array.isArray(stored.groupChats)
-        ? stored.groupChats.map(migrateGroupChat)
+        ? reconcileGroupIdentities(stored.groupChats, localIdentityByFile, groupIdentityByFile).map(
+            migrateGroupChat
+          )
         : [];
       const chatVariables =
         stored.chatVariables && typeof stored.chatVariables === 'object'

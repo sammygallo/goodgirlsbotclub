@@ -16,6 +16,35 @@ vi.mock('./lovenseStore', () => ({
   useLovenseStore: { getState: () => ({}), subscribe: () => () => {} },
 }));
 
+// Review round 2 G1 follow-up: this file's new deleteGroupChat test writes
+// through to localStorage (saveGroupChatsToStorage) — this sandbox's Node
+// build defines its own global `localStorage` (via an unconfigured
+// `--localstorage-file` flag; `setItem` is `undefined` on it) that shadows
+// a working implementation. Same in-memory Storage stub as the other
+// chatStore suites, installed BEFORE the dynamic import below.
+class MemoryStorage {
+  private store = new Map<string, string>();
+  get length(): number {
+    return this.store.size;
+  }
+  key(i: number): string | null {
+    return Array.from(this.store.keys())[i] ?? null;
+  }
+  getItem(key: string): string | null {
+    return this.store.has(key) ? this.store.get(key)! : null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
+vi.stubGlobal('localStorage', new MemoryStorage() as unknown as Storage);
+
 const { resolveRagContext, useChatStore } = await import('./chatStore');
 const { useChatHistoryRagStore } = await import('./chatHistoryRagStore');
 const { useCharacterStore } = await import('./characterStore');
@@ -130,6 +159,52 @@ describe('resolveRagContext — group identity resolution', () => {
 
     expect(spy).not.toHaveBeenCalled();
     expect(result).toBeNull();
+  });
+
+  it("recall survives deleteGroupChat removing the OPEN group's record (G1, review round 2)", async () => {
+    // Before this fix: deleteGroupChat on the OPEN group leaves group mode
+    // (isGroupChatMode) untouched but removes the registry record, so
+    // getGroupChatByFile returns null even though this is still a group
+    // chat. The old code then fell straight to the SOLO branch — but
+    // selectedCharacter is null in group mode — so recall went silently
+    // dead for the rest of the session, no warning, no error. The F3
+    // last-known-good memo (populated here by a real loadGroupChat call)
+    // is the only surviving source of the identity once the record is gone.
+    // KILLS: removing the `memoIdentity` read from EITHER arm of
+    // resolveRagContext's ternary — with no live record and
+    // selectedCharacter null, that would leave characterAvatar '' and the
+    // spy would never be called.
+    const fileName = 'g1-delete.jsonl';
+    const record = mkGroupChat({
+      fileName,
+      characterAvatars: ['b.png', 'a.png'],
+      characterNames: ['B', 'A'],
+      identityAvatar: 'a.png',
+    });
+    useChatStore.setState({ groupChats: [record], currentChatFile: fileName });
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
+      header: null,
+      messages: [],
+      server_ts: 1,
+    });
+
+    // Prime the memo the same way a real load does.
+    await useChatStore.getState().loadGroupChat(record);
+
+    // Group mode nulls selectedCharacter in production
+    // (characterStore.setGroupChatCharacters); simulate it directly since
+    // this file doesn't drive that store's group-mode actions.
+    useCharacterStore.setState({ selectedCharacter: null });
+
+    useChatStore.getState().deleteGroupChat(fileName);
+    expect(useChatStore.getState().getGroupChatByFile(fileName)).toBeNull();
+
+    const spy = vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ chunks: [] });
+    const messages = [mkMsg('hello there')];
+    await resolveRagContext(messages, fileName, null);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe('a.png');
   });
 });
 
