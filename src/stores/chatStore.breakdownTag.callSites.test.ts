@@ -264,6 +264,7 @@ function mkGroupChat(characters: CharacterInfo[]): GroupChatInfo {
     fileName: 'breakdown-tag-group.jsonl',
     characterNames: characters.map((c) => c.name),
     characterAvatars: characters.map((c) => c.avatar),
+    identityAvatar: characters[0].avatar,
     lastMessage: '',
     createdAt: 0,
     activationStrategy: 'manual',

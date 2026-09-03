@@ -680,14 +680,16 @@ describe('the committing pass really commits, at every solo call site', () => {
 const GROUP_CHAT = 'call-sites-group.jsonl';
 
 /** A persisted group-chat record, complete rather than cast: `resolveRagContext`
- *  reads `characterAvatars[0]` off it for the recall identity, and
- *  `generateGroupTurn` reads `cardMode` and `scenarioOverride`. Written without
- *  an `as` so `tsc -b` fails loudly if the record gains a required field. */
+ *  reads `identityAvatar` off it for the recall identity (E9-S9, #458 — no
+ *  longer `characterAvatars[0]`), and `generateGroupTurn` reads `cardMode`
+ *  and `scenarioOverride`. Written without an `as` so `tsc -b` fails loudly
+ *  if the record gains a required field. */
 function mkGroupChat(avatars: string[], names: string[]): GroupChatInfo {
   return {
     fileName: GROUP_CHAT,
     characterNames: names,
     characterAvatars: avatars,
+    identityAvatar: avatars[0],
     lastMessage: '',
     createdAt: 0,
     activationStrategy: 'manual',

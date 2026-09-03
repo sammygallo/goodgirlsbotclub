@@ -42,6 +42,11 @@ function mkGroupChat(over: Partial<GroupChatInfo> = {}): GroupChatInfo {
     fileName: 'group1.jsonl',
     characterNames: ['Seraphina', 'Marcus'],
     characterAvatars: ['seraphina.png', 'marcus.png'],
+    // E9-S9 (#458): the frozen server identity. Defaults to slot 0 here only
+    // because that's what a never-reordered group resolves to — the tests
+    // below deliberately move it out of slot 0 to prove the read isn't
+    // positional.
+    identityAvatar: 'seraphina.png',
     lastMessage: '',
     createdAt: 0,
     activationStrategy: 'manual',
@@ -63,12 +68,21 @@ describe('resolveRagContext — group identity resolution', () => {
     });
   });
 
-  it('carries characterAvatars[0] (slot 0) as characterAvatar, not the current speaker', async () => {
+  it('carries identityAvatar as characterAvatar, not roster slot 0 or the current speaker', async () => {
+    // KILLS: `groupChat.characterAvatars[0]` (the pre-#458 read) — slot 0 is
+    // Marcus here (matches selectedCharacter too, deliberately, to prove
+    // neither the roster's first slot nor the solo fallback is what supplied
+    // the avatar), so a slot-0 implementation reports 'marcus.png' and this
+    // goes red.
+    useChatStore.setState({
+      groupChats: [
+        mkGroupChat({
+          characterAvatars: ['marcus.png', 'seraphina.png'],
+          characterNames: ['Marcus', 'Seraphina'],
+        }),
+      ],
+    });
     const spy = vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ chunks: [] });
-    // The current speaker for this turn is Marcus (matches selectedCharacter
-    // too, deliberately, to prove the group branch — not the solo fallback —
-    // is what supplied the avatar): the group save/load identity is always
-    // slot 0 (Seraphina here), regardless of who's actually speaking.
     const messages = [mkMsg('hello there')];
     // The boundary is an ARGUMENT since E2-S2 task 1b (the caller derives it —
     // group from `groupHistoryWindow`, solo from an uncommitted builder pass).
@@ -79,6 +93,21 @@ describe('resolveRagContext — group identity resolution', () => {
     const [characterAvatar, fileName] = spy.mock.calls[0];
     expect(characterAvatar).toBe('seraphina.png');
     expect(fileName).toBe('group1.jsonl');
+  });
+
+  it('never calls the server, and never falls back to the selected character, when the group record has no identityAvatar', async () => {
+    // KILLS: `groupIdentityAvatar(g) ?? selectedCharacter?.avatar` (i.e.
+    // treating a group record like the solo fallback instead of stopping at
+    // its own null) — selectedCharacter is Marcus here, so that wrong
+    // implementation would call the spy with 'marcus.png' instead of never
+    // calling it.
+    useChatStore.setState({ groupChats: [mkGroupChat({ identityAvatar: '' })] });
+    const spy = vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ chunks: [] });
+    const messages = [mkMsg('hello there')];
+    const result = await resolveRagContext(messages, 'group1.jsonl', null);
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(result).toBeNull();
   });
 
   it('falls back to the selected character for a chat that is not a group chat', async () => {
