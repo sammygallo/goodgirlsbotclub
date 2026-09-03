@@ -195,6 +195,15 @@ export interface GroupChatInfo {
   fileName: string;
   characterNames: string[];
   characterAvatars: string[];
+  /** E9-S9 (#458): the group's server identity — the `character_avatar` half
+   *  of the `(character_avatar, file_name)` tuple this chat saves to, loads
+   *  from, and recalls against. Frozen at creation (`startNewGroupChat`,
+   *  `convertCurrentToGroup`) and never rewritten by reorder/add/remove — it
+   *  is the server key, not a roster position. May stop naming a current
+   *  member (removal doesn't touch it); that's fine, the string keeps
+   *  addressing the same row. Never rendered as an image — thumbnails read
+   *  `characterAvatars`. Read only via `groupIdentityAvatar()` below. */
+  identityAvatar: string;
   lastMessage: string;
   createdAt: number;
   /** How the next speaker is chosen each turn. Added in Phase 5.1. */
@@ -321,7 +330,10 @@ const GROUP_CHATS_KEY = 'sillytavern_group_chats';
 
 /**
  * Fill defaults for pre-Phase-5.1 records so the rest of the code can assume
- * the new fields are always present.
+ * the new fields are always present. E9-S9 (#458): also the only place left
+ * in production code that reads `characterAvatars[0]` positionally — the
+ * backfill for records saved before `identityAvatar` existed. A record that
+ * already carries a non-empty `identityAvatar` is never overwritten.
  */
 function migrateGroupChat(raw: Partial<GroupChatInfo> & {
   fileName: string;
@@ -332,6 +344,10 @@ function migrateGroupChat(raw: Partial<GroupChatInfo> & {
     fileName: raw.fileName,
     characterNames: raw.characterNames ?? [],
     characterAvatars: raw.characterAvatars ?? [],
+    identityAvatar:
+      typeof raw.identityAvatar === 'string' && raw.identityAvatar !== ''
+        ? raw.identityAvatar
+        : (raw.characterAvatars?.[0] ?? ''),
     lastMessage: raw.lastMessage ?? '',
     createdAt: raw.createdAt ?? Date.now(),
     activationStrategy:
@@ -935,6 +951,21 @@ let noKeyHintShownThisSession = false;
  * server then falls back to excluding a fixed tail count, which can return
  * chunks the prompt already contains.
  */
+
+// E9-S9 (#458): the two readers of `identityAvatar`. Not exported — every
+// caller either already has the `GroupChatInfo` record (use
+// `groupIdentityAvatar`) or only has the chat file name and needs a registry
+// lookup (`resolveGroupIdentityAvatar`). Both fold `''` to `null` so a
+// corrupt/never-set record never silently degrades to slot 0.
+function groupIdentityAvatar(g: GroupChatInfo): string | null {
+  return g.identityAvatar ? g.identityAvatar : null;
+}
+
+function resolveGroupIdentityAvatar(fileName: string): string | null {
+  const groupChat = useChatStore.getState().getGroupChatByFile(fileName);
+  return groupChat ? groupIdentityAvatar(groupChat) : null;
+}
+
 export async function resolveRagContext(
   messages: ChatMessage[],
   chatFile: string | undefined,
@@ -948,15 +979,18 @@ export async function resolveRagContext(
   if (!chatFile) return null;
   if (!useChatHistoryRagStore.getState().enabled) return null;
 
-  // Group identity: the save/load identity is groupCharacters[0].avatar /
-  // characterAvatars[0] (chatStore.ts's buildChatPayload/loadGroupChat),
-  // NOT the current speaker — threading the speaker's avatar here would
-  // 404 for every non-first speaker and this never-throws wrapper would
-  // silently turn that into empty recall. Solo chats fall back to the
-  // currently selected character.
+  // Group identity: the save/load identity is `GroupChatInfo.identityAvatar`
+  // (chatStore.ts's buildChatPayload/loadGroupChat) — frozen at creation, NOT
+  // a roster slot and NOT the current speaker (#458). Threading the
+  // speaker's avatar here would 404 for every non-first speaker and this
+  // never-throws wrapper would silently turn that into empty recall. Solo
+  // chats fall back to the currently selected character; a GROUP chat with a
+  // null identity must NOT fall through to it — that's a different chat's
+  // character.
   const groupChat = useChatStore.getState().getGroupChatByFile(chatFile);
-  const characterAvatar =
-    groupChat?.characterAvatars[0] ?? useCharacterStore.getState().selectedCharacter?.avatar ?? '';
+  const characterAvatar = groupChat
+    ? (groupIdentityAvatar(groupChat) ?? '')
+    : (useCharacterStore.getState().selectedCharacter?.avatar ?? '');
   if (!characterAvatar) return null;
 
   const { signal, cancel } = ragAbortAfter(RAG_MESSAGES_TIMEOUT_MS);
@@ -3371,6 +3405,22 @@ async function runGenerateInterceptors(
   return result;
 }
 
+// E9-S9 (#458): one-shot warning for the sole remaining fallback to roster
+// slot 0 — a group chat whose registry record was deleted (or never
+// existed) while the chat is still open, so `resolveGroupIdentityAvatar` has
+// nothing to look up. Same module-level, session-scoped latch shape as
+// `noKeyHintShownThisSession` above (not per-chat: this is a global "have we
+// warned" flag), cleared by `resetUser()` on logout/user switch. Returns its
+// argument so it can sit inline in the `??` chain below.
+let positionalFallbackWarnedThisSession = false;
+function warnPositionalFallback(avatar: string): string {
+  if (!positionalFallbackWarnedThisSession) {
+    positionalFallbackWarnedThisSession = true;
+    console.warn('[E9-S9] group chat has no registry record — falling back to roster slot 0 for server identity');
+  }
+  return avatar;
+}
+
 // Helper: save chat to backend
 // Build the SillyTavern-compatible save payload (header element followed by
 // the messages) for a chat. Shared by the normal save path and the
@@ -3445,8 +3495,14 @@ function buildChatPayload(
     })),
   ];
 
+  // E9-S9 (#458): the group identity comes from the registry record, not
+  // roster position — this one call site covers every group save (the
+  // immediate save + finally flush in sendGroupMessage, forceGroupMemberTalk's
+  // flush, persistTruncatingEdit, and the page-unload beacon, which calls
+  // this same function with `lastSaveContext`). The slot-0 fallback fires
+  // only when the registry entry is gone while the chat is still open.
   const avatarUrl = isGroupChat && groupCharacters
-    ? groupCharacters[0].avatar
+    ? (resolveGroupIdentityAvatar(currentChatFile) ?? warnPositionalFallback(groupCharacters[0].avatar))
     : character.avatar;
 
   return { avatarUrl, fileName: currentChatFile, chatData };
@@ -3809,6 +3865,14 @@ async function persistTruncatingEdit() {
 // those messages would never reach the backend. A keepalive POST (which
 // survives unload) flushes the current in-memory state. Guarded on isSending
 // so we only pay the cost during the risky mid-generation window.
+//
+// E9-S9 (#458): for a group chat this goes through `buildChatPayload`, same
+// as every other save path, which resolves the server identity from the
+// registry (`resolveGroupIdentityAvatar`) rather than from `lastSaveContext`'s
+// `groupCharacters` array — so a roster reorder mid-generation can't race
+// this flush into addressing the wrong row. Roster edits are themselves
+// refused while `isSending` (see GroupChatControls.tsx), so the registry
+// entry this reads can't change out from under an in-flight unload either.
 function flushChatOnUnload() {
   if (typeof window === 'undefined') return;
   const state = useChatStore.getState();
@@ -4348,6 +4412,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       fileName: currentChatFile,
       characterNames: allCharacters.map((c) => c.name),
       characterAvatars: allCharacters.map((c) => c.avatar),
+      // E9-S9 (#458): the solo chat's row already exists under this avatar
+      // with this file name — freeze on it, NEVER `additionalCharacters[0]`,
+      // or the very first save after conversion forks a new empty row.
+      identityAvatar: currentCharacter.avatar,
       lastMessage: messages[messages.length - 1]?.content || '',
       createdAt: Date.now(),
       activationStrategy: DEFAULT_GROUP_ACTIVATION_STRATEGY,
@@ -4460,6 +4528,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const missing = oldAvatars.filter((a) => !validAvatars.includes(a));
       const nextAvatars = [...validAvatars, ...missing];
       const nextNames = nextAvatars.map((a) => nameByAvatar.get(a) ?? '');
+      // E9-S9 (#458): `identityAvatar` is intentionally untouched here — it's
+      // the server key, not a roster position, and `...g` above already
+      // carries it through.
       return {
         ...g,
         characterAvatars: nextAvatars,
@@ -4560,6 +4631,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const nextOverrides = { ...(existing.talkativenessOverrides || {}) };
     delete nextOverrides[avatar];
 
+    // E9-S9 (#458): `identityAvatar` is intentionally untouched, even when
+    // `avatar` IS the identity member being removed — it's the server key,
+    // not a roster position, and may stop naming a current member. `...g`
+    // below carries it through unchanged.
     const updated = groupChats.map((g) =>
       g.fileName === fileName
         ? {
@@ -4620,7 +4695,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadGroupChat: async (groupChat: GroupChatInfo) => {
     set({ isLoading: true, error: null, currentChatFile: groupChat.fileName });
     try {
-      const avatarUrl = groupChat.characterAvatars[0];
+      // E9-S9 (#458): load against the frozen server identity, not roster
+      // slot 0 — a group that's been reordered would otherwise 404 or,
+      // worse, silently load a different chat's row under the new slot-0
+      // avatar.
+      const avatarUrl = groupIdentityAvatar(groupChat);
+      if (!avatarUrl) {
+        console.error('[E9-S9] group record has no identityAvatar', groupChat.fileName);
+        set({ isLoading: false, error: 'Group chat record is missing its server identity' });
+        return;
+      }
       const { header, messages: rawMessages, server_ts } = await api.getChatWithHeader(avatarUrl, groupChat.fileName);
       const messages = ensureUniqueMessageIds(rawMessages.map(normalizeMessage));
       chatServerTsByFile.set(groupChat.fileName, server_ts);
@@ -4705,6 +4789,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       fileName,
       characterNames: characters.map((c) => c.name),
       characterAvatars: characters.map((c) => c.avatar),
+      // E9-S9 (#458): frozen at creation, matching what the pre-#458
+      // behavior resolved to on a never-reordered group (roster slot 0) —
+      // this group's first save creates its server row under this avatar.
+      identityAvatar: characters[0].avatar,
       lastMessage: messages[messages.length - 1]?.content || '',
       createdAt: Date.now(),
       activationStrategy: DEFAULT_GROUP_ACTIVATION_STRATEGY,
@@ -6015,6 +6103,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try { localStorage.removeItem(GROUP_CHATS_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
     noKeyHintShownThisSession = false; // E9-S7 (#455) — see the latch's own comment
+    positionalFallbackWarnedThisSession = false; // E9-S9 (#458) — see warnPositionalFallback's own comment
   },
 
   fetchPrefs: async () => {
