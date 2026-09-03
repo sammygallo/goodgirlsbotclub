@@ -264,8 +264,8 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>2 Sep 2026</b><br>
-      main <b>f4b7eda2</b><br>
+      <b>3 Sep 2026</b><br>
+      main <b>37447003</b><br>
       active <b>none</b>
     </div>
   </header>
@@ -275,7 +275,7 @@
     <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">1</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
-    <div class="tile is-warn"><div class="n">18</div><div class="k">Gated</div></div>
+    <div class="tile is-warn"><div class="n">19</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">9</div><div class="k">Deployed</div></div>
     <div class="tile is-warn"><div class="n">11</div><div class="k">Open issues</div></div>
@@ -362,8 +362,9 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Gated</h2><span class="ct">18</span></div>
+      <div class="colhead"><h2>Gated</h2><span class="ct">19</span></div>
       <div class="stack">
+        <article class="card s-warn" data-epic="E9"><div class="id">E9-S9</div><div class="t">Group recall identity is positional</div><div class="m"><b>Parked 3 Sep</b> by Sammy at review round 6. Branch <code>claude/e9-s9-group-recall-identity</code> @ <code>f892d731</code>, no PR. The frozen <code>identityAvatar</code> core is sound and covered; the deleted-while-open handling the review pulled in could not converge client-side (five fix-introduced defects in one function, rooted in a pre-existing ChatView mode-tracking bug).</div><div class="gates"><span class="gate hot">← ggbc-backend#84</span></div></article>
         <article class="card s-warn" data-epic="E2"><div class="id">E2-S3</div><div class="t">Show-prompt toggle</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
         <article class="card s-warn" data-epic="E2"><div class="id">E2-S4</div><div class="t">Insights data API</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S2 · S3</div><div class="t">Defaults clarity · character overrides</div><div class="gates"><span class="gate">← E3-S1</span></div></article>
@@ -428,26 +429,24 @@
   </div>
 
   <section class="focus">
-    <h2>E9-S7 — deployed 2 Sep, closed</h2>
-    <p class="sub">The smallest card on the board shipped: when the server answers <code>no_key</code>, the client now logs a warning on each such response and shows one toast per app session pointing at Settings → AI Settings, with the latch cleared on logout. What the run is remembered for is its review: 19 rounds and ~19M against a class budget of one ≤0.3M pass, sixteen of them over the PM's own board and ledger prose. The first CURATE postmortem turned that into four <code>run-story</code> amendments, red-teamed in design mode and merged on Sammy's go as <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/505">#505</a> (<code>f4b7eda2</code>), and a 261-claim staleness sweep of the memory directory handed to Sammy as a batch.</p>
+    <h2>E9-S9 — parked 3 Sep at review round 6</h2>
+    <p class="sub">The fix itself worked: a group's server identity is frozen on its record at creation and backfilled for existing records, so a roster reorder can no longer move a chat onto a new server row and strand its embeddings. What could not converge was a sub-feature the review pulled in at round 1 — keeping a group addressable after its registry record is deleted while the chat is open. Five consecutive fix rounds each introduced the next round's defect in one function, and round 6 traced the state they kept breaking on to a pre-existing ChatView bug that leaves a group transcript open under a solo selection, where the ordinary send path already forks the row on main today. Sammy parked the story pending a server-side group identity (ggbc-backend#84). Branch pushed; nothing on main.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Build</div><div class="sv">Sonnet · on band</div></div>
-      <div class="step done"><div class="sn">Review</div><div class="sv">19 rounds · 1 runtime defect, round 1</div></div>
-      <div class="step done"><div class="sn">QA</div><div class="sv">4 / 4 AC · kill mutation re-run red</div></div>
-      <div class="step done"><div class="sn">Merge</div><div class="sv">#504 → 473c8aa2 · Sammy's go at the gate</div></div>
-      <div class="step done"><div class="sn">Deploy</div><div class="sv">2 Sep · image 3aea98b8</div></div>
-      <div class="step done"><div class="sn">Postmortem</div><div class="sv">CURATE · ledger row 2 Sep</div></div>
+      <div class="step done"><div class="sn">Plan</div><div class="sv">3 designs · frozen identity won</div></div>
+      <div class="step done"><div class="sn">Build</div><div class="sv">Sonnet · 1 feat + 5 fix commits</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">6 rounds · trigger tier · did not converge</div></div>
+      <div class="step now"><div class="sn">Exit</div><div class="sv">parked by Sammy</div></div>
     </div>
 
     <div class="tscroll">
       <table>
         <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">~0.22M est.</td><td>S</td><td>Initial ~95k inside the S letter; ~125k rework across three code rounds</td></tr>
-          <tr><td>Verification</td><td class="num">~19.5M est. / 19 rounds</td><td>≤0.3M</td><td><b>~63× over.</b> Round 1: latch never reset on logout, toast named an unreachable page, weak assertion. Rounds 2–3: comments and tests. Rounds 4–19: the PM's own board and ledger prose — the postmortem's subject</td></tr>
-          <tr><td>Absorption</td><td class="num">~0</td><td>n/a</td><td>Code story; roadmap close-out was bookkeeping</td></tr>
-          <tr><td>Postmortem</td><td class="num">~21M est.</td><td>unpriced</td><td>CAPTURE + first CURATE (53/56 files swept, 261 stale claims verified, none applied mechanically) + design red-team of #505; two usage-limit kills, both resumed</td></tr>
+          <tr><td>Plan</td><td class="num">~0.8M est.</td><td>M</td><td>Judge panel, unanimous</td></tr>
+          <tr><td>Build</td><td class="num">~0.7M est.</td><td>S–M</td><td>Initial build on band; five fix rounds of rework</td></tr>
+          <tr><td>Verification</td><td class="num">~24.7M est. / 6 rounds</td><td>trigger tier</td><td>Round 1: 5 real items incl. an unguarded slot-0 read and a docstring reattached to the wrong function. Rounds 2–6: each caught a defect the previous fix introduced in the deleted-while-open seam</td></tr>
+          <tr><td>Postmortem</td><td class="num">CAPTURE</td><td></td><td>Exit #1 since the first CURATE row; verdict in the ledger</td></tr>
         </tbody>
       </table>
     </div>
