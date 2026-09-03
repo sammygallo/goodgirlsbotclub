@@ -15,7 +15,7 @@
 
 | | Lore retrieval (incl. Data Bank content) | Chat-history recall |
 |---|---|---|
-| Client entry | `tryServerRetrieval` (`serverRetrieval.ts:452`) → `serverMatchedEntries`; local fallback = `scanMessagesForEntries` | `resolveRagContext` (`chatStore.ts:883-940`) → `ragCtx` string |
+| Client entry | `tryServerRetrieval` (`serverRetrieval.ts:452`) → `serverMatchedEntries`; local fallback = `scanMessagesForEntries` | `resolveRagContext` (chatStore.ts) → `ragCtx` string |
 | Backend | `POST /retrieval/context`; SQL/RRF stage `_retrieval.py` (k=60, cos-dist ≤ 0.3 at `:95,:102`) then the Python activation engine `_activation.py` | `POST /retrieval/messages`, `message_embeddings` (migration 0026), pure cosine, `limit=k` |
 | Threshold | cos-dist ≤ 0.3 | `_MESSAGE_SIMILARITY_FLOOR = 0.5` → `_MAX_MESSAGE_COSINE_DISTANCE = 1.0 - floor` (`retrieval.py:401-402`; **note `:398` is the comment warning not to confuse this with the lorebook 0.3**) |
 | k / budget | budget = `wiState.tokenBudget` (default 1024), passed to the server (`serverRetrieval.ts:485-492`) | k hardcoded 3 (`chatStore.ts:921`); **no token budget** |

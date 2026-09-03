@@ -402,10 +402,17 @@ function migrateGroupChat(raw: Partial<GroupChatInfo> & {
  * (2) otherwise, THIS client's own local registry entry for the same
  * `fileName`, if it has one — a local record's identity is frozen and
  * therefore a better witness than a fresh positional guess; (3) otherwise,
- * this client's own last-known-good memo (`groupIdentityByFile`) for that
- * file; (4) otherwise, the record is genuinely unknown to this client and
- * `migrateGroupChat`'s ordinary slot-0 backfill is the best available
- * answer, same as it always was.
+ * the record is genuinely unknown to this client and `migrateGroupChat`'s
+ * ordinary slot-0 backfill is the best available answer, same as it
+ * always was.
+ *
+ * Round 3 H3: an earlier version also consulted the last-known-good memo
+ * (`groupIdentityByFile`) as a fourth level between (2) and (3), on the
+ * theory that a group opened this session but not yet in the local
+ * registry could still be recognized. Removed — `fetchPrefs` runs only at
+ * checkAuth/register/login, before any group chat in this session could
+ * possibly be open, so the memo is provably always empty at the point
+ * this function runs and the level was dead code in production.
  *
  * Honest limit, not fixable client-side: if the OTHER device ALSO
  * reordered before writing the field-less blob back, this client's own
@@ -420,15 +427,18 @@ function migrateGroupChat(raw: Partial<GroupChatInfo> & {
  */
 function reconcileGroupIdentities(
   incoming: GroupChatInfo[],
-  localByFile: Map<string, string>,
-  memo: Map<string, string>
+  localByFile: Map<string, string>
 ): GroupChatInfo[] {
   return incoming.map((rec) => {
     const incomingIdentity = (rec as Partial<GroupChatInfo>).identityAvatar;
+    // Deliberately NOT `??`: an incoming `identityAvatar: ''` is present
+    // (not null/undefined) but still a MISSING identity for this
+    // function's purposes — `??` would pass it through as "already has
+    // one" and skip the local-preference rescue entirely.
     if (typeof incomingIdentity === 'string' && incomingIdentity !== '') {
       return rec;
     }
-    const preferred = localByFile.get(rec.fileName) || memo.get(rec.fileName);
+    const preferred = localByFile.get(rec.fileName);
     if (!preferred) return rec;
     return { ...rec, identityAvatar: preferred };
   });
@@ -962,11 +972,21 @@ function ragAbortAfter(ms: number): { signal: AbortSignal; cancel: () => void } 
 // a shared browser would silently inherit "already told you".
 let noKeyHintShownThisSession = false;
 
-// E9-S9 (#458): the two readers of `identityAvatar`. Not exported — every
-// caller either already has the `GroupChatInfo` record (use
-// `groupIdentityAvatar`) or only has the chat file name and needs a registry
-// lookup (`resolveGroupIdentityAvatar`). Both fold `''` to `null` so a
-// corrupt/never-set record never silently degrades to slot 0.
+// E9-S9 (#458): the two STRUCTURED readers of `identityAvatar` — for a
+// record that has already been through `migrateGroupChat` and is therefore
+// a well-formed `GroupChatInfo`. Not exported — every such caller either
+// already has the record (use `groupIdentityAvatar`) or only has the chat
+// file name and needs a registry lookup (`resolveGroupIdentityAvatar`).
+// Both fold `''` to `null` so a corrupt/never-set record never silently
+// degrades to slot 0.
+//
+// Round 3 H5: the one exception is `reconcileGroupIdentities` (defined
+// above `migrateGroupChat`, near this file's top), which reads
+// `identityAvatar` directly off a RAW, PRE-migration record — it runs
+// BEFORE `migrateGroupChat` on data that may not even be a well-formed
+// `GroupChatInfo` yet (a field-less pre-#458 blob, for instance), so
+// neither helper below — both of which assume the shape is already
+// valid — applies there.
 function groupIdentityAvatar(g: GroupChatInfo): string | null {
   return g.identityAvatar ? g.identityAvatar : null;
 }
@@ -3934,14 +3954,26 @@ async function persistTruncatingEdit() {
   const charState = useCharacterStore.getState();
   const groupChat = getGroupChatByFile(currentChatFile);
   // Review round 2 G2 (#458 follow-up): branch on whether this is a GROUP
-  // chat (registry record OR characterStore still in group mode), not on
-  // whether the registry record still exists. `deleteGroupChat` (F3) can
-  // remove the OPEN group's record while `isGroupChatMode` stays true —
-  // the pre-fix `if (groupChat)` branch took the SOLO arm in that window,
-  // found `selectedCharacter` null (it's nulled by group mode), and
-  // returned without saving: message delete and hide-from-AI silently
-  // persisted nothing in exactly the window F3 declared covered.
-  const isGroup = !!groupChat || charState.isGroupChatMode;
+  // chat, not on whether the registry record still exists. `deleteGroupChat`
+  // (F3) can remove the OPEN group's record while the chat is still very
+  // much a group — the pre-fix `if (groupChat)` branch took the SOLO arm in
+  // that window, found `selectedCharacter` null (it's nulled by group
+  // mode), and returned without saving: message delete and hide-from-AI
+  // silently persisted nothing in exactly the window F3 declared covered.
+  //
+  // Round 3 H1 (MAJOR): branching on `characterStore.isGroupChatMode` alone
+  // is wrong — it's a GLOBAL flag, not keyed to `currentChatFile`. Sidebar's
+  // "Start Group Chat" calls the synchronous `startGroupChat()` (mode ->
+  // true, selectedCharacter -> null) and only THEN the async
+  // `startNewGroupChat`, whose `set({ currentChatFile })` runs after
+  // `api.createChat` resolves. If that call fails, the SOLO chat is still
+  // open in `currentChatFile`, mode is stuck true, and the old condition
+  // would save the solo chat as a group under a staged member's avatar. The
+  // memo is keyed by file name, so `groupIdentityByFile.has(currentChatFile)`
+  // is only true once THIS file specifically has a resolved identity —
+  // unlike the mode flag, it cannot be tripped by an unrelated, still-in-
+  // progress or failed group action on a different (or no) file.
+  const isGroup = !!groupChat || groupIdentityByFile.has(currentChatFile);
   if (isGroup) {
     // Prefer the registry record's roster when it still exists (it's the
     // authoritative source); fall back to characterStore's live roster —
@@ -6290,16 +6322,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // function's own doc comment for why an incoming record missing
       // identityAvatar is not automatically safe to backfill from its own
       // slot 0 here (a pre-#458 device can round-trip the whole blob).
-      const localIdentityByFile = new Map(
-        get()
-          .groupChats.filter((g) => g.identityAvatar)
-          .map((g) => [g.fileName, g.identityAvatar])
+      // H5: routed through `groupIdentityAvatar` (not a raw `.identityAvatar`
+      // field read) — `get().groupChats` are already-migrated, well-formed
+      // records, so the structured reader applies and folds a corrupt ''
+      // to null the same way every other reader of a live record does.
+      const localIdentityByFile = new Map<string, string>();
+      for (const g of get().groupChats) {
+        const identity = groupIdentityAvatar(g);
+        if (identity) localIdentityByFile.set(g.fileName, identity);
+      }
+      const rawIncomingGroupChats = Array.isArray(stored.groupChats) ? stored.groupChats : [];
+      const reconciledGroupChats = reconcileGroupIdentities(rawIncomingGroupChats, localIdentityByFile);
+      // H4 (#458 follow-up): reconcileGroupIdentities only returns a NEW
+      // object reference for a record it actually repaired — reference
+      // inequality against the raw incoming array is how we know at least
+      // one record's identity came from THIS client's local copy rather
+      // than the server's (possibly field-less) one, before
+      // migrateGroupChat's `.map` below makes every entry a fresh object
+      // regardless of whether anything changed.
+      const identitiesRepaired = reconciledGroupChats.some(
+        (rec, i) => rec !== rawIncomingGroupChats[i]
       );
-      const groupChats = Array.isArray(stored.groupChats)
-        ? reconcileGroupIdentities(stored.groupChats, localIdentityByFile, groupIdentityByFile).map(
-            migrateGroupChat
-          )
-        : [];
+      const groupChats = reconciledGroupChats.map(migrateGroupChat);
       const chatVariables =
         stored.chatVariables && typeof stored.chatVariables === 'object'
           ? stored.chatVariables
@@ -6316,6 +6360,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       _latestSnapshot.chatVariables = chatVariables;
       set({ authorNotes, groupChats, chatVariables });
       _persistEnabled = true;
+      // H4: reconciliation repairs LOCAL state only — without this, the
+      // shared `stm_chat_state` blob stays field-less forever and every
+      // OTHER upgraded device keeps re-deriving (and forking) the identity
+      // from slot 0 on its own next fetchPrefs. Re-upload through the
+      // normal debounced path (same one every other mutation uses) so the
+      // section is marked dirty and PUT back with the correct base_ts —
+      // never bypass that bookkeeping with a raw patchServerKey call. Must
+      // run AFTER `_persistEnabled = true` (`schedulePersist` no-ops while
+      // disabled) and AFTER `recordServerTs` above (which would otherwise
+      // immediately clear the very dirty flag this sets).
+      if (identitiesRepaired) schedulePersist();
     } catch {
       // Network failure — keep local. Future mutations will mark LOCAL_TS_KEY
       // dirty and the next fetchPrefs will detect the local-newer case.

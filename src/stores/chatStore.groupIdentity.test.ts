@@ -6,12 +6,16 @@
  * shifted slot 0, so the very next save addressed a DIFFERENT server row
  * (`(character_avatar, file_name)`), orphaning the old row and its message
  * embeddings with no cascade. The fix freezes the identity at creation as
- * `GroupChatInfo.identityAvatar`, written in exactly three places
- * (`startNewGroupChat`, `convertCurrentToGroup`, `migrateGroupChat`'s
- * backfill) and read through exactly two helpers (`groupIdentityAvatar`,
- * `resolveGroupIdentityAvatar`) — neither exported, so every test below
- * drives a real store action and asserts on what actually got sent/loaded,
- * per this repo's house style (chatStore.callSites.test.ts, etc.).
+ * `GroupChatInfo.identityAvatar`, written in FOUR places (`startNewGroupChat`,
+ * `convertCurrentToGroup`, `migrateGroupChat`'s backfill, and — round 3 H5 —
+ * `reconcileGroupIdentities`, which runs on incoming sync data BEFORE
+ * `migrateGroupChat` and may overwrite only a MISSING or EMPTY incoming
+ * identity with this client's own local one; it never touches a non-empty
+ * incoming identity) and read through exactly two helpers
+ * (`groupIdentityAvatar`, `resolveGroupIdentityAvatar`) — neither exported,
+ * so every test below drives a real store action and asserts on what
+ * actually got sent/loaded, per this repo's house style
+ * (chatStore.callSites.test.ts, etc.).
  *
  * Every test's `KILLS` comment names the cheapest wrong implementation it
  * fails on; each was verified red against a real edit of chatStore.ts
@@ -755,6 +759,68 @@ describe('persistTruncatingEdit resolves identity from the registry too', () => 
     expect(saveSpy.mock.calls[0][0]).toBe('a.png');
     expect(saveSpy.mock.calls[0][4]).toBe(true); // allow_truncate
   });
+
+  it("a SOLO chat left mid-conversion by a failed startNewGroupChat is never saved as a group (H1, review round 3)", async () => {
+    // Round 3 H1 (MAJOR — introduced by the G2 fix): Sidebar's "Start Group
+    // Chat" flow calls the SYNCHRONOUS characterStore.startGroupChat()
+    // (mode -> true, selectedCharacter -> null) and only THEN the async
+    // chatStore.startNewGroupChat, whose `set({ currentChatFile })` runs
+    // only after `api.createChat` resolves. If that call rejects, the
+    // SOLO chat stays open in `currentChatFile` with `isGroupChatMode`
+    // stuck true and `selectedCharacter` stuck null. G2's fix branched on
+    // `isGroupChatMode` — a GLOBAL flag unrelated to which file is open —
+    // so it would misclassify this still-solo chat as a group and save it
+    // under a staged member's avatar with `is_group_chat: true`.
+    // KILLS: restoring `|| charState.isGroupChatMode` to the `isGroup`
+    // condition — with mode stuck true and no memo entry for
+    // 'solo-chat.jsonl' (the failed conversion never warmed one), that
+    // reverted code takes the group branch and calls api.saveChat with
+    // 'b.png' (roster slot 0 of the staged members).
+    const solo = mkChar('Solo', 'solo.png');
+    const charB = mkChar('B', 'b.png');
+    const charC = mkChar('C', 'c.png');
+    useCharacterStore.setState({
+      selectedCharacter: solo,
+      isGroupChatMode: false,
+      groupChatCharacters: [charB, charC],
+      characters: [solo, charB, charC],
+    });
+    const msg = mkMsg('hi');
+    useChatStore.setState({
+      currentChatFile: 'solo-chat.jsonl',
+      messages: [msg],
+      groupChats: [],
+    });
+
+    useCharacterStore.getState().startGroupChat();
+    expect(useCharacterStore.getState().isGroupChatMode).toBe(true);
+    expect(useCharacterStore.getState().selectedCharacter).toBeNull();
+
+    vi.spyOn(api, 'createChat').mockRejectedValue(new Error('network blip'));
+    await useChatStore.getState().startNewGroupChat([charB, charC]).catch(() => {});
+
+    // The failed conversion left the SOLO chat still open — no group file
+    // was ever created, and the memo was never warmed for it.
+    expect(useChatStore.getState().currentChatFile).toBe('solo-chat.jsonl');
+    expect(useChatStore.getState().getGroupChatByFile('solo-chat.jsonl')).toBeNull();
+
+    const saveSpy = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    useChatStore.getState().deleteMessage(msg.id);
+    // persistTruncatingEdit is fire-and-forget from deleteMessage; flush a
+    // macrotask so any queued save (correct or not) has had a chance to
+    // fire before we inspect the spy.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The fix's honest limit: `selectedCharacter` is still null (nulled by
+    // startGroupChat, never restored by the failed conversion), so the
+    // correct SOLO branch's own guard drops the save rather than sending
+    // it — a safe no-op is acceptable; corrupting it under 'b.png' is not.
+    for (const call of saveSpy.mock.calls) {
+      expect(call[0]).not.toBe('b.png');
+      expect(call[0]).toBe('solo.png');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -925,6 +991,94 @@ describe('migrateGroupChat backfills identityAvatar for pre-#458 records', () =>
 
     expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
   });
+
+  it("the incoming identity is kept even when the local record disagrees (H3, review round 3)", async () => {
+    // Round 3 H3: reconcileGroupIdentities must NEVER prefer the local
+    // registry over an incoming record that already carries its OWN
+    // non-empty identity — the local-preference rescue exists only for a
+    // record that's missing one, not as a general "local wins" rule. If it
+    // won unconditionally, a stale/lagging local copy could overwrite a
+    // genuinely newer, correct identity written by another (upgraded)
+    // device.
+    // KILLS: reordering the preference so local wins over a non-empty
+    // incoming identity — the result below would be 'b.png' (local)
+    // instead of 'a.png' (incoming).
+    useChatStore.setState({
+      groupChats: [
+        mkGroupChat({
+          fileName: 'g.jsonl',
+          characterAvatars: ['a.png', 'b.png'],
+          characterNames: ['A', 'B'],
+          identityAvatar: 'b.png', // local thinks it's 'b.png'
+        }),
+      ],
+    });
+
+    const incomingWithIdentity = {
+      fileName: 'g.jsonl',
+      characterNames: ['A', 'B'],
+      characterAvatars: ['a.png', 'b.png'],
+      identityAvatar: 'a.png', // incoming already has its own (different) identity
+      lastMessage: '',
+      createdAt: 0,
+    };
+    getSettingsBlob.mockResolvedValueOnce({
+      stm_chat_state: {
+        authorNotes: {},
+        chatVariables: {},
+        groupChats: [incomingWithIdentity],
+        _ts: 999,
+      },
+    });
+
+    await useChatStore.getState().fetchPrefs();
+
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
+  });
+
+  it("an incoming identityAvatar of '' is treated as missing, not as a real (empty) value (H3, review round 3)", async () => {
+    // Round 3 H3: `typeof incomingIdentity === 'string' && incomingIdentity
+    // !== ''` must NOT be simplified to `??` — `??` only falls through on
+    // null/undefined, so an incoming `identityAvatar: ''` (present, but
+    // empty) would read as "already has one" and skip the local-preference
+    // rescue entirely, same failure shape as REQUIRED KILL d for
+    // migrateGroupChat's own backfill.
+    // KILLS: reconcileGroupIdentities using
+    // `incomingIdentity ?? localByFile.get(rec.fileName)` instead of the
+    // explicit non-empty-string check — the result below would be ''
+    // instead of 'a.png'.
+    useChatStore.setState({
+      groupChats: [
+        mkGroupChat({
+          fileName: 'g.jsonl',
+          characterAvatars: ['b.png', 'a.png'],
+          characterNames: ['B', 'A'],
+          identityAvatar: 'a.png',
+        }),
+      ],
+    });
+
+    const incomingEmptyIdentity = {
+      fileName: 'g.jsonl',
+      characterNames: ['B', 'A'],
+      characterAvatars: ['b.png', 'a.png'],
+      identityAvatar: '', // present, but empty
+      lastMessage: '',
+      createdAt: 0,
+    };
+    getSettingsBlob.mockResolvedValueOnce({
+      stm_chat_state: {
+        authorNotes: {},
+        chatVariables: {},
+        groupChats: [incomingEmptyIdentity],
+        _ts: 999,
+      },
+    });
+
+    await useChatStore.getState().fetchPrefs();
+
+    expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -954,6 +1108,61 @@ describe('a reorder round-trips identityAvatar through both persistence layers',
       expect(storedRaw).toBeTruthy();
       const stored = JSON.parse(storedRaw!) as GroupChatInfo[];
       expect(stored.find((g) => g.fileName === 'g.jsonl')?.identityAvatar).toBe('a.png');
+
+      // schedulePersist debounces 300ms.
+      vi.advanceTimersByTime(300);
+
+      expect(patchServerKey).toHaveBeenCalled();
+      const lastCall = patchServerKey.mock.calls[patchServerKey.mock.calls.length - 1];
+      const payload = lastCall[1] as { groupChats: GroupChatInfo[] };
+      expect(payload.groupChats.find((g) => g.fileName === 'g.jsonl')?.identityAvatar).toBe('a.png');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a repaired identity from server-apply reconciliation is re-uploaded (H4, review round 3)', async () => {
+    // Round 3 H4: reconcileGroupIdentities (G4) repairs LOCAL state only.
+    // Without re-uploading, the shared stm_chat_state blob stays
+    // field-less forever and every OTHER upgraded device keeps
+    // re-deriving (and forking) the identity from slot 0 on ITS next
+    // fetchPrefs — #458, reintroduced through the far side of the very
+    // sync channel G4 patched from this client's own side.
+    // KILLS: removing the `if (identitiesRepaired) schedulePersist();`
+    // call (or the `identitiesRepaired` computation feeding it) —
+    // patchServerKey would never be called at all.
+    vi.useFakeTimers();
+    try {
+      useChatStore.setState({
+        groupChats: [
+          mkGroupChat({
+            fileName: 'g.jsonl',
+            characterAvatars: ['b.png', 'a.png'],
+            characterNames: ['B', 'A'],
+            identityAvatar: 'a.png',
+          }),
+        ],
+      });
+
+      const incomingWithoutIdentity = {
+        fileName: 'g.jsonl',
+        characterNames: ['B', 'A'],
+        characterAvatars: ['b.png', 'a.png'],
+        lastMessage: '',
+        createdAt: 0,
+        // no identityAvatar field at all — a pre-#458 device's round-trip.
+      };
+      getSettingsBlob.mockResolvedValueOnce({
+        stm_chat_state: {
+          authorNotes: {},
+          chatVariables: {},
+          groupChats: [incomingWithoutIdentity],
+          _ts: 999,
+        },
+      });
+
+      await useChatStore.getState().fetchPrefs();
+      expect(useChatStore.getState().getGroupChatByFile('g.jsonl')?.identityAvatar).toBe('a.png');
 
       // schedulePersist debounces 300ms.
       vi.advanceTimersByTime(300);

@@ -170,10 +170,13 @@ describe('resolveRagContext — group identity resolution', () => {
     // dead for the rest of the session, no warning, no error. The F3
     // last-known-good memo (populated here by a real loadGroupChat call)
     // is the only surviving source of the identity once the record is gone.
-    // KILLS: removing the `memoIdentity` read from EITHER arm of
-    // resolveRagContext's ternary — with no live record and
-    // selectedCharacter null, that would leave characterAvatar '' and the
-    // spy would never be called.
+    // KILLS: removing the `memoIdentity` read from the RECORD-ABSENT arm
+    // of resolveRagContext's ternary (the `groupChat` lookup below finds
+    // nothing once deleteGroupChat has run) — with selectedCharacter null,
+    // that would leave characterAvatar '' and the spy would never be
+    // called. This test alone does NOT exercise the record-PRESENT arm's
+    // memo read (the record is deleted, not corrupted) — see the sibling
+    // test below for that.
     const fileName = 'g1-delete.jsonl';
     const record = mkGroupChat({
       fileName,
@@ -205,6 +208,44 @@ describe('resolveRagContext — group identity resolution', () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][0]).toBe('a.png');
+  });
+
+  it('recall uses the memo when the record is PRESENT but its own identity is corrupted (empty) — H2, review round 3', async () => {
+    // Companion to the test above: that one exercises resolveRagContext's
+    // RECORD-ABSENT arm (deleteGroupChat removes the record entirely). This
+    // one exercises the RECORD-PRESENT arm's memo read — a corrupted-but-
+    // still-registered record (identityAvatar: '') takes a DIFFERENT branch
+    // (`groupChat ? (groupIdentityAvatar(groupChat) ?? memoIdentity ?? '') :
+    // ...`) that the test above cannot reach, since deleting the record
+    // makes `groupChat` null and short-circuits straight past this arm.
+    // Five skeptics confirmed: before this test existed, mutating the group
+    // arm to `groupIdentityAvatar(groupChat) ?? ''` (dropping the memo
+    // fallback) left the full 2036-test suite green.
+    // KILLS: that exact mutation — with the record's own identity
+    // corrupted to '' below, it would leave characterAvatar '' and the spy
+    // would never be called.
+    const record = mkGroupChat(); // default fixture: 'group1.jsonl', identity 'seraphina.png'
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
+      header: null,
+      messages: [],
+      server_ts: 1,
+    });
+
+    // Prime the memo the same way a real load does.
+    await useChatStore.getState().loadGroupChat(record);
+
+    // Corrupt the LIVE record's own identity (still present in the
+    // registry, just empty) — distinct from deleteGroupChat, which removes
+    // the record entirely.
+    useChatStore.setState({ groupChats: [{ ...record, identityAvatar: '' }] });
+    useCharacterStore.setState({ selectedCharacter: null });
+
+    const spy = vi.spyOn(api, 'getRetrievalMessages').mockResolvedValue({ chunks: [] });
+    const messages = [mkMsg('hello there')];
+    await resolveRagContext(messages, record.fileName, null);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe('seraphina.png');
   });
 });
 
