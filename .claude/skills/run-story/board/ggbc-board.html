@@ -265,8 +265,8 @@
     </div>
     <div class="stamp">
       <b>3 Sep 2026</b><br>
-      main <b>f4363368</b><br>
-      active <b>E8-S1</b>
+      main <b>45600d14</b><br>
+      active <b>none</b>
     </div>
   </header>
 
@@ -278,7 +278,7 @@
     <div class="tile is-warn"><div class="n">17</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">9</div><div class="k">Deployed</div></div>
-    <div class="tile is-warn"><div class="n">11</div><div class="k">Open issues</div></div>
+    <div class="tile is-warn"><div class="n">12</div><div class="k">Open issues</div></div>
   </div>
 
   <div class="notices">
@@ -332,10 +332,10 @@
     <section class="col">
       <div class="colhead"><h2>Design</h2><span class="ct">4</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E8">
+        <article class="card s-warn" data-epic="E8">
           <div class="id">E8-S1</div>
           <div class="t">Arch v2 — research + methodology pick</div>
-          <div class="m">Critical path. Everything in E8 waits on this. <b>Running 3 Sep</b> — design story: research fan-out → methodology brief + P0 gate criteria → design-mode red-team → QA → Sammy sign-off. Branch <code>claude/e8-s1-arch-v2-methodology</code>.</div>
+          <div class="m">Critical path. Everything in E8 waits on this. <b>Parked 3 Sep</b> by Sammy after review round 2, to resume when E8-S2 is scheduled. Branch <code>claude/e8-s1-arch-v2-methodology</code> @ <code>fbb30fdf</code> pushed, no PR: the brief plus four research reports, twice red-teamed. Methodology, arms, probe design, lore control and token surface converged; the statistical gate layer did not.</div>
         </article>
         <article class="card" data-epic="E6">
           <div class="id">E6-S1</div>
@@ -423,13 +423,13 @@
   </div>
 
   <section class="focus">
-    <h2>E9-S9 — parked 3 Sep at review round 6</h2>
-    <p class="sub">The fix itself worked: a group's server identity is frozen on its record at creation and backfilled for existing records, so a roster reorder can no longer move a chat onto a new server row and strand its embeddings. What could not converge was a sub-feature the review pulled in at round 1 — keeping a group addressable after its registry record is deleted while the chat is open. Five consecutive fix rounds each introduced the next round's defect in one function, and round 6 traced the state they kept breaking on to a pre-existing ChatView bug that leaves a group transcript open under a solo selection, where the ordinary send path already forks the row on main today. Sammy parked the story pending a server-side group identity (ggbc-backend#84). Branch pushed; nothing on main.</p>
+    <h2>E8-S1 — parked 3 Sep after review round 2</h2>
+    <p class="sub">The deliverable is the pre-registration for Arch v2's GO/ITERATE gate: pick the methodology, then fix the metrics and targets before E8-S2 spends anything. Research narrowed the bet — a Jan-2026 study of 211 personas found "structured vs unstructured" already tested and null — so the brief's claim became behavioral <em>content</em> at token parity, with a token-matched freeform rewrite as a control arm so a win cannot be explained by rewriting alone. Two design red-team passes ran. The substance converged; the statistical gate layer did not, and round 1's fix introduced round 2's defects inside that one seam. The §5 early-trigger rule fired on the round count and Sammy parked it rather than paying a third pass. Branch pushed; nothing on main.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Plan</div><div class="sv">3 designs · frozen identity won</div></div>
-      <div class="step done"><div class="sn">Build</div><div class="sv">Sonnet · 1 feat + 5 fix commits</div></div>
-      <div class="step done"><div class="sn">Review</div><div class="sv">6 rounds · trigger tier · did not converge</div></div>
+      <div class="step done"><div class="sn">Research</div><div class="sv">4 agents · reports committed</div></div>
+      <div class="step done"><div class="sn">Draft</div><div class="sv">brief + gate criteria</div></div>
+      <div class="step done"><div class="sn">Red-team</div><div class="sv">2 passes · design mode</div></div>
       <div class="step now"><div class="sn">Exit</div><div class="sv">parked by Sammy</div></div>
     </div>
 
@@ -437,10 +437,10 @@
       <table>
         <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Plan</td><td class="num">~0.8M est.</td><td>M</td><td>Judge panel, unanimous</td></tr>
-          <tr><td>Build</td><td class="num">~0.7M est.</td><td>S–M</td><td>Initial build on band; five fix rounds of rework</td></tr>
-          <tr><td>Verification</td><td class="num">~24.7M est. / 6 rounds</td><td>trigger tier</td><td>Round 1: 5 real items incl. an unguarded slot-0 read and a docstring reattached to the wrong function. Rounds 2–6: each caught a defect the previous fix introduced in the deleted-while-open seam</td></tr>
-          <tr><td>Postmortem</td><td class="num">CAPTURE</td><td></td><td>Exit #1 since the first CURATE row; verdict in the ledger</td></tr>
+          <tr><td>Build</td><td class="num">~0.9M est.</td><td>M</td><td>Four research passes plus drafting and one fix round</td></tr>
+          <tr><td>Verification</td><td class="num">~20.7M est. / 2 passes</td><td>claim-set ~3.4–9.8M</td><td>Round 1: 23 confirmed, 5 plausible, 42 refuted. Round 2 over the fix delta: 15 confirmed, 11 plausible, 16 refuted. A first attempt lost ~2.3M to a usage-limit kill and was discarded unread rather than partly believed</td></tr>
+          <tr><td>Stop</td><td class="num">round 2</td><td></td><td>§5's early trigger fired on the round count against the class row; the choice was put to Sammy as descope / keep hardening / park</td></tr>
+          <tr><td>Postmortem</td><td class="num">CAPTURE</td><td></td><td>Exit #3 since the first CURATE row; verdict in the ledger</td></tr>
         </tbody>
       </table>
     </div>
@@ -448,7 +448,7 @@
 
   <section class="section">
     <h2>Filed, no story card</h2>
-    <p class="sub">Eleven open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; four are new from this week; one is a tracking issue spanning nine independent gaps.</p>
+    <p class="sub">Twelve open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; four are new from this week; one is a tracking issue spanning nine independent gaps.</p>
     <div class="issues">
       <div class="issue new"><span class="n">#476</span> — Persona set to "In system prompt" is silently dropped from solo prompts. Found by E2-S2's own fixtures.</div>
       <div class="issue new"><span class="n">#477</span> — Character's note rendering to whitespace ships a blank system message at every depth except 0.</div>
@@ -456,13 +456,14 @@
       <div class="issue"><span class="n">#454</span> — Group feature-parity debt. Nine gaps; each a product decision, not a bug queue.</div>
       <div class="issue"><span class="n">#457</span> — <s>Recall-boundary pair</s> — CLOSED by PR #482, deployed 28 Aug.</div>
       <div class="issue"><span class="n">#466 · #467 · #470</span> — Change emitted group text, so they oblige a golden re-cut when fixed.</div>
+      <div class="issue new"><span class="n">#509</span> — Anthropic providers hoist every system-role message to the top-level system block, so the character's note never injects at depth and post-history instructions are not last. Found by E8-S1; the OpenRouter path bypasses it.</div>
       <div class="issue new"><span class="n">#495</span> — E4-S0's sticky tie-break cites an id-sharing justification that died at the 2026-08-07 cutover. Three carriers, two sha256-guarded across both repos. Not a live defect.</div>
       <div class="issue"><span class="n">#468 · #469 · #471</span> — Zero-turn prompt · image exemption vs fold · unguarded storage write.</div>
     </div>
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 3 Sep 2026.</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 3 Sep 2026 (E8-S1 park).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
