@@ -14,6 +14,11 @@ export const meta = {
 //   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<branch>' }]   (diff mode)
 //   docPath: '/abs/path/to/design.md'                                                            (design mode)
 //   context: 'PM-written brief excerpt: what this change is, safety invariants, known constraints'
+//   classBudgetTokens: optional number — the story's roadmap §5 class-row budget. When set, the run
+//     HOLDS before the skeptic wave if the projection exceeds it (see the cost gate below).
+//   spentTokens: optional number — this story's review spend so far, so the gate prices the STORY
+//     across its 1-2 passes rather than each pass in isolation.
+//   confirmOverBudget: true — proceed past that hold. Pair it with resumeFromRunId or the lenses re-roll.
 //   lenses: optional [{ key, focus }] override
 // }
 const DEFAULT_DIFF_LENSES = [
@@ -55,6 +60,33 @@ const subject = mode === 'design'
 // script runs even in sessions where custom agent types are not loaded.
 const stance = `You are an adversarial review lens on the GGBC agent team. Find defects that are REAL — for every finding construct the concrete failure scenario (inputs/state → wrong output/crash/bypass); no scenario, no finding. Check whether a co-located gate already masks a candidate before reporting it. Never patch anything. If you verify a coverage claim by MUTATION (temporarily editing code to prove a test stays green), do it in a THROWAWAY checkout — git worktree add <scratchpad-path> --detach <sha> — NEVER in the target worktree, and remove the throwaway when done; the target must stay byte-identical to its committed state (pilot E1-S1 lesson: a reviewer's uncommitted mutation was found sitting in the shared worktree). Do not pad the report with hypotheticals, style nits, or findings you could not ground in a failure scenario. Zero findings is a legitimate result.`
 
+// Validate the gate's inputs BEFORE spending anything. The house writes budgets
+// as "9.8M" in prose, and a string is truthy while `n > "9.8M"` is false — which
+// would DISABLE the gate silently, in the direction that never announces itself.
+// A bare `7.16` meaning 7.16M passes every type check and disarms the cumulative
+// half just as quietly, so magnitude is checked too.
+//
+// This runs above the lens fan-out deliberately: round 3 of this file's own
+// red-team found the validation sitting below it, where rejecting a string
+// literal first burned every lens agent — ~320-400k, more than roadmap §5's
+// entire standard-pass row — and left the caller with completed lens findings
+// reachable only by a resume nothing documented for the throw path.
+const num = (v, name) => {
+  if (v === undefined || v === null) return undefined
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+    throw new Error(`story-review: ${name} must be a non-negative number of tokens, got ${JSON.stringify(v)} ` +
+                    `(write 9_800_000, not "9.8M")`)
+  }
+  if (v > 0 && v < 1000) {
+    throw new Error(`story-review: ${name} is ${v}, which is almost certainly a magnitude error — ` +
+                    `these are TOKEN counts, so 7.16M is 7_160_000, not 7.16`)
+  }
+  return v
+}
+const classBudgetTokens = num(args.classBudgetTokens, 'classBudgetTokens')
+const spentTokens = num(args.spentTokens, 'spentTokens') || 0
+const gateArmed = classBudgetTokens !== undefined
+
 phase('Lens review')
 const lensResults = await parallel(lenses.map(l => () =>
   agent(
@@ -70,6 +102,65 @@ const deduped = all.filter(f => {
   seen.add(k); return true
 })
 log(`${all.length} raw findings → ${deduped.length} after dedup`)
+
+// --- Cost gate (E8-S1 postmortem P4) -------------------------------------
+// The skeptic wave is nearly the whole cost of a pass and its size is EXACT
+// here, before a single skeptic launches: one agent per lens already ran, and
+// verification spawns two per deduped finding. E8-S1 learned this ~18M late —
+// its round 1 logged 70 deduped (145 agents, ~10.3M) against a whole-story
+// claim-set budget of ~3.4–9.8M, and nothing read the number until the top of
+// the next fix round.
+//
+// This HOLDS, it does not cap. Roadmap §5: the story slips, the review does
+// not shrink.
+//
+// A HELD RUN IS NOT A REVIEW ROUND, and the return is shaped so it cannot be
+// read as one. Its own first red-team found that the earlier shape — a plain
+// object with no `confirmed` key — satisfied §8 merge-checklist item 3 ("the
+// final review round confirmed zero findings") off a pass that verified
+// nothing, which would have let a budget hold launder an unverified
+// trigger-tier diff into a mergeable one. So the four verdict keys are
+// explicitly `null`: any downstream `.confirmed.length` throws instead of
+// quietly reading 0, and the lens output is named `unverifiedFindings`.
+//
+// To proceed after presenting, re-invoke with BOTH `confirmOverBudget: true`
+// and `resumeFromRunId: <this run's id>` (plus the same scriptPath/args) — the
+// resume is what replays the completed lens agents from cache; a plain
+// re-invocation re-rolls them live and can silently drop a finding you already
+// presented.
+//
+// The comparison is cumulative: pass `spentTokens` (this story's review spend
+// so far) so the gate prices the STORY, not the pass. Roadmap §5 budgets are
+// per story across 1-2 passes, and without this the gate misses the second
+// half of an overrun — replaying E8-S1 at the class ceiling, round 1 holds and
+// round 2 does not, although round 2 is what carried the story to 1.9x.
+// NOTE: this figure has THREE carriers — here, roadmap §5's unit sentence, and
+// the literal in story-review.test.mjs's PROJECTED_TOKENS. All three move
+// together at the next recalibration, or the gate under-projects and silently
+// fails to fire, which is its one invisible failure direction.
+const PER_AGENT_TOKENS = 80_000 // midpoint of the ~70–90k band recorded in roadmap §5
+
+const projectedAgents = lenses.length + 2 * deduped.length
+const projectedTokens = projectedAgents * PER_AGENT_TOKENS
+const cumulativeTokens = spentTokens + projectedTokens
+log(`skeptic wave projection: ${projectedAgents} agents ≈ ${(projectedTokens / 1e6).toFixed(1)}M` +
+    (spentTokens ? ` (story total would reach ${(cumulativeTokens / 1e6).toFixed(1)}M)` : '') +
+    (gateArmed ? ` — gate ARMED at ${(classBudgetTokens / 1e6).toFixed(1)}M` : ' — gate DISARMED (no classBudgetTokens)'))
+if (gateArmed && cumulativeTokens > classBudgetTokens && args.confirmOverBudget !== true) {
+  log(`HELD before the skeptic wave: ${(cumulativeTokens / 1e6).toFixed(1)}M would exceed the ` +
+      `${(args.classBudgetTokens / 1e6).toFixed(1)}M class budget. NOT A REVIEW ROUND — nothing was verified. ` +
+      `To proceed, re-invoke with confirmOverBudget: true AND resumeFromRunId set to this run.`)
+  return {
+    story: args.story, mode, status: 'held_over_budget',
+    // Explicitly null, not absent and not []: a held run verified nothing, and
+    // must not satisfy §8 item 3 or §5's zero-confirmed predicate by omission.
+    confirmed: null, plausible: null, refuted: null, unverified: null,
+    projectedAgents, projectedTokens, spentTokens, cumulativeTokens,
+    classBudgetTokens, gateArmed,
+    rawFindings: all.length, dedupedFindings: deduped.length,
+    lensCount: lenses.length, unverifiedFindings: deduped,
+  }
+}
 
 phase('Skeptic verify')
 const judged = await parallel(deduped.map(f => () =>
@@ -100,4 +191,5 @@ const refuted = results.filter(f => f.status === 'refuted')
 const unverified = results.filter(f => f.status === 'unverified')
 log(`confirmed ${confirmed.length} · plausible ${plausible.length} · refuted ${refuted.length} · unverified ${unverified.length}`)
 if (unverified.length) log(`WARNING: ${unverified.length} finding(s) got no surviving skeptic vote — UNVERIFIED, do not treat as confirmed`)
-return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length }
+return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length,
+         gateArmed, classBudgetTokens, spentTokens, projectedAgents, projectedTokens, cumulativeTokens }
