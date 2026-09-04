@@ -132,8 +132,8 @@ console.log('story-review cost gate')
   const r = await h.run()
   check('projection over budget -> holds', r.status === 'held_over_budget', `status=${r.status}`)
   check('hold spawns zero skeptics', h.calls.skeptic === 0, `skeptics=${h.calls.skeptic}`)
-  check('hold returns the findings for presentation', Array.isArray(r.findings) && r.findings.length === 6,
-        `findings=${r.findings && r.findings.length}`)
+  check('hold returns the lens output for presentation', Array.isArray(r.unverifiedFindings) && r.unverifiedFindings.length === 6,
+        `unverifiedFindings=${r.unverifiedFindings && r.unverifiedFindings.length}`)
   check('hold reports the projection', r.projectedAgents === PROJECTED_AGENTS && r.projectedTokens === PROJECTED_TOKENS,
         `agents=${r.projectedAgents} tokens=${r.projectedTokens}`)
 }
@@ -172,6 +172,61 @@ console.log('story-review cost gate')
   check('dedup unchanged (3 raw -> 1 deduped)', r.rawFindings === 3 && r.dedupedFindings === 1,
         `raw=${r.rawFindings} deduped=${r.dedupedFindings}`)
   check('projection uses deduped, not raw', r.projectedAgents === 2 + 2 * 1, `agents=${r.projectedAgents}`)
+}
+
+// 7 — a held run must be structurally unreadable as a review round
+{
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS - 1 }),
+  })
+  const r = await h.run()
+  check('held: confirmed is null, not absent',
+        r.confirmed === null && 'confirmed' in r, `confirmed=${r.confirmed} present=${'confirmed' in r}`)
+  check('held: plausible/refuted/unverified all null',
+        r.plausible === null && r.refuted === null && r.unverified === null)
+  // The defect this guards: `(r.confirmed || []).length === 0` reads TRUE on an
+  // absent key and on [], and would satisfy §8 item 3. It must throw instead.
+  let threw = false
+  try { void r.confirmed.length } catch { threw = true }
+  check('held: reading a verdict count throws rather than reading zero', threw)
+  check('held: lens output is named unverifiedFindings, not findings',
+        Array.isArray(r.unverifiedFindings) && r.unverifiedFindings.length === 6 && r.findings === undefined,
+        `unverified=${r.unverifiedFindings && r.unverifiedFindings.length} findings=${r.findings}`)
+}
+
+// 8 — the budget is cumulative across the story's passes, not per pass
+{
+  // Projection alone fits the budget; prior spend pushes it over. A pass-at-a-
+  // time gate proceeds here and misses the half that completes the overrun.
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({
+      lenses: LENSES,
+      classBudgetTokens: PROJECTED_TOKENS + 100_000,
+      spentTokens: 200_000,
+    }),
+  })
+  const r = await h.run()
+  check('spentTokens counts toward the budget -> holds', r.status === 'held_over_budget', `status=${r.status}`)
+  check('held reports cumulative total', r.cumulativeTokens === PROJECTED_TOKENS + 200_000,
+        `cumulative=${r.cumulativeTokens}`)
+  check('cumulative hold spawns zero skeptics', h.calls.skeptic === 0, `skeptics=${h.calls.skeptic}`)
+}
+
+// 9 — spentTokens must not fire the gate on its own when the total still fits
+{
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({
+      lenses: LENSES,
+      classBudgetTokens: PROJECTED_TOKENS + 300_000,
+      spentTokens: 200_000,
+    }),
+  })
+  const r = await h.run()
+  check('cumulative under budget -> proceeds', r.status === undefined && h.calls.skeptic === 12,
+        `status=${r.status} skeptics=${h.calls.skeptic}`)
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)

@@ -16,7 +16,9 @@ export const meta = {
 //   context: 'PM-written brief excerpt: what this change is, safety invariants, known constraints'
 //   classBudgetTokens: optional number — the story's roadmap §5 class-row budget. When set, the run
 //     HOLDS before the skeptic wave if the projection exceeds it (see the cost gate below).
-//   confirmOverBudget: true — proceed past that hold. Resume replays the lenses from cache.
+//   spentTokens: optional number — this story's review spend so far, so the gate prices the STORY
+//     across its 1-2 passes rather than each pass in isolation.
+//   confirmOverBudget: true — proceed past that hold. Pair it with resumeFromRunId or the lenses re-roll.
 //   lenses: optional [{ key, focus }] override
 // }
 const DEFAULT_DIFF_LENSES = [
@@ -83,21 +85,48 @@ log(`${all.length} raw findings → ${deduped.length} after dedup`)
 // the next fix round.
 //
 // This HOLDS, it does not cap. Roadmap §5: the story slips, the review does
-// not shrink. Exceeding the budget returns the projection and the findings so
-// the PM can present the choice; re-run with confirmOverBudget: true (resume
-// replays the lenses from cache, so confirming costs almost nothing).
+// not shrink.
+//
+// A HELD RUN IS NOT A REVIEW ROUND, and the return is shaped so it cannot be
+// read as one. Its own first red-team found that the earlier shape — a plain
+// object with no `confirmed` key — satisfied §8 merge-checklist item 3 ("the
+// final review round confirmed zero findings") off a pass that verified
+// nothing, which would have let a budget hold launder an unverified
+// trigger-tier diff into a mergeable one. So the four verdict keys are
+// explicitly `null`: any downstream `.confirmed.length` throws instead of
+// quietly reading 0, and the lens output is named `unverifiedFindings`.
+//
+// To proceed after presenting, re-invoke with BOTH `confirmOverBudget: true`
+// and `resumeFromRunId: <this run's id>` (plus the same scriptPath/args) — the
+// resume is what replays the completed lens agents from cache; a plain
+// re-invocation re-rolls them live and can silently drop a finding you already
+// presented.
+//
+// The comparison is cumulative: pass `spentTokens` (this story's review spend
+// so far) so the gate prices the STORY, not the pass. Roadmap §5 budgets are
+// per story across 1-2 passes, and without this the gate misses the second
+// half of an overrun — replaying E8-S1 at the class ceiling, round 1 holds and
+// round 2 does not, although round 2 is what carried the story to 1.9x.
 const PER_AGENT_TOKENS = 80_000 // midpoint of the ~70–90k band recorded in roadmap §5
 const projectedAgents = lenses.length + 2 * deduped.length
 const projectedTokens = projectedAgents * PER_AGENT_TOKENS
-log(`skeptic wave projection: ${projectedAgents} agents ≈ ${(projectedTokens / 1e6).toFixed(1)}M`)
-if (args.classBudgetTokens && projectedTokens > args.classBudgetTokens && args.confirmOverBudget !== true) {
-  log(`HELD before the skeptic wave: ${(projectedTokens / 1e6).toFixed(1)}M projected exceeds the ` +
-      `${(args.classBudgetTokens / 1e6).toFixed(1)}M class budget. Re-run with confirmOverBudget: true to proceed.`)
+const spentTokens = args.spentTokens || 0
+const cumulativeTokens = spentTokens + projectedTokens
+log(`skeptic wave projection: ${projectedAgents} agents ≈ ${(projectedTokens / 1e6).toFixed(1)}M` +
+    (spentTokens ? ` (story total would reach ${(cumulativeTokens / 1e6).toFixed(1)}M)` : ''))
+if (args.classBudgetTokens && cumulativeTokens > args.classBudgetTokens && args.confirmOverBudget !== true) {
+  log(`HELD before the skeptic wave: ${(cumulativeTokens / 1e6).toFixed(1)}M would exceed the ` +
+      `${(args.classBudgetTokens / 1e6).toFixed(1)}M class budget. NOT A REVIEW ROUND — nothing was verified. ` +
+      `To proceed, re-invoke with confirmOverBudget: true AND resumeFromRunId set to this run.`)
   return {
     story: args.story, mode, status: 'held_over_budget',
-    projectedAgents, projectedTokens, classBudgetTokens: args.classBudgetTokens,
+    // Explicitly null, not absent and not []: a held run verified nothing, and
+    // must not satisfy §8 item 3 or §5's zero-confirmed predicate by omission.
+    confirmed: null, plausible: null, refuted: null, unverified: null,
+    projectedAgents, projectedTokens, spentTokens, cumulativeTokens,
+    classBudgetTokens: args.classBudgetTokens,
     rawFindings: all.length, dedupedFindings: deduped.length,
-    lensCount: lenses.length, findings: deduped,
+    lensCount: lenses.length, unverifiedFindings: deduped,
   }
 }
 
