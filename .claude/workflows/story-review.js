@@ -60,6 +60,33 @@ const subject = mode === 'design'
 // script runs even in sessions where custom agent types are not loaded.
 const stance = `You are an adversarial review lens on the GGBC agent team. Find defects that are REAL — for every finding construct the concrete failure scenario (inputs/state → wrong output/crash/bypass); no scenario, no finding. Check whether a co-located gate already masks a candidate before reporting it. Never patch anything. If you verify a coverage claim by MUTATION (temporarily editing code to prove a test stays green), do it in a THROWAWAY checkout — git worktree add <scratchpad-path> --detach <sha> — NEVER in the target worktree, and remove the throwaway when done; the target must stay byte-identical to its committed state (pilot E1-S1 lesson: a reviewer's uncommitted mutation was found sitting in the shared worktree). Do not pad the report with hypotheticals, style nits, or findings you could not ground in a failure scenario. Zero findings is a legitimate result.`
 
+// Validate the gate's inputs BEFORE spending anything. The house writes budgets
+// as "9.8M" in prose, and a string is truthy while `n > "9.8M"` is false — which
+// would DISABLE the gate silently, in the direction that never announces itself.
+// A bare `7.16` meaning 7.16M passes every type check and disarms the cumulative
+// half just as quietly, so magnitude is checked too.
+//
+// This runs above the lens fan-out deliberately: round 3 of this file's own
+// red-team found the validation sitting below it, where rejecting a string
+// literal first burned every lens agent — ~320-400k, more than roadmap §5's
+// entire standard-pass row — and left the caller with completed lens findings
+// reachable only by a resume nothing documented for the throw path.
+const num = (v, name) => {
+  if (v === undefined || v === null) return undefined
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+    throw new Error(`story-review: ${name} must be a non-negative number of tokens, got ${JSON.stringify(v)} ` +
+                    `(write 9_800_000, not "9.8M")`)
+  }
+  if (v > 0 && v < 1000) {
+    throw new Error(`story-review: ${name} is ${v}, which is almost certainly a magnitude error — ` +
+                    `these are TOKEN counts, so 7.16M is 7_160_000, not 7.16`)
+  }
+  return v
+}
+const classBudgetTokens = num(args.classBudgetTokens, 'classBudgetTokens')
+const spentTokens = num(args.spentTokens, 'spentTokens') || 0
+const gateArmed = classBudgetTokens !== undefined
+
 phase('Lens review')
 const lensResults = await parallel(lenses.map(l => () =>
   agent(
@@ -107,30 +134,15 @@ log(`${all.length} raw findings → ${deduped.length} after dedup`)
 // per story across 1-2 passes, and without this the gate misses the second
 // half of an overrun — replaying E8-S1 at the class ceiling, round 1 holds and
 // round 2 does not, although round 2 is what carried the story to 1.9x.
-// NOTE: roadmap §5 carries this same figure and instructs re-derivation at the
-// next recalibration. Both carriers move together, or the gate under-projects
-// and silently fails to fire — its one invisible failure direction.
+// NOTE: this figure has THREE carriers — here, roadmap §5's unit sentence, and
+// the literal in story-review.test.mjs's PROJECTED_TOKENS. All three move
+// together at the next recalibration, or the gate under-projects and silently
+// fails to fire, which is its one invisible failure direction.
 const PER_AGENT_TOKENS = 80_000 // midpoint of the ~70–90k band recorded in roadmap §5
 
-// Validate before trusting. The house writes budgets as "9.8M" in prose, and a
-// string is truthy while `n > "9.8M"` is false — which would DISABLE the gate
-// silently, in the direction that never announces itself. Same for a negative
-// or NaN spend. Fail loudly instead: a governance control that quietly turns
-// itself off is worse than no control.
-const num = (v, name) => {
-  if (v === undefined || v === null) return undefined
-  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
-    throw new Error(`story-review: ${name} must be a non-negative number of tokens, got ${JSON.stringify(v)} ` +
-                    `(write 9_800_000, not "9.8M")`)
-  }
-  return v
-}
-const classBudgetTokens = num(args.classBudgetTokens, 'classBudgetTokens')
-const spentTokens = num(args.spentTokens, 'spentTokens') || 0
 const projectedAgents = lenses.length + 2 * deduped.length
 const projectedTokens = projectedAgents * PER_AGENT_TOKENS
 const cumulativeTokens = spentTokens + projectedTokens
-const gateArmed = classBudgetTokens !== undefined
 log(`skeptic wave projection: ${projectedAgents} agents ≈ ${(projectedTokens / 1e6).toFixed(1)}M` +
     (spentTokens ? ` (story total would reach ${(cumulativeTokens / 1e6).toFixed(1)}M)` : '') +
     (gateArmed ? ` — gate ARMED at ${(classBudgetTokens / 1e6).toFixed(1)}M` : ' — gate DISARMED (no classBudgetTokens)'))

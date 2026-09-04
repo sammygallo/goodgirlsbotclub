@@ -47,6 +47,12 @@
 //  11. armed/disarmed recorded -> both returns say whether the gate was armed,
 //                                 so a reader can tell a passed gate from an
 //                                 absent one
+//  12. magnitude guard        -> a bare `7.16` meaning 7.16M passes every type
+//                                 check and silently disarms the half it
+//                                 belongs to, so it throws too
+//  13. gate log content       -> the ARMED/DISARMED/NOT-A-REVIEW-ROUND lines are
+//                                 asserted, because deleting them left the
+//                                 suite green when they were the deliverable
 //
 // Keep this list in step with the cases below. It went stale once already, in
 // the commit that added cases 7-9, and a whitespace-mismatched patch then
@@ -183,7 +189,7 @@ console.log('story-review cost gate')
   const one = { a: [finding('only')], b: [] }
   const h = makeHarness({
     findingsPerLens: one,
-    args: baseArgs({ lenses: LENSES, classBudgetTokens: 1 }),
+    args: baseArgs({ lenses: LENSES, classBudgetTokens: 100_000 }),
   })
   const r = await h.run()
   check('projection = lenses + 2 x deduped', r.projectedAgents === 2 + 2 * 1, `agents=${r.projectedAgents}`)
@@ -195,7 +201,7 @@ console.log('story-review cost gate')
   const dupes = { a: [finding('same'), finding('same')], b: [finding('same')] }
   const h = makeHarness({
     findingsPerLens: dupes,
-    args: baseArgs({ lenses: LENSES, classBudgetTokens: 1 }),
+    args: baseArgs({ lenses: LENSES, classBudgetTokens: 100_000 }),
   })
   const r = await h.run()
   check('dedup unchanged (3 raw -> 1 deduped)', r.rawFindings === 3 && r.dedupedFindings === 1,
@@ -268,8 +274,9 @@ console.log('story-review cost gate')
     const h = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES, classBudgetTokens: value }) })
     let threw = false
     try { await h.run() } catch { threw = true }
-    check(`classBudgetTokens as ${kind} throws`, threw && h.calls.skeptic === 0,
-          `threw=${threw} skeptics=${h.calls.skeptic}`)
+    check(`classBudgetTokens as ${kind} throws before any agent runs`,
+          threw && h.calls.lens === 0 && h.calls.skeptic === 0,
+          `threw=${threw} lenses=${h.calls.lens} skeptics=${h.calls.skeptic}`)
   }
   const h = makeHarness({
     findingsPerLens: SIX,
@@ -277,7 +284,8 @@ console.log('story-review cost gate')
   })
   let threw = false
   try { await h.run() } catch { threw = true }
-  check('spentTokens as string throws', threw, `threw=${threw}`)
+  check('spentTokens as string throws before any agent runs', threw && h.calls.lens === 0,
+        `threw=${threw} lenses=${h.calls.lens}`)
 }
 
 // 11 — armed vs disarmed must be visible on BOTH returns, or a passed gate and
@@ -302,6 +310,49 @@ console.log('story-review cost gate')
   })
   const rh = await held.run()
   check('held run records gateArmed true', rh.gateArmed === true, `gateArmed=${rh.gateArmed}`)
+}
+
+// 12 — a bare magnitude silently disarms the half it belongs to: `7.16` meaning
+//      7.16M is a non-negative finite number and passes every type check while
+//      contributing nothing to the cumulative comparison
+{
+  for (const [field, value] of [['spentTokens', 7.16], ['classBudgetTokens', 9.8]]) {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      args: baseArgs({ lenses: LENSES, classBudgetTokens: 9_800_000, [field]: value }),
+    })
+    let threw = false
+    try { await h.run() } catch { threw = true }
+    check(`${field} as a bare magnitude (${value}) throws`, threw && h.calls.lens === 0,
+          `threw=${threw} lenses=${h.calls.lens}`)
+  }
+}
+
+// 13 — the ARMED/DISARMED log line is what makes a passed gate distinguishable
+//      from an absent one in the record. Without this, deleting it entirely
+//      leaves the suite green.
+{
+  const armed = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS + 1 }),
+  })
+  await armed.run()
+  const aLog = armed.calls.logs.find((l) => l.includes('projection'))
+  check('armed run logs ARMED with the budget', !!aLog && /gate ARMED at 1\.1M/.test(aLog), `log=${aLog}`)
+
+  const off = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES }) })
+  await off.run()
+  const oLog = off.calls.logs.find((l) => l.includes('projection'))
+  check('disarmed run says DISARMED', !!oLog && /gate DISARMED/.test(oLog), `log=${oLog}`)
+
+  const held = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS - 1 }),
+  })
+  await held.run()
+  check('held run logs NOT A REVIEW ROUND',
+        held.calls.logs.some((l) => l.includes('NOT A REVIEW ROUND')),
+        `logs=${JSON.stringify(held.calls.logs)}`)
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)
