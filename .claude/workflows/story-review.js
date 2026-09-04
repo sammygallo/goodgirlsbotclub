@@ -14,6 +14,9 @@ export const meta = {
 //   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<branch>' }]   (diff mode)
 //   docPath: '/abs/path/to/design.md'                                                            (design mode)
 //   context: 'PM-written brief excerpt: what this change is, safety invariants, known constraints'
+//   classBudgetTokens: optional number — the story's roadmap §5 class-row budget. When set, the run
+//     HOLDS before the skeptic wave if the projection exceeds it (see the cost gate below).
+//   confirmOverBudget: true — proceed past that hold. Resume replays the lenses from cache.
 //   lenses: optional [{ key, focus }] override
 // }
 const DEFAULT_DIFF_LENSES = [
@@ -70,6 +73,33 @@ const deduped = all.filter(f => {
   seen.add(k); return true
 })
 log(`${all.length} raw findings → ${deduped.length} after dedup`)
+
+// --- Cost gate (E8-S1 postmortem P4) -------------------------------------
+// The skeptic wave is nearly the whole cost of a pass and its size is EXACT
+// here, before a single skeptic launches: one agent per lens already ran, and
+// verification spawns two per deduped finding. E8-S1 learned this ~18M late —
+// its round 1 logged 70 deduped (145 agents, ~10.3M) against a whole-story
+// claim-set budget of ~3.4–9.8M, and nothing read the number until the top of
+// the next fix round.
+//
+// This HOLDS, it does not cap. Roadmap §5: the story slips, the review does
+// not shrink. Exceeding the budget returns the projection and the findings so
+// the PM can present the choice; re-run with confirmOverBudget: true (resume
+// replays the lenses from cache, so confirming costs almost nothing).
+const PER_AGENT_TOKENS = 80_000 // midpoint of the ~70–90k band recorded in roadmap §5
+const projectedAgents = lenses.length + 2 * deduped.length
+const projectedTokens = projectedAgents * PER_AGENT_TOKENS
+log(`skeptic wave projection: ${projectedAgents} agents ≈ ${(projectedTokens / 1e6).toFixed(1)}M`)
+if (args.classBudgetTokens && projectedTokens > args.classBudgetTokens && args.confirmOverBudget !== true) {
+  log(`HELD before the skeptic wave: ${(projectedTokens / 1e6).toFixed(1)}M projected exceeds the ` +
+      `${(args.classBudgetTokens / 1e6).toFixed(1)}M class budget. Re-run with confirmOverBudget: true to proceed.`)
+  return {
+    story: args.story, mode, status: 'held_over_budget',
+    projectedAgents, projectedTokens, classBudgetTokens: args.classBudgetTokens,
+    rawFindings: all.length, dedupedFindings: deduped.length,
+    lensCount: lenses.length, findings: deduped,
+  }
+}
 
 phase('Skeptic verify')
 const judged = await parallel(deduped.map(f => () =>
