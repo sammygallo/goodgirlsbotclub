@@ -264,18 +264,18 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>3 Sep 2026</b><br>
-      main <b>45600d14</b><br>
-      active <b>none</b>
+      <b>4 Sep 2026</b><br>
+      main <b>dc7e35db</b><br>
+      active <b>E9-S10</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
     <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
-    <div class="tile is-warn"><div class="n">18</div><div class="k">Gated</div></div>
+    <div class="tile is-warn"><div class="n">17</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">9</div><div class="k">Deployed</div></div>
     <div class="tile is-warn"><div class="n">12</div><div class="k">Open issues</div></div>
@@ -312,8 +312,14 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E9">
+          <div class="id">E9-S10</div>
+          <div class="t">Depth injection destroyed on 2 of 13 providers</div>
+          <div class="m"><b>Running 4 Sep</b> · #509. The anthropic and google translators hoist every system-role message to the top of the prompt, so the character's note never lands at depth and the card PHI is not last. Plan chosen by a 3-design judge panel (23.3/25): hoist by <b>position</b> — only the leading run goes to the system channel, later ones stay in place demoted to a wrapped user turn. Builder untouched, so all 44 goldens must stay byte-identical. <b>N=2</b>: backend behaviour+tests, then frontend docs. Unconditional rollout, Sammy 4 Sep.</div>
+          <div class="gates"><span class="gate hot">cross-repo</span></div>
+        </article>
       </div>
     </section>
 
@@ -356,7 +362,7 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Gated</h2><span class="ct">18</span></div>
+      <div class="colhead"><h2>Gated</h2><span class="ct">17</span></div>
       <div class="stack">
         <article class="card s-warn" data-epic="E9"><div class="id">E9-S9</div><div class="t">Group recall identity is positional</div><div class="m"><b>Parked 3 Sep</b> by Sammy at review round 6. Branch <code>claude/e9-s9-group-recall-identity</code> @ <code>f892d731</code>, no PR. The frozen <code>identityAvatar</code> core is sound and covered; the deleted-while-open handling the review pulled in could not converge client-side (five fix-introduced defects in one function, rooted in a pre-existing ChatView mode-tracking bug).</div><div class="gates"><span class="gate hot">← ggbc-backend#84</span></div></article>
         <article class="card s-warn" data-epic="E2"><div class="id">E2-S3</div><div class="t">Show-prompt toggle</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
@@ -374,7 +380,6 @@
         <article class="card s-crit" data-epic="E8"><div class="id">E8-S3 → S6</div><div class="t">Schema · editor · migration · compiler</div><div class="gates"><span class="gate hot">← GO gate</span></div></article>
         <article class="card s-warn" data-epic="E1"><div class="id">E1-S3</div><div class="t">Phase B impl (NSFW Scene)</div><div class="gates"><span class="gate">← E1-S2</span></div></article>
         <article class="card s-warn" data-epic="E1"><div class="id">E1-S4</div><div class="t">Permission-widening decision</div><div class="gates"><span class="gate free">E1-S1 ✓</span><span class="gate">← E1-S2</span></div></article>
-        <article class="card s-crit" data-epic="E9"><div class="id">E9-S10</div><div class="t">Depth injection destroyed on 2 of 13 providers</div><div class="m">#509 — the anthropic and google translators hoist every system-role message to the top of the prompt, so the character's note never lands at depth and the card PHI is not last. Scheduled 4 Sep in preference to caveating the user guide. Two-repo, so L minimum.</div><div class="gates"><span class="gate free">unblocked</span></div></article>
         <article class="card s-warn" data-epic="E9"><div class="id">E9-S8</div><div class="t">Doc/comment hygiene sweep</div><div class="m">#456 — docs-only now that #458 is split out.</div></article>
       </div>
     </section>
@@ -424,24 +429,22 @@
   </div>
 
   <section class="focus">
-    <h2>E8-S1 — parked 3 Sep after review round 2</h2>
-    <p class="sub">The deliverable is the pre-registration for Arch v2's GO/ITERATE gate: pick the methodology, then fix the metrics and targets before E8-S2 spends anything. Research narrowed the bet — a Jan-2026 study of 211 personas found "structured vs unstructured" already tested and null — so the brief's claim became behavioral <em>content</em> at token parity, with a token-matched freeform rewrite as a control arm so a win cannot be explained by rewriting alone. Two design red-team passes ran. The substance converged; the statistical gate layer did not, and round 1's fix introduced round 2's defects inside that one seam. The §5 early-trigger rule fired on the round count and Sammy parked it rather than paying a third pass. Branch pushed; nothing on main.</p>
+    <h2>E9-S10 — running, 4 Sep</h2>
+    <p class="sub">Two of the thirteen providers destroy message position: the Anthropic and Google translators hoist <em>every</em> system-role message into the single top-of-prompt field, regardless of where the builder put it. So a character's note written for depth 4 arrives at the top, and post-history instructions are not post-history — on two families the "last thing the AI reads" is the first. A three-design judge panel picked hoisting by <b>position</b> rather than by role: only the contiguous leading run goes to the provider's system channel, and every later system message stays at its index, demoted in place to a wrapped user turn. The frontend builder is untouched, so all 44 goldens must stay byte-identical — a moved byte would prove the change leaked. Because post-history instructions default on, this moves prompt text in most Claude and Gemini chats, not only cards with a note; Sammy chose to ship it unconditionally rather than behind a setting.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Research</div><div class="sv">4 agents · reports committed</div></div>
-      <div class="step done"><div class="sn">Draft</div><div class="sv">brief + gate criteria</div></div>
-      <div class="step done"><div class="sn">Red-team</div><div class="sv">2 passes · design mode</div></div>
-      <div class="step now"><div class="sn">Exit</div><div class="sv">parked by Sammy</div></div>
+      <div class="step done"><div class="sn">Intake</div><div class="sv">premise re-verified at 995e5a1</div></div>
+      <div class="step done"><div class="sn">Plan</div><div class="sv">3 designs · panel 23.3/25</div></div>
+      <div class="step now"><div class="sn">Build</div><div class="sv">loop 1 of 2 · backend</div></div>
+      <div class="step"><div class="sn">Review</div><div class="sv">trigger tier · prompt assembly</div></div>
     </div>
 
     <div class="tscroll">
       <table>
-        <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
+        <thead><tr><th>Loop</th><th>Repo</th><th>Contents</th><th>Class</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">~0.9M est.</td><td>M</td><td>Four research passes plus drafting and one fix round</td></tr>
-          <tr><td>Verification</td><td class="num">~20.7M est. / 2 passes</td><td>claim-set ~3.4–9.8M</td><td>Round 1: 23 confirmed, 5 plausible, 42 refuted. Round 2 over the fix delta: 15 confirmed, 11 plausible, 16 refuted. A first attempt lost ~2.3M to a usage-limit kill and was discarded unread rather than partly believed</td></tr>
-          <tr><td>Stop</td><td class="num">round 2</td><td></td><td>§5's early trigger fired on the round count against the class row; the choice was put to Sammy as descope / keep hardening / park</td></tr>
-          <tr><td>Postmortem</td><td class="num">CAPTURE</td><td></td><td>Exit #3 since the first CURATE row; verdict in the ledger</td></tr>
+          <tr><td>1</td><td>ggbc-backend</td><td>Position-preserving demotion in both translators, a shared placement helper, and the regression guard that fails if a translator returns to hoisting</td><td>prompt assembly — 4–6 rounds, ~6.2–18.5M</td></tr>
+          <tr><td>2</td><td>goodgirlsbotclub</td><td>Docs only: the character guide's uncaveated "secret weapon" claim, and the editor help tip that says the note is the last thing the AI reads — false today on two families</td><td>standard — ≤0.3M</td></tr>
         </tbody>
       </table>
     </div>
@@ -464,7 +467,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 3 Sep 2026 (E8-S1 park).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 4 Sep 2026 (E9-S10 start).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
