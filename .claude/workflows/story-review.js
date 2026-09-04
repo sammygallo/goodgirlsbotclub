@@ -107,14 +107,34 @@ log(`${all.length} raw findings → ${deduped.length} after dedup`)
 // per story across 1-2 passes, and without this the gate misses the second
 // half of an overrun — replaying E8-S1 at the class ceiling, round 1 holds and
 // round 2 does not, although round 2 is what carried the story to 1.9x.
+// NOTE: roadmap §5 carries this same figure and instructs re-derivation at the
+// next recalibration. Both carriers move together, or the gate under-projects
+// and silently fails to fire — its one invisible failure direction.
 const PER_AGENT_TOKENS = 80_000 // midpoint of the ~70–90k band recorded in roadmap §5
+
+// Validate before trusting. The house writes budgets as "9.8M" in prose, and a
+// string is truthy while `n > "9.8M"` is false — which would DISABLE the gate
+// silently, in the direction that never announces itself. Same for a negative
+// or NaN spend. Fail loudly instead: a governance control that quietly turns
+// itself off is worse than no control.
+const num = (v, name) => {
+  if (v === undefined || v === null) return undefined
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+    throw new Error(`story-review: ${name} must be a non-negative number of tokens, got ${JSON.stringify(v)} ` +
+                    `(write 9_800_000, not "9.8M")`)
+  }
+  return v
+}
+const classBudgetTokens = num(args.classBudgetTokens, 'classBudgetTokens')
+const spentTokens = num(args.spentTokens, 'spentTokens') || 0
 const projectedAgents = lenses.length + 2 * deduped.length
 const projectedTokens = projectedAgents * PER_AGENT_TOKENS
-const spentTokens = args.spentTokens || 0
 const cumulativeTokens = spentTokens + projectedTokens
+const gateArmed = classBudgetTokens !== undefined
 log(`skeptic wave projection: ${projectedAgents} agents ≈ ${(projectedTokens / 1e6).toFixed(1)}M` +
-    (spentTokens ? ` (story total would reach ${(cumulativeTokens / 1e6).toFixed(1)}M)` : ''))
-if (args.classBudgetTokens && cumulativeTokens > args.classBudgetTokens && args.confirmOverBudget !== true) {
+    (spentTokens ? ` (story total would reach ${(cumulativeTokens / 1e6).toFixed(1)}M)` : '') +
+    (gateArmed ? ` — gate ARMED at ${(classBudgetTokens / 1e6).toFixed(1)}M` : ' — gate DISARMED (no classBudgetTokens)'))
+if (gateArmed && cumulativeTokens > classBudgetTokens && args.confirmOverBudget !== true) {
   log(`HELD before the skeptic wave: ${(cumulativeTokens / 1e6).toFixed(1)}M would exceed the ` +
       `${(args.classBudgetTokens / 1e6).toFixed(1)}M class budget. NOT A REVIEW ROUND — nothing was verified. ` +
       `To proceed, re-invoke with confirmOverBudget: true AND resumeFromRunId set to this run.`)
@@ -124,7 +144,7 @@ if (args.classBudgetTokens && cumulativeTokens > args.classBudgetTokens && args.
     // must not satisfy §8 item 3 or §5's zero-confirmed predicate by omission.
     confirmed: null, plausible: null, refuted: null, unverified: null,
     projectedAgents, projectedTokens, spentTokens, cumulativeTokens,
-    classBudgetTokens: args.classBudgetTokens,
+    classBudgetTokens, gateArmed,
     rawFindings: all.length, dedupedFindings: deduped.length,
     lensCount: lenses.length, unverifiedFindings: deduped,
   }
@@ -159,4 +179,5 @@ const refuted = results.filter(f => f.status === 'refuted')
 const unverified = results.filter(f => f.status === 'unverified')
 log(`confirmed ${confirmed.length} · plausible ${plausible.length} · refuted ${refuted.length} · unverified ${unverified.length}`)
 if (unverified.length) log(`WARNING: ${unverified.length} finding(s) got no surviving skeptic vote — UNVERIFIED, do not treat as confirmed`)
-return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length }
+return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length,
+         gateArmed, classBudgetTokens, spentTokens, projectedAgents, projectedTokens, cumulativeTokens }

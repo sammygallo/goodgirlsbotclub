@@ -24,6 +24,34 @@
 //                                 gate becomes a cap; roadmap §5 forbids caps)
 //   5. projection arithmetic   -> lenses + 2 x deduped, exactly
 //   6. dedup unchanged         -> the gate must not perturb what it measures
+//   7. held run is not a round -> the four verdict keys are null, NOT absent and
+//                                 NOT [], so a downstream count throws rather
+//                                 than reading zero. This is the gate's own
+//                                 first red-team finding: without it a budget
+//                                 hold satisfies §8 checklist item 3 ("the
+//                                 final review round confirmed zero findings")
+//                                 off a pass that verified nothing, laundering
+//                                 an unverified trigger-tier diff into a
+//                                 mergeable one. Lens output is named
+//                                 `unverifiedFindings`, never `findings`.
+//   8. cumulative budget       -> spentTokens + projection is compared, because
+//                                 roadmap §5 budgets are per STORY over 1-2
+//                                 passes; pass-at-a-time pricing misses the
+//                                 second half of an overrun
+//   9. cumulative under budget -> prior spend alone must not fire the gate
+//  10. input validation        -> a wrong-typed budget ("9.8M", negative, NaN)
+//                                 THROWS instead of silently disabling the
+//                                 gate, which is its invisible failure
+//                                 direction: a hold announces itself, a
+//                                 missing hold does not
+//  11. armed/disarmed recorded -> both returns say whether the gate was armed,
+//                                 so a reader can tell a passed gate from an
+//                                 absent one
+//
+// Keep this list in step with the cases below. It went stale once already, in
+// the commit that added cases 7-9, and a whitespace-mismatched patch then
+// silently failed to fix it — the D-T6 class twice over (a document has no call
+// graph, so a dependent of your edit does not announce itself).
 //
 // Run: node .claude/workflows/story-review.test.mjs
 
@@ -78,8 +106,9 @@ const baseArgs = (extra = {}) => ({
   ...extra,
 })
 
-// Five lenses is the script's design-mode default (3) unless overridden; pin an
-// explicit lens set so the arithmetic in the assertions is not a moving target.
+// The script's own defaults are 3 lenses in design mode and 4 in diff mode, both
+// overridable via args.lenses. Pin an explicit two-lens set here so the
+// arithmetic in every assertion below is fixed and not a moving target.
 const LENSES = [
   { key: 'a', focus: 'a' },
   { key: 'b', focus: 'b' },
@@ -227,6 +256,52 @@ console.log('story-review cost gate')
   const r = await h.run()
   check('cumulative under budget -> proceeds', r.status === undefined && h.calls.skeptic === 12,
         `status=${r.status} skeptics=${h.calls.skeptic}`)
+}
+
+// 10 — a wrong-typed or nonsensical budget must THROW, not silently disarm.
+//      The house writes budgets as "9.8M" in prose; a string is truthy and
+//      `n > "9.8M"` is false, so the pre-validation gate would have proceeded
+//      while looking armed.
+{
+  const bad = [['9.8M', 'string'], [-1, 'negative'], [Number.NaN, 'NaN']]
+  for (const [value, kind] of bad) {
+    const h = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES, classBudgetTokens: value }) })
+    let threw = false
+    try { await h.run() } catch { threw = true }
+    check(`classBudgetTokens as ${kind} throws`, threw && h.calls.skeptic === 0,
+          `threw=${threw} skeptics=${h.calls.skeptic}`)
+  }
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS + 1, spentTokens: '0.66M' }),
+  })
+  let threw = false
+  try { await h.run() } catch { threw = true }
+  check('spentTokens as string throws', threw, `threw=${threw}`)
+}
+
+// 11 — armed vs disarmed must be visible on BOTH returns, or a passed gate and
+//      an absent one are indistinguishable in the record
+{
+  const armed = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS + 1 }),
+  })
+  const ra = await armed.run()
+  check('completed run records gateArmed true', ra.gateArmed === true, `gateArmed=${ra.gateArmed}`)
+  check('completed run carries the projection', ra.projectedAgents === PROJECTED_AGENTS,
+        `agents=${ra.projectedAgents}`)
+
+  const disarmed = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES }) })
+  const rd = await disarmed.run()
+  check('completed run records gateArmed false when no budget', rd.gateArmed === false, `gateArmed=${rd.gateArmed}`)
+
+  const held = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS - 1 }),
+  })
+  const rh = await held.run()
+  check('held run records gateArmed true', rh.gateArmed === true, `gateArmed=${rh.gateArmed}`)
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)
