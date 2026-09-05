@@ -74,7 +74,7 @@ Think of the prompt in three bands, and place entries deliberately:
 
 - **Lead** (Before Character): background and world texture — the stage dressing.
 - **Body** (the default positions): everyday facts.
-- **Trailing** (@ Depth 0–1): the one non-negotiable rule of the scene. Depth 0 lands the card right after the newest message — the closest possible spot to where the AI starts writing, and the spot it obeys most.
+- **Trailing** (@ Depth 0–1): the one non-negotiable rule of the scene. Depth 0 lands the card right after the newest message, with the post-history sections (post-history instructions and "After Author's Note" cards) still to come.
 
 Placement decides *where* an entry goes, never *whether* it loads. Loading is still governed by keys, Constant, and Critical — a trailing slot is no substitute for a trigger that works.
 

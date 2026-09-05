@@ -400,7 +400,7 @@ export function GenerationSettingsPage(_props?: { params?: Record<string, string
                 placeholder='Final nudge before the AI responds...'
               />
               <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
-                Inserted as a system message after the chat history.
+                Inserted after the chat history. On Claude and Gemini it arrives as a bracketed system note inside a regular user turn rather than a separate system message.
               </p>
             </div>
 

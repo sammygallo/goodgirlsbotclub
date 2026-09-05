@@ -42,7 +42,10 @@ export interface GenerationPreset {
 export interface PromptConfig {
   /** Replaces the default "You are {{char}}" opener when non-empty. */
   mainPrompt: string;
-  /** Appended as a final system message before generation. */
+  /** Appended after the chat history as a system-role post-history section
+   *  (one of the four POST_HISTORY_SECTIONS, ordered by promptOrder). On the anthropic/google
+   *  families the backend relay keeps it in place as a wrapped user turn
+   *  (ggbc-backend app/providers/system_placement.py, #509). */
   postHistoryInstructions: string;
   /** Auxiliary prompt inserted into the system block. */
   jailbreakPrompt: string;
