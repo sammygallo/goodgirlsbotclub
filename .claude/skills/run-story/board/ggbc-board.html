@@ -317,7 +317,7 @@
         <article class="card s-live" data-epic="E9">
           <div class="id">E9-S10</div>
           <div class="t">Depth injection destroyed on 2 of 13 providers</div>
-          <div class="m"><b>Loop 1 merged 5 Sep</b> · #509. Backend <a href="https://github.com/sammygallo/ggbc-backend/pull/87">ggbc-backend#87</a> → <code>032de27</code> on Sammy's go (awaiting deploy); docstring follow-up <a href="https://github.com/sammygallo/ggbc-backend/pull/88">#88</a>. Hoist by <b>position</b> — only the leading run goes to the system channel, later system messages stay in place demoted to a wrapped user turn. Two trigger-tier rounds (22 + 8 agents), QA AC1 + AC3 pass, 983 tests. Filed: backend #85, #86, frontend #513 (text-completion mode never produced a token). <b>Loop 2</b> docs+copy <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/514">#514</a> @ <code>d191da9d</code>: five standard rounds (Sammy: keep hardening at round 3), converged; QA running; goes to Sammy at the merge gate on the did-not-converge trigger. 44 goldens byte-identical. Unconditional rollout, Sammy 4 Sep.</div>
+          <div class="m"><b>Loop 1 merged 5 Sep</b> · #509. Backend <a href="https://github.com/sammygallo/ggbc-backend/pull/87">ggbc-backend#87</a> → <code>032de27</code> on Sammy's go (awaiting deploy); docstring follow-up <a href="https://github.com/sammygallo/ggbc-backend/pull/88">#88</a>. Hoist by <b>position</b> — only the leading run goes to the system channel, later system messages stay in place demoted to a wrapped user turn. Two trigger-tier rounds (22 + 8 agents), QA AC1 + AC3 pass, 983 tests. Filed: backend #85, #86, frontend #513 (text-completion mode never produced a token). <b>Loop 2</b> docs+copy <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/514">#514</a> @ <code>d8fd5e03</code>: nine standard rounds (Sammy: keep hardening at round 3; rounds 8 and 9 zero), two QA passes, converged; presented to Sammy at the merge gate on the did-not-converge trigger. 44 goldens byte-identical. Unconditional rollout, Sammy 4 Sep.</div>
           <div class="gates"><span class="gate hot">cross-repo</span></div>
         </article>
       </div>
@@ -429,15 +429,15 @@
   </div>
 
   <section class="focus">
-    <h2>E9-S10 — loop 1 merged, loop 2 at QA, 5 Sep</h2>
+    <h2>E9-S10 — loop 1 merged, loop 2 at the merge gate, 5 Sep</h2>
     <p class="sub">Two of the thirteen providers destroy message position: the Anthropic and Google translators hoist <em>every</em> system-role message into the single top-of-prompt field, regardless of where the builder put it. So a character's note written for depth 4 arrives at the top, and post-history instructions are not post-history — on two families the "last thing the AI reads" is the first. A three-design judge panel picked hoisting by <b>position</b> rather than by role: only the contiguous leading run goes to the provider's system channel, and every later system message stays at its index, demoted in place to a wrapped user turn. The frontend builder is untouched, so all 44 goldens must stay byte-identical — a moved byte would prove the change leaked. Because post-history instructions default on, this moves prompt text in most Claude and Gemini chats, not only cards with a note; Sammy chose to ship it unconditionally rather than behind a setting.</p>
 
     <div class="steps">
       <div class="step done"><div class="sn">Intake</div><div class="sv">premise re-verified at 995e5a1</div></div>
       <div class="step done"><div class="sn">Plan</div><div class="sv">3 designs · panel 23.3/25</div></div>
       <div class="step done"><div class="sn">Build</div><div class="sv">both loops built</div></div>
-      <div class="step done"><div class="sn">Review</div><div class="sv">loop 1: 2 rounds · loop 2: 5 rounds</div></div>
-      <div class="step now"><div class="sn">Merge</div><div class="sv">loop 1 merged (#87) · loop 2 QA, then Sammy</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">loop 1: 2 rounds · loop 2: 9 rounds</div></div>
+      <div class="step now"><div class="sn">Merge</div><div class="sv">loop 1 merged (#87, #88) · loop 2 presented</div></div>
     </div>
 
     <div class="tscroll">
@@ -445,7 +445,7 @@
         <thead><tr><th>Loop</th><th>Repo</th><th>Contents</th><th>Class</th></tr></thead>
         <tbody>
           <tr><td>1</td><td>ggbc-backend</td><td>Position-preserving demotion in both translators, a shared placement helper, and the regression guard that fails if a translator returns to hoisting. <b>PR #87 merged → 032de27; 2 rounds, ~2.7M est. review, QA pass, CI green</b>; docstring follow-up #88</td><td>prompt assembly — 4–6 rounds, ~6.2–18.5M</td></tr>
-          <tr><td>2</td><td>goodgirlsbotclub</td><td>Docs + help copy: the character guide, both editor tips, the Generation Settings caption, the store JSDoc and the audit reference now say where the note and post-history instructions land per provider. <b>PR #514; 5 rounds, ~3.3M est.</b> (Q2 fired at round 3, Sammy: keep hardening) — QA, then the merge gate</td><td>standard — ≤0.3M</td></tr>
+          <tr><td>2</td><td>goodgirlsbotclub</td><td>Docs + help copy: the character guide, both editor tips, the Generation Settings caption, the store JSDoc and the audit reference now say where the note and post-history instructions land per provider. <b>PR #514; 9 rounds, ~5.6M est., QA ×2</b> (Q2 fired at round 3, Sammy: keep hardening) — at the merge gate</td><td>standard — ≤0.3M</td></tr>
         </tbody>
       </table>
     </div>
@@ -468,7 +468,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 5 Sep 2026 (E9-S10 loop 1 merged, loop 2 at QA).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 5 Sep 2026 (E9-S10 loop 1 merged, loop 2 at the merge gate).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
