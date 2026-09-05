@@ -39,7 +39,7 @@ These are the boxes in the character editor.
 **System Prompt Override** — Replaces the main rules the AI follows.
 - *How it changes behavior:* Powerful but risky. It throws out your normal settings and uses this instead. Only use it if your character truly needs different rules (like a video game NPC who must speak in code).
 
-**Post-History Instructions** — A reminder that gets shoved in right before the AI replies.
+**Post-History Instructions** — A reminder that gets shoved in after the chat history, near the end of what the AI reads.
 - *How it changes behavior:* Because it's among the *last* things the AI reads, it pays extra attention to it. Great for rules like "Keep replies under 3 paragraphs" or "Stay in character."
 - *Tip:* Short and direct works best. One or two sentences.
 - *Provider note:* It sits in that exact spot in what GGBC sends, whichever provider you use; on Claude and Gemini the wrapper differs — see "Where these reminders land on each provider" below.
