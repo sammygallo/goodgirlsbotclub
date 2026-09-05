@@ -818,7 +818,7 @@ export function CharacterEdit({
             systemPrompt:
               "Replaces the global Main Prompt for this character only. Use when a character needs a fundamentally different system prompt than your default. Only active if 'Honor character's System Prompt override' is enabled in Generation Settings → Prompts.",
             postHistoryInstructions:
-              "Inserted right after the chat history, just before the AI responds — on every provider. This is the last thing the AI reads before generating a reply — great for final behavioral nudges or reminders. On Claude and Gemini it arrives as a bracketed system note inside a regular user turn rather than a separate system message. Requires 'Honor character's Post-History Instructions' in Generation Settings → Prompts.",
+              "Inserted after the chat history, among the last things the AI reads before generating a reply — great for final behavioral nudges or reminders. On Claude and Gemini it arrives as a bracketed system note inside a regular user turn rather than a separate system message. Requires 'Honor character's Post-History Instructions' in Generation Settings → Prompts.",
           }}
         />
 
