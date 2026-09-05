@@ -127,7 +127,7 @@ Each card in your lorebook has these settings.
 - `after_an` — after the author's note.
 - `at_depth` — slipped in N messages back in the chat (use the depth field).
 
-*How position changes behavior:* The AI pays more attention to stuff near the *end* of what it reads. So `at_depth` with a low depth number (close to the latest message) makes the lore feel "fresh" and recent. Depth 0 works too: it puts the card right after the newest message — the closest a lorebook card can get to where the AI starts writing (only the post-history reminders come after it). Save that trailing slot for the one rule the AI absolutely must follow right now. (`at_depth` cards go out as system-role text, so on Claude and Gemini they arrive as a bracketed system note inside a regular user turn — still at that depth, just wrapped differently.)
+*How position changes behavior:* The AI pays more attention to stuff near the *end* of what it reads. So `at_depth` with a low depth number (close to the latest message) makes the lore feel "fresh" and recent. Depth 0 works too: it puts the card right after the newest message; the post-history sections (Post-History Instructions and `after_an` cards) come after it. Save that trailing slot for the one rule the AI absolutely must follow right now. (`at_depth` cards go out as system-role text, so on Claude and Gemini they arrive as a bracketed system note inside a regular user turn — still at that depth, just wrapped differently.)
 
 **Order** — A number for sorting cards in the same position. Lower = earlier.
 - *How it changes behavior:* If the budget runs out, higher-order cards get cut first. Put your most important cards at order 0–50. Cards marked Constant or Critical are never cut, whatever their order.
