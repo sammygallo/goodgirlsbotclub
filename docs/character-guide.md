@@ -42,7 +42,7 @@ These are the boxes in the character editor.
 **Post-History Instructions** — A reminder that gets shoved in right before the AI replies.
 - *How it changes behavior:* Because it's the *last* thing the AI reads, it pays extra attention to it. Great for rules like "Keep replies under 3 paragraphs" or "Stay in character."
 - *Tip:* Short and direct works best. One or two sentences.
-- *Provider note:* It still lands in that exact spot on every provider; on Claude and Gemini the wrapper differs — see "Where these reminders land on each provider" below.
+- *Provider note:* It sits in that exact spot in what GGBC sends, whichever provider you use; on Claude and Gemini the wrapper differs — see "Where these reminders land on each provider" below.
 
 **Character's Note (Depth Prompt)** — A reminder you slip into the recent chat history.
 - *How it changes behavior:* You tell it how deep to put the reminder (depth 0 is right next to the latest message; depth 4 is four messages back). The AI sees it as if it were just said. Super effective at fixing "the AI forgot they're sad" problems.
