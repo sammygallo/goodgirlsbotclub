@@ -814,7 +814,7 @@ export function CharacterEdit({
             exampleMessages:
               "Sample dialogue that teaches the AI the character's voice. Use the format: {{user}}: [message]\n{{char}}: [response]\n\nA few good examples (3–5 exchanges) are more effective than many mediocre ones. Focus on capturing distinctive speech patterns or reactions rather than plot.",
             characterNote:
-              "A reminder injected at a specific position in the chat history (controlled by Injection Depth). Useful for keeping the AI on-track during long conversations where early instructions start to fade. Acts as a nudge rather than a full system prompt. Lands at that exact position on every provider; on Claude and Gemini it arrives as a bracketed system note inside a regular turn rather than a separate system message.",
+              "A reminder injected at a specific position in the chat history (controlled by Injection Depth). Useful for keeping the AI on-track during long conversations where early instructions start to fade. Acts as a nudge rather than a full system prompt. Lands at that exact position on every provider; with Role left at System, on Claude and Gemini it arrives as a bracketed system note inside a regular turn rather than a separate system message.",
             systemPrompt:
               "Replaces the global Main Prompt for this character only. Use when a character needs a fundamentally different system prompt than your default. Only active if 'Honor character's System Prompt override' is enabled in Generation Settings → Prompts.",
             postHistoryInstructions:

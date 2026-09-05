@@ -42,7 +42,7 @@ These are the boxes in the character editor.
 **Post-History Instructions** — A reminder that gets shoved in right before the AI replies.
 - *How it changes behavior:* Because it's the *last* thing the AI reads, it pays extra attention to it. Great for rules like "Keep replies under 3 paragraphs" or "Stay in character."
 - *Tip:* Short and direct works best. One or two sentences.
-- *Provider note:* On Claude and Gemini this arrives wrapped as a bracketed system note inside a regular turn rather than as a separate system message — see "Where these reminders land on each provider" below. It still lands in that exact spot, so the "last thing it reads" effect holds everywhere.
+- *Provider note:* It still lands in that exact spot on every provider; on Claude and Gemini the wrapper differs — see "Where these reminders land on each provider" below.
 
 **Character's Note (Depth Prompt)** — A reminder you slip into the recent chat history.
 - *How it changes behavior:* You tell it how deep to put the reminder (depth 0 is right next to the latest message; depth 4 is four messages back). The AI sees it as if it were just said. Super effective at fixing "the AI forgot they're sad" problems.
@@ -127,7 +127,7 @@ Each card in your lorebook has these settings.
 - `after_an` — after the author's note.
 - `at_depth` — slipped in N messages back in the chat (use the depth field).
 
-*How position changes behavior:* The AI pays more attention to stuff near the *end* of what it reads. So `at_depth` with a low depth number (close to the latest message) makes the lore feel "fresh" and recent. Depth 0 works too: it puts the card right after the newest message — the closest possible spot to where the AI starts writing. Save that trailing slot for the one rule the AI absolutely must follow right now. (`at_depth` cards go out as system-role text, so on Claude and Gemini they're delivered as the same bracketed system note described under Character's Note above — still at that depth, just wrapped differently.)
+*How position changes behavior:* The AI pays more attention to stuff near the *end* of what it reads. So `at_depth` with a low depth number (close to the latest message) makes the lore feel "fresh" and recent. Depth 0 works too: it puts the card right after the newest message — the closest possible spot to where the AI starts writing. Save that trailing slot for the one rule the AI absolutely must follow right now. (`at_depth` cards go out as system-role text, so on Claude and Gemini they arrive as a bracketed system note inside a regular user turn — still at that depth, just wrapped differently.)
 
 **Order** — A number for sorting cards in the same position. Lower = earlier.
 - *How it changes behavior:* If the budget runs out, higher-order cards get cut first. Put your most important cards at order 0–50. Cards marked Constant or Critical are never cut, whatever their order.
