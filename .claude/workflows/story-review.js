@@ -174,7 +174,7 @@ const judged = await parallel(deduped.map(f => () =>
   parallel([1, 2].map(n => () =>
     agent(
       `${stance}\n\nYou are a SKEPTIC. Try to REFUTE this finding from story ${args.story}. Default to refuted=true unless the failure scenario demonstrably holds against the actual code/doc.\n\nFinding: ${JSON.stringify(f)}\n\n${subject}\n\nVerify against the source, then verdict.`,
-      { label: `skeptic${n}:${f.title.slice(0, 30)}`, phase: 'Skeptic verify', schema: VERDICT_SCHEMA, effort: 'high' } // skeptics inherit the strongest model — never economize on verifiers
+      { label: `skeptic${n}:${f.title.slice(0, 30)}`, phase: 'Skeptic verify', schema: VERDICT_SCHEMA, effort: 'high' } // skeptics pin no model: they inherit the SESSION's model (lenses above are pinned to opus), so a limit on the session tier takes out verifiers first — run the trigger tier from the strongest tier; never economize on verifiers
     )))
     .then(vs => {
       const votes = vs.filter(Boolean)
