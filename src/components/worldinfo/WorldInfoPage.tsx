@@ -728,6 +728,9 @@ export function WorldInfoPage(_props?: { params?: Record<string, string> }) {
               />
               <Input
                 type="search"
+                id="lorebook-entry-search"
+                name="lorebook-entry-search"
+                autoComplete="off"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search entries in all books..."

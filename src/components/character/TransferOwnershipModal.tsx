@@ -91,6 +91,9 @@ export function TransferOwnershipModal({
           <>
             <Input
               type="text"
+              id="transfer-ownership-user-search"
+              name="transfer-ownership-user-search"
+              autoComplete="off"
               placeholder="Search users…"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}

@@ -171,6 +171,9 @@ export function CharacterManagementPage() {
             />
             <input
               type="text"
+              id="character-management-search"
+              name="character-management-search"
+              autoComplete="off"
               placeholder="Search characters..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}

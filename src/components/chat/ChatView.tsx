@@ -1751,6 +1751,9 @@ export function ChatView() {
           <input
             ref={searchInputRef}
             type="text"
+            id="chat-message-search"
+            name="chat-message-search"
+            autoComplete="off"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {

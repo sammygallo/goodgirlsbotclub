@@ -532,6 +532,9 @@ export function GroupChatControls({
           <div className="space-y-3">
             <input
               type="text"
+              id="group-add-member-search"
+              name="group-add-member-search"
+              autoComplete="off"
               value={addMemberQuery}
               onChange={(e) => setAddMemberQuery(e.target.value)}
               placeholder="Search characters..."

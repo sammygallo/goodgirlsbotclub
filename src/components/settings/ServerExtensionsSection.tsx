@@ -529,6 +529,9 @@ export function ServerExtensionsSection() {
             />
             <input
               type="text"
+              id="extension-search"
+              name="extension-search"
+              autoComplete="off"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search extensions..."

@@ -222,6 +222,9 @@ export function GalleryPage(_props?: { params?: Record<string, string> }) {
             />
             <input
               type="text"
+              id="gallery-prompt-search"
+              name="gallery-prompt-search"
+              autoComplete="off"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search prompts..."

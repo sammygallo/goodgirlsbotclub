@@ -396,6 +396,9 @@ export function ProviderCatalogPage() {
               />
               <Input
                 type="text"
+                id="provider-search"
+                name="provider-search"
+                autoComplete="off"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search providers..."

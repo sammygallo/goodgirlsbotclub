@@ -557,6 +557,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 />
                 <Input
                   type="search"
+                  id="character-search"
+                  name="character-search"
+                  autoComplete="off"
                   placeholder="Search characters..."
                   className="pl-10"
                   value={searchQuery}
