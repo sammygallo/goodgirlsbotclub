@@ -155,6 +155,8 @@ git fetch origin && git log --oneline origin/main..HEAD
 
 Confirm with the user what you're about to merge before proceeding. If a repo has no changes, skip it.
 
+**Enumerate what each image would SHIP, not just what you are merging.** `:latest` is built from `main`, so the deploy carries every commit since the droplet's last pull, whoever merged it: frontend `git log $(ssh root@159.89.180.146 cat /opt/goodgirlsbotclub/.last-deployed)..origin/main --oneline`; the backend has no marker — read the running container's image digest and creation time against the registry's build for the last merged sha, never a doc. List every commit to the user before merging or deploying, and flag any migration first. A commit whose subject carries no `(#N)` reached `main` without a PR: it has no merge notice, step 5.5's extractor cannot see it, and step 5.6's release note will omit it unless you add it by hand (2026-09-06: `9de118a5`, a direct-to-`main` UI fix, shipped inside another session's window with no note).
+
 **Also check for open PRs**, since work often lives on GitHub rather than in a local branch:
 
 ```bash
