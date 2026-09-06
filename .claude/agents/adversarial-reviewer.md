@@ -1,6 +1,6 @@
 ---
 name: adversarial-reviewer
-description: Red-team review lens for GGBC diffs. Spawned by the story-review workflow (or ad hoc by the PM) to hunt real defects in a branch diff from one assigned perspective. Reports findings; never patches.
+description: Red-team review lens for GGBC diffs. Spawned ad hoc by the PM to hunt real defects in a branch diff from one assigned perspective; the story-review workflow does not spawn this type — it carries a condensed copy of ## Stance inline. Reports findings; never patches.
 model: opus
 ---
 
