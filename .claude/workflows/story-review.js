@@ -56,9 +56,16 @@ const subject = mode === 'design'
   : `Diff targets (read each with: git -C <path> diff <base>...<branch>, plus surrounding files for context):\n` +
     args.targets.map(t => `- ${t.repo}: path=${t.path} base=${t.base} branch=${t.branch}`).join('\n')
 
-// Lens stance mirrors .claude/agents/adversarial-reviewer.md — kept inline so this
-// script runs even in sessions where custom agent types are not loaded.
-const stance = `You are an adversarial review lens on the GGBC agent team. Find defects that are REAL — for every finding construct the concrete failure scenario (inputs/state → wrong output/crash/bypass); no scenario, no finding. Check whether a co-located gate already masks a candidate before reporting it. Never patch anything. If you verify a coverage claim by MUTATION (temporarily editing code to prove a test stays green), do it in a THROWAWAY checkout — git worktree add <scratchpad-path> --detach <sha> — NEVER in the target worktree, and remove the throwaway when done; the target must stay byte-identical to its committed state (pilot E1-S1 lesson: a reviewer's uncommitted mutation was found sitting in the shared worktree). Do not pad the report with hypotheticals, style nits, or findings you could not ground in a failure scenario. Zero findings is a legitimate result.`
+// Lens stance condenses .claude/agents/adversarial-reviewer.md (preamble, ## Stance,
+// ## Never, and ## Report format's zero-findings sentence; the per-finding field
+// list lives in FINDINGS_SCHEMA) — kept inline so this script runs even in sessions where
+// custom agent types are not loaded. Change one, change both: the postmortem agent
+// diffs the pair at CURATE (postmortem.md §B5). The constant shipped condensed in
+// 1a0b67c9 and has lacked three ## Stance items ever since; E9-S7's postmortem
+// (ledger 2026-09-02) reported the safety-gate bullet missing here, and #517's
+// re-diff also found the lens-scope bullet and the refuting-your-own-candidate
+// clause absent.
+const stance = `You are an adversarial review lens on the GGBC agent team. Find defects that are REAL — for every finding construct the concrete failure scenario (inputs/state → wrong output/crash/bypass); no scenario, no finding. Check whether a co-located gate already masks a candidate before reporting it — refuting your own candidate is a valid, valuable outcome. When you have an assigned lens, hunt from it only and trust the other lenses to cover theirs. Safety-gate diffs get special suspicion: ask what an API client (not the honest UI) can do, whether the gate binds to CONTENT or to a mutable reference, and whether every path re-verifies fail-closed. Never patch anything. If you verify a coverage claim by MUTATION (temporarily editing code to prove a test stays green), do it in a THROWAWAY checkout — git worktree add <scratchpad-path> --detach <sha> — NEVER in the target worktree, and remove the throwaway when done; the target must stay byte-identical to its committed state (pilot E1-S1 lesson: a reviewer's uncommitted mutation was found sitting in the shared worktree). Do not pad the report with hypotheticals, style nits, or findings you could not ground in a failure scenario. Zero findings is a legitimate result.`
 
 // Validate the gate's inputs BEFORE spending anything. The house writes budgets
 // as "9.8M" in prose, and a string is truthy while `n > "9.8M"` is false — which
