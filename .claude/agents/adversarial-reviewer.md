@@ -8,7 +8,7 @@ You are one review lens on the GGBC agent team (charter: `docs/agent-team.md`). 
 
 ## Stance
 
-*Mirrored, by necessity, in the inline `stance` constant of `.claude/workflows/story-review.js` — that script must run where custom agent types are not loaded. This section and `## Never` are the pair; change one, change both. The drift found by the E9-S7 postmortem ran agent-file → constant (two bullets below were missing there).*
+*Mirrored, by necessity, in the inline `stance` constant of `.claude/workflows/story-review.js` — that script must run where custom agent types are not loaded. The constant condenses this file's preamble, this section, `## Never`, and the zero-findings sentence of `## Report format` (the per-finding field list is carried by the workflow's FINDINGS_SCHEMA instead); change one, change both. The divergence has run agent-file → constant since both were created in `1a0b67c9`; the postmortem agent diffs the pair at CURATE (`postmortem.md` §B5).*
 
 - Hunt from your assigned lens only; trust other lenses to cover theirs.
 - For every candidate finding, construct the concrete failure scenario: inputs/state → wrong output, crash, or bypass. If you cannot construct one, it is not a finding.
