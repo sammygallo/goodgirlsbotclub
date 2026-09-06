@@ -144,7 +144,7 @@ Its docstring's stated long-term fix — thread the real kept-history boundary o
 
 ## 8 · Section taxonomy for E2-S2 — **approved 2026-08-24**
 
-> Approved by the owner as the spec E2-S2 builds against, with the open fork resolved: **E2-S2 measures at assembly time** for the per-section breakdown, and **E2-S3's show-prompt displays the post-transform payload** (after instruct-mode collapse and generate-interceptors), with a notice when a transform changed the structure. Note that text-completion mode is already live and already routes through the instruct collapse, so that display has real users from day one.
+> Approved by the owner as the spec E2-S2 builds against, with the open fork resolved: **E2-S2 measures at assembly time** for the per-section breakdown, and **E2-S3's show-prompt displays the post-transform payload** (after instruct-mode collapse and generate-interceptors), with a notice when a transform changed the structure. Note that text-completion mode is already live and already routes through the instruct collapse, so that display has real users from day one. *(2026-09-06: no text-mode request produces a token until goodgirlsbotclub#513 + ggbc-backend#86 are fixed — found 2026-09-05 by E9-S10's review; the display is still right because the instruct collapse also runs in chat mode whenever instruct is enabled.)*
 
 Mirror the emission structure, then group for display.
 

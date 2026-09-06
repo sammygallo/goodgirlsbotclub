@@ -264,21 +264,21 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>5 Sep 2026</b><br>
-      main <b>cdc1be62</b><br>
-      active <b>E9-S10</b>
+      <b>6 Sep 2026</b><br>
+      main <b>2412ed12</b><br>
+      active <b>none</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
     <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">17</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
-    <div class="tile is-ok"><div class="n">9</div><div class="k">Deployed</div></div>
-    <div class="tile is-warn"><div class="n">12</div><div class="k">Open issues</div></div>
+    <div class="tile is-ok"><div class="n">10</div><div class="k">Deployed</div></div>
+    <div class="tile is-warn"><div class="n">13</div><div class="k">Open issues</div></div>
   </div>
 
   <div class="notices">
@@ -312,14 +312,8 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E9">
-          <div class="id">E9-S10</div>
-          <div class="t">Depth injection destroyed on 2 of 13 providers</div>
-          <div class="m"><b>Loop 1 merged 5 Sep</b> · #509. Backend <a href="https://github.com/sammygallo/ggbc-backend/pull/87">ggbc-backend#87</a> → <code>032de27</code> on Sammy's go (awaiting deploy); docstring follow-up <a href="https://github.com/sammygallo/ggbc-backend/pull/88">#88</a>. Hoist by <b>position</b> — only the leading run goes to the system channel, later system messages stay in place demoted to a wrapped user turn. Two trigger-tier rounds (22 + 8 agents), QA AC1 + AC3 pass, 983 tests. Filed: backend #85, #86, frontend #513 (text-completion mode never produced a token). <b>Loop 2</b> docs+copy <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/514">#514</a> @ <code>d8fd5e03</code>: nine standard rounds (Sammy: keep hardening at round 3; rounds 8 and 9 zero), two QA passes, converged; presented to Sammy at the merge gate on the did-not-converge trigger. 44 goldens byte-identical. Unconditional rollout, Sammy 4 Sep.</div>
-          <div class="gates"><span class="gate hot">cross-repo</span></div>
-        </article>
       </div>
     </section>
 
@@ -401,8 +395,9 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Deployed</h2><span class="ct">9</span></div>
+      <div class="colhead"><h2>Deployed</h2><span class="ct">10</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S10</div><div class="t">Depth injection on the anthropic and google families</div><div class="m">6 Sep · backend <a href="https://github.com/sammygallo/ggbc-backend/pull/87">#87</a> → <code>032de27</code> + <a href="https://github.com/sammygallo/ggbc-backend/pull/88">#88</a> → <code>fb26a80</code>, frontend <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/514">#514</a> → <code>37154b0f</code>, deployed 6 Sep (frontend image <code>2412ed12</code>) · closes #509 · hoist by <b>position</b>: only the leading system run goes to the out-of-band channel; the note, at-depth lore and post-history sections keep their index as a wrapped user turn · backend: 2 trigger-tier rounds, QA AC1/AC3 pass, 983 tests · docs: 9 standard rounds (Q2 fired at round 3, Sammy: keep hardening; rounds 8–9 zero), merged by Sammy at the did-not-converge gate · filed #513 / backend #85 #86 (text mode never produces a token), #515 (catalog drift).</div></article>
         <article class="card s-ok" data-epic="E9"><div class="id">E9-S7</div><div class="t">Surface recall's <code>no_key</code> reason</div><div class="m">1 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/504">#504</a> → <code>473c8aa2</code>, deployed 2 Sep · closes #455 · QA 4/4 · 19 review rounds (one code round with 3 confirmed defects; 16 rounds on the PM's own bookkeeping prose) · merged on Sammy's go after the "did not converge" trigger fired · first CURATE postmortem → <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/505">#505</a>, merged 2 Sep.</div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry coverage</div><div class="m">31 Aug · <code>2b3efa30</code> (<a href="https://github.com/sammygallo/goodgirlsbotclub/pull/500">#500</a>). Read-time remap of pre-cutover <code>wi_fired</code> keys + a "not observable" replay state. Re-scoped 30 Aug after the id-crosswalk premise was falsified at intake. <b>6 review rounds, ~30 findings, zero behavior defects.</b> <b>Deployed 1 Sep</b> (sync deploy of <code>main</code>, frontend image <code>9474fbfa</code>).</div><div class="gates"><span class="gate free">unblocks E5-S1</span></div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S2a</div><div class="t">Activation reason in the server DTO</div><div class="m">29 Aug · backend #82 + frontend #490, shipped together · 3 rounds converged at zero, QA 4/4 mutation-verified · additive DTO, no migration.</div></article>
@@ -419,7 +414,7 @@
       <div class="colhead"><h2>Shipped pre-roadmap</h2><span class="ct">5</span></div>
       <div class="stack">
         <article class="card s-ok" data-epic="E9"><div class="id">E9-S1</div><div class="t">Phase 5.3 swap-vs-join card handling</div><div class="m">PR #59, April. Board said Ready for Dev for 4½ months.</div></article>
-        <article class="card s-ok" data-epic="E9"><div class="id">E9-S4</div><div class="t">Text-completion API</div><div class="m">Same class — stale backlog row, not work.</div></article>
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S4</div><div class="t">Text-completion API</div><div class="m">Same class — stale backlog row, not work. Code only: the mode can't produce a token (#513 / ggbc-backend#86, found 5 Sep).</div></article>
         <article class="card s-ok"><div class="id">10.1</div><div class="t">Local models</div><div class="m">#58, April.</div></article>
         <article class="card s-ok"><div class="id">6.1</div><div class="t">Theme customization</div><div class="m">May.</div></article>
         <article class="card s-ok" data-epic="E1"><div class="id">Selfies</div><div class="t">0–2.5 · Scene A · Studio C1/C2 · provenance</div><div class="m">23 Aug.</div></article>
@@ -429,23 +424,27 @@
   </div>
 
   <section class="focus">
-    <h2>E9-S10 — loop 1 merged, loop 2 at the merge gate, 5 Sep</h2>
-    <p class="sub">Two of the thirteen providers destroy message position: the Anthropic and Google translators hoist <em>every</em> system-role message into the single top-of-prompt field, regardless of where the builder put it. So a character's note written for depth 4 arrives at the top, and post-history instructions are not post-history — on two families the "last thing the AI reads" is the first. A three-design judge panel picked hoisting by <b>position</b> rather than by role: only the contiguous leading run goes to the provider's system channel, and every later system message stays at its index, demoted in place to a wrapped user turn. The frontend builder is untouched, so all 44 goldens must stay byte-identical — a moved byte would prove the change leaked. Because post-history instructions default on, this moves prompt text in most Claude and Gemini chats, not only cards with a note; Sammy chose to ship it unconditionally rather than behind a setting.</p>
+    <h2>E9-S10 — deployed 6 Sep</h2>
+    <p class="sub">Both native translators used to hoist <em>every</em> system-role message into the single top-of-prompt field, so a character's note written for depth 4 arrived first and post-history instructions were not post-history on Claude and Gemini. Shipped: hoist by <b>position</b> — only the leading run goes to the provider's system channel; everything later keeps its index as a bracketed system note inside a user turn. The builder is untouched (44 goldens byte-identical) and the guides, editor tips and settings caption now say where each reminder lands per provider. Filed on the way: text-completion mode never produces a token on any provider (#513, backend #85/#86) and seven catalog providers the backend cannot route (#515).</p>
 
     <div class="steps">
       <div class="step done"><div class="sn">Intake</div><div class="sv">premise re-verified at 995e5a1</div></div>
       <div class="step done"><div class="sn">Plan</div><div class="sv">3 designs · panel 23.3/25</div></div>
       <div class="step done"><div class="sn">Build</div><div class="sv">both loops built</div></div>
       <div class="step done"><div class="sn">Review</div><div class="sv">loop 1: 2 rounds · loop 2: 9 rounds</div></div>
-      <div class="step now"><div class="sn">Merge</div><div class="sv">loop 1 merged (#87, #88) · loop 2 presented</div></div>
+      <div class="step done"><div class="sn">Merge</div><div class="sv">#87 + #88 · #514 (Sammy, did-not-converge gate)</div></div>
+      <div class="step done"><div class="sn">Deploy</div><div class="sv">6 Sep · frontend 2412ed12 · backend fb26a80</div></div>
+      <div class="step done"><div class="sn">Postmortem</div><div class="sv">CAPTURE · exit #4 since the CURATE row</div></div>
     </div>
 
     <div class="tscroll">
       <table>
-        <thead><tr><th>Loop</th><th>Repo</th><th>Contents</th><th>Class</th></tr></thead>
+        <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>1</td><td>ggbc-backend</td><td>Position-preserving demotion in both translators, a shared placement helper, and the regression guard that fails if a translator returns to hoisting. <b>PR #87 merged → 032de27; 2 rounds, ~2.7M est. review, QA pass, CI green</b>; docstring follow-up #88</td><td>prompt assembly — 4–6 rounds, ~6.2–18.5M</td></tr>
-          <tr><td>2</td><td>goodgirlsbotclub</td><td>Docs + help copy: the character guide, both editor tips, the Generation Settings caption, the store JSDoc and the audit reference now say where the note and post-history instructions land per provider. <b>PR #514; 9 rounds, ~5.6M est., QA ×2</b> (Q2 fired at round 3, Sammy: keep hardening) — at the merge gate</td><td>standard — ≤0.3M</td></tr>
+          <tr><td>Build</td><td class="num">~0.85M est.</td><td>L min</td><td>The 4 Sep session's intake, judge panel and backend build were never recorded (est. ~0.6M); fix round 0.13M; docs loop 0.11M</td></tr>
+          <tr><td>Verification</td><td class="num">~9.2M est. / 12 rounds</td><td>loop 1 prompt-assembly 6.2–18.5M · loop 2 standard ≤0.3M</td><td>Loop 1: 2.7M over 2 rounds (22 + 8 agents). Loop 2: 5.6M over 9 rounds — the retracted "last thing" claim re-asserted in synonyms; Q2 fired at round 3, Sammy kept hardening. #88: 0.5M. QA ×3: 0.4M</td></tr>
+          <tr><td>Plan absorption</td><td class="num">~8.2M est.</td><td>—</td><td>30 proposals → 29 upheld, critic found 15 more carriers, 54-hunk refute-first verification of the applied edits; ~3.4M of it lost to a usage-limit kill mid-verification (resumed from the journal)</td></tr>
+          <tr><td>Postmortem</td><td class="num">~0.17M est.</td><td>—</td><td>CAPTURE. Two memory amendments applied (D-T7; piped exit status); three governance edits red-teamed and sent to Sammy as a PR</td></tr>
         </tbody>
       </table>
     </div>
@@ -453,7 +452,7 @@
 
   <section class="section">
     <h2>Filed, no story card</h2>
-    <p class="sub">Twelve open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; four are new from this week; one is a tracking issue spanning nine independent gaps.</p>
+    <p class="sub">Thirteen open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; six came out of E2-S2, E2-S5 and E9-S10; one is a tracking issue spanning nine independent gaps.</p>
     <div class="issues">
       <div class="issue new"><span class="n">#476</span> — Persona set to "In system prompt" is silently dropped from solo prompts. Found by E2-S2's own fixtures.</div>
       <div class="issue new"><span class="n">#477</span> — Character's note rendering to whitespace ships a blank system message at every depth except 0.</div>
@@ -461,14 +460,16 @@
       <div class="issue"><span class="n">#454</span> — Group feature-parity debt. Nine gaps; each a product decision, not a bug queue.</div>
       <div class="issue"><span class="n">#457</span> — <s>Recall-boundary pair</s> — CLOSED by PR #482, deployed 28 Aug.</div>
       <div class="issue"><span class="n">#466 · #467 · #470</span> — Change emitted group text, so they oblige a golden re-cut when fixed.</div>
-      <div class="issue new"><span class="n">#509</span> — Anthropic providers hoist every system-role message to the top-level system block, so the character's note never injects at depth and post-history instructions are not last. Found by E8-S1; the OpenRouter path bypasses it.</div>
+      <div class="issue"><span class="n">#509</span> — <s>Depth injection destroyed on the anthropic and google families</s> — CLOSED by E9-S10 (backend #87, deployed 6 Sep).</div>
+      <div class="issue new"><span class="n">#513 · ggbc-backend #86 · #85</span> — Text-completion mode cannot produce a token on any provider: the client omits the provider in text mode and the backend forwards <code>messages</code> to <code>/completions</code>; the endpoint has no tests. Found by E9-S10's review.</div>
+      <div class="issue new"><span class="n">#515</span> — The frontend catalog offers seven providers the backend cannot route (cohere among them). Found by E9-S10's QA.</div>
       <div class="issue new"><span class="n">#495</span> — E4-S0's sticky tie-break cites an id-sharing justification that died at the 2026-08-07 cutover. Three carriers, two sha256-guarded across both repos. Not a live defect.</div>
       <div class="issue"><span class="n">#468 · #469 · #471</span> — Zero-turn prompt · image exemption vs fold · unguarded storage write.</div>
     </div>
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 5 Sep 2026 (E9-S10 loop 1 merged, loop 2 at the merge gate).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 6 Sep 2026 (E9-S10 closed).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 

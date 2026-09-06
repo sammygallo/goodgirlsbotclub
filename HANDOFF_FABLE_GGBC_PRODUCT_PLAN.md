@@ -5,8 +5,8 @@
 > Phase 5.3 swap-vs-join SHIPPED 2026-04-11 (PR #59; the "Not started / no cardMode in codebase" rows below were false when written and blocked pipeline run E9-S1) ·
 > Phase 6.1 themes SHIPPED ~May 2026 (editor, CRUD, import/export, gallery all verified in code 2026-07-31) ·
 > Phase 10.1 local models SHIPPED April 2026 (#58 merged) ·
-> text-completion API SHIPPED pre-roadmap (E9-S4).
-> Phase 6.3 mobile UX audited and present · Phase 10.2–10.3 cloud providers SHIPPED (`ecf1f90e`) · Selfies Phase C SHIPPED 2026-08-23 · the "Phase 10.1 gates Phase 10.2" dependency and its merge instructions are VOID · `project_roadmap_status.md` is NOT authoritative.
+> text-completion API SHIPPED pre-roadmap (E9-S4) — *code only: the mode cannot produce a token on any provider (#513 / ggbc-backend#86, found 2026-09-05).*
+> Phase 6.3 mobile UX audited and present · Phase 10.2–10.3 cloud providers SHIPPED (`ecf1f90e`; *2026-09-06: cohere is unroutable, #515, and text-completion mode is broken, #513 / ggbc-backend#86*) · Selfies Phase C SHIPPED 2026-08-23 · the "Phase 10.1 gates Phase 10.2" dependency and its merge instructions are VOID · `project_roadmap_status.md` is NOT authoritative.
 > **End-to-end sweep completed 2026-08-28** (not claim-scoped — every status row in this file was ground-truthed). Do not act on any status row below without re-checking `git`/`gh`.
 
 **Date:** 2026-08-24  
@@ -142,7 +142,7 @@ Reference: `project_roadmap_status.md` (audited 2026-04-12; note: may be stale o
 **Partial/Next:**
 - ~~Phase 6.1: Theme customization (8 CSS vars exist; need color picker UI, import/export)~~ — SHIPPED ~May 2026, editor/CRUD/import-export/gallery all verified in code 2026-07-31 (corrected 2026-08-28)
 - ~~Phase 6.3: Mobile UX (gestures/PWA/haptics not audited)~~ — audited 2026-08-26 and found present in code (`src/utils/haptics.ts`, `src/hooks/usePwaInstall.ts`, `src/hooks/useSwipeSidebar.ts`); memory row 6.3 corrected the same day (corrected 2026-08-28)
-- ~~Phase 10.2–10.3: Additional cloud providers, text completion API~~ — BOTH shipped: providers in `ecf1f90e` (deepseek/cohere/perplexity live in `providerCatalog.ts`; E9-S3 re-scoped 2026-08-26 for this reason), text completion pre-roadmap as E9-S4 (corrected 2026-08-28)
+- ~~Phase 10.2–10.3: Additional cloud providers, text completion API~~ — BOTH shipped: providers in `ecf1f90e` (deepseek/cohere/perplexity live in `providerCatalog.ts`; E9-S3 re-scoped 2026-08-26 for this reason), text completion pre-roadmap as E9-S4 (corrected 2026-08-28; *2026-09-06: code only — the mode cannot produce a token, #513 / ggbc-backend#86; and cohere is one of seven catalog providers the backend cannot route, #515*)
 
 **Not Started:**
 - ~~Phase 5.3: Swap vs join card-handling~~ (SHIPPED 2026-04-11, PR #59 — corrected 2026-08-28)

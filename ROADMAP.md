@@ -111,10 +111,10 @@ Features are grouped into **phases** ordered by user impact and dependency. Each
 - Fixed-message-count fallback still available.
 - Live token estimate surfaced in the Generation Settings header.
 
-### 3.5 Instruct Mode (Text Completion APIs) ✅
+### 3.5 Instruct Mode (Text Completion APIs) ✅ *(the client-side flatten; the text-completion API delivery path is broken — see §10.3)*
 - `src/utils/instructTemplates.ts` with 7 built-in templates: Alpaca, ChatML, Llama 3, Mistral, Vicuna, Metharme/Pygmalion, Raw.
 - Toggle + template selector + extra stop strings in the Instruct tab.
-- When enabled, chat messages are flattened into a single text-completion prompt with role prefixes/suffixes.
+- When enabled, chat messages are flattened into a single text-completion prompt with role prefixes/suffixes. ⚠️ **2026-09-06:** the ✅ covers this client-side template/flatten code (which also runs in chat mode whenever instruct is enabled, `chatStore.ts:3325`). The **Text Completion API delivery path** — completion mode `text`, posting `body.prompt` to `/api/backends/text-completions/generate` — cannot yield a token on any provider today: the client's text branch never sends `chat_completion_source`, so the backend defaults it to openai ([#513](https://github.com/sammygallo/goodgirlsbotclub/issues/513)), and the backend forwards the body as `messages` to the legacy `/completions` endpoint, which rejects it ([ggbc-backend#86](https://github.com/sammygallo/ggbc-backend/issues/86)); the route has no tests ([ggbc-backend#85](https://github.com/sammygallo/ggbc-backend/issues/85)). Found 2026-09-05 by E9-S10's review; pre-existing. See §10.3.
 
 ---
 
@@ -298,13 +298,13 @@ Features are grouped into **phases** ordered by user impact and dependency. Each
 - **Work:** Add OpenAI-compatible custom endpoint configuration (covers Ollama, LM Studio, llama.cpp server, KoboldCpp, etc.). URL + optional API key input. Model list auto-fetch where supported.
 
 ### 10.2 Additional Cloud Providers — mostly shipped
-- **SHIPPED 2026-04-11** in `ecf1f90e` (nineteen minutes after the 5.3 commit): DeepSeek, Cohere and Perplexity. `src/api/providerCatalog.ts` now carries 44 provider entries including `deepseek`, `cohere`, `perplexity` and `fireworks`.
-- **Actually remaining, and it is not "add providers":** none of the shipped providers has a `profileForProvider` case (`src/utils/tokenizer.ts:33-46` maps only `openai`/`groq`/`mistralai`/`openrouter`/`claude`/`makersuite`), so every one of them silently falls through to the `generic` 3.8 chars-per-token profile — over-pricing history and shrinking the usable context window with no visible error. AI Horde exists only as an image backend. Tracked as roadmap v3 **E9-S3**, re-scoped accordingly.
+- **SHIPPED 2026-04-11** in `ecf1f90e` (nineteen minutes after the 5.3 commit): DeepSeek, Cohere and Perplexity. *(2026-09-06: shipped in the frontend catalog; the backend relay routes DeepSeek and Perplexity but **not Cohere** — one of seven catalog providers `ggbc-backend` does not register as a `chat_completion_source` (it answers "not yet supported"; the backend's only Cohere wiring is embeddings), [#515](https://github.com/sammygallo/goodgirlsbotclub/issues/515), filed 2026-09-05.)* `src/api/providerCatalog.ts` now carries 44 provider entries including `deepseek`, `cohere`, `perplexity` and `fireworks`.
+- **Actually remaining, and it is not "add providers":** none of the shipped providers has a `profileForProvider` case (`src/utils/tokenizer.ts:33-46` maps only `openai`/`groq`/`mistralai`/`openrouter`/`claude`/`makersuite`), so every one of them silently falls through to the `generic` 3.8 chars-per-token profile — over-pricing history and shrinking the usable context window with no visible error. AI Horde exists only as an image backend. Tracked as roadmap v3 **E9-S3**, re-scoped accordingly. *(2026-09-06: for `cohere` it **is** "add a provider" on the backend side — see [#515](https://github.com/sammygallo/goodgirlsbotclub/issues/515) — before its tokenizer case matters.)*
 
-### 10.3 Text Completion API Support ✅
-- **SHIPPED before roadmap v3** (verified in code 2026-08-24): `CompletionMode = 'chat' | 'text'` (`generationStore.ts:94`), `isTextCompletionMode()` through all six generate paths, client posting `body.prompt`, backend route live.
+### 10.3 Text Completion API Support ✅ (code) — ⚠️ mode non-functional as of 2026-09-05 (#513 / ggbc-backend#86)
+- **SHIPPED before roadmap v3** (verified in code 2026-08-24): `CompletionMode = 'chat' | 'text'` (`generationStore.ts:94`), `isTextCompletionMode()` through all six generate paths, client posting `body.prompt`, backend route live. **Amended 2026-09-06 — code-present, not working:** E9-S10's review (2026-09-05) found the mode cannot produce a token on any provider, two pre-existing bugs on `main`: the client's text branch never sends `chat_completion_source` (`src/api/client.ts:1565-1575`), so the backend defaults the request to the openai provider ([#513](https://github.com/sammygallo/goodgirlsbotclub/issues/513)); and the backend coerces `prompt` back into `messages` (`app/routers/generation.py:316-318`) and forwards that to the legacy `/completions` endpoint (`:330`/`:347`), which rejects it ([ggbc-backend#86](https://github.com/sammygallo/ggbc-backend/issues/86)); the route has zero tests ([ggbc-backend#85](https://github.com/sammygallo/ggbc-backend/issues/85)). The ✅ above is for the code's existence, not for a working mode.
 - ⚠️ The stale "Gap" line below is what carried into roadmap v3 as story E9-S4 and had to be withdrawn.
-- **Superseded Gap:** Only chat completion format.
+- **Superseded Gap** *(operationally un-superseded until #513 / ggbc-backend#86 are fixed)*: Only chat completion format.
 - **ST Feature:** Full text completion support for local models.
 - **Work:** Text completion request builder. Instruct mode integration. Context template system. Model-specific tokenizer selection.
 
