@@ -1293,6 +1293,74 @@ describe('token breakdown — world-info per-entry records', () => {
     expect(dropped!.emittedTokens).toBeNull();
   });
 
+  it('solo: persona and unlabelled entries in wi.entries report their own wrapper kind', () => {
+    // FIX ROUND 2. A2 widened `WiEntryRecord.wrapper` from `WiWrapperKind`
+    // to `WiWrapperKind | null`, which removed tsc as an enforcer of this
+    // field on the solo RENDERED path (chatStore.ts's `wrapper: info?.wrapper
+    // ?? 'none'` in the `wi.entries` builder) — nothing asserted it, so
+    // `wrapper: null` and a hardcoded `wrapper: 'none'` both stayed green.
+    // Two active books, one persona-linked and one not, BOTH firing and
+    // BOTH surviving to `wi.entries` (no budget, nothing dropped) — solo
+    // only ever reaches 'none'/'persona' (see the group wrapper test below
+    // for the third, group-only 'owner' branch). KILLS: `wrapper: null` on
+    // this path, a hardcoded `wrapper: 'none'`, and a swapped/dropped
+    // persona branch.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-wrap-persona', [
+          mkEntry('e-wrap-persona', {
+            content: 'WRAP PERSONA: a note about the user, not the bot.',
+            constant: true,
+          }),
+        ]),
+        mkBook('b-wrap-plain', [
+          mkEntry('e-wrap-plain', {
+            content: 'WRAP PLAIN: an unlabelled note about the room.',
+            constant: true,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-wrap-persona', 'b-wrap-plain'],
+    });
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p-wrap',
+          name: 'Wren',
+          description: 'A night-shift cataloguer.',
+          descriptionPosition: 'in_prompt',
+          descriptionDepth: 4,
+          descriptionRole: 'system',
+          linkedBookIds: ['b-wrap-persona'],
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      activePersonaId: 'p-wrap',
+    });
+    const messages = [mkMsg('wr1', 'Where is the catalogue kept?')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    const persona = byId.get('e-wrap-persona');
+    const plain = byId.get('e-wrap-plain');
+    expect(persona, 'e-wrap-persona never produced a wi.entries record').toBeDefined();
+    expect(plain, 'e-wrap-plain never produced a wi.entries record').toBeDefined();
+    expect(persona!.wrapper, 'a persona-linked book must report the persona wrapper').toBe('persona');
+    expect(plain!.wrapper, 'an unlabelled book must report the none wrapper').toBe('none');
+    expect(persona!.wrapper).not.toBe(plain!.wrapper);
+  });
+
   it('per-entry bookId and pinned are real, not hardcoded', () => {
     // FIX ROUND 1, B3. Two entries from DIFFERENT books, one constant
     // (pinned), one not — chosen so bookId and pinned each have two
