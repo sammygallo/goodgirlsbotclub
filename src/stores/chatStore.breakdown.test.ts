@@ -1490,6 +1490,15 @@ describe('token breakdown — world-info per-entry records', () => {
     ).not.toBeNull();
     expect(trimmed!.emittedChars).not.toBeNull();
     expect(trimmed!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 20 });
+    // FIX ROUND 2. A2's `null` convention is reserved for "wrapWiContent
+    // never ran" (budget-dropped entries). This entry WAS rendered — the
+    // comment above and its non-null emittedTokens both say so — so `null`
+    // here would contradict its own record. e-trim-deep's book is a plain,
+    // non-persona book, so 'none' is the only correct value.
+    expect(
+      trimmed!.wrapper,
+      'a trimmed-from-history entry WAS rendered — wrapper must not be null'
+    ).toBe('none');
     // And it must never silently double up in the rendered set too.
     expect(
       breakdown.wi.entries.find((e) => e.entryId === 'e-trim-deep'),
