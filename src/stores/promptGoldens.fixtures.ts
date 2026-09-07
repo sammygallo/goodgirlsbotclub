@@ -2297,14 +2297,12 @@ export const PINS_ANCHORS: Record<number, string | [string, number]> = {
   1133: 'if (personaBookIdSet.has(m.bookId)) {',
   // E2-S4 PR1 turned `wiRendered` into a Map (per-entry render-time
   // tokens/chars/wrapper). The fingerprint reaches the DECLARATION itself
-  // (not just the comment above it) so the anchor still bites if the Map
-  // is ever swapped back to a Set or to a WeakMap — either would silently
-  // break the `.get(m)` reads that feed emittedTokens/emittedChars/wrapper.
-  // The trailing comment line is solo-specific wording (group's own copy
-  // reads "see solo's own copy of this comment for why" instead), which is
-  // what keeps the combined fingerprint solo-unique even though the bare
-  // declaration `const wiRendered = new Map<MatchedEntry, WiRenderInfo>();`
-  // occurs twice (once per builder).
+  // (not just the comment above it). The trailing comment line is
+  // solo-specific wording (group's own copy reads "see solo's own copy of
+  // this comment for why" instead), which is what keeps the combined
+  // fingerprint solo-unique even though the bare declaration
+  // `const wiRendered = new Map<MatchedEntry, WiRenderInfo>();` occurs
+  // twice (once per builder).
   1144:
     'read off THIS same `c` rather than a second call to wrapWiContent.\n' +
     '  const wiRendered = new Map<MatchedEntry, WiRenderInfo>();',
