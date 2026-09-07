@@ -2012,6 +2012,90 @@ describe('token breakdown — world-info per-entry records', () => {
     expect(record, 'e-depth-clamp never produced a wi.entries record').toBeDefined();
     expect(record!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 0 });
   });
+
+  it('group: an at-depth entry\'s reported placement.depth is floored, not the raw stored depth', () => {
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-gdepth-clamp', [
+          mkEntry('e-gdepth-clamp', {
+            content: 'Group depth-clamp lore.',
+            position: 'at_depth',
+            depth: 1.9,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-gdepth-clamp'],
+    });
+    const messages = [
+      mkMsg('gdc1', 'First.'),
+      mkMsg('gdc2', 'Second.', { isUser: false, name: 'Seraphina', characterAvatar: 'ser.png' }),
+    ];
+    const seraphina = mkChar({ name: 'Seraphina', avatar: 'ser.png' });
+    const marcus = mkChar({ name: 'Marcus', avatar: 'mar.png' });
+    const breakdown = createPromptBreakdown('group');
+    buildGroupConversationContext(
+      messages,
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      mkWiOut(messages),
+      true,
+      breakdown
+    );
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-gdepth-clamp');
+    expect(record, 'e-gdepth-clamp never produced a wi.entries record').toBeDefined();
+    expect(record!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 1 });
+  });
+
+  it('a trim-cut at-depth entry\'s reported placement.depth is floored, not the raw stored depth', () => {
+    resetStores();
+    secondExtContributions = [];
+    useGenerationStore.setState({
+      context: { ...DEFAULT_CONTEXT_CONFIG, maxTokens: 1600, responseReserve: 256, tokenAware: true },
+    });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-trim-depth-clamp', [
+          mkEntry('e-trim-depth-clamp', {
+            content: 'Lore at a fractional depth, old enough that the trim reaches it.',
+            position: 'at_depth',
+            depth: 20.7,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-trim-depth-clamp'],
+    });
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 24; i++) {
+      const isUser = i % 2 === 0;
+      messages.push(
+        mkMsg(`tdc${i}`, `Turn ${i}. ${'ledger '.repeat(20).trim()}`, {
+          isUser,
+          name: isUser ? 'User' : 'Ivy',
+        })
+      );
+    }
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    expect(breakdown.flags.droppedFromHistory, 'the trim did not bite — wrong fixture shape').toBeGreaterThan(0);
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find(
+      (e) => e.entryId === 'e-trim-depth-clamp'
+    );
+    expect(trimmed, 'e-trim-depth-clamp never produced a trimmedFromHistoryEntries record').toBeDefined();
+    expect(trimmed!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 20 });
+  });
 });
 
 // ---------------------------------------------------------------------------
