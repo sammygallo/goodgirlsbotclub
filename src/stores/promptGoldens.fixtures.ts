@@ -2296,12 +2296,18 @@ export const PINS_ANCHORS: Record<number, string | [string, number]> = {
   1131: 'const content = sub(m.entry.content);',
   1133: 'if (personaBookIdSet.has(m.bookId)) {',
   // E2-S4 PR1 turned `wiRendered` into a Map (per-entry render-time
-  // tokens/chars/wrapper) — the fingerprint now spans into the comment that
-  // explains why, which is solo-specific wording (group's copy differs, so
-  // this still occurs exactly once).
+  // tokens/chars/wrapper). The fingerprint reaches the DECLARATION itself
+  // (not just the comment above it) so the anchor still bites if the Map
+  // is ever swapped back to a Set or to a WeakMap — either would silently
+  // break the `.get(m)` reads that feed emittedTokens/emittedChars/wrapper.
+  // The trailing comment line is solo-specific wording (group's own copy
+  // reads "see solo's own copy of this comment for why" instead), which is
+  // what keeps the combined fingerprint solo-unique even though the bare
+  // declaration `const wiRendered = new Map<MatchedEntry, WiRenderInfo>();`
+  // occurs twice (once per builder).
   1144:
-    'must not be recorded as fired.\n' +
-    '  // A Map since E2-S4 PR1 (was a bare Set) — carries each',
+    'read off THIS same `c` rather than a second call to wrapWiContent.\n' +
+    '  const wiRendered = new Map<MatchedEntry, WiRenderInfo>();',
   1184: 'const description = sub(getCharacterField(character,',
   1195: 'const linkedStyleActive =',
   1205: 'const charSystemPromptOverride = genState.prompt.respectCharacterOverride',
