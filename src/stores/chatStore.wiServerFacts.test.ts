@@ -473,6 +473,56 @@ describe.each(SERVER_SITES)('server activation facts — $name stamps wi.server 
   });
 });
 
+describe('server activation facts — activationSource "server" implies a defined wi.server', () => {
+  it('sendMessage: a server-activated turn carries both activationSource "server" and a defined wi.server', async () => {
+    const CHAT_FILE = 'server-facts-invariant-sendMessage.jsonl';
+    arrangeEligibleChat(CHAT_FILE);
+    stubCommonEdges();
+    vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
+      entries: [ENTRY_DTO],
+      turnNo: 0,
+      activatedEntryIds: ['sf-entry-1'],
+      evictedEntryIds: [],
+    });
+
+    await useChatStore.getState().sendMessage('Invariant check.', CHAR);
+
+    const breakdown = useGenerationStore.getState().lastPromptBreakdown;
+    const isServerActivated = breakdown!.wi.activationSource === 'server';
+    expect(isServerActivated, 'sendMessage: activationSource is not "server" on this turn').toBe(true);
+    expect(
+      isServerActivated && breakdown!.wi.server !== undefined,
+      'sendMessage: activationSource is "server" but wi.server is undefined'
+    ).toBe(true);
+  });
+
+  it.each(SERVER_SITES)(
+    '$name: a server-activated turn carries both activationSource "server" and a defined wi.server',
+    async (site) => {
+      const CHAT_FILE = `server-facts-invariant-${site.name}.jsonl`;
+      arrangeEligibleChat(CHAT_FILE);
+      site.arrange();
+      stubCommonEdges();
+      vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
+        entries: [ENTRY_DTO],
+        turnNo: 0,
+        activatedEntryIds: ['sf-entry-1'],
+        evictedEntryIds: [],
+      });
+
+      await site.run();
+
+      const breakdown = useGenerationStore.getState().lastPromptBreakdown;
+      const isServerActivated = breakdown!.wi.activationSource === 'server';
+      expect(isServerActivated, `${site.name}: activationSource is not "server" on this turn`).toBe(true);
+      expect(
+        isServerActivated && breakdown!.wi.server !== undefined,
+        `${site.name}: activationSource is "server" but wi.server is undefined`
+      ).toBe(true);
+    }
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Client path — wi.server stays undefined
 // ---------------------------------------------------------------------------
