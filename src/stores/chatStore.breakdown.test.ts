@@ -1869,6 +1869,149 @@ describe('token breakdown — world-info per-entry records', () => {
       'wi.droppedEntries doubled across two finish passes'
     ).toBe(afterProbeDropped);
   });
+
+  it('solo: wi.entries rawTokens is the raw entry content, not the emitted string, on an entry a macro shrinks', () => {
+    const { breakdown } = runSolo('macro-writes');
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-macro');
+    expect(record, 'e-macro never produced a wi.entries record').toBeDefined();
+    const rawContent = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'b-macro')!
+      .entries.find((e) => e.id === 'e-macro')!.content;
+    expect(record!.rawTokens).toBe(estimateTokens(rawContent, breakdown.profile));
+    expect(record!.rawTokens, 'rawTokens equals emittedTokens').not.toBe(record!.emittedTokens);
+  });
+
+  it('group: wi.entries rawTokens is the raw entry content, not the emitted string, on a persona-wrapped entry', () => {
+    const { breakdown } = runGroup('wi-attribution');
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-persona');
+    expect(record, 'e-persona never produced a wi.entries record').toBeDefined();
+    expect(record!.wrapper).toBe('persona');
+    const rawContent = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'b-persona')!
+      .entries.find((e) => e.id === 'e-persona')!.content;
+    expect(record!.rawTokens).toBe(estimateTokens(rawContent, breakdown.profile));
+    expect(record!.rawTokens, 'rawTokens equals emittedTokens').not.toBe(record!.emittedTokens);
+  });
+
+  it('a trim-cut PERSONA-linked at-depth entry\'s rawTokens is the raw entry content, not the emitted string', () => {
+    resetStores();
+    secondExtContributions = [];
+    useGenerationStore.setState({
+      context: { ...DEFAULT_CONTEXT_CONFIG, maxTokens: 1600, responseReserve: 256, tokenAware: true },
+    });
+    const RAW_CONTENT = 'Lore at depth 20, about the user — old enough that the trim reaches it.';
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-rawpin-trim', [
+          mkEntry('e-rawpin-trim-deep', {
+            content: RAW_CONTENT,
+            position: 'at_depth',
+            depth: 20,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-rawpin-trim'],
+    });
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p-rawpin-trim',
+          name: 'Wren',
+          description: 'A night-shift cataloguer.',
+          descriptionPosition: 'in_prompt',
+          descriptionDepth: 4,
+          descriptionRole: 'system',
+          linkedBookIds: ['b-rawpin-trim'],
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      activePersonaId: 'p-rawpin-trim',
+    });
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 24; i++) {
+      const isUser = i % 2 === 0;
+      messages.push(
+        mkMsg(`rpt${i}`, `Turn ${i}. ${'ledger '.repeat(20).trim()}`, {
+          isUser,
+          name: isUser ? 'User' : 'Ivy',
+        })
+      );
+    }
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    expect(breakdown.flags.droppedFromHistory, 'the trim did not bite for this fixture').toBeGreaterThan(0);
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find(
+      (e) => e.entryId === 'e-rawpin-trim-deep'
+    );
+    expect(trimmed, 'e-rawpin-trim-deep never produced a trimmedFromHistoryEntries record').toBeDefined();
+    expect(trimmed!.wrapper).toBe('persona');
+    expect(trimmed!.rawTokens).toBe(estimateTokens(RAW_CONTENT, breakdown.profile));
+    expect(trimmed!.rawTokens, 'rawTokens equals emittedTokens').not.toBe(trimmed!.emittedTokens);
+  });
+
+  it('a budget-evicted entry rawTokens is the raw entry content, not a placeholder constant', () => {
+    const { breakdown } = runSolo('wi-budget-eviction');
+    const dropped = breakdown.wi.droppedEntries.find((e) => e.entryId === 'e-evicted');
+    expect(dropped, 'e-evicted never produced a droppedEntries record').toBeDefined();
+    const rawContent = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'b-budget')!
+      .entries.find((e) => e.id === 'e-evicted')!.content;
+    expect(dropped!.rawTokens).toBe(estimateTokens(rawContent, breakdown.profile));
+  });
+
+  it('group: a budget-evicted entry rawTokens is the raw entry content, not a placeholder constant', () => {
+    const { breakdown } = runGroup('wi-budget-eviction');
+    const dropped = breakdown.wi.droppedEntries.find((e) => e.entryId === 'e-gevicted');
+    expect(dropped, 'e-gevicted never produced a droppedEntries record').toBeDefined();
+    const rawContent = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'b-gbudget')!
+      .entries.find((e) => e.id === 'e-gevicted')!.content;
+    expect(dropped!.rawTokens).toBe(estimateTokens(rawContent, breakdown.profile));
+  });
+
+  it('solo: an at-depth entry\'s reported placement.depth is floored and clamped to zero, not the raw stored depth', () => {
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-depth-clamp', [
+          mkEntry('e-depth-clamp', {
+            content: 'Depth-clamp lore.',
+            position: 'at_depth',
+            depth: -3.7,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-depth-clamp'],
+    });
+    const messages = [mkMsg('dc1', 'Hello.')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-depth-clamp');
+    expect(record, 'e-depth-clamp never produced a wi.entries record').toBeDefined();
+    expect(record!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 0 });
+  });
 });
 
 // ---------------------------------------------------------------------------
