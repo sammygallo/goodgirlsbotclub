@@ -494,11 +494,9 @@ export interface ServerRetrievalResult {
   /**
    * `undefined` when the backend omitted the key (pre-E4-S0) OR sent an
    * array that is pure garbage (present on the wire but filters to nothing,
-   * e.g. every id came through non-string) — see RetrievalContextDTO
-   * .evictedEntryIds's own doc comment (api/client.ts) for the full
-   * absent/malformed-vs-`[]` contract this mirrors exactly. NOT required
-   * by the malformed-response guard below, same LANDMINE as `activations` —
-   * see that comment at the point of use.
+   * e.g. every id came through non-string). NOT required by the
+   * malformed-response guard below, same LANDMINE as `activations` — see
+   * that comment at the point of use.
    */
   evictedEntryIds?: string[];
   /** The budget PASSED to this call (`useWorldInfoStore.getState().tokenBudget`

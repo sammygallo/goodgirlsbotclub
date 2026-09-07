@@ -256,9 +256,10 @@ export interface ServerActivationFacts {
    *  request time. Never read live later — that is the staleness
    *  `responseReserve`'s doc comment exists to prevent. */
   budgetRequested: number;
-  /** `undefined` when the backend omitted the key (pre-E4-S0). NOT the same
-   *  as `[]`, which means the backend said nothing was evicted — mirrors
-   *  `RetrievalContextDTO.evictedEntryIds`'s own doc comment (api/client.ts). */
+  /** `undefined` when the backend omitted the key (pre-E4-S0) OR sent an
+   *  array that filters down to nothing (see serverRetrieval.ts's own
+   *  `evictedEntryIds` doc for the full contract). NOT the same as `[]`,
+   *  which means the backend said nothing was evicted. */
   evictedEntryIds?: string[];
   /** Provenance ONLY. Post-E4-S0 this is a SUBSET of the entries the server
    *  returned, so `activatedEntryIds` minus those entries is empty by
