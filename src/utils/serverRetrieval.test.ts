@@ -426,6 +426,32 @@ describe('tryServerRetrieval — network path', () => {
     expect(result!.evictedEntryIds).toEqual(['real-id', 'another-id']);
   });
 
+  it('a non-empty `evictedEntryIds` array that filters to nothing surfaces as undefined, not []', async () => {
+    // FIX ROUND 1, A1: `[null, null]` (or any array present on the wire but
+    // made entirely of non-string elements — a serialization regression is
+    // the realistic case) must NOT collapse to `[]`. `[]` is the positive
+    // fact "this backend reports eviction, and nothing was evicted" —
+    // asserting that fact off pure garbage is the exact absent-vs-empty
+    // hazard AC4 forbids, just fed by a different malformed shape than the
+    // non-array case above. Mutation-verified against the pre-fix
+    // `dto.evictedEntryIds.filter(isString)` (no undefined-on-empty-filter
+    // branch): that implementation returns `[]` here, so this test reds it.
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ev-garbage-entry-1', lorebook_id: 'ev-garbage-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ev-garbage-entry-1'],
+      evictedEntryIds: [null, null],
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-evicted-garbage.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(
+      result!.evictedEntryIds,
+      'an array that is non-empty on the wire but filters to empty must surface as undefined, not []'
+    ).toBeUndefined();
+  });
+
   it('reads a keyword firing from `activations`, never from the entry object itself', async () => {
     getRetrievalContext.mockResolvedValue({
       entries: [{ id: 'kw-entry-1', lorebook_id: 'kw-book-1', keys: ['k'], content: 'c' }],
