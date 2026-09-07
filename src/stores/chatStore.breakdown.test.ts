@@ -1561,6 +1561,11 @@ describe('token breakdown — world-info per-entry records', () => {
     // `null`, with the full suite green. KILLS: a constant-return
     // `placementForGroupEntry`, and independently, a null placement (both
     // mutation-verified by the reviewer before this fix).
+    //
+    // FIX ROUND 2 — the original fixture only reached 3 of the 5 positions
+    // (before_char, at_depth, after_an), leaving `after_char` and
+    // `before_an` free to be corrupted in GROUP_WI_SLOT_BY_POSITION with
+    // the suite green. e-gp-after-char and e-gp-before-an close the gap.
     resetStores();
     secondExtContributions = [];
     useWorldInfoStore.setState({
@@ -1569,6 +1574,8 @@ describe('token breakdown — world-info per-entry records', () => {
           mkEntry('e-gp-a', { content: 'Group stage A lore.', position: 'before_char' }),
           mkEntry('e-gp-b', { content: 'Group stage B lore.', position: 'at_depth', depth: 1 }),
           mkEntry('e-gp-c', { content: 'Group stage C lore.', position: 'after_an' }),
+          mkEntry('e-gp-after-char', { content: 'Group stage A lore, after char.', position: 'after_char' }),
+          mkEntry('e-gp-before-an', { content: 'Group stage A lore, before AN.', position: 'before_an' }),
         ]),
       ],
       activeBookIds: ['b-group-placement'],
@@ -1592,6 +1599,8 @@ describe('token breakdown — world-info per-entry records', () => {
     expect(byId.get('e-gp-a')?.placement).toEqual({ stage: 'A', sectionId: 'group_wi_before_char' });
     expect(byId.get('e-gp-b')?.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 1 });
     expect(byId.get('e-gp-c')?.placement).toEqual({ stage: 'C', sectionId: 'group_wi_after_an' });
+    expect(byId.get('e-gp-after-char')?.placement).toEqual({ stage: 'A', sectionId: 'group_wi_after_char' });
+    expect(byId.get('e-gp-before-an')?.placement).toEqual({ stage: 'A', sectionId: 'group_wi_before_an' });
     const stages = new Set(breakdown.wi.entries.map((e) => e.placement?.stage));
     expect(stages, 'not all three stages produced a placement').toEqual(new Set(['A', 'B', 'C']));
 
@@ -1607,6 +1616,8 @@ describe('token breakdown — world-info per-entry records', () => {
     for (const [id, sectionId, expectedStage] of [
       ['e-gp-a', 'group_wi_before_char', 'A'],
       ['e-gp-c', 'group_wi_after_an', 'C'],
+      ['e-gp-after-char', 'group_wi_after_char', 'A'],
+      ['e-gp-before-an', 'group_wi_before_an', 'A'],
     ] as const) {
       const entry = byId.get(id);
       expect(entry?.placement, `${id}: no placement recorded`).not.toBeNull();
