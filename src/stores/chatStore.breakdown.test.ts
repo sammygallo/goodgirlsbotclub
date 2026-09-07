@@ -216,6 +216,18 @@ function isWiId(id: string): boolean {
   return id.startsWith('wi_') || id.startsWith('group_wi_');
 }
 
+/** Sum of `estimateTokens` over just the constant+critical entries of one
+ *  book currently in the world-info store — the same computation
+ *  `applyTokenBudget` (worldInfoStore.ts) uses for `pinnedCost`. Used to pin
+ *  `wi.pinnedTokens` to a real, computed number rather than a range. */
+function pinnedTokensForBook(bookId: string, profile: PromptBreakdown['profile']): number {
+  const book = useWorldInfoStore.getState().books.find((b) => b.id === bookId);
+  if (!book) throw new Error(`no book "${bookId}" in the store`);
+  return book.entries
+    .filter((e) => e.constant || e.critical)
+    .reduce((sum, e) => sum + estimateTokens(e.content, profile), 0);
+}
+
 /**
  * The world-info headline, rebuilt from the slices rather than read off
  * `wi.emittedTokens`. Stage A sections are fragments of one message and are
@@ -1521,6 +1533,74 @@ describe('token breakdown — world-info per-entry records', () => {
     // Not the budget number itself — a hardcode that just echoed `budget`
     // would slip past a bare `toBeGreaterThan(0)`.
     expect(breakdown.wi.pinnedTokens).not.toBe(breakdown.wi.budget);
+    // FIX ROUND 2. `>0`/`!== budget` also passes `pinnedTokens = true` or
+    // `pinnedTokens = wiScanReport.totalTokens` (the adjacent-field
+    // copy-paste) — in THIS over-budget fixture the two happen to coincide
+    // (every budgetable entry gets dropped, so totalTokens === pinnedCost),
+    // which is exactly why the fits-budget test below exists too. Pin the
+    // exact computed value here as well, since it costs nothing.
+    expect(breakdown.wi.pinnedTokens).toBe(pinnedTokensForBook('b-budget', breakdown.profile));
+  });
+
+  it('wi.pinnedOverBudget is false, and wi.pinnedTokens is the pinned-only sum, when pinned entries fit the budget', () => {
+    // FIX ROUND 2. The test above only exercises the OVER-budget direction,
+    // and its `>0`/`!== budget` checks pass `pinnedOverBudget: true`
+    // (hardcoded) and `pinnedTokens: wiScanReport.totalTokens` (the
+    // adjacent-field copy-paste) unchanged — in that fixture every
+    // budgetable entry gets dropped, so totalTokens happens to equal
+    // pinnedCost too. A generous budget with ONE small pinned entry AND one
+    // surviving non-pinned entry pins the other boolean direction and makes
+    // totalTokens strictly greater than pinnedTokens, so the copy-paste
+    // mutation is now visible. KILLS: `pinnedOverBudget: true` (or any
+    // constant), and `pinnedTokens = wiScanReport.totalTokens`.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({ tokenBudget: 500 });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-wi-fits', [
+          mkEntry('e-pin-fits', {
+            content: 'PIN FITS: a short pinned note about the desk.',
+            constant: true,
+            order: 10,
+          }),
+          mkEntry('e-budgetable-fits', {
+            content: 'BUDGETABLE FITS: a second, non-pinned note that also survives the budget.',
+            constant: false,
+            critical: false,
+            keys: ['fits'],
+            order: 20,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-wi-fits'],
+    });
+    const messages = [mkMsg('wf1', 'Tell me about what fits.')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    expect(
+      breakdown.wi.pinnedOverBudget,
+      'one short pinned entry must fit comfortably under a 500-token budget'
+    ).toBe(false);
+    const expectedPinnedTokens = pinnedTokensForBook('b-wi-fits', breakdown.profile);
+    expect(breakdown.wi.pinnedTokens).toBe(expectedPinnedTokens);
+    // The surviving non-pinned entry must have actually been counted
+    // somewhere, i.e. this fixture isn't accidentally degenerate — proves
+    // totalTokens (pinnedCost + surviving budgetable cost) differs from
+    // pinnedTokens (pinnedCost alone), so a totalTokens/pinnedTokens
+    // mix-up cannot hide behind a fixture where the two coincide.
+    expect(
+      breakdown.wi.entries.find((e) => e.entryId === 'e-budgetable-fits'),
+      'e-budgetable-fits must survive the budget for this fixture to distinguish pinnedTokens from totalTokens'
+    ).toBeDefined();
   });
 
   it('group: wi.pinnedOverBudget and wi.pinnedTokens are real scan-report values, not hardcoded', () => {
@@ -1529,6 +1609,59 @@ describe('token breakdown — world-info per-entry records', () => {
     expect(breakdown.wi.pinnedOverBudget).toBe(true);
     expect(breakdown.wi.pinnedTokens).toBeGreaterThan(0);
     expect(breakdown.wi.pinnedTokens).not.toBe(breakdown.wi.budget);
+    // FIX ROUND 2 — same computed-value strengthening as solo's copy above.
+    expect(breakdown.wi.pinnedTokens).toBe(pinnedTokensForBook('b-gbudget', breakdown.profile));
+  });
+
+  it('group: wi.pinnedOverBudget is false, and wi.pinnedTokens is the pinned-only sum, when pinned entries fit the budget', () => {
+    // FIX ROUND 2 — group's own copy of the solo fits-budget test above.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({ tokenBudget: 500 });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-wi-fits-group', [
+          mkEntry('e-pin-fits-group', {
+            content: 'PIN FITS GROUP: a short pinned note about the desk.',
+            constant: true,
+            order: 10,
+          }),
+          mkEntry('e-budgetable-fits-group', {
+            content: 'BUDGETABLE FITS GROUP: a second, non-pinned note that also survives.',
+            constant: false,
+            critical: false,
+            keys: ['fits'],
+            order: 20,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-wi-fits-group'],
+    });
+    const messages = [mkMsg('wfg1', 'Tell me about what fits.')];
+    const seraphina = mkChar({ name: 'Seraphina', avatar: 'ser.png' });
+    const marcus = mkChar({ name: 'Marcus', avatar: 'mar.png' });
+    const breakdown = createPromptBreakdown('group');
+    buildGroupConversationContext(
+      messages,
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      mkWiOut(messages),
+      true,
+      breakdown
+    );
+    expect(
+      breakdown.wi.pinnedOverBudget,
+      'one short pinned entry must fit comfortably under a 500-token budget'
+    ).toBe(false);
+    const expectedPinnedTokens = pinnedTokensForBook('b-wi-fits-group', breakdown.profile);
+    expect(breakdown.wi.pinnedTokens).toBe(expectedPinnedTokens);
+    expect(
+      breakdown.wi.entries.find((e) => e.entryId === 'e-budgetable-fits-group'),
+      'e-budgetable-fits-group must survive the budget for this fixture to distinguish pinnedTokens from totalTokens'
+    ).toBeDefined();
   });
 
   it('group: owner, persona, and unlabelled entries report their own wrapper kind', () => {
