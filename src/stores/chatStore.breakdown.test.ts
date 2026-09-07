@@ -896,7 +896,7 @@ describe('token breakdown — group tags per emitted slot', () => {
 
   it('group: a budget-evicted entry carries wrapper: null, not the "none" result value', () => {
     // FIX ROUND 1, A2 — group's own copy of solo's droppedEntries.wrapper
-    // fix (chatStore.ts:3278). e-gevicted never reaches wrapWiContent at
+    // fix (chatStore.ts:3280). e-gevicted never reaches wrapWiContent at
     // all, so 'none' (a legal RESULT for a branch that ran) must not stand
     // in for "no branch ran."
     const { breakdown } = runGroup('wi-budget-eviction');
@@ -1360,7 +1360,7 @@ describe('token breakdown — world-info per-entry records', () => {
     // FIX ROUND 1, B3. `activationReason` is structurally `undefined` on
     // every CLIENT-scanned entry (see WiEntryRecord's own doc comment and
     // the test above) — the only path that ever sets it is `serverMatchedEntries`
-    // (chatStore.ts:1080's `?? scanMessagesForEntries(...)` skipped
+    // (chatStore.ts:1376's `?? scanMessagesForEntries(...)` skipped
     // entirely). Two entries with DIFFERENT reasons, matching the house's
     // own `server-matched-entries-grouped` fixture pattern, so a hardcoded
     // `activationReason: undefined` (or any single constant) cannot pass.
