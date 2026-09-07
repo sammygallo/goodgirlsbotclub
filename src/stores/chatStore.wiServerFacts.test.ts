@@ -262,6 +262,218 @@ describe('server activation facts — stamped on the object the store holds', ()
 });
 
 // ---------------------------------------------------------------------------
+// budgetRequested — captured at request time, never read live later
+// (FIX ROUND 1, B4)
+//
+// The "ordering" test above compares `budgetRequested` against
+// `useWorldInfoStore.getState().tokenBudget` read LIVE at assertion time —
+// which is also what the whole rest of the test's arrangement never
+// changes, so it cannot tell "captured at request time" apart from
+// "re-read at stamp time." Both `ServerRetrievalResult.budgetRequested`'s
+// and `ServerActivationFacts.budgetRequested`'s own doc comments say the
+// value must NOT be read live later — this is the dedicated test for that
+// invariant. Mutation-verified: changing serverRetrieval.ts's
+// `budgetRequested: tokenBudget` to `budgetRequested:
+// useWorldInfoStore.getState().tokenBudget` (the exact staleness the doc
+// comment forbids) left the "ordering" test above green.
+// ---------------------------------------------------------------------------
+
+describe('server activation facts — budgetRequested is captured at request time, not read live', () => {
+  it('a WI budget change mid-flight does not leak into the recorded budgetRequested', async () => {
+    const CHAT_FILE = 'server-facts-budget-staleness.jsonl';
+    arrangeEligibleChat(CHAT_FILE);
+    const SENT_BUDGET = 4096;
+    useWorldInfoStore.setState({ tokenBudget: SENT_BUDGET });
+    stubCommonEdges();
+    const getRetrievalContext = vi.spyOn(api, 'getRetrievalContext').mockImplementation(
+      async () => {
+        // Simulate the user changing the WI budget slider WHILE this
+        // request is in flight — the realistic window tryServerRetrieval's
+        // own eligibility-recheck comment describes.
+        useWorldInfoStore.setState({ tokenBudget: SENT_BUDGET + 777 });
+        return {
+          entries: [ENTRY_DTO],
+          turnNo: 0,
+          activatedEntryIds: ['sf-entry-1'],
+          evictedEntryIds: [],
+        };
+      }
+    );
+
+    await useChatStore.getState().sendMessage('Budget staleness check.', CHAR);
+
+    expect(getRetrievalContext).toHaveBeenCalledTimes(1);
+    // The call itself must have been made with the PRE-mutation budget —
+    // the request already left before the store changed.
+    expect(getRetrievalContext.mock.calls[0][2]).toBe(SENT_BUDGET);
+    const breakdown = useGenerationStore.getState().lastPromptBreakdown;
+    expect(
+      breakdown!.wi.server!.budgetRequested,
+      'budgetRequested drifted to the LIVE (post-mutation) store value instead of staying pinned to what was actually requested'
+    ).toBe(SENT_BUDGET);
+    expect(breakdown!.wi.server!.budgetRequested).not.toBe(SENT_BUDGET + 777);
+    // Sanity: the store really did change, so a pass here isn't just
+    // because nothing moved.
+    expect(useWorldInfoStore.getState().tokenBudget).toBe(SENT_BUDGET + 777);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// impersonate / editMessageAndRegenerate (FIX ROUND 1, B2)
+//
+// Every test above drives `sendMessage` only, even though this file's own
+// header names all three solo server-path call sites. Mutation-verified by
+// the round-1 review: deleting either site's `if (serverRetrieval) {
+// recordServerActivation(...) }` block outright, or stamping onto a fresh
+// disconnected `createPromptBreakdown('solo')` instead of the real
+// `breakdown`, left the whole suite green. The tests below give both sites
+// the identical real-store treatment `sendMessage` gets above, and add the
+// ineligible/null-path case (the guard-removal mutation) each site shares
+// with `sendMessage`'s own copy under "absent on every client-scanned turn".
+// ---------------------------------------------------------------------------
+
+type ServerSite = {
+  name: 'impersonate' | 'editMessageAndRegenerate';
+  /** Extra store setup this site needs beyond arrangeEligibleChat (a real
+   *  message to edit, for editMessageAndRegenerate). */
+  arrange: () => void;
+  run: () => Promise<void>;
+};
+
+const SERVER_SITES: ServerSite[] = [
+  {
+    name: 'impersonate',
+    arrange: () => {
+      // impersonate builds from whatever messages already exist; none
+      // required beyond arrangeEligibleChat's empty list.
+    },
+    run: async () => {
+      await useChatStore.getState().impersonate(CHAR);
+    },
+  },
+  {
+    name: 'editMessageAndRegenerate',
+    arrange: () => {
+      useChatStore.setState({ messages: [mkMsg('ef1', 'Edit target.')] });
+    },
+    run: async () => {
+      const target = useChatStore.getState().messages[0];
+      await useChatStore.getState().editMessageAndRegenerate(target.id, 'Edited content.', CHAR);
+    },
+  },
+];
+
+describe.each(SERVER_SITES)('server activation facts — $name stamps wi.server too', (site) => {
+  it('absent evictedEntryIds leaves wi.server.evictedEntryIds undefined', async () => {
+    const CHAT_FILE = `server-facts-${site.name}-absent.jsonl`;
+    arrangeEligibleChat(CHAT_FILE);
+    site.arrange();
+    stubCommonEdges();
+    const getRetrievalContext = vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
+      entries: [ENTRY_DTO],
+      turnNo: 0,
+      activatedEntryIds: ['sf-entry-1'],
+      // evictedEntryIds deliberately absent.
+    });
+
+    await site.run();
+
+    expect(
+      getRetrievalContext,
+      `${site.name} never attempted the server-path read`
+    ).toHaveBeenCalledTimes(1);
+    const breakdown = useGenerationStore.getState().lastPromptBreakdown;
+    expect(breakdown?.wi.server, `${site.name} never stamped wi.server at all`).toBeDefined();
+    expect(
+      breakdown!.wi.server!.evictedEntryIds,
+      'an absent key must surface as undefined, not []'
+    ).toBeUndefined();
+    expect(breakdown!.wi.server!.activatedEntryIds).toEqual(['sf-entry-1']);
+    expect(breakdown!.wi.activationSource).toBe('server');
+  });
+
+  it('evictedEntryIds: [] survives onto wi.server.evictedEntryIds as [], not undefined', async () => {
+    const CHAT_FILE = `server-facts-${site.name}-empty.jsonl`;
+    arrangeEligibleChat(CHAT_FILE);
+    site.arrange();
+    stubCommonEdges();
+    vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
+      entries: [ENTRY_DTO],
+      turnNo: 0,
+      activatedEntryIds: ['sf-entry-1'],
+      evictedEntryIds: [],
+    });
+
+    await site.run();
+
+    const breakdown = useGenerationStore.getState().lastPromptBreakdown;
+    expect(breakdown?.wi.server?.evictedEntryIds).toEqual([]);
+    expect(breakdown!.wi.server!.evictedEntryIds).not.toBeUndefined();
+  });
+
+  it('a non-empty eviction list survives onto wi.server.evictedEntryIds untouched', async () => {
+    const CHAT_FILE = `server-facts-${site.name}-real-eviction.jsonl`;
+    arrangeEligibleChat(CHAT_FILE);
+    site.arrange();
+    stubCommonEdges();
+    vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
+      entries: [ENTRY_DTO],
+      turnNo: 0,
+      activatedEntryIds: ['sf-entry-1'],
+      evictedEntryIds: ['sf-entry-2'],
+    });
+
+    await site.run();
+
+    const breakdown = useGenerationStore.getState().lastPromptBreakdown;
+    expect(breakdown!.wi.server!.evictedEntryIds).toEqual(['sf-entry-2']);
+  });
+
+  it('a null tryServerRetrieval result (ineligible) leaves wi.server undefined — KILLS dropping the `if (serverRetrieval)` guard', async () => {
+    const CHAT_FILE = `server-facts-${site.name}-ineligible.jsonl`;
+    arrangeEligibleChat(CHAT_FILE);
+    site.arrange();
+    const { usePersonaStore } = await import('./personaStore');
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p1',
+          name: 'Wren',
+          description: 'irrelevant',
+          descriptionPosition: 'before_char',
+          descriptionDepth: 4,
+          descriptionRole: 'system',
+          linkedBookIds: ['sf-book-1'],
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      activePersonaId: 'p1',
+    });
+    stubCommonEdges();
+    const getRetrievalContext = vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
+      entries: [ENTRY_DTO],
+      turnNo: 0,
+      activatedEntryIds: ['sf-entry-1'],
+      evictedEntryIds: [],
+    });
+
+    await site.run();
+
+    expect(
+      getRetrievalContext,
+      `${site.name} called the server-retrieval endpoint on an ineligible chat`
+    ).not.toHaveBeenCalled();
+    const breakdown = useGenerationStore.getState().lastPromptBreakdown;
+    expect(
+      breakdown!.wi.server,
+      `wi.server was stamped even though tryServerRetrieval returned null at ${site.name}`
+    ).toBeUndefined();
+    expect(breakdown!.wi.activationSource).toBe('client');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Client path — wi.server stays undefined
 // ---------------------------------------------------------------------------
 
