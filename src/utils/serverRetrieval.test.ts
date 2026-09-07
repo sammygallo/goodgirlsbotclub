@@ -454,8 +454,7 @@ describe('tryServerRetrieval — network path', () => {
 
   it('a non-array, truthy `evictedEntryIds` (e.g. a mangled string) degrades to undefined, not []', async () => {
     // FIX ROUND 2. `Array.isArray(dto.evictedEntryIds) ? ... : undefined`
-    // guards every non-array shape identically, but only the falsy shapes
-    // (absent key, `null`) had a test. A truthy non-array — a comma-joined
+    // guards every non-array shape identically. A truthy non-array — a comma-joined
     // string from a serialization regression is the realistic case — took
     // the same `: undefined` branch and had nothing pinning it. KILLS:
     // collapsing every non-array shape to `[]` instead of `undefined`
