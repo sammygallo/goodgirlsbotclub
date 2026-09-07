@@ -64,7 +64,9 @@ const {
   finishConversationContext,
   useChatStore,
 } = await import('./chatStore');
-const { useGenerationStore, POST_HISTORY_SECTIONS } = await import('./generationStore');
+const { useGenerationStore, POST_HISTORY_SECTIONS, DEFAULT_CONTEXT_CONFIG } = await import(
+  './generationStore'
+);
 const { useWorldInfoStore } = await import('./worldInfoStore');
 const { usePersonaStore } = await import('./personaStore');
 const { extensionRegistry } = await import('../extensions/registry');
@@ -217,8 +219,7 @@ function isWiId(id: string): boolean {
 }
 
 /** Sum of `estimateTokens` over just the constant+critical entries of one
- *  book currently in the world-info store — the same computation
- *  `applyTokenBudget` (worldInfoStore.ts) uses for `pinnedCost`. Used to pin
+ *  book currently in the world-info store. Used to pin
  *  `wi.pinnedTokens` to a real, computed number rather than a range. */
 function pinnedTokensForBook(bookId: string, profile: PromptBreakdown['profile']): number {
   const book = useWorldInfoStore.getState().books.find((b) => b.id === bookId);
@@ -1518,6 +1519,68 @@ describe('token breakdown — world-info per-entry records', () => {
     ).toBeUndefined();
   });
 
+  it('a trim-cut PERSONA-linked at-depth entry reports wrapper "persona" in wi.trimmedFromHistoryEntries', () => {
+    resetStores();
+    secondExtContributions = [];
+    useGenerationStore.setState({
+      context: { ...DEFAULT_CONTEXT_CONFIG, maxTokens: 1600, responseReserve: 256, tokenAware: true },
+    });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-trim-persona', [
+          mkEntry('e-trim-persona-deep', {
+            content: 'Lore at depth 20, about the user — old enough that the trim reaches it.',
+            position: 'at_depth',
+            depth: 20,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-trim-persona'],
+    });
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p-trim',
+          name: 'Wren',
+          description: 'A night-shift cataloguer.',
+          descriptionPosition: 'in_prompt',
+          descriptionDepth: 4,
+          descriptionRole: 'system',
+          linkedBookIds: ['b-trim-persona'],
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      activePersonaId: 'p-trim',
+    });
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 24; i++) {
+      const isUser = i % 2 === 0;
+      messages.push(
+        mkMsg(`tp${i}`, `Turn ${i}. ${'ledger '.repeat(20).trim()}`, {
+          isUser,
+          name: isUser ? 'User' : 'Ivy',
+        })
+      );
+    }
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    expect(breakdown.flags.droppedFromHistory, 'the trim did not bite — wrong fixture shape').toBeGreaterThan(0);
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find(
+      (e) => e.entryId === 'e-trim-persona-deep'
+    );
+    expect(trimmed, 'e-trim-persona-deep never produced a trimmedFromHistoryEntries record').toBeDefined();
+    expect(trimmed!.wrapper).toBe('persona');
+  });
+
   it('wi.pinnedOverBudget and wi.pinnedTokens are real scan-report values, not hardcoded', () => {
     // FIX ROUND 1, B3. Both fields are pure copy-throughs from
     // `wiScanReport` with no prior test — `false`/`0` passes the whole
@@ -1533,7 +1596,7 @@ describe('token breakdown — world-info per-entry records', () => {
     // Not the budget number itself — a hardcode that just echoed `budget`
     // would slip past a bare `toBeGreaterThan(0)`.
     expect(breakdown.wi.pinnedTokens).not.toBe(breakdown.wi.budget);
-    // FIX ROUND 2. `>0`/`!== budget` also passes `pinnedTokens = true` or
+    // FIX ROUND 2. `>0`/`!== budget` also passes
     // `pinnedTokens = wiScanReport.totalTokens` (the adjacent-field
     // copy-paste) — in THIS over-budget fixture the two happen to coincide
     // (every budgetable entry gets dropped, so totalTokens === pinnedCost),
