@@ -167,6 +167,9 @@ export function withHistoryRole(
  * renders with no header at all, same as `'none'`. Always read off the
  * branch that already ran (the wrapper never gets re-derived from the
  * rendered string after the fact) — see WiEntryRecord's own doc comment.
+ * `'none'` is itself a legal RESULT here (the branch ran and produced no
+ * header) — it is NOT the value used for an entry `wrapWiContent` never
+ * reached at all; that case is `WiEntryRecord.wrapper: null`, one level up.
  */
 export type WiWrapperKind = 'none' | 'persona' | 'owner';
 
@@ -221,7 +224,13 @@ export interface WiEntryRecord {
    *  even though its content did not make the final prompt: it DID reach a
    *  wi_at_depth slot before the trim cut the message carrying it. */
   placement: WiEntryPlacement | null;
-  wrapper: WiWrapperKind;
+  /** `null` — never `'none'` — when the entry was never rendered at all
+   *  (evicted by the WI token budget before `wrapWiContent` ever ran on it,
+   *  `droppedEntries`): `'none'` is a legal RESULT for an entry that DID
+   *  reach `wrapWiContent` and took its no-header branch, and the two must
+   *  stay distinguishable — same null-vs-zero rule as `emittedTokens` /
+   *  `emittedChars` / `placement` above, and for the identical reason. */
+  wrapper: WiWrapperKind | null;
   /** `MatchedEntry.activationReason` — see that field's own doc comment.
    *  `undefined` on every CLIENT-scanned turn: the client scanner computes
    *  no activation reason at all (structural, not a gap — worldInfoStore.ts). */

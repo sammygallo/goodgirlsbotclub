@@ -2297,7 +2297,9 @@ export function finishConversationContext(
     // Budget-evicted entries never reach `wrapWiContent` at all — the scan's
     // own token budget (worldInfoStore.ts's applyTokenBudget) drops them
     // before position-grouping ever sees them, so there is no rendered
-    // string to measure and no placement to report.
+    // string to measure and no placement to report. Same reasoning applies
+    // to `wrapper`: no branch of `wrapWiContent` ran, so it is `null`, not
+    // the legal-result value `'none'` a rendered-but-unwrapped entry gets.
     out.wi.droppedEntries = wiScanReport.dropped.map((m): WiEntryRecord => ({
       entryId: m.entry.id,
       bookId: m.bookId,
@@ -2305,7 +2307,7 @@ export function finishConversationContext(
       emittedChars: null,
       rawTokens: estimateTokens(m.entry.content, tokenProfile),
       placement: null,
-      wrapper: 'none',
+      wrapper: null,
       activationReason: m.activationReason,
       pinned: m.entry.constant || m.entry.critical,
     }));
@@ -3267,7 +3269,7 @@ CONTENT RULES:
       };
     });
     // Budget-evicted entries never reach `wrapWiContent` — see solo's own
-    // copy of this comment for the full reasoning.
+    // copy of this comment for the full reasoning, `wrapper: null` included.
     breakdownOut.wi.droppedEntries = wiScanReport.dropped.map((m): WiEntryRecord => ({
       entryId: m.entry.id,
       bookId: m.bookId,
@@ -3275,7 +3277,7 @@ CONTENT RULES:
       emittedChars: null,
       rawTokens: tk(m.entry.content),
       placement: null,
-      wrapper: 'none',
+      wrapper: null,
       activationReason: m.activationReason,
       pinned: m.entry.constant || m.entry.critical,
     }));
