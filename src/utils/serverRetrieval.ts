@@ -491,6 +491,18 @@ export interface ServerRetrievalResult {
   matchedEntries: MatchedEntry[];
   turnNo: number;
   activatedEntryIds: string[];
+  /**
+   * `undefined` when the backend omitted the key (pre-E4-S0) — see
+   * RetrievalContextDTO.evictedEntryIds's own doc comment (api/client.ts)
+   * for the full absent-vs-`[]` contract this mirrors exactly. NOT required
+   * by the malformed-response guard below, same LANDMINE as `activations` —
+   * see that comment at the point of use.
+   */
+  evictedEntryIds?: string[];
+  /** The budget PASSED to this call (`useWorldInfoStore.getState().tokenBudget`
+   *  at request time) — not re-read live later. Callers stamp this straight
+   *  onto `ServerActivationFacts.budgetRequested` (promptBreakdown.ts). */
+  budgetRequested: number;
 }
 
 /**
@@ -572,10 +584,23 @@ export async function tryServerRetrieval(
       const matched = dtoToMatchedEntry(rawEntry, dto.activations);
       if (matched) matchedEntries.push(matched);
     }
+    // Same LANDMINE as `dto.activations` above, and for the identical
+    // reason: `dto.evictedEntryIds` is intentionally NOT required by the
+    // malformed-response guard. Requiring it would make a pre-E4-S0 backend
+    // (which never sends the key at all) fall through to `return null`,
+    // silently moving every eligible chat back to the client scanner.
+    // `undefined` (not `[]`) when the key is absent or malformed — collapsing
+    // the two would tell a caller "nothing was evicted" when the truth is
+    // "this backend never said."
+    const evictedEntryIds = Array.isArray(dto.evictedEntryIds)
+      ? dto.evictedEntryIds.filter((id): id is string => typeof id === 'string')
+      : undefined;
     return {
       matchedEntries,
       turnNo: dto.turnNo,
       activatedEntryIds: dto.activatedEntryIds.filter((id): id is string => typeof id === 'string'),
+      evictedEntryIds,
+      budgetRequested: tokenBudget,
     };
   } catch (err) {
     console.warn(
