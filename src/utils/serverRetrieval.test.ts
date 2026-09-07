@@ -452,6 +452,50 @@ describe('tryServerRetrieval — network path', () => {
     ).toBeUndefined();
   });
 
+  it('a non-array, truthy `evictedEntryIds` (e.g. a mangled string) degrades to undefined, not []', async () => {
+    // FIX ROUND 2. `Array.isArray(dto.evictedEntryIds) ? ... : undefined`
+    // guards every non-array shape identically, but only the falsy shapes
+    // (absent key, `null`) had a test. A truthy non-array — a comma-joined
+    // string from a serialization regression is the realistic case — took
+    // the same `: undefined` branch and had nothing pinning it. KILLS:
+    // collapsing every non-array shape to `[]` instead of `undefined`
+    // (e.g. `Array.isArray(x) ? x : (x === undefined ? undefined : [])`).
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ev-string-entry-1', lorebook_id: 'ev-string-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ev-string-entry-1'],
+      evictedEntryIds: 'ev-1,ev-2',
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-evicted-string.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(
+      result!.evictedEntryIds,
+      'a non-array, truthy evictedEntryIds must surface as undefined, not []'
+    ).toBeUndefined();
+  });
+
+  it('a non-array, falsy `evictedEntryIds` (`null`) degrades to undefined, not []', async () => {
+    // FIX ROUND 2. Same guard, the falsy-but-present non-array shape: a
+    // key present on the wire with a JSON `null` value (distinct from the
+    // key being absent entirely, already covered above).
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ev-null-entry-1', lorebook_id: 'ev-null-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ev-null-entry-1'],
+      evictedEntryIds: null,
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-evicted-null.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(
+      result!.evictedEntryIds,
+      'a null evictedEntryIds must surface as undefined, not []'
+    ).toBeUndefined();
+  });
+
   it('reads a keyword firing from `activations`, never from the entry object itself', async () => {
     getRetrievalContext.mockResolvedValue({
       entries: [{ id: 'kw-entry-1', lorebook_id: 'kw-book-1', keys: ['k'], content: 'c' }],
