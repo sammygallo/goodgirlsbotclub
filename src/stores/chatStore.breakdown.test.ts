@@ -998,6 +998,253 @@ describe('token breakdown — world info', () => {
 });
 
 // ---------------------------------------------------------------------------
+// World-info per-entry records (E2-S4 PR1)
+// ---------------------------------------------------------------------------
+
+describe('token breakdown — world-info per-entry records', () => {
+  it('two entries of different lengths in one section get two different emittedTokens', () => {
+    // KILLS: attributing the whole section's cost to the first entry, and
+    // splitting the section's total evenly across its entries. Bespoke
+    // fixture, deliberately a short entry and a much longer one, so the two
+    // token counts cannot coincide by rounding (as two similarly-sized real
+    // sentences briefly did against 'wi-budget-eviction' while drafting
+    // this test — hence not reusing that fixture here).
+    resetStores();
+    secondExtContributions = [];
+    const SHORT = 'Short lore.';
+    const LONG =
+      'A considerably longer piece of lore, padded well past the short ' +
+      "entry's length so the two entries' token costs cannot round to the " +
+      'same value no matter the tokenizer profile in play.';
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-distinct', [
+          mkEntry('e-short', { content: SHORT, position: 'before_char', order: 10 }),
+          mkEntry('e-long', { content: LONG, position: 'before_char', order: 20 }),
+        ]),
+      ],
+      activeBookIds: ['b-distinct'],
+    });
+    const messages = [mkMsg('d1', 'Hello.')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const a = breakdown.wi.entries.find((e) => e.entryId === 'e-short');
+    const b = breakdown.wi.entries.find((e) => e.entryId === 'e-long');
+    expect(a, 'e-short never produced a per-entry record').toBeDefined();
+    expect(b, 'e-long never produced a per-entry record').toBeDefined();
+    expect(a!.emittedTokens).not.toBeNull();
+    expect(b!.emittedTokens).not.toBeNull();
+    expect(
+      a!.emittedTokens,
+      'two entries of very different lengths reported the same emittedTokens — the section total was attributed to one entry, or split evenly'
+    ).not.toBe(b!.emittedTokens);
+  });
+
+  it('per-entry token capture does not double-execute WI macros (the double-execution canary)', () => {
+    // KILLS: measuring an entry's tokens by calling wrapWiContent(m) (or
+    // sub(m.entry.content)) a SECOND time instead of reading `c`, the string
+    // joinWi's own single pass already produced. 'macro-writes' WI entry
+    // e-macro carries a pure `{{incvar::ledger}}` accumulator, so a second
+    // execution anywhere in the pipeline leaves it at '2', not '1'. This is
+    // the same canary "the wrapper is one prepare and one committing finish"
+    // (above) already reads; reasserted here, scoped to this task, because a
+    // per-entry-measurement bug is exactly the kind of second read that
+    // counter exists to catch.
+    const { breakdown } = runSolo('macro-writes');
+    expect(
+      useChatStore.getState().chatVariables[GOLDEN_CHAT_FILE]?.ledger,
+      'the WI entry macro ran more than once — per-entry measurement re-rendered it'
+    ).toBe('1');
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-macro');
+    expect(record, 'e-macro never produced a per-entry record').toBeDefined();
+    expect(
+      record!.emittedTokens,
+      'a rendered entry must report a real per-entry token count, not null'
+    ).not.toBeNull();
+  });
+
+  it('produces distinct placements for Stage A, Stage B (wi_at_depth), and Stage C in one build', () => {
+    // KILLS: "only the joined Stage-A sections got records" — an
+    // implementation that built `wi.entries` off the four positional
+    // Stage-A/C joins alone and never cross-joined the at-depth insertion
+    // loop that produces Stage B's wi_at_depth class.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-placement', [
+          mkEntry('e-stage-a', { content: 'Stage A lore.', position: 'before_char' }),
+          mkEntry('e-stage-b', { content: 'Stage B lore.', position: 'at_depth', depth: 1 }),
+          mkEntry('e-stage-c', { content: 'Stage C lore.', position: 'after_an' }),
+        ]),
+      ],
+      activeBookIds: ['b-placement'],
+    });
+    const messages = [mkMsg('pl1', 'First.'), mkMsg('pl2', 'Second.', { isUser: false, name: 'Ivy' })];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    expect(byId.get('e-stage-a')?.placement).toEqual({ stage: 'A', sectionId: 'wi_before_char' });
+    expect(byId.get('e-stage-b')?.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 1 });
+    expect(byId.get('e-stage-c')?.placement).toEqual({ stage: 'C', sectionId: 'wi_after_an' });
+    const stages = new Set(breakdown.wi.entries.map((e) => e.placement?.stage));
+    expect(stages, 'not all three stages produced a placement').toEqual(new Set(['A', 'B', 'C']));
+  });
+
+  it('the join residual is real, non-zero, and never re-attributed to the entries', () => {
+    // KILLS: "fixing" the gap between Σ per-entry tokens and the section
+    // total by folding the separator/rounding residual back into one of the
+    // entries. estimateTokens is non-additive (ceil per part, plus a
+    // whitespace term that MERGES at the '\n\n' join seam), so a non-zero,
+    // unreconciled gap is CORRECT behaviour. Bespoke fixture (not a shared
+    // golden) so the exact joined string is known and the residual formula
+    // can be checked independently rather than merely asserted non-zero.
+    resetStores();
+    secondExtContributions = [];
+    const CONTENT_A =
+      'Lore part A: the reading room closes promptly at six every evening without exception.';
+    const CONTENT_B =
+      'Lore part B: the stacks close one hour later, at seven, for the night shift to finish.';
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-residual', [
+          mkEntry('e-residual-a', { content: CONTENT_A, position: 'before_char', order: 10 }),
+          mkEntry('e-residual-b', { content: CONTENT_B, position: 'before_char', order: 20 }),
+        ]),
+      ],
+      activeBookIds: ['b-residual'],
+    });
+    const messages = [mkMsg('r1', 'Hello.')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const a = breakdown.wi.entries.find((e) => e.entryId === 'e-residual-a');
+    const b = breakdown.wi.entries.find((e) => e.entryId === 'e-residual-b');
+    expect(a?.emittedTokens).not.toBeNull();
+    expect(b?.emittedTokens).not.toBeNull();
+    // Both entries are macro-free, non-persona, non-owner — wrapWiContent
+    // returns their content verbatim, so Σ per-entry tokens should equal
+    // estimateTokens summed over the two RAW strings independently.
+    const sumPerEntry = (a!.emittedTokens as number) + (b!.emittedTokens as number);
+    const sumStandalone =
+      estimateTokens(CONTENT_A, breakdown.profile) + estimateTokens(CONTENT_B, breakdown.profile);
+    expect(
+      sumPerEntry,
+      'a per-entry token was not measured off the entry\'s own wrapped string'
+    ).toBe(sumStandalone);
+    const joined = `${CONTENT_A}\n\n${CONTENT_B}`;
+    const expectedResidual = estimateTokens(joined, breakdown.profile) - sumStandalone;
+    expect(
+      expectedResidual,
+      'chose fixture content whose join residual happens to be zero — this test needs a real gap'
+    ).not.toBe(0);
+    expect(
+      breakdown.wi.emittedTokens,
+      'Σ per-entry tokens already equals the section headline — the non-additive join residual was reconciled away'
+    ).not.toBe(sumPerEntry);
+    expect(
+      breakdown.wi.emittedTokens - sumPerEntry,
+      'the gap must equal estimateTokens(joined) - Σ estimateTokens(part_i)'
+    ).toBe(expectedResidual);
+  });
+
+  it('a budget-evicted entry carries emittedTokens: null, never 0', () => {
+    // KILLS: defaulting an unrendered entry's cost to 0 — 0 is a legal
+    // EMITTED cost (an entry that renders to whitespace), so the two must
+    // stay distinguishable. e-evicted never reaches wrapWiContent at all —
+    // the WI budget drops it before position-grouping ever sees it.
+    const { breakdown } = runSolo('wi-budget-eviction');
+    const dropped = breakdown.wi.droppedEntries.find((e) => e.entryId === 'e-evicted');
+    expect(dropped, 'e-evicted never produced a droppedEntries record').toBeDefined();
+    expect(dropped!.emittedTokens).toBeNull();
+    expect(dropped!.emittedChars).toBeNull();
+    expect(dropped!.placement).toBeNull();
+    // rawTokens is ALWAYS computable — the WI budget's own cost function
+    // reads stored content directly and runs no macros.
+    expect(dropped!.rawTokens).toBeGreaterThan(0);
+    // And it must never silently collapse into the rendered set instead.
+    expect(
+      breakdown.wi.entries.find((e) => e.entryId === 'e-evicted'),
+      'a budget-evicted entry also appeared in wi.entries'
+    ).toBeUndefined();
+  });
+
+  it('group: owner, persona, and unlabelled entries report their own wrapper kind', () => {
+    // The three `wrapWiContent` branches group can reach — solo only ever
+    // reaches 'none'/'persona' (there is no "owned by someone else" concept
+    // with one character). e-marcus is owned by Marcus, a NON-speaking
+    // member of this room (Seraphina is the speaker); e-persona is
+    // persona-linked; e-shared is room-shared / unowned.
+    const { breakdown } = runGroup('wi-attribution');
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    expect(
+      byId.get('e-marcus')?.wrapper,
+      'a book owned by a non-speaking member must report the owner wrapper'
+    ).toBe('owner');
+    expect(
+      byId.get('e-persona')?.wrapper,
+      'a persona-linked book must report the persona wrapper'
+    ).toBe('persona');
+    expect(
+      byId.get('e-shared')?.wrapper,
+      'a room-shared, unowned book must report no wrapper'
+    ).toBe('none');
+  });
+
+  it("a collector run through two finish passes holds one pass's per-entry records, not their union", () => {
+    // Extends the existing collector-reuse invariant ("a collector describes
+    // one pass, not their union", above) to the three new arrays:
+    // beginBreakdownPass clears them at the START of every finish call, so
+    // the uncommitted probe pass and the committing pass must not accumulate.
+    resetStores();
+    secondExtContributions = [];
+    const input = SOLO_FIXTURES.find((f) => f.name === 'wi-budget-eviction')!.setup();
+    const prepared = prepareConversationContext(
+      input.messages,
+      input.character,
+      input.availableEmotions,
+      mkWiOut(input.messages),
+      input.serverMatchedEntries
+    );
+    const b = createPromptBreakdown('solo');
+    finishConversationContext(prepared, undefined, { commit: false, breakdownOut: b });
+    const afterProbeEntries = b.wi.entries.length;
+    const afterProbeDropped = b.wi.droppedEntries.length;
+    expect(afterProbeEntries, 'the probe pass produced no per-entry records at all').toBeGreaterThan(0);
+    expect(afterProbeDropped, 'the probe pass produced no dropped-entry records at all').toBeGreaterThan(0);
+    finishConversationContext(prepared, undefined, { commit: true, breakdownOut: b });
+    expect(b.wi.entries.length, 'wi.entries doubled across two finish passes').toBe(afterProbeEntries);
+    expect(
+      b.wi.droppedEntries.length,
+      'wi.droppedEntries doubled across two finish passes'
+    ).toBe(afterProbeDropped);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Flags, identity, and re-entry
 // ---------------------------------------------------------------------------
 
