@@ -774,10 +774,12 @@ export function recordAttachments(
  * MUST be called immediately after `finishConversationContext` returns and
  * BEFORE `setLastPromptBreakdown` — not because a later call would fail to
  * mutate the right object (both point at the same `PromptBreakdown`
- * reference either way), but because this is the one call in the sequence
- * with no test coverage forcing the order otherwise, and a call site that
- * drifted it later (e.g. inside the `if (stream)` block, after a chat abort
- * could skip it) would silently ship a breakdown with no server facts on it.
+ * reference either way, so no test in the suite forces this ordering any
+ * more than it forces `recordCallSiteTurn`'s or `recordAttachments`' —
+ * see chatStore.wiServerFacts.test.ts's own header for the honest version
+ * of that), but because a call site that drifted it later (e.g. inside the
+ * `if (stream)` block, after a chat abort could skip it) would silently
+ * ship a breakdown with no server facts on it.
  *
  * Never called when the client engine ran this turn (`tryServerRetrieval`
  * returned null) — `wi.server` stays undefined, which is what
