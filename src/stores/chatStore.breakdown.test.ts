@@ -1993,11 +1993,21 @@ describe('token breakdown — world-info per-entry records', () => {
             position: 'at_depth',
             depth: -3.7,
           }),
+          mkEntry('e-depth-floor', {
+            content: 'Depth-floor lore.',
+            position: 'at_depth',
+            depth: 3.5,
+          }),
         ]),
       ],
       activeBookIds: ['b-depth-clamp'],
     });
-    const messages = [mkMsg('dc1', 'Hello.')];
+    const messages = [
+      mkMsg('dc1', 'Hello.'),
+      mkMsg('dc2', 'Reply.', { isUser: false, name: 'Ivy' }),
+      mkMsg('dc3', 'Again.'),
+      mkMsg('dc4', 'And again.', { isUser: false, name: 'Ivy' }),
+    ];
     const breakdown = createPromptBreakdown('solo');
     buildConversationContext(
       messages,
@@ -2011,9 +2021,12 @@ describe('token breakdown — world-info per-entry records', () => {
     const record = breakdown.wi.entries.find((e) => e.entryId === 'e-depth-clamp');
     expect(record, 'e-depth-clamp never produced a wi.entries record').toBeDefined();
     expect(record!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 0 });
+    const floored = breakdown.wi.entries.find((e) => e.entryId === 'e-depth-floor');
+    expect(floored, 'e-depth-floor never produced a wi.entries record').toBeDefined();
+    expect(floored!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 3 });
   });
 
-  it('group: an at-depth entry\'s reported placement.depth is floored, not the raw stored depth', () => {
+  it('group: an at-depth entry\'s reported placement.depth is floored and clamped to zero, not the raw stored depth', () => {
     resetStores();
     secondExtContributions = [];
     useWorldInfoStore.setState({
@@ -2023,6 +2036,11 @@ describe('token breakdown — world-info per-entry records', () => {
             content: 'Group depth-clamp lore.',
             position: 'at_depth',
             depth: 1.9,
+          }),
+          mkEntry('e-gdepth-negative', {
+            content: 'Group negative-depth lore.',
+            position: 'at_depth',
+            depth: -2.5,
           }),
         ]),
       ],
@@ -2049,6 +2067,9 @@ describe('token breakdown — world-info per-entry records', () => {
     const record = breakdown.wi.entries.find((e) => e.entryId === 'e-gdepth-clamp');
     expect(record, 'e-gdepth-clamp never produced a wi.entries record').toBeDefined();
     expect(record!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 1 });
+    const clamped = breakdown.wi.entries.find((e) => e.entryId === 'e-gdepth-negative');
+    expect(clamped, 'e-gdepth-negative never produced a wi.entries record').toBeDefined();
+    expect(clamped!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 0 });
   });
 
   it('a trim-cut at-depth entry\'s reported placement.depth is floored, not the raw stored depth', () => {
