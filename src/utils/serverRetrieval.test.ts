@@ -365,6 +365,136 @@ describe('tryServerRetrieval — network path', () => {
     expect(result!.matchedEntries[0].matchedKeyCount).toBeUndefined();
   });
 
+  // -------------------------------------------------------------------
+  // E2-S4 PR1 — evictedEntryIds, sourced from RetrievalContextDTO's own
+  // additive field. Same shape as the `activations` block above and for the
+  // same reason: a pre-E4-S0 backend never sends the key, and that must
+  // NOT be treated as malformed (see the second LANDMINE comment at the
+  // call site).
+  // -------------------------------------------------------------------
+
+  it('backward-compat — behaves like today against a response with no `evictedEntryIds` key at all (pre-E4-S0 backend)', async () => {
+    // Mutation-verified: adding `Array.isArray(dto.evictedEntryIds)` to the
+    // malformed-response guard (the exact "fix" the LANDMINE comment
+    // forbids) turns this response's absent key into a `return null` and
+    // this test red — checked by hand while writing it, then reverted.
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'e4s0-entry-1', lorebook_id: 'e4s0-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['e4s0-entry-1'],
+      // no `evictedEntryIds` key at all.
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-no-evicted-key.jsonl');
+
+    // Non-null with a real entry, same load-bearing reason as the AC3 test
+    // above: a null result would ALSO read as "evictedEntryIds undefined."
+    expect(result).not.toBeNull();
+    expect(result!.matchedEntries).toHaveLength(1);
+    expect(
+      result!.evictedEntryIds,
+      'an absent key must surface as undefined, not []'
+    ).toBeUndefined();
+  });
+
+  it('reports an empty `evictedEntryIds: []` as [], never collapsed to undefined', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ev-empty-entry-1', lorebook_id: 'ev-empty-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ev-empty-entry-1'],
+      evictedEntryIds: [],
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-evicted-empty.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(result!.evictedEntryIds).toEqual([]);
+    expect(result!.evictedEntryIds).not.toBeUndefined();
+  });
+
+  it('filters non-string entries out of a malformed `evictedEntryIds` array rather than throwing', async () => {
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ev-mixed-entry-1', lorebook_id: 'ev-mixed-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ev-mixed-entry-1'],
+      evictedEntryIds: ['real-id', 42, null, 'another-id'],
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-evicted-mixed.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(result!.evictedEntryIds).toEqual(['real-id', 'another-id']);
+  });
+
+  it('a non-empty `evictedEntryIds` array that filters to nothing surfaces as undefined, not []', async () => {
+    // FIX ROUND 1, A1: `[null, null]` (or any array present on the wire but
+    // made entirely of non-string elements — a serialization regression is
+    // the realistic case) must NOT collapse to `[]`. `[]` is the positive
+    // fact "this backend reports eviction, and nothing was evicted" —
+    // asserting that fact off pure garbage is the exact absent-vs-empty
+    // hazard AC4 forbids, just fed by a different malformed shape than the
+    // non-array case above. Mutation-verified against the pre-fix
+    // `dto.evictedEntryIds.filter(isString)` (no undefined-on-empty-filter
+    // branch): that implementation returns `[]` here, so this test reds it.
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ev-garbage-entry-1', lorebook_id: 'ev-garbage-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ev-garbage-entry-1'],
+      evictedEntryIds: [null, null],
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-evicted-garbage.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(
+      result!.evictedEntryIds,
+      'an array that is non-empty on the wire but filters to empty must surface as undefined, not []'
+    ).toBeUndefined();
+  });
+
+  it('a non-array, truthy `evictedEntryIds` (e.g. a mangled string) degrades to undefined, not []', async () => {
+    // FIX ROUND 2. `Array.isArray(dto.evictedEntryIds) ? ... : undefined`
+    // guards every non-array shape identically. A truthy non-array — a comma-joined
+    // string from a serialization regression is the realistic case — took
+    // the same `: undefined` branch and had nothing pinning it. KILLS:
+    // collapsing every non-array shape to `[]` instead of `undefined`
+    // (e.g. `Array.isArray(x) ? x : (x === undefined ? undefined : [])`).
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ev-string-entry-1', lorebook_id: 'ev-string-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ev-string-entry-1'],
+      evictedEntryIds: 'ev-1,ev-2',
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-evicted-string.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(
+      result!.evictedEntryIds,
+      'a non-array, truthy evictedEntryIds must surface as undefined, not []'
+    ).toBeUndefined();
+  });
+
+  it('a non-array, falsy `evictedEntryIds` (`null`) degrades to undefined, not []', async () => {
+    // FIX ROUND 2. Same guard, the falsy-but-present non-array shape: a
+    // key present on the wire with a JSON `null` value (distinct from the
+    // key being absent entirely, already covered above).
+    getRetrievalContext.mockResolvedValue({
+      entries: [{ id: 'ev-null-entry-1', lorebook_id: 'ev-null-book-1', keys: ['k'], content: 'c' }],
+      turnNo: 3,
+      activatedEntryIds: ['ev-null-entry-1'],
+      evictedEntryIds: null,
+    });
+
+    const result = await tryServerRetrieval(AVATAR, 'chat-evicted-null.jsonl');
+
+    expect(result).not.toBeNull();
+    expect(
+      result!.evictedEntryIds,
+      'a null evictedEntryIds must surface as undefined, not []'
+    ).toBeUndefined();
+  });
+
   it('reads a keyword firing from `activations`, never from the entry object itself', async () => {
     getRetrievalContext.mockResolvedValue({
       entries: [{ id: 'kw-entry-1', lorebook_id: 'kw-book-1', keys: ['k'], content: 'c' }],

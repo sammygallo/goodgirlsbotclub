@@ -34,6 +34,7 @@ import {
 } from './tokenizer';
 import type { TokenizerProfile } from './tokenizer';
 import type { PromptSectionId } from '../stores/generationStore';
+import type { WiActivationReason } from '../stores/worldInfoStore';
 
 // ---------------------------------------------------------------------------
 // What a slice can be
@@ -150,6 +151,123 @@ export function withHistoryRole(
 ): SectionKind {
   if (kind.stage !== 'B' || kind.cls !== 'history') return kind;
   return { ...kind, role };
+}
+
+// ---------------------------------------------------------------------------
+// World-info per-entry records (E2-S4 PR1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which of `wrapWiContent`'s branches produced an entry's rendered string
+ * (chatStore.ts, solo's and group's own copies of that function name). Solo
+ * only ever reaches `'none'` or `'persona'`; group additionally reaches
+ * `'owner'` when an entry comes from a book owned by a DIFFERENT character
+ * than the current speaker (the "[Information about NAME, another character
+ * in this conversation]" header) — a book owned by the speaker themselves
+ * renders with no header at all, same as `'none'`. Always read off the
+ * branch that already ran (the wrapper never gets re-derived from the
+ * rendered string after the fact) — see WiEntryRecord's own doc comment.
+ * `'none'` is itself a legal RESULT here (the branch ran and produced no
+ * header) — it is NOT the value used for an entry `wrapWiContent` never
+ * reached at all; that case is `WiEntryRecord.wrapper: null`, one level up.
+ */
+export type WiWrapperKind = 'none' | 'persona' | 'owner';
+
+/**
+ * Where one world-info entry's rendered content landed in the assembled
+ * prompt — the per-entry sibling to `SectionKind`'s own Stage A/B/C split.
+ * Stage A and C entries carry the section id they were joined into (one of
+ * the four `wi_*` / `group_wi_*` slots); Stage B entries are always the
+ * `wi_at_depth` class, carrying the DEPTH the entry matched at (its own
+ * `entry.depth`, floored and clamped to 0 the same way the builders group
+ * at-depth entries for interleaved injection) rather than a message id — an
+ * at-depth insertion has none of its own to report, unlike a real history
+ * turn (see `SectionKind`'s own `messageId` comment).
+ */
+export type WiEntryPlacement =
+  | { stage: 'A'; sectionId: BreakdownSectionId }
+  | { stage: 'B'; cls: 'wi_at_depth'; depth: number }
+  | { stage: 'C'; sectionId: BreakdownSectionId };
+
+/**
+ * One world-info entry's own accounting — the per-entry sibling to the
+ * aggregate `PromptBreakdown.wi.emittedTokens`/`rawTokens`. Same rule as the
+ * rest of this module: nothing here is ever produced by re-wrapping an
+ * entry to measure it, because `wrapWiContent` runs macros and
+ * `{{setvar}}`/`{{incvar}}` writes are persisted into the chat — every
+ * `emittedTokens`/`emittedChars` value is read off a string `joinWi` had
+ * already produced for its own purposes.
+ */
+export interface WiEntryRecord {
+  entryId: string;
+  bookId: string;
+  /**
+   * Post-macro, post-wrapper tokens for THIS entry's own wrapped string,
+   * read off the string `joinWi` already produced. `null` — never `0` —
+   * when the entry was never rendered at all (evicted by the WI token
+   * budget before `wrapWiContent` ever ran on it): `0` is a legal EMITTED
+   * cost for an entry that rendered to whitespace and was then dropped by
+   * `joinWi`'s own empty-content filter, and the two must stay
+   * distinguishable.
+   */
+  emittedTokens: number | null;
+  /** Same string, character length. Same null-vs-zero rule as `emittedTokens`. */
+  emittedChars: number | null;
+  /** `estimateTokens(entry.content, profile)` — the WI budget's own cost
+   *  function (`applyTokenBudget`, worldInfoStore.ts). Always computable: it
+   *  reads stored content directly and runs no macros, so it is defined even
+   *  for an entry `emittedTokens` reports null for. */
+  rawTokens: number;
+  /** Null for an entry that never reached a placement at all — dropped by
+   *  the WI budget before position-grouping ever saw it (`droppedEntries`).
+   *  Non-null for a history-trimmed at-depth entry (`trimmedFromHistoryEntries`)
+   *  even though its content did not make the final prompt: it DID reach a
+   *  wi_at_depth slot before the trim cut the message carrying it. */
+  placement: WiEntryPlacement | null;
+  /** `null` — never `'none'` — when the entry was never rendered at all
+   *  (evicted by the WI token budget before `wrapWiContent` ever ran on it,
+   *  `droppedEntries`): `'none'` is a legal RESULT for an entry that DID
+   *  reach `wrapWiContent` and took its no-header branch, and the two must
+   *  stay distinguishable — same null-vs-zero rule as `emittedTokens` /
+   *  `emittedChars` / `placement` above, and for the identical reason. */
+  wrapper: WiWrapperKind | null;
+  /** `MatchedEntry.activationReason` — see that field's own doc comment.
+   *  `undefined` on every CLIENT-scanned turn: the client scanner computes
+   *  no activation reason at all (structural, not a gap — worldInfoStore.ts). */
+  activationReason?: WiActivationReason;
+  /** `entry.constant || entry.critical` — the budget could never evict it,
+   *  matching `applyTokenBudget`'s own pinned test. */
+  pinned: boolean;
+}
+
+/**
+ * Server-path facts about ONE turn's POST /retrieval/context call, stamped
+ * post-return by `recordServerActivation` — see that function's own doc
+ * comment for why this can't be threaded through the builder signature.
+ * `PromptBreakdown.wi.server` stays `undefined` on every turn that never
+ * called the server at all (client-scanned, or the server call failed and
+ * fell back) — `wi.activationSource` is the authoritative test for that;
+ * this type's own optional field distinguishes "called, and the backend said
+ * nothing was evicted" from "called, but the backend predates eviction
+ * reporting" (see `evictedEntryIds` below).
+ */
+export interface ServerActivationFacts {
+  /** The budget this app PASSED to POST /retrieval/context, captured at
+   *  request time. Never read live later — that is the staleness
+   *  `responseReserve`'s doc comment exists to prevent. */
+  budgetRequested: number;
+  /** `undefined` when the backend omitted the key (pre-E4-S0) OR sent an
+   *  array that filters down to nothing (see serverRetrieval.ts's own
+   *  `evictedEntryIds` doc for the full contract). NOT the same as `[]`,
+   *  which means the backend said nothing was evicted. */
+  evictedEntryIds?: string[];
+  /** Provenance ONLY. Post-E4-S0 this is a SUBSET of the entries the server
+   *  returned, so `activatedEntryIds` minus those entries is empty by
+   *  construction and must never be used to derive eviction. */
+  activatedEntryIds: string[];
+  /** The server's estimator is the GENERIC profile unconditionally
+   *  (3.8 chars/token), regardless of `PromptBreakdown.profile`. */
+  budgetEstimator: 'generic';
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +406,40 @@ export interface PromptBreakdown {
      * and its presence now only ever means `keyword`.
      */
     activationSource: 'server' | 'client';
+
+    /**
+     * ADDITIVE (E2-S4 PR1 — file unfrozen for these fields, additive-only,
+     * by PM decision). Every world-info entry that reached a placement in
+     * the assembled prompt — the cross-join of `injectedWi`/`groupFired`
+     * against the render-time token map both builders already build inside
+     * their single `joinWi` pass. See `WiEntryRecord`'s own doc comment.
+     */
+    entries: WiEntryRecord[];
+    /** ADDITIVE (E2-S4 PR1). Entries the WI token budget evicted during the
+     *  scan (`wiScanReport.dropped`) — never reached `wrapWiContent` at all,
+     *  so every entry here carries `emittedTokens: null` and `placement: null`. */
+    droppedEntries: WiEntryRecord[];
+    /** ADDITIVE (E2-S4 PR1). At-depth entries that survived the WI budget
+     *  scan and DID render, but were then cut by the token-aware history
+     *  trim — solo only; always empty in group, which has no history trim
+     *  at all. Unlike `droppedEntries`, these carry real `emittedTokens` /
+     *  `emittedChars` — see `WiEntryRecord.placement`'s own doc comment for
+     *  why that is knowable here and is not for a budget-dropped entry. */
+    trimmedFromHistoryEntries: WiEntryRecord[];
+    /** ADDITIVE (E2-S4 PR1). `wiScanReport.pinnedOverBudget`, recorded as
+     *  measured. `wi.budget === 0` is ambiguous (unlimited, vs. a server
+     *  turn that never ran a scan) — this field does not resolve that; a
+     *  consumer must read it alongside `budget` and `activationSource`. */
+    pinnedOverBudget: boolean;
+    /** ADDITIVE (E2-S4 PR1). `wiScanReport.pinnedTokens` — the token cost of
+     *  every never-evictable (constant/critical) entry, as measured by the
+     *  WI budget's own cost function. */
+    pinnedTokens: number;
+    /** ADDITIVE (E2-S4 PR1). Server-path facts for this turn, stamped
+     *  post-return by `recordServerActivation` — see that function and
+     *  `ServerActivationFacts` for the full contract. `undefined` on every
+     *  client-scanned turn. */
+    server?: ServerActivationFacts;
   };
 
   /**
@@ -436,6 +588,14 @@ export function createPromptBreakdown(
       budget: 0,
       droppedIds: [],
       activationSource: 'client',
+      entries: [],
+      droppedEntries: [],
+      trimmedFromHistoryEntries: [],
+      pinnedOverBudget: false,
+      pinnedTokens: 0,
+      // `server` deliberately omitted — see PromptBreakdown.wi.server's own
+      // doc comment. It is stamped post-return by recordServerActivation,
+      // never here.
     },
     responseReserve: null,
     flags: {
@@ -489,6 +649,19 @@ export function beginBreakdownPass(
   out.wi.budget = 0;
   out.wi.droppedIds = [];
   out.wi.activationSource = 'client';
+  out.wi.entries = [];
+  out.wi.droppedEntries = [];
+  out.wi.trimmedFromHistoryEntries = [];
+  out.wi.pinnedOverBudget = false;
+  out.wi.pinnedTokens = 0;
+  // `wi.server` is deliberately NOT cleared here — same rationale as
+  // `responseReserve` below: it is stamped post-return by
+  // recordServerActivation, at the call site, AFTER the builder (and both
+  // of its finish passes) has already returned. Clearing it here would just
+  // erase whatever a previous pass had — a no-op for the two-pass solo
+  // path (recordServerActivation always runs after the real pass, never
+  // between the probe and the real one) and irrelevant for group, which
+  // never calls it at all.
   // `responseReserve` is deliberately NOT cleared here: both builder tails
   // assign it unconditionally on every pass, and the collector-reuse test in
   // chatStore.breakdown.test.ts is what guards that invariant — a future tail
@@ -586,4 +759,38 @@ export function recordAttachments(
     tokens: 0,
     chars: 0,
   });
+}
+
+/**
+ * Stamp this turn's POST /retrieval/context facts onto an already-finished
+ * breakdown (E2-S4 PR1) — the same post-return amendment pattern as
+ * `recordCallSiteTurn`/`recordAttachments`, and for the same reason: whether
+ * the server call happened at all, and what it reported, is knowable only at
+ * the call site, both before `prepareConversationContext` runs (the call
+ * awaits `tryServerRetrieval` first) and after `finishConversationContext`
+ * returns (the facts this records — the eviction list, the requested budget
+ * — are not inputs the builder itself needs, so they never thread through
+ * either builder signature).
+ *
+ * MUST be called immediately after `finishConversationContext` returns and
+ * BEFORE `setLastPromptBreakdown` — not because a later call would fail to
+ * mutate the right object (both point at the same `PromptBreakdown`
+ * reference either way, so no test in the suite forces this ordering any
+ * more than it forces `recordCallSiteTurn`'s or `recordAttachments`' —
+ * see chatStore.wiServerFacts.test.ts's own header for the honest version
+ * of that), but because a call site that drifted it later (e.g. inside the
+ * `if (stream)` block, after a chat abort could skip it) would silently
+ * ship a breakdown with no server facts on it.
+ *
+ * Never called when the client engine ran this turn (`tryServerRetrieval`
+ * returned null) — `wi.server` stays undefined, which is what
+ * `wi.activationSource === 'client'` already documents as the authoritative
+ * test for "the server path ran this turn."
+ */
+export function recordServerActivation(
+  out: PromptBreakdown | undefined,
+  facts: ServerActivationFacts
+): void {
+  if (!out) return;
+  out.wi.server = facts;
 }

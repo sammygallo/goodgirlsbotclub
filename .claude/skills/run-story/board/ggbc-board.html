@@ -264,18 +264,19 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>6 Sep 2026</b><br>
-      main <b>2412ed12</b><br>
-      active <b>none</b>
+      <b>7 Sep 2026</b><br>
+      main <b>57d3832a</b><br>
+      active <b>E2-S4 · PR1 in review</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
-    <div class="tile is-warn"><div class="n">17</div><div class="k">Gated</div></div>
+    <div class="tile is-warn"><div class="n">16</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">10</div><div class="k">Deployed</div></div>
     <div class="tile is-warn"><div class="n">13</div><div class="k">Open issues</div></div>
@@ -318,6 +319,18 @@
     </section>
 
     <section class="col">
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="stack">
+        <article class="card s-live" data-epic="E2">
+          <div class="id">E2-S4 · PR1</div>
+          <div class="t">Per-entry World Info capture + server eviction facts</div>
+          <div class="m"><a href="https://github.com/sammygallo/goodgirlsbotclub/pull/525">#525</a> · leg 1 of 2, opened 7 Sep. Captures per-entry World Info cost inside <b>both</b> prompt builders and plumbs the backend&rsquo;s <code>evictedEntryIds</code>, which the client had never read. Intake found the card&rsquo;s own method <b>dead</b>: E4-S0 inverted <code>activatedEntryIds &minus; entries</code>, so following the card would have hard-coded &ldquo;nothing was evicted&rdquo; on every server turn &mdash; the exact lie AC4 exists to forbid, one layer below AC4&rsquo;s defences. <b>9 review rounds, 168 agents, 0 errors:</b> 12 &rarr; 11 &rarr; 8 &rarr; 0, QA then found 4 more, then 3 &rarr; 4 &rarr; 3 &rarr; 1 &rarr; <b>0</b>. <b>Zero behavior defects were ever confirmed in the production logic</b>; the recurring defect was fix rounds writing false checkable claims (6, then 3), which a deletion-only prose rule took to zero. QA D1&ndash;D7 pass &mdash; the macro double-execution canary fails <code>expected &#39;2&#39; to be &#39;1&#39;</code> in both builders. 2063 tests; goldens 146/146, <code>__goldens__/</code> untouched. Verification ~14.1M against the ~6.2&ndash;18.5M class row: inside on tokens, over on rounds. <b>Stops for Sammy at the did-not-converge gate.</b></div>
+          <div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate free">E2-S2a ✓</span><span class="gate free">E2-S5 ✓</span><span class="gate hot">merge gate</span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="col">
       <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">0</span></div>
       <div class="stack">
       </div>
@@ -356,11 +369,10 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Gated</h2><span class="ct">17</span></div>
+      <div class="colhead"><h2>Gated</h2><span class="ct">16</span></div>
       <div class="stack">
         <article class="card s-warn" data-epic="E9"><div class="id">E9-S9</div><div class="t">Group recall identity is positional</div><div class="m"><b>Parked 3 Sep</b> by Sammy at review round 6. Branch <code>claude/e9-s9-group-recall-identity</code> @ <code>f892d731</code>, no PR. The frozen <code>identityAvatar</code> core is sound and covered; the deleted-while-open handling the review pulled in could not converge client-side (five fix-introduced defects in one function, rooted in a pre-existing ChatView mode-tracking bug).</div><div class="gates"><span class="gate hot">← ggbc-backend#84</span></div></article>
         <article class="card s-warn" data-epic="E2"><div class="id">E2-S3</div><div class="t">Show-prompt toggle</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
-        <article class="card s-warn" data-epic="E2"><div class="id">E2-S4</div><div class="t">Insights data API</div><div class="gates"><span class="gate free">E2-S2 ✓</span></div></article>
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S2 · S3</div><div class="t">Defaults clarity · character overrides</div><div class="gates"><span class="gate">← E3-S1</span></div></article>
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S4</div><div class="t">Chat overrides</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S1</div><div class="t">Memory pane</div><div class="gates"><span class="gate free">E4-S0 ✓</span></div></article>
@@ -424,27 +436,32 @@
   </div>
 
   <section class="focus">
-    <h2>E9-S10 — deployed 6 Sep</h2>
-    <p class="sub">Both native translators used to hoist <em>every</em> system-role message into the single top-of-prompt field, so a character's note written for depth 4 arrived first and post-history instructions were not post-history on Claude and Gemini. Shipped: hoist by <b>position</b> — only the leading run goes to the provider's system channel; everything later keeps its index as a bracketed system note inside a user turn. The builder is untouched (44 goldens byte-identical) and the guides, editor tips and settings caption now say where each reminder lands per provider. Filed on the way: text-completion mode never produces a token on any provider (#513, backend #85/#86) and seven catalog providers the backend cannot route (#515).</p>
+    <h2>E2-S4 · PR1 — in review, awaiting the merge gate</h2>
+    <p class="sub">The data layer E5's Optimization Agent reads. E5-S1 has to be able to say "entry X fired 0 times in the last 25 chats and costs ~450 tokens a turn when it is active" <em>and be honest about which half of that it cannot actually see</em> — so the API's job is as much to refuse a question as to answer one. Split <b>N=2 by assembly surface</b>: PR1 captures per-entry World Info cost inside both prompt builders; PR2 derives the consumer API from it and never imports a builder.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Intake</div><div class="sv">premise re-verified at 995e5a1</div></div>
-      <div class="step done"><div class="sn">Plan</div><div class="sv">3 designs · panel 23.3/25</div></div>
-      <div class="step done"><div class="sn">Build</div><div class="sv">both loops built</div></div>
-      <div class="step done"><div class="sn">Review</div><div class="sv">loop 1: 2 rounds · loop 2: 9 rounds</div></div>
-      <div class="step done"><div class="sn">Merge</div><div class="sv">#87 + #88 · #514 (Sammy, did-not-converge gate)</div></div>
-      <div class="step done"><div class="sn">Deploy</div><div class="sv">6 Sep · frontend 2412ed12 · backend fb26a80</div></div>
-      <div class="step done"><div class="sn">Postmortem</div><div class="sv">CAPTURE · exit #4 since the CURATE row</div></div>
+      <div class="step done"><div class="sn">Intake</div><div class="sv">premise intact · card&rsquo;s method dead</div></div>
+      <div class="step done"><div class="sn">Plan</div><div class="sv">N=2 by assembly surface</div></div>
+      <div class="step done"><div class="sn">Build</div><div class="sv">PR1 + 4 fix rounds</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">9 rounds &rarr; converged at 0</div></div>
+      <div class="step done"><div class="sn">QA</div><div class="sv">D1&ndash;D7 pass · 4 AC partial</div></div>
+      <div class="step now"><div class="sn">Merge</div><div class="sv">Sammy &mdash; trigger fired</div></div>
+      <div class="step"><div class="sn">Deploy</div><div class="sv">n/a for PR1</div></div>
+    </div>
+
+    <div class="note crit" style="margin-bottom:18px">
+      <h3>What PLAN caught</h3>
+      The card told the implementer to derive server-turn eviction as <code>activatedEntryIds &minus; entries</code>. <b>E4-S0 inverted that on 25 Aug</b> — <code>activated_entry_ids</code> is now the post-trim intersection, so the difference is <b>always empty</b>. Following the card would have hard-coded &ldquo;nothing was evicted&rdquo; on every server turn: the exact lie this story&rsquo;s own AC4 forbids, manufactured one layer <em>below</em> the API and looking observed while doing it. The backend has returned <code>evictedEntryIds</code> explicitly since E2-S2a (28 Aug, deployed); the client simply never read it. Three carriers corrected in <code>bb9efe46</code> — one of them, E5-S1&rsquo;s task row, contradicted itself.
     </div>
 
     <div class="tscroll">
       <table>
-        <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
+        <thead><tr><th>Stage</th><th>Actual</th><th>Projected band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">~0.85M est.</td><td>L min</td><td>The 4 Sep session's intake, judge panel and backend build were never recorded (est. ~0.6M); fix round 0.13M; docs loop 0.11M</td></tr>
-          <tr><td>Verification</td><td class="num">~9.2M est. / 12 rounds</td><td>loop 1 prompt-assembly 6.2–18.5M · loop 2 standard ≤0.3M</td><td>Loop 1: 2.7M over 2 rounds (22 + 8 agents). Loop 2: 5.6M over 9 rounds — the retracted "last thing" claim re-asserted in synonyms; Q2 fired at round 3, Sammy kept hardening. #88: 0.5M. QA ×3: 0.4M</td></tr>
-          <tr><td>Plan absorption</td><td class="num">~8.2M est.</td><td>—</td><td>30 proposals → 29 upheld, critic found 15 more carriers, 54-hunk refute-first verification of the applied edits; ~3.4M of it lost to a usage-limit kill mid-verification (resumed from the journal)</td></tr>
-          <tr><td>Postmortem</td><td class="num">~0.17M est.</td><td>—</td><td>CAPTURE. Two memory amendments applied (D-T7; piped exit status); three governance edits red-teamed and sent to Sammy as a PR</td></tr>
+          <tr><td>Build</td><td class="num">~1.4M</td><td>M / leg</td><td>Initial build plus four fix rounds; production logic unchanged since fix round 1</td></tr>
+          <tr><td>Verification</td><td class="num">~14.1M · 9 rounds</td><td>~6.2&ndash;18.5M / loop</td><td><b>Inside on tokens, over on rounds</b> (class expects 4&ndash;6). 168 agents, 0 errors. Rounds 6&ndash;9 chased one predicate&rsquo;s floor-and-clamp across three sites, each round finding the previous fix pinned only one half</td></tr>
+          <tr><td>Plan absorption</td><td class="num">&mdash;</td><td>&mdash;</td><td>Not a knowledge story; three carrier corrections rode the branch as intake work</td></tr>
+          <tr><td>Postmortem</td><td class="num">pending</td><td>CURATE</td><td>Exit #5 since the 2 Sep CURATE row &rarr; the staleness sweep fires at close</td></tr>
         </tbody>
       </table>
     </div>

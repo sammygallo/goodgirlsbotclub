@@ -2295,9 +2295,17 @@ export const PINS_ANCHORS: Record<number, string | [string, number]> = {
   1101: 'wiScanReport.pinnedOverBudget &&\n    ctxChatFile &&',
   1131: 'const content = sub(m.entry.content);',
   1133: 'if (personaBookIdSet.has(m.bookId)) {',
+  // E2-S4 PR1 turned `wiRendered` into a Map (per-entry render-time
+  // tokens/chars/wrapper). The fingerprint reaches the DECLARATION itself
+  // (not just the comment above it). The trailing comment line is
+  // solo-specific wording (group's own copy reads "see solo's own copy of
+  // this comment for why" instead), which is what keeps the combined
+  // fingerprint solo-unique even though the bare declaration
+  // `const wiRendered = new Map<MatchedEntry, WiRenderInfo>();` occurs
+  // twice (once per builder).
   1144:
-    'must not be recorded as fired.\n' +
-    '  const wiRendered = new Set<MatchedEntry>();',
+    'read off THIS same `c` rather than a second call to wrapWiContent.\n' +
+    '  const wiRendered = new Map<MatchedEntry, WiRenderInfo>();',
   1184: 'const description = sub(getCharacterField(character,',
   1195: 'const linkedStyleActive =',
   1205: 'const charSystemPromptOverride = genState.prompt.respectCharacterOverride',
@@ -2356,7 +2364,9 @@ export const PINS_ANCHORS: Record<number, string | [string, number]> = {
     'if (!ctxConfig.tokenAware && commit) {\n' +
     '    genState.setLastTokenEstimate(',
   1722: 'if (!enabledSections.has(sectionId)) continue;',
-  1724: 'if (wiRendered.has(m)) injectedWi.push(m);',
+  // E2-S4 PR1 wrapped this in a block to also record the entry's placement
+  // (injectedWiPlacement) — same construct, the filter is unchanged.
+  1724: 'if (wiRendered.has(m)) {\n        injectedWi.push(m);',
   1737: 'if (!keptSet.has(msg)) trimmedAtDepth.push(...atDepth);',
 
   // --- group builder -------------------------------------------------------

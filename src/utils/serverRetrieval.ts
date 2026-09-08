@@ -491,6 +491,18 @@ export interface ServerRetrievalResult {
   matchedEntries: MatchedEntry[];
   turnNo: number;
   activatedEntryIds: string[];
+  /**
+   * `undefined` when the backend omitted the key (pre-E4-S0) OR sent an
+   * array that is pure garbage (present on the wire but filters to nothing,
+   * e.g. every id came through non-string). NOT required by the
+   * malformed-response guard below, same LANDMINE as `activations` — see
+   * that comment at the point of use.
+   */
+  evictedEntryIds?: string[];
+  /** The budget PASSED to this call (`useWorldInfoStore.getState().tokenBudget`
+   *  at request time) — not re-read live later. Callers stamp this straight
+   *  onto `ServerActivationFacts.budgetRequested` (promptBreakdown.ts). */
+  budgetRequested: number;
 }
 
 /**
@@ -572,10 +584,40 @@ export async function tryServerRetrieval(
       const matched = dtoToMatchedEntry(rawEntry, dto.activations);
       if (matched) matchedEntries.push(matched);
     }
+    // Same LANDMINE as `dto.activations` above, and for the identical
+    // reason: `dto.evictedEntryIds` is intentionally NOT required by the
+    // malformed-response guard. Requiring it would make a pre-E4-S0 backend
+    // (which never sends the key at all) fall through to `return null`,
+    // silently moving every eligible chat back to the client scanner.
+    // `undefined` (not `[]`) when the key is absent OR malformed — collapsing
+    // the two would tell a caller "nothing was evicted" when the truth is
+    // "this backend never said." Malformed covers two distinct shapes and
+    // both must degrade to `undefined`, not just the non-array one: a
+    // non-array `evictedEntryIds` obviously never said, but an array that
+    // IS present on the wire and filters down to nothing (e.g. every id
+    // came through as `null` from a serialization regression) is pure
+    // garbage, not a truthful empty list, and must not be allowed to assert
+    // the positive fact "nothing was evicted this turn." Only a genuinely
+    // empty array on the wire (`[]`) reports that fact; a non-empty wire
+    // array that survives filtering keeps its filtered (non-empty) subset.
+    const evictedEntryIdsRaw = Array.isArray(dto.evictedEntryIds) ? dto.evictedEntryIds : undefined;
+    const evictedEntryIdsFiltered = evictedEntryIdsRaw?.filter(
+      (id): id is string => typeof id === 'string'
+    );
+    const evictedEntryIds =
+      evictedEntryIdsRaw === undefined
+        ? undefined
+        : evictedEntryIdsRaw.length === 0
+          ? []
+          : evictedEntryIdsFiltered!.length > 0
+            ? evictedEntryIdsFiltered
+            : undefined;
     return {
       matchedEntries,
       turnNo: dto.turnNo,
       activatedEntryIds: dto.activatedEntryIds.filter((id): id is string => typeof id === 'string'),
+      evictedEntryIds,
+      budgetRequested: tokenBudget,
     };
   } catch (err) {
     console.warn(

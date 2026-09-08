@@ -70,10 +70,14 @@ import {
   createPromptBreakdown,
   recordAttachments,
   recordCallSiteTurn,
+  recordServerActivation,
   withHistoryRole,
   type GroupSlotId,
   type PromptBreakdown,
   type SectionKind,
+  type WiEntryPlacement,
+  type WiEntryRecord,
+  type WiWrapperKind,
 } from '../utils/promptBreakdown';
 import { useUsageStore } from './usageStore';
 import { usePromptTemplateStore } from './promptTemplateStore';
@@ -1096,6 +1100,21 @@ interface WiScanOut {
   trimmedAtDepth?: MatchedEntry[];
 }
 
+/**
+ * Per-entry render-time facts, captured inside the single `joinWi` pass
+ * (E2-S4 PR1) — tokens/chars for THIS entry's own wrapped string, plus which
+ * `wrapWiContent` branch produced it. Feeds the token breakdown's per-entry
+ * records (`PromptBreakdown.wi.entries` and friends); never used to
+ * re-derive anything `joinWi` already decided, and never produced by a
+ * second call to `wrapWiContent` — see the module-level comment above both
+ * builders' `wiRendered` declarations.
+ */
+interface WiRenderInfo {
+  tokens: number;
+  chars: number;
+  wrapper: WiWrapperKind;
+}
+
 // Chats already warned about pinned lore exceeding the WI budget this app
 // session — the toast fires once per chat, not on every generation.
 const wiPinnedWarnedChats = new Set<string>();
@@ -1155,7 +1174,12 @@ export interface PreparedConversation {
    *  not gain non-world-info members. */
   entryClassByMessage: Map<object, SectionKind>;
   wiByPosition: Record<WorldInfoPosition, MatchedEntry[]>;
-  wiRendered: Set<MatchedEntry>;
+  /** Entries whose wrapped content was non-empty at render time, keyed by
+   *  object identity, carrying each entry's own render-time tokens/chars/
+   *  wrapper (E2-S4 PR1 — was a bare `Set<MatchedEntry>` before per-entry
+   *  accounting existed; every `.has(m)` read site is unaffected, a Map
+   *  supports it identically). */
+  wiRendered: Map<MatchedEntry, WiRenderInfo>;
   wiScanReport: WorldInfoScanReport;
   /** Which activation engine produced this turn's entries. AC 9's data: the
    *  drill-down says "reason unavailable (server-path turn)" off THIS, and
@@ -1399,30 +1423,35 @@ export function prepareConversationContext(
   // (e.g. "the bot now thinks it IS the persona"). Prefixing each persona
   // entry with a user-context tag keeps the source semantically scoped.
   const personaBookIdSet = new Set(personaBookIds);
-  const wrapWiContent = (m: MatchedEntry): string => {
+  const wrapWiContent = (m: MatchedEntry): { c: string; wrapper: WiWrapperKind } => {
     const content = sub(m.entry.content);
-    if (!content.trim()) return '';
+    if (!content.trim()) return { c: '', wrapper: 'none' };
     if (personaBookIdSet.has(m.bookId)) {
       const subject = personaName || 'the user';
-      return `[Information about ${subject}, the user you're talking to]\n${content}`;
+      return {
+        c: `[Information about ${subject}, the user you're talking to]\n${content}`,
+        wrapper: 'persona',
+      };
     }
-    return content;
+    return { c: content, wrapper: 'none' };
   };
   // Entries whose wrapped content was non-empty at render time. Tracked here
   // (inside the single joinWi pass) rather than by re-wrapping later, because
   // wrapWiContent runs macros and {{setvar}}-style writes must not execute
   // twice. Feeds the fired-state telemetry: an entry whose macros expand to
   // nothing never reaches the prompt and must not be recorded as fired.
-  const wiRendered = new Set<MatchedEntry>();
+  // A Map since E2-S4 PR1 (was a bare Set) — carries each entry's own
+  // render-time tokens/chars/wrapper for the per-entry breakdown records,
+  // read off THIS same `c` rather than a second call to wrapWiContent.
+  const wiRendered = new Map<MatchedEntry, WiRenderInfo>();
   const joinWi = (list: MatchedEntry[]): string =>
     list
-      .map((m) => ({ m, c: wrapWiContent(m) }))
-      .filter(({ m, c }) => {
-        const ok = c.trim().length > 0;
-        if (ok) wiRendered.add(m);
-        return ok;
+      .map((m) => ({ m, ...wrapWiContent(m) }))
+      .filter(({ c }) => c.trim().length > 0)
+      .map(({ m, c, wrapper }) => {
+        wiRendered.set(m, { tokens: estimateTokens(c, tokenProfile), chars: c.length, wrapper });
+        return c;
       })
-      .map(({ c }) => c)
       .join('\n\n');
 
   // Phase 7.1: Extension context contributions
@@ -2179,6 +2208,12 @@ export function finishConversationContext(
   // telemetry and the token breakdown need the same set; only the WRITE is
   // gated, on both `wiTimerOut` and `commit`.
   const injectedWi: MatchedEntry[] = [];
+  // Placement per entry, in lockstep with `injectedWi` above (E2-S4 PR1) —
+  // built in the SAME traversal rather than re-derived from `m.entry.position`
+  // afterwards, because a Stage-A/C entry's placement here also depends on
+  // whether its section is ENABLED, which `m.entry.position` alone can't say
+  // (group has no such concept — see its own, simpler placement derivation).
+  const injectedWiPlacement = new Map<MatchedEntry, WiEntryPlacement>();
   const enabledSections = new Set(
     promptOrder.filter((e) => e.enabled).map((e) => e.id)
   );
@@ -2191,12 +2226,27 @@ export function finishConversationContext(
   for (const [sectionId, position] of positionBySection) {
     if (!enabledSections.has(sectionId)) continue;
     for (const m of wiByPosition[position]) {
-      if (wiRendered.has(m)) injectedWi.push(m);
+      if (wiRendered.has(m)) {
+        injectedWi.push(m);
+        injectedWiPlacement.set(m, {
+          stage: POST_HISTORY_SECTIONS.has(sectionId) ? 'C' : 'A',
+          sectionId,
+        });
+      }
     }
   }
   for (const msg of keptHistory) {
     const atDepth = wiAtDepthByMessage.get(msg);
-    if (atDepth) injectedWi.push(...atDepth);
+    if (atDepth) {
+      injectedWi.push(...atDepth);
+      for (const m of atDepth) {
+        injectedWiPlacement.set(m, {
+          stage: 'B',
+          cls: 'wi_at_depth',
+          depth: Math.max(0, Math.floor(m.entry.depth)),
+        });
+      }
+    }
   }
   // At-depth entries the history trim cut after the scan passed them —
   // never critical ones (those are pinned above), but part of the audit.
@@ -2225,6 +2275,70 @@ export function finishConversationContext(
     out.wi.budget = wiScanReport.budget;
     out.wi.droppedIds = wiScanReport.dropped.map((m) => m.entry.id);
     out.wi.activationSource = activationSource;
+    // E2-S4 PR1 — per-entry records. `injectedWi` is exactly the entries
+    // that reached a placement (built above, in lockstep with
+    // `injectedWiPlacement`); `info` is always present for each of them —
+    // `injectedWi` only ever gains an entry that was already added to
+    // `wiRendered` in the same push (`?? ` below covers the type only).
+    out.wi.entries = injectedWi.map((m): WiEntryRecord => {
+      const info = wiRendered.get(m);
+      return {
+        entryId: m.entry.id,
+        bookId: m.bookId,
+        emittedTokens: info?.tokens ?? null,
+        emittedChars: info?.chars ?? null,
+        rawTokens: estimateTokens(m.entry.content, tokenProfile),
+        placement: injectedWiPlacement.get(m) ?? null,
+        wrapper: info?.wrapper ?? 'none',
+        activationReason: m.activationReason,
+        pinned: m.entry.constant || m.entry.critical,
+      };
+    });
+    // Budget-evicted entries never reach `wrapWiContent` at all — the scan's
+    // own token budget (worldInfoStore.ts's applyTokenBudget) drops them
+    // before position-grouping ever sees them, so there is no rendered
+    // string to measure and no placement to report. Same reasoning applies
+    // to `wrapper`: no branch of `wrapWiContent` ran, so it is `null`, not
+    // the legal-result value `'none'` a rendered-but-unwrapped entry gets.
+    out.wi.droppedEntries = wiScanReport.dropped.map((m): WiEntryRecord => ({
+      entryId: m.entry.id,
+      bookId: m.bookId,
+      emittedTokens: null,
+      emittedChars: null,
+      rawTokens: estimateTokens(m.entry.content, tokenProfile),
+      placement: null,
+      wrapper: null,
+      activationReason: m.activationReason,
+      pinned: m.entry.constant || m.entry.critical,
+    }));
+    // `trimmedAtDepth` entries WERE rendered — they reached a wi_at_depth
+    // slot and wrapWiContent ran on them (they are a subset of
+    // `wiAtDepthByMessage`, itself already filtered to `wiRendered.has(m)`
+    // — see the insertion sites above); only the HISTORY trim then cut the
+    // message carrying them, which runs strictly after joinWi. Their
+    // emitted cost is therefore knowable off the same render map every
+    // other Stage-B entry reads, unlike a budget-dropped entry above, and
+    // their placement records the wi_at_depth slot they were cut FROM.
+    out.wi.trimmedFromHistoryEntries = trimmedAtDepth.map((m): WiEntryRecord => {
+      const info = wiRendered.get(m);
+      return {
+        entryId: m.entry.id,
+        bookId: m.bookId,
+        emittedTokens: info?.tokens ?? null,
+        emittedChars: info?.chars ?? null,
+        rawTokens: estimateTokens(m.entry.content, tokenProfile),
+        placement: {
+          stage: 'B',
+          cls: 'wi_at_depth',
+          depth: Math.max(0, Math.floor(m.entry.depth)),
+        },
+        wrapper: info?.wrapper ?? 'none',
+        activationReason: m.activationReason,
+        pinned: m.entry.constant || m.entry.critical,
+      };
+    });
+    out.wi.pinnedOverBudget = wiScanReport.pinnedOverBudget;
+    out.wi.pinnedTokens = wiScanReport.pinnedTokens;
     out.flags.overBudget = overBudget;
     out.flags.historyTrimmed = ctxConfig.tokenAware;
     out.flags.droppedFromHistory = droppedFromHistory;
@@ -2462,7 +2576,7 @@ export function buildGroupConversationContext(
     if (owner) memberByOwnedBookId.set(book.id, owner);
   }
   const personaBookIdSet = new Set(personaBookIds);
-  const wrapWiContent = (m: MatchedEntry): string => {
+  const wrapWiContent = (m: MatchedEntry): { c: string; wrapper: WiWrapperKind } => {
     // An entry out of a book this room has positively identified as member B's
     // is B's own lore, so its macros resolve against B — the same subMember
     // mechanism the per-member card blocks use, and for the same reason.
@@ -2504,29 +2618,36 @@ export function buildGroupConversationContext(
     const content = owner
       ? subMember(owner, m.entry.content)
       : subSpeaker(m.entry.content);
-    if (!content.trim()) return '';
+    if (!content.trim()) return { c: '', wrapper: 'none' };
     if (isPersonaBook) {
       const subject = personaName || 'the user';
-      return `[Information about ${subject}, the user you're talking to]\n${content}`;
+      return {
+        c: `[Information about ${subject}, the user you're talking to]\n${content}`,
+        wrapper: 'persona',
+      };
     }
     if (owner && owner.avatar !== currentCharacter.avatar) {
-      return `[Information about ${owner.name}, another character in this conversation]\n${content}`;
+      return {
+        c: `[Information about ${owner.name}, another character in this conversation]\n${content}`,
+        wrapper: 'owner',
+      };
     }
-    return content;
+    return { c: content, wrapper: 'none' };
   };
   // Entries whose wrapped content was non-empty at render time — tracked in
   // the single joinWi pass rather than by re-wrapping later, since
   // wrapWiContent runs macros and {{setvar}} writes must not execute twice.
-  const wiRendered = new Set<MatchedEntry>();
+  // A Map since E2-S4 PR1 (was a bare Set) — see solo's own copy of this
+  // comment for why.
+  const wiRendered = new Map<MatchedEntry, WiRenderInfo>();
   const joinWi = (list: MatchedEntry[]): string =>
     list
-      .map((m) => ({ m, c: wrapWiContent(m) }))
-      .filter(({ m, c }) => {
-        const ok = c.trim().length > 0;
-        if (ok) wiRendered.add(m);
-        return ok;
+      .map((m) => ({ m, ...wrapWiContent(m) }))
+      .filter(({ c }) => c.trim().length > 0)
+      .map(({ m, c, wrapper }) => {
+        wiRendered.set(m, { tokens: estimateTokens(c, tokenProfile), chars: c.length, wrapper });
+        return c;
       })
-      .map(({ c }) => c)
       .join('\n\n');
 
   // E9-S6 review-fix: card fields, the speaker's scenario and the speaker's
@@ -3068,6 +3189,37 @@ CONTENT RULES:
     wiTimerOut.trimmedAtDepth = [];
   }
 
+  // E2-S4 PR1 — placement for one fired entry. Unlike solo, group has no
+  // promptOrder section-enable concept and no history trim, so `groupFired`
+  // above (`wiRendered.has(m)` alone) is already the complete "reached the
+  // prompt" test — placement is derived straight from the entry's own
+  // `position`/`depth` rather than re-walked through a second traversal
+  // (contrast solo's `injectedWiPlacement`, which has to be built in
+  // lockstep with its own traversal because a section being DISABLED is a
+  // second reason an entry might not have reached the prompt there).
+  const GROUP_WI_SLOT_BY_POSITION: Record<
+    Exclude<WorldInfoPosition, 'at_depth'>,
+    GroupSlotId
+  > = {
+    before_char: 'group_wi_before_char',
+    after_char: 'group_wi_after_char',
+    before_an: 'group_wi_before_an',
+    after_an: 'group_wi_after_an',
+  };
+  const placementForGroupEntry = (m: MatchedEntry): WiEntryPlacement => {
+    if (m.entry.position === 'at_depth') {
+      return {
+        stage: 'B',
+        cls: 'wi_at_depth',
+        depth: Math.max(0, Math.floor(m.entry.depth)),
+      };
+    }
+    const sectionId = GROUP_WI_SLOT_BY_POSITION[m.entry.position];
+    return sectionId === 'group_wi_after_an'
+      ? { stage: 'C', sectionId }
+      : { stage: 'A', sectionId };
+  };
+
   if (breakdownOut) {
     let stageA = 0;
     let stageB = 0;
@@ -3099,6 +3251,41 @@ CONTENT RULES:
     // Group never calls server retrieval (utils/serverRetrieval.ts:32-33), so
     // its activations always come from the client engine.
     breakdownOut.wi.activationSource = 'client';
+    // E2-S4 PR1 — per-entry records. `info` is always present for each
+    // `groupFired` entry — that array is exactly `wiRendered`'s keys
+    // filtered against `matchedEntries` (`?? ` below covers the type only).
+    breakdownOut.wi.entries = groupFired.map((m): WiEntryRecord => {
+      const info = wiRendered.get(m);
+      return {
+        entryId: m.entry.id,
+        bookId: m.bookId,
+        emittedTokens: info?.tokens ?? null,
+        emittedChars: info?.chars ?? null,
+        rawTokens: tk(m.entry.content),
+        placement: placementForGroupEntry(m),
+        wrapper: info?.wrapper ?? 'none',
+        activationReason: m.activationReason,
+        pinned: m.entry.constant || m.entry.critical,
+      };
+    });
+    // Budget-evicted entries never reach `wrapWiContent` — see solo's own
+    // copy of this comment for the full reasoning, `wrapper: null` included.
+    breakdownOut.wi.droppedEntries = wiScanReport.dropped.map((m): WiEntryRecord => ({
+      entryId: m.entry.id,
+      bookId: m.bookId,
+      emittedTokens: null,
+      emittedChars: null,
+      rawTokens: tk(m.entry.content),
+      placement: null,
+      wrapper: null,
+      activationReason: m.activationReason,
+      pinned: m.entry.constant || m.entry.critical,
+    }));
+    // Group has no history trim at all (AC 7's own comment below) — nothing
+    // can ever land here.
+    breakdownOut.wi.trimmedFromHistoryEntries = [];
+    breakdownOut.wi.pinnedOverBudget = wiScanReport.pinnedOverBudget;
+    breakdownOut.wi.pinnedTokens = wiScanReport.pinnedTokens;
     // AC 7: group has no history trim — badge the HISTORY slice "not trimmed",
     // not the whole view "un-budgeted". The WI slice above IS budgeted, and
     // `wi.budget` / `wi.droppedIds` are how the panel shows that.
@@ -5206,6 +5393,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const ragCtx = await resolveRagContext(messages, currentChatFile || undefined, probe.boundaryId);
       const breakdown = createPromptBreakdown('solo');
       const { context, overBudget } = finishConversationContext(prepared, ragCtx ?? undefined, { commit: true, breakdownOut: breakdown });
+      // E2-S4 PR1 — server-path facts, stamped immediately after the builder
+      // returns and BEFORE setLastPromptBreakdown (recordServerActivation's
+      // own doc comment). Guarded on `serverRetrieval`, not on
+      // `breakdown.wi.activationSource`: the two always agree (both are the
+      // same `serverMatchedEntries !== undefined` test), but reading the
+      // local variable keeps this call site from having to reach back into
+      // the breakdown to decide whether to call it.
+      if (serverRetrieval) {
+        recordServerActivation(breakdown, {
+          budgetRequested: serverRetrieval.budgetRequested,
+          evictedEntryIds: serverRetrieval.evictedEntryIds,
+          activatedEntryIds: serverRetrieval.activatedEntryIds,
+          budgetEstimator: 'generic',
+        });
+      }
       // User-role instruction so Gemini (which extracts system into a
       // separate systemInstruction field) doesn't leave contents[] ending
       // with an assistant turn and trip its 400. See continueMessage above
@@ -5448,6 +5650,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const ragCtx = await resolveRagContext(updatedMessages, currentChatFile || undefined, probe.boundaryId);
       const breakdown = createPromptBreakdown('solo');
       const { context, overBudget } = finishConversationContext(prepared, ragCtx ?? undefined, { commit: true, breakdownOut: breakdown });
+      // E2-S4 PR1 — server-path facts. See impersonate's own copy of this
+      // comment for why this runs here (immediately post-return, before
+      // setLastPromptBreakdown) and why it's guarded on the local variable.
+      if (serverRetrieval) {
+        recordServerActivation(breakdown, {
+          budgetRequested: serverRetrieval.budgetRequested,
+          evictedEntryIds: serverRetrieval.evictedEntryIds,
+          activatedEntryIds: serverRetrieval.activatedEntryIds,
+          budgetEstimator: 'generic',
+        });
+      }
       const sendImages = resolveImagesForSend(attachedImages);
       recordAttachments(breakdown, sendImages);
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
@@ -5861,6 +6074,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const ragCtx = await resolveRagContext(updatedMessages, currentChatFile || undefined, probe.boundaryId);
       const breakdown = createPromptBreakdown('solo');
       const { context, overBudget } = finishConversationContext(prepared, ragCtx ?? undefined, { commit: true, breakdownOut: breakdown });
+      // E2-S4 PR1 — server-path facts. See impersonate's own copy of this
+      // comment for why this runs here (immediately post-return, before
+      // setLastPromptBreakdown) and why it's guarded on the local variable.
+      if (serverRetrieval) {
+        recordServerActivation(breakdown, {
+          budgetRequested: serverRetrieval.budgetRequested,
+          evictedEntryIds: serverRetrieval.evictedEntryIds,
+          activatedEntryIds: serverRetrieval.activatedEntryIds,
+          budgetEstimator: 'generic',
+        });
+      }
       const { provider, model } = getProviderAndModel();
       const regenImages = imagesFromLastUserMessage(updatedMessages, provider, model);
       recordAttachments(breakdown, regenImages);

@@ -4,7 +4,7 @@
  * WHAT THE GOLDENS CANNOT DO: `promptGoldens.test.ts` proves the
  * instrumentation changed nothing about what the model is sent. It cannot
  * prove the instrumentation MEASURED anything — an accounting layer that
- * silently computes zero leaves all 142 goldens green. That is this file's
+ * silently computes zero leaves all the goldens green. That is this file's
  * job, and it is why every test below names the cheapest wrong implementation
  * it exists to kill.
  *
@@ -64,8 +64,11 @@ const {
   finishConversationContext,
   useChatStore,
 } = await import('./chatStore');
-const { useGenerationStore, POST_HISTORY_SECTIONS } = await import('./generationStore');
+const { useGenerationStore, POST_HISTORY_SECTIONS, DEFAULT_CONTEXT_CONFIG } = await import(
+  './generationStore'
+);
 const { useWorldInfoStore } = await import('./worldInfoStore');
+const { usePersonaStore } = await import('./personaStore');
 const { extensionRegistry } = await import('../extensions/registry');
 const {
   GOLDEN_CHAT_FILE,
@@ -213,6 +216,17 @@ function charsFor(b: PromptBreakdown, pred: (k: SectionKind) => boolean): number
  *  of the list, so a fifth position cannot quietly escape the cross-check. */
 function isWiId(id: string): boolean {
   return id.startsWith('wi_') || id.startsWith('group_wi_');
+}
+
+/** Sum of `estimateTokens` over just the constant+critical entries of one
+ *  book currently in the world-info store. Used to pin
+ *  `wi.pinnedTokens` to a real, computed number rather than a range. */
+function pinnedTokensForBook(bookId: string, profile: PromptBreakdown['profile']): number {
+  const book = useWorldInfoStore.getState().books.find((b) => b.id === bookId);
+  if (!book) throw new Error(`no book "${bookId}" in the store`);
+  return book.entries
+    .filter((e) => e.constant || e.critical)
+    .reduce((sum, e) => sum + estimateTokens(e.content, profile), 0);
 }
 
 /**
@@ -460,7 +474,7 @@ const STAGE_C_MARKERS: Array<[string, string]> = [
 describe('token breakdown — per-section attribution', () => {
   it('bills every Stage-A section its own recomputed cost, under its own id', () => {
     // KILLS: any drift between `systemPartIds[i]` and `systemParts[i]`. The
-    // sum identity, the POST_HISTORY membership test and all 142 goldens are
+    // sum identity, the POST_HISTORY membership test and all the goldens are
     // invariant under a permutation of those ids — reversing every one of them
     // leaves the whole suite green while every number in the panel sits on the
     // wrong row, telling a user tuning spend that their selfie instruction is
@@ -892,6 +906,19 @@ describe('token breakdown — group tags per emitted slot', () => {
     expect(breakdown.wi.budget, 'group does enforce the WI budget').toBeGreaterThan(0);
     expect(breakdown.wi.droppedIds.length).toBeGreaterThan(0);
   });
+
+  it('group: a budget-evicted entry carries wrapper: null, not the "none" result value', () => {
+    // FIX ROUND 1, A2 — group's own copy of solo's droppedEntries.wrapper
+    // fix (chatStore.ts:3280). e-gevicted never reaches wrapWiContent at
+    // all, so 'none' (a legal RESULT for a branch that ran) must not stand
+    // in for "no branch ran."
+    const { breakdown } = runGroup('wi-budget-eviction');
+    const dropped = breakdown.wi.droppedEntries.find((e) => e.entryId === 'e-gevicted');
+    expect(dropped, 'e-gevicted never produced a droppedEntries record').toBeDefined();
+    expect(dropped!.wrapper).toBeNull();
+    expect(dropped!.placement).toBeNull();
+    expect(dropped!.emittedTokens).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -994,6 +1021,1142 @@ describe('token breakdown — world info', () => {
     expect(runSolo('server-matched-entries').breakdown.wi.activationSource).toBe('server');
     expect(runSolo('all-sections').breakdown.wi.activationSource).toBe('client');
     expect(runGroup('swap').breakdown.wi.activationSource).toBe('client');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// World-info per-entry records (E2-S4 PR1)
+// ---------------------------------------------------------------------------
+
+describe('token breakdown — world-info per-entry records', () => {
+  it('two entries of different lengths in one section get two different emittedTokens', () => {
+    // KILLS: attributing the whole section's cost to the first entry, and
+    // splitting the section's total evenly across its entries. Bespoke
+    // fixture, deliberately a short entry and a much longer one, so the two
+    // token counts cannot coincide by rounding (as two similarly-sized real
+    // sentences briefly did against 'wi-budget-eviction' while drafting
+    // this test — hence not reusing that fixture here).
+    resetStores();
+    secondExtContributions = [];
+    const SHORT = 'Short lore.';
+    const LONG =
+      'A considerably longer piece of lore, padded well past the short ' +
+      "entry's length so the two entries' token costs cannot round to the " +
+      'same value no matter the tokenizer profile in play.';
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-distinct', [
+          mkEntry('e-short', { content: SHORT, position: 'before_char', order: 10 }),
+          mkEntry('e-long', { content: LONG, position: 'before_char', order: 20 }),
+        ]),
+      ],
+      activeBookIds: ['b-distinct'],
+    });
+    const messages = [mkMsg('d1', 'Hello.')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const a = breakdown.wi.entries.find((e) => e.entryId === 'e-short');
+    const b = breakdown.wi.entries.find((e) => e.entryId === 'e-long');
+    expect(a, 'e-short never produced a per-entry record').toBeDefined();
+    expect(b, 'e-long never produced a per-entry record').toBeDefined();
+    expect(a!.emittedTokens).not.toBeNull();
+    expect(b!.emittedTokens).not.toBeNull();
+    expect(
+      a!.emittedTokens,
+      'two entries of very different lengths reported the same emittedTokens — the section total was attributed to one entry, or split evenly'
+    ).not.toBe(b!.emittedTokens);
+  });
+
+  it('per-entry token capture does not double-execute WI macros (the double-execution canary)', () => {
+    // KILLS: measuring an entry's tokens by calling wrapWiContent(m) (or
+    // sub(m.entry.content)) a SECOND time instead of reading `c`, the string
+    // joinWi's own single pass already produced. 'macro-writes' WI entry
+    // e-macro carries a pure `{{incvar::ledger}}` accumulator, so a second
+    // execution anywhere in the pipeline leaves it at '2', not '1'. This is
+    // the same canary "the wrapper is one prepare and one committing finish"
+    // (above) already reads; reasserted here, scoped to this task, because a
+    // per-entry-measurement bug is exactly the kind of second read that
+    // counter exists to catch.
+    const { breakdown } = runSolo('macro-writes');
+    expect(
+      useChatStore.getState().chatVariables[GOLDEN_CHAT_FILE]?.ledger,
+      'the WI entry macro ran more than once — per-entry measurement re-rendered it'
+    ).toBe('1');
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-macro');
+    expect(record, 'e-macro never produced a per-entry record').toBeDefined();
+    expect(
+      record!.emittedTokens,
+      'a rendered entry must report a real per-entry token count, not null'
+    ).not.toBeNull();
+  });
+
+  it('produces distinct placements for Stage A, Stage B (wi_at_depth), and Stage C in one build', () => {
+    // KILLS: "only the joined Stage-A sections got records" — an
+    // implementation that built `wi.entries` off the four positional
+    // Stage-A/C joins alone and never cross-joined the at-depth insertion
+    // loop that produces Stage B's wi_at_depth class.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-placement', [
+          mkEntry('e-stage-a', { content: 'Stage A lore.', position: 'before_char' }),
+          mkEntry('e-stage-b', { content: 'Stage B lore.', position: 'at_depth', depth: 1 }),
+          mkEntry('e-stage-c', { content: 'Stage C lore.', position: 'after_an' }),
+        ]),
+      ],
+      activeBookIds: ['b-placement'],
+    });
+    const messages = [mkMsg('pl1', 'First.'), mkMsg('pl2', 'Second.', { isUser: false, name: 'Ivy' })];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    expect(byId.get('e-stage-a')?.placement).toEqual({ stage: 'A', sectionId: 'wi_before_char' });
+    expect(byId.get('e-stage-b')?.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 1 });
+    expect(byId.get('e-stage-c')?.placement).toEqual({ stage: 'C', sectionId: 'wi_after_an' });
+    const stages = new Set(breakdown.wi.entries.map((e) => e.placement?.stage));
+    expect(stages, 'not all three stages produced a placement').toEqual(new Set(['A', 'B', 'C']));
+  });
+
+  it('the join residual is real, non-zero, and never re-attributed to the entries', () => {
+    // KILLS: "fixing" the gap between Σ per-entry tokens and the section
+    // total by folding the separator/rounding residual back into one of the
+    // entries. estimateTokens is non-additive (ceil per part, plus a
+    // whitespace term that MERGES at the '\n\n' join seam), so a non-zero,
+    // unreconciled gap is CORRECT behaviour. Bespoke fixture (not a shared
+    // golden) so the exact joined string is known and the residual formula
+    // can be checked independently rather than merely asserted non-zero.
+    resetStores();
+    secondExtContributions = [];
+    const CONTENT_A =
+      'Lore part A: the reading room closes promptly at six every evening without exception.';
+    const CONTENT_B =
+      'Lore part B: the stacks close one hour later, at seven, for the night shift to finish.';
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-residual', [
+          mkEntry('e-residual-a', { content: CONTENT_A, position: 'before_char', order: 10 }),
+          mkEntry('e-residual-b', { content: CONTENT_B, position: 'before_char', order: 20 }),
+        ]),
+      ],
+      activeBookIds: ['b-residual'],
+    });
+    const messages = [mkMsg('r1', 'Hello.')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const a = breakdown.wi.entries.find((e) => e.entryId === 'e-residual-a');
+    const b = breakdown.wi.entries.find((e) => e.entryId === 'e-residual-b');
+    expect(a?.emittedTokens).not.toBeNull();
+    expect(b?.emittedTokens).not.toBeNull();
+    // Both entries are macro-free, non-persona, non-owner — wrapWiContent
+    // returns their content verbatim, so Σ per-entry tokens should equal
+    // estimateTokens summed over the two RAW strings independently.
+    const sumPerEntry = (a!.emittedTokens as number) + (b!.emittedTokens as number);
+    const sumStandalone =
+      estimateTokens(CONTENT_A, breakdown.profile) + estimateTokens(CONTENT_B, breakdown.profile);
+    expect(
+      sumPerEntry,
+      'a per-entry token was not measured off the entry\'s own wrapped string'
+    ).toBe(sumStandalone);
+    const joined = `${CONTENT_A}\n\n${CONTENT_B}`;
+    const expectedResidual = estimateTokens(joined, breakdown.profile) - sumStandalone;
+    expect(
+      expectedResidual,
+      'chose fixture content whose join residual happens to be zero — this test needs a real gap'
+    ).not.toBe(0);
+    expect(
+      breakdown.wi.emittedTokens,
+      'Σ per-entry tokens already equals the section headline — the non-additive join residual was reconciled away'
+    ).not.toBe(sumPerEntry);
+    expect(
+      breakdown.wi.emittedTokens - sumPerEntry,
+      'the gap must equal estimateTokens(joined) - Σ estimateTokens(part_i)'
+    ).toBe(expectedResidual);
+  });
+
+  it('a budget-evicted entry carries emittedTokens: null, never 0', () => {
+    // KILLS: defaulting an unrendered entry's cost to 0 — 0 is a legal
+    // EMITTED cost (an entry that renders to whitespace), so the two must
+    // stay distinguishable. e-evicted never reaches wrapWiContent at all —
+    // the WI budget drops it before position-grouping ever sees it.
+    const { breakdown } = runSolo('wi-budget-eviction');
+    const dropped = breakdown.wi.droppedEntries.find((e) => e.entryId === 'e-evicted');
+    expect(dropped, 'e-evicted never produced a droppedEntries record').toBeDefined();
+    expect(dropped!.emittedTokens).toBeNull();
+    expect(dropped!.emittedChars).toBeNull();
+    expect(dropped!.placement).toBeNull();
+    // FIX ROUND 1, A2: `wrapper` is null for the same never-rendered reason
+    // — 'none' is a legal RESULT of a branch that actually ran, and the two
+    // must stay distinguishable exactly like emittedTokens/emittedChars/
+    // placement above.
+    expect(dropped!.wrapper).toBeNull();
+    // rawTokens is ALWAYS computable — the WI budget's own cost function
+    // reads stored content directly and runs no macros.
+    expect(dropped!.rawTokens).toBeGreaterThan(0);
+    // And it must never silently collapse into the rendered set instead.
+    expect(
+      breakdown.wi.entries.find((e) => e.entryId === 'e-evicted'),
+      'a budget-evicted entry also appeared in wi.entries'
+    ).toBeUndefined();
+  });
+
+  it('a budget-evicted PERSONA entry carries wrapper: null, not the "none" result value', () => {
+    // FIX ROUND 1, A2. `droppedEntries` hardcoded `wrapper: 'none'` before
+    // this fix, which is indistinguishable from an entry that DID reach
+    // wrapWiContent and took its no-header branch. A persona-linked entry
+    // is the sharpest fixture for this: if a future "fix" tried to restore
+    // an eager guess instead of `null` (e.g. defaulting to the wrapper its
+    // OWN book would have produced had it rendered), a persona-linked
+    // dropped entry would come back 'persona' — still wrong, and this
+    // assertion catches that too, not just the 'none' collapse.
+    // KILLS: `wrapper: 'none'` (or any non-null default) on droppedEntries.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({ tokenBudget: 40 });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-persona-budget', [
+          mkEntry('e-pinned-persona-a', {
+            content:
+              'PINNED PERSONA A: the reading room closes at six, the stacks ' +
+              'at seven, and the grille is locked by whoever leaves last.',
+            constant: true,
+            order: 10,
+          }),
+          mkEntry('e-pinned-persona-b', {
+            content:
+              'PINNED PERSONA B: the catalogue cards are ordered by ' +
+              'acquisition, never by title, and nobody has agreed to change that.',
+            critical: true,
+            constant: false,
+            keys: ['catalogue'],
+            order: 20,
+          }),
+          mkEntry('e-evicted-persona', {
+            content:
+              'EVICTED PERSONA: a low-priority note about the lift that the ' +
+              'budget cannot afford once the pinned pair is counted.',
+            constant: false,
+            critical: false,
+            keys: ['catalogue'],
+            order: 900,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-persona-budget'],
+    });
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p1',
+          name: 'Wren',
+          description: 'A night-shift cataloguer.',
+          descriptionPosition: 'in_prompt',
+          descriptionDepth: 4,
+          descriptionRole: 'system',
+          linkedBookIds: ['b-persona-budget'],
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      activePersonaId: 'p1',
+    });
+    const messages = [mkMsg('bp1', 'Where is the catalogue kept?')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const dropped = breakdown.wi.droppedEntries.find((e) => e.entryId === 'e-evicted-persona');
+    expect(dropped, 'e-evicted-persona never produced a droppedEntries record').toBeDefined();
+    expect(
+      dropped!.wrapper,
+      'a budget-evicted persona entry reported a wrapper as if a branch had run'
+    ).toBeNull();
+    expect(dropped!.placement).toBeNull();
+    expect(dropped!.emittedTokens).toBeNull();
+  });
+
+  it('solo: persona and unlabelled entries in wi.entries report their own wrapper kind', () => {
+    // FIX ROUND 2. A2 widened `WiEntryRecord.wrapper` from `WiWrapperKind`
+    // to `WiWrapperKind | null`, which removed tsc as an enforcer of this
+    // field on the solo RENDERED path (chatStore.ts's `wrapper: info?.wrapper
+    // ?? 'none'` in the `wi.entries` builder) — nothing asserted it, so
+    // `wrapper: null` and a hardcoded `wrapper: 'none'` both stayed green.
+    // Two active books, one persona-linked and one not, BOTH firing and
+    // BOTH surviving to `wi.entries` (no budget, nothing dropped) — solo
+    // only ever reaches 'none'/'persona' (see the group wrapper test below
+    // for the third, group-only 'owner' branch). KILLS: `wrapper: null` on
+    // this path, a hardcoded `wrapper: 'none'`, and a swapped/dropped
+    // persona branch.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-wrap-persona', [
+          mkEntry('e-wrap-persona', {
+            content: 'WRAP PERSONA: a note about the user, not the bot.',
+            constant: true,
+          }),
+        ]),
+        mkBook('b-wrap-plain', [
+          mkEntry('e-wrap-plain', {
+            content: 'WRAP PLAIN: an unlabelled note about the room.',
+            constant: true,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-wrap-persona', 'b-wrap-plain'],
+    });
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p-wrap',
+          name: 'Wren',
+          description: 'A night-shift cataloguer.',
+          descriptionPosition: 'in_prompt',
+          descriptionDepth: 4,
+          descriptionRole: 'system',
+          linkedBookIds: ['b-wrap-persona'],
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      activePersonaId: 'p-wrap',
+    });
+    const messages = [mkMsg('wr1', 'Where is the catalogue kept?')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    const persona = byId.get('e-wrap-persona');
+    const plain = byId.get('e-wrap-plain');
+    expect(persona, 'e-wrap-persona never produced a wi.entries record').toBeDefined();
+    expect(plain, 'e-wrap-plain never produced a wi.entries record').toBeDefined();
+    expect(persona!.wrapper, 'a persona-linked book must report the persona wrapper').toBe('persona');
+    expect(plain!.wrapper, 'an unlabelled book must report the none wrapper').toBe('none');
+    expect(persona!.wrapper).not.toBe(plain!.wrapper);
+  });
+
+  it('per-entry bookId and pinned are real, not hardcoded', () => {
+    // FIX ROUND 1, B3. Two entries from DIFFERENT books, one constant
+    // (pinned), one not — chosen so bookId and pinned each have two
+    // genuinely different values in one build. KILLS: a constant `bookId`
+    // (e.g. 'MUTATED') or `pinned: false` always — neither is refutable by
+    // a single-entry fixture, which is why nothing caught them before.
+    // activationReason is covered separately below: the CLIENT scan this
+    // test drives structurally never sets it (see WiEntryRecord's own doc
+    // comment on the field) — only the server-matched path does.
+    resetStores();
+    secondExtContributions = [];
+    const CONTENT_A = 'FIELDS A: the reading room ledger is bound in green cloth.';
+    const CONTENT_B = 'FIELDS B: the trigger word opens the second cabinet.';
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-fields-1', [
+          mkEntry('e-fields-a', { content: CONTENT_A, position: 'before_char', constant: true }),
+        ]),
+        mkBook('b-fields-2', [
+          mkEntry('e-fields-b', {
+            content: CONTENT_B,
+            position: 'before_char',
+            constant: false,
+            critical: false,
+            keys: ['trigger'],
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-fields-1', 'b-fields-2'],
+    });
+    const messages = [mkMsg('f1', 'The trigger word, please.')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    const a = byId.get('e-fields-a');
+    const b = byId.get('e-fields-b');
+    expect(a, 'e-fields-a never produced a per-entry record').toBeDefined();
+    expect(b, 'e-fields-b never produced a per-entry record').toBeDefined();
+
+    expect(a!.bookId).toBe('b-fields-1');
+    expect(b!.bookId).toBe('b-fields-2');
+    expect(a!.bookId, 'bookId is the same on two entries from different books').not.toBe(b!.bookId);
+
+    expect(a!.pinned, 'a constant entry must report pinned: true').toBe(true);
+    expect(b!.pinned, 'a non-constant, non-critical entry must report pinned: false').toBe(false);
+
+    // Both entries are macro-free, non-persona, non-owner — wrapWiContent
+    // returns their content verbatim, so emittedChars must equal the raw
+    // content length exactly (not null, not the section total, not the
+    // OTHER entry's length).
+    expect(a!.emittedChars).toBe(CONTENT_A.length);
+    expect(b!.emittedChars).toBe(CONTENT_B.length);
+    expect(a!.emittedChars).not.toBe(b!.emittedChars);
+  });
+
+  it('per-entry activationReason threads through from a server-matched entry, untouched', () => {
+    // FIX ROUND 1, B3. `activationReason` is structurally `undefined` on
+    // every CLIENT-scanned entry (see WiEntryRecord's own doc comment and
+    // the test above) — the only path that ever sets it is `serverMatchedEntries`
+    // (chatStore.ts:1376's `?? scanMessagesForEntries(...)` skipped
+    // entirely). Two entries with DIFFERENT reasons, matching the house's
+    // own `server-matched-entries-grouped` fixture pattern, so a hardcoded
+    // `activationReason: undefined` (or any single constant) cannot pass.
+    resetStores();
+    secondExtContributions = [];
+    const messages = [mkMsg('sar1', 'What do the archive notes say?')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      [
+        {
+          entry: mkEntry('e-sar-keyword', {
+            content: 'SERVER A: matched by keyword.',
+            position: 'before_char',
+          }),
+          bookId: 'b-sar',
+          bookName: 'Server-side lorebook',
+          activationReason: 'keyword',
+          matchedKeyCount: 2,
+        },
+        {
+          entry: mkEntry('e-sar-sticky', {
+            content: 'SERVER B: a sticky carry-over.',
+            position: 'before_char',
+          }),
+          bookId: 'b-sar',
+          bookName: 'Server-side lorebook',
+          activationReason: 'sticky',
+        },
+      ],
+      breakdown
+    );
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    expect(byId.get('e-sar-keyword')?.activationReason).toBe('keyword');
+    expect(byId.get('e-sar-sticky')?.activationReason).toBe('sticky');
+  });
+
+  it('a trim-cut at-depth entry lands in wi.trimmedFromHistoryEntries with a real emitted cost, and NOT in wi.entries', () => {
+    // FIX ROUND 1, B3. The whole `trimmedFromHistoryEntries` population
+    // block (chatStore.ts ~2322-2339) had no test — deletable to `[]` with
+    // the suite green. 'trim-bites' is the one fixture whose token-aware
+    // trim actually cuts the message carrying an at-depth WI entry
+    // (e-trim-deep, depth 20) — see that fixture's own `what`.
+    const { breakdown } = runSolo('trim-bites');
+    expect(breakdown.flags.droppedFromHistory, 'the trim did not bite — wrong fixture').toBeGreaterThan(0);
+
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find((e) => e.entryId === 'e-trim-deep');
+    expect(trimmed, 'e-trim-deep never produced a trimmedFromHistoryEntries record').toBeDefined();
+    // KILLS: defaulting emittedTokens/emittedChars to null for a trimmed
+    // entry — it WAS rendered (wrapWiContent ran before the trim cut it),
+    // unlike a budget-dropped entry, so its cost is knowable.
+    expect(
+      trimmed!.emittedTokens,
+      'a trimmed-from-history entry must report a real emitted token count, not null'
+    ).not.toBeNull();
+    expect(trimmed!.emittedChars).not.toBeNull();
+    expect(trimmed!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 20 });
+    // FIX ROUND 2. A2's `null` convention is reserved for "wrapWiContent
+    // never ran" (budget-dropped entries). This entry WAS rendered — the
+    // comment above and its non-null emittedTokens both say so — so `null`
+    // here would contradict its own record. e-trim-deep's book is a plain,
+    // non-persona book, so 'none' is the only correct value.
+    expect(
+      trimmed!.wrapper,
+      'a trimmed-from-history entry WAS rendered — wrapper must not be null'
+    ).toBe('none');
+    // And it must never silently double up in the rendered set too.
+    expect(
+      breakdown.wi.entries.find((e) => e.entryId === 'e-trim-deep'),
+      'a trimmed-from-history entry also appeared in wi.entries'
+    ).toBeUndefined();
+  });
+
+  it('a trim-cut PERSONA-linked at-depth entry reports wrapper "persona" in wi.trimmedFromHistoryEntries', () => {
+    resetStores();
+    secondExtContributions = [];
+    useGenerationStore.setState({
+      context: { ...DEFAULT_CONTEXT_CONFIG, maxTokens: 1600, responseReserve: 256, tokenAware: true },
+    });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-trim-persona', [
+          mkEntry('e-trim-persona-deep', {
+            content: 'Lore at depth 20, about the user — old enough that the trim reaches it.',
+            position: 'at_depth',
+            depth: 20,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-trim-persona'],
+    });
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p-trim',
+          name: 'Wren',
+          description: 'A night-shift cataloguer.',
+          descriptionPosition: 'in_prompt',
+          descriptionDepth: 4,
+          descriptionRole: 'system',
+          linkedBookIds: ['b-trim-persona'],
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      activePersonaId: 'p-trim',
+    });
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 24; i++) {
+      const isUser = i % 2 === 0;
+      messages.push(
+        mkMsg(`tp${i}`, `Turn ${i}. ${'ledger '.repeat(20).trim()}`, {
+          isUser,
+          name: isUser ? 'User' : 'Ivy',
+        })
+      );
+    }
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    expect(breakdown.flags.droppedFromHistory, 'the trim did not bite — wrong fixture shape').toBeGreaterThan(0);
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find(
+      (e) => e.entryId === 'e-trim-persona-deep'
+    );
+    expect(trimmed, 'e-trim-persona-deep never produced a trimmedFromHistoryEntries record').toBeDefined();
+    expect(trimmed!.wrapper).toBe('persona');
+  });
+
+  it('wi.pinnedOverBudget and wi.pinnedTokens are real scan-report values, not hardcoded', () => {
+    // FIX ROUND 1, B3. Both fields are pure copy-throughs from
+    // `wiScanReport` with no prior test — `false`/`0` passes the whole
+    // suite. 'wi-budget-eviction' is built so its two pinned (constant +
+    // critical) entries alone exceed the 40-token budget — see that
+    // fixture's own `what` — so pinnedOverBudget must come back true and
+    // pinnedTokens must be a real positive number, not the budget itself.
+    const { breakdown } = runSolo('wi-budget-eviction');
+    expect(breakdown.wi.pinnedOverBudget, 'the fixture is built to exceed budget on pinned entries alone').toBe(
+      true
+    );
+    expect(breakdown.wi.pinnedTokens).toBeGreaterThan(0);
+    // Not the budget number itself — a hardcode that just echoed `budget`
+    // would slip past a bare `toBeGreaterThan(0)`.
+    expect(breakdown.wi.pinnedTokens).not.toBe(breakdown.wi.budget);
+    // FIX ROUND 2. `>0`/`!== budget` also passes
+    // `pinnedTokens = wiScanReport.totalTokens` (the adjacent-field
+    // copy-paste) — in THIS over-budget fixture the two happen to coincide
+    // (every budgetable entry gets dropped, so totalTokens === pinnedCost),
+    // which is exactly why the fits-budget test below exists too. Pin the
+    // exact computed value here as well, since it costs nothing.
+    expect(breakdown.wi.pinnedTokens).toBe(pinnedTokensForBook('b-budget', breakdown.profile));
+  });
+
+  it('wi.pinnedOverBudget is false, and wi.pinnedTokens is the pinned-only sum, when pinned entries fit the budget', () => {
+    // FIX ROUND 2. The test above only exercises the OVER-budget direction,
+    // and its `>0`/`!== budget` checks pass `pinnedOverBudget: true`
+    // (hardcoded) and `pinnedTokens: wiScanReport.totalTokens` (the
+    // adjacent-field copy-paste) unchanged — in that fixture every
+    // budgetable entry gets dropped, so totalTokens happens to equal
+    // pinnedCost too. A generous budget with ONE small pinned entry AND one
+    // surviving non-pinned entry pins the other boolean direction and makes
+    // totalTokens strictly greater than pinnedTokens, so the copy-paste
+    // mutation is now visible. KILLS: `pinnedOverBudget: true` (or any
+    // constant), and `pinnedTokens = wiScanReport.totalTokens`.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({ tokenBudget: 500 });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-wi-fits', [
+          mkEntry('e-pin-fits', {
+            content: 'PIN FITS: a short pinned note about the desk.',
+            constant: true,
+            order: 10,
+          }),
+          mkEntry('e-budgetable-fits', {
+            content: 'BUDGETABLE FITS: a second, non-pinned note that also survives the budget.',
+            constant: false,
+            critical: false,
+            keys: ['fits'],
+            order: 20,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-wi-fits'],
+    });
+    const messages = [mkMsg('wf1', 'Tell me about what fits.')];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    expect(
+      breakdown.wi.pinnedOverBudget,
+      'one short pinned entry must fit comfortably under a 500-token budget'
+    ).toBe(false);
+    const expectedPinnedTokens = pinnedTokensForBook('b-wi-fits', breakdown.profile);
+    expect(breakdown.wi.pinnedTokens).toBe(expectedPinnedTokens);
+    // The surviving non-pinned entry must have actually been counted
+    // somewhere, i.e. this fixture isn't accidentally degenerate — proves
+    // totalTokens (pinnedCost + surviving budgetable cost) differs from
+    // pinnedTokens (pinnedCost alone), so a totalTokens/pinnedTokens
+    // mix-up cannot hide behind a fixture where the two coincide.
+    expect(
+      breakdown.wi.entries.find((e) => e.entryId === 'e-budgetable-fits'),
+      'e-budgetable-fits must survive the budget for this fixture to distinguish pinnedTokens from totalTokens'
+    ).toBeDefined();
+  });
+
+  it('group: wi.pinnedOverBudget and wi.pinnedTokens are real scan-report values, not hardcoded', () => {
+    // Group's own copy of the solo test above (chatStore.ts:3287-3288).
+    const { breakdown } = runGroup('wi-budget-eviction');
+    expect(breakdown.wi.pinnedOverBudget).toBe(true);
+    expect(breakdown.wi.pinnedTokens).toBeGreaterThan(0);
+    expect(breakdown.wi.pinnedTokens).not.toBe(breakdown.wi.budget);
+    // FIX ROUND 2 — same computed-value strengthening as solo's copy above.
+    expect(breakdown.wi.pinnedTokens).toBe(pinnedTokensForBook('b-gbudget', breakdown.profile));
+  });
+
+  it('group: wi.pinnedOverBudget is false, and wi.pinnedTokens is the pinned-only sum, when pinned entries fit the budget', () => {
+    // FIX ROUND 2 — group's own copy of the solo fits-budget test above.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({ tokenBudget: 500 });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-wi-fits-group', [
+          mkEntry('e-pin-fits-group', {
+            content: 'PIN FITS GROUP: a short pinned note about the desk.',
+            constant: true,
+            order: 10,
+          }),
+          mkEntry('e-budgetable-fits-group', {
+            content: 'BUDGETABLE FITS GROUP: a second, non-pinned note that also survives.',
+            constant: false,
+            critical: false,
+            keys: ['fits'],
+            order: 20,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-wi-fits-group'],
+    });
+    const messages = [mkMsg('wfg1', 'Tell me about what fits.')];
+    const seraphina = mkChar({ name: 'Seraphina', avatar: 'ser.png' });
+    const marcus = mkChar({ name: 'Marcus', avatar: 'mar.png' });
+    const breakdown = createPromptBreakdown('group');
+    buildGroupConversationContext(
+      messages,
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      mkWiOut(messages),
+      true,
+      breakdown
+    );
+    expect(
+      breakdown.wi.pinnedOverBudget,
+      'one short pinned entry must fit comfortably under a 500-token budget'
+    ).toBe(false);
+    const expectedPinnedTokens = pinnedTokensForBook('b-wi-fits-group', breakdown.profile);
+    expect(breakdown.wi.pinnedTokens).toBe(expectedPinnedTokens);
+    expect(
+      breakdown.wi.entries.find((e) => e.entryId === 'e-budgetable-fits-group'),
+      'e-budgetable-fits-group must survive the budget for this fixture to distinguish pinnedTokens from totalTokens'
+    ).toBeDefined();
+  });
+
+  it('group: owner, persona, and unlabelled entries report their own wrapper kind', () => {
+    // The three `wrapWiContent` branches group can reach — solo only ever
+    // reaches 'none'/'persona' (there is no "owned by someone else" concept
+    // with one character). e-marcus is owned by Marcus, a NON-speaking
+    // member of this room (Seraphina is the speaker); e-persona is
+    // persona-linked; e-shared is room-shared / unowned.
+    const { breakdown } = runGroup('wi-attribution');
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    expect(
+      byId.get('e-marcus')?.wrapper,
+      'a book owned by a non-speaking member must report the owner wrapper'
+    ).toBe('owner');
+    expect(
+      byId.get('e-persona')?.wrapper,
+      'a persona-linked book must report the persona wrapper'
+    ).toBe('persona');
+    expect(
+      byId.get('e-shared')?.wrapper,
+      'a room-shared, unowned book must report no wrapper'
+    ).toBe('none');
+  });
+
+  it('group: produces distinct placements for Stage A, Stage B (wi_at_depth), and Stage C in one build', () => {
+    // FIX ROUND 1, B1 — the group mirror of solo's own "produces distinct
+    // placements" test above. `placementForGroupEntry` (chatStore.ts,
+    // GROUP_WI_SLOT_BY_POSITION + the group_wi_after_an special case) had
+    // no test anywhere: every branch could be replaced by a constant, or by
+    // `null`, with the full suite green. KILLS: a constant-return
+    // `placementForGroupEntry`, and independently, a null placement (both
+    // mutation-verified by the reviewer before this fix).
+    //
+    // FIX ROUND 2 — the original fixture only reached 3 of the 5 positions
+    // (before_char, at_depth, after_an), leaving `after_char` and
+    // `before_an` free to be corrupted in GROUP_WI_SLOT_BY_POSITION with
+    // the suite green. e-gp-after-char and e-gp-before-an close the gap.
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-group-placement', [
+          mkEntry('e-gp-a', { content: 'Group stage A lore.', position: 'before_char' }),
+          mkEntry('e-gp-b', { content: 'Group stage B lore.', position: 'at_depth', depth: 1 }),
+          mkEntry('e-gp-c', { content: 'Group stage C lore.', position: 'after_an' }),
+          mkEntry('e-gp-after-char', { content: 'Group stage A lore, after char.', position: 'after_char' }),
+          mkEntry('e-gp-before-an', { content: 'Group stage A lore, before AN.', position: 'before_an' }),
+        ]),
+      ],
+      activeBookIds: ['b-group-placement'],
+    });
+    const messages = [mkMsg('gp1', 'First.'), mkMsg('gp2', 'Second.', { isUser: false, name: 'Seraphina', characterAvatar: 'ser.png' })];
+    const seraphina = mkChar({ name: 'Seraphina', avatar: 'ser.png' });
+    const marcus = mkChar({ name: 'Marcus', avatar: 'mar.png' });
+    const breakdown = createPromptBreakdown('group');
+    buildGroupConversationContext(
+      messages,
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      mkWiOut(messages),
+      true,
+      breakdown
+    );
+    const byId = new Map(breakdown.wi.entries.map((e) => [e.entryId, e]));
+    expect(byId.get('e-gp-a')?.placement).toEqual({ stage: 'A', sectionId: 'group_wi_before_char' });
+    expect(byId.get('e-gp-b')?.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 1 });
+    expect(byId.get('e-gp-c')?.placement).toEqual({ stage: 'C', sectionId: 'group_wi_after_an' });
+    expect(byId.get('e-gp-after-char')?.placement).toEqual({ stage: 'A', sectionId: 'group_wi_after_char' });
+    expect(byId.get('e-gp-before-an')?.placement).toEqual({ stage: 'A', sectionId: 'group_wi_before_an' });
+    const stages = new Set(breakdown.wi.entries.map((e) => e.placement?.stage));
+    expect(stages, 'not all three stages produced a placement').toEqual(new Set(['A', 'B', 'C']));
+
+    // Stronger form: pin the derivation to the ACTUAL emission rather than
+    // letting it merely restate the stored `position`/`depth` fields it read
+    // from. For the A/C entries, look up the real slice by sectionId (a fact
+    // independent of what the entry's own `placement.stage` claims) and
+    // assert THAT slice's stage — not the entry's self-reported one — is
+    // what the exact-value assertions above expect. This is what would catch
+    // the review's named failure: a future change that moves a group WI slot
+    // to a different stage while `placementForGroupEntry` keeps reading the
+    // unchanged `position` field and reporting the old stage.
+    for (const [id, sectionId, expectedStage] of [
+      ['e-gp-a', 'group_wi_before_char', 'A'],
+      ['e-gp-c', 'group_wi_after_an', 'C'],
+      ['e-gp-after-char', 'group_wi_after_char', 'A'],
+      ['e-gp-before-an', 'group_wi_before_an', 'A'],
+    ] as const) {
+      const entry = byId.get(id);
+      expect(entry?.placement, `${id}: no placement recorded`).not.toBeNull();
+      const realSlice = breakdown.slices.find(
+        (s) => (s.kind.stage === 'A' || s.kind.stage === 'C') && s.kind.id === sectionId
+      );
+      expect(
+        realSlice,
+        `${id}: no emitted slice named ${sectionId} exists — placement cannot be pinned to a real emission`
+      ).toBeDefined();
+      expect(
+        realSlice!.kind.stage,
+        `${id}: the slice its content was actually measured into reports a different stage than its own placement`
+      ).toBe(expectedStage);
+      expect(entry!.placement!.stage).toBe(realSlice!.kind.stage);
+    }
+    // Stage B has no per-depth slice identity to cross-check against (the
+    // slice kind carries `cls` only, not `depth` — see promptBreakdown.ts's
+    // SectionKind), so the strongest available cross-check is that at least
+    // one real wi_at_depth Stage-B slice was actually emitted alongside the
+    // entry's own claim of one.
+    expect(
+      breakdown.slices.some((s) => s.kind.stage === 'B' && s.kind.cls === 'wi_at_depth'),
+      'e-gp-b claims a wi_at_depth placement but no such slice was emitted'
+    ).toBe(true);
+  });
+
+  it("a collector run through two finish passes holds one pass's per-entry records, not their union", () => {
+    // Extends the existing collector-reuse invariant ("a collector describes
+    // one pass, not their union", above) to the three new arrays:
+    // beginBreakdownPass clears them at the START of every finish call, so
+    // the uncommitted probe pass and the committing pass must not accumulate.
+    resetStores();
+    secondExtContributions = [];
+    const input = SOLO_FIXTURES.find((f) => f.name === 'wi-budget-eviction')!.setup();
+    const prepared = prepareConversationContext(
+      input.messages,
+      input.character,
+      input.availableEmotions,
+      mkWiOut(input.messages),
+      input.serverMatchedEntries
+    );
+    const b = createPromptBreakdown('solo');
+    finishConversationContext(prepared, undefined, { commit: false, breakdownOut: b });
+    const afterProbeEntries = b.wi.entries.length;
+    const afterProbeDropped = b.wi.droppedEntries.length;
+    expect(afterProbeEntries, 'the probe pass produced no per-entry records at all').toBeGreaterThan(0);
+    expect(afterProbeDropped, 'the probe pass produced no dropped-entry records at all').toBeGreaterThan(0);
+    finishConversationContext(prepared, undefined, { commit: true, breakdownOut: b });
+    expect(b.wi.entries.length, 'wi.entries doubled across two finish passes').toBe(afterProbeEntries);
+    expect(
+      b.wi.droppedEntries.length,
+      'wi.droppedEntries doubled across two finish passes'
+    ).toBe(afterProbeDropped);
+  });
+
+  it('solo: wi.entries rawTokens is the raw entry content, not the emitted string, on an entry a macro shrinks', () => {
+    const { breakdown } = runSolo('macro-writes');
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-macro');
+    expect(record, 'e-macro never produced a wi.entries record').toBeDefined();
+    const rawContent = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'b-macro')!
+      .entries.find((e) => e.id === 'e-macro')!.content;
+    expect(record!.rawTokens).toBe(estimateTokens(rawContent, breakdown.profile));
+    expect(record!.rawTokens, 'rawTokens equals emittedTokens').not.toBe(record!.emittedTokens);
+  });
+
+  it('group: wi.entries rawTokens is the raw entry content, not the emitted string, on a persona-wrapped entry', () => {
+    const { breakdown } = runGroup('wi-attribution');
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-persona');
+    expect(record, 'e-persona never produced a wi.entries record').toBeDefined();
+    expect(record!.wrapper).toBe('persona');
+    const rawContent = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'b-persona')!
+      .entries.find((e) => e.id === 'e-persona')!.content;
+    expect(record!.rawTokens).toBe(estimateTokens(rawContent, breakdown.profile));
+    expect(record!.rawTokens, 'rawTokens equals emittedTokens').not.toBe(record!.emittedTokens);
+  });
+
+  it('a trim-cut PERSONA-linked at-depth entry\'s rawTokens is the raw entry content, not the emitted string', () => {
+    resetStores();
+    secondExtContributions = [];
+    useGenerationStore.setState({
+      context: { ...DEFAULT_CONTEXT_CONFIG, maxTokens: 1600, responseReserve: 256, tokenAware: true },
+    });
+    const RAW_CONTENT = 'Lore at depth 20, about the user — old enough that the trim reaches it.';
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-rawpin-trim', [
+          mkEntry('e-rawpin-trim-deep', {
+            content: RAW_CONTENT,
+            position: 'at_depth',
+            depth: 20,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-rawpin-trim'],
+    });
+    usePersonaStore.setState({
+      personas: [
+        {
+          id: 'p-rawpin-trim',
+          name: 'Wren',
+          description: 'A night-shift cataloguer.',
+          descriptionPosition: 'in_prompt',
+          descriptionDepth: 4,
+          descriptionRole: 'system',
+          linkedBookIds: ['b-rawpin-trim'],
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      activePersonaId: 'p-rawpin-trim',
+    });
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 24; i++) {
+      const isUser = i % 2 === 0;
+      messages.push(
+        mkMsg(`rpt${i}`, `Turn ${i}. ${'ledger '.repeat(20).trim()}`, {
+          isUser,
+          name: isUser ? 'User' : 'Ivy',
+        })
+      );
+    }
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    expect(breakdown.flags.droppedFromHistory, 'the trim did not bite for this fixture').toBeGreaterThan(0);
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find(
+      (e) => e.entryId === 'e-rawpin-trim-deep'
+    );
+    expect(trimmed, 'e-rawpin-trim-deep never produced a trimmedFromHistoryEntries record').toBeDefined();
+    expect(trimmed!.wrapper).toBe('persona');
+    expect(trimmed!.rawTokens).toBe(estimateTokens(RAW_CONTENT, breakdown.profile));
+    expect(trimmed!.rawTokens, 'rawTokens equals emittedTokens').not.toBe(trimmed!.emittedTokens);
+  });
+
+  it('a budget-evicted entry rawTokens is the raw entry content, not a placeholder constant', () => {
+    const { breakdown } = runSolo('wi-budget-eviction');
+    const dropped = breakdown.wi.droppedEntries.find((e) => e.entryId === 'e-evicted');
+    expect(dropped, 'e-evicted never produced a droppedEntries record').toBeDefined();
+    const rawContent = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'b-budget')!
+      .entries.find((e) => e.id === 'e-evicted')!.content;
+    expect(dropped!.rawTokens).toBe(estimateTokens(rawContent, breakdown.profile));
+  });
+
+  it('group: a budget-evicted entry rawTokens is the raw entry content, not a placeholder constant', () => {
+    const { breakdown } = runGroup('wi-budget-eviction');
+    const dropped = breakdown.wi.droppedEntries.find((e) => e.entryId === 'e-gevicted');
+    expect(dropped, 'e-gevicted never produced a droppedEntries record').toBeDefined();
+    const rawContent = useWorldInfoStore
+      .getState()
+      .books.find((b) => b.id === 'b-gbudget')!
+      .entries.find((e) => e.id === 'e-gevicted')!.content;
+    expect(dropped!.rawTokens).toBe(estimateTokens(rawContent, breakdown.profile));
+  });
+
+  it('solo: an at-depth entry\'s reported placement.depth is floored and clamped to zero, not the raw stored depth', () => {
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-depth-clamp', [
+          mkEntry('e-depth-clamp', {
+            content: 'Depth-clamp lore.',
+            position: 'at_depth',
+            depth: -3.7,
+          }),
+          mkEntry('e-depth-floor', {
+            content: 'Depth-floor lore.',
+            position: 'at_depth',
+            depth: 3.5,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-depth-clamp'],
+    });
+    const messages = [
+      mkMsg('dc1', 'Hello.'),
+      mkMsg('dc2', 'Reply.', { isUser: false, name: 'Ivy' }),
+      mkMsg('dc3', 'Again.'),
+      mkMsg('dc4', 'And again.', { isUser: false, name: 'Ivy' }),
+    ];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-depth-clamp');
+    expect(record, 'e-depth-clamp never produced a wi.entries record').toBeDefined();
+    expect(record!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 0 });
+    const floored = breakdown.wi.entries.find((e) => e.entryId === 'e-depth-floor');
+    expect(floored, 'e-depth-floor never produced a wi.entries record').toBeDefined();
+    expect(floored!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 3 });
+  });
+
+  it('group: an at-depth entry\'s reported placement.depth is floored and clamped to zero, not the raw stored depth', () => {
+    resetStores();
+    secondExtContributions = [];
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-gdepth-clamp', [
+          mkEntry('e-gdepth-clamp', {
+            content: 'Group depth-clamp lore.',
+            position: 'at_depth',
+            depth: 1.9,
+          }),
+          mkEntry('e-gdepth-negative', {
+            content: 'Group negative-depth lore.',
+            position: 'at_depth',
+            depth: -2.5,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-gdepth-clamp'],
+    });
+    const messages = [
+      mkMsg('gdc1', 'First.'),
+      mkMsg('gdc2', 'Second.', { isUser: false, name: 'Seraphina', characterAvatar: 'ser.png' }),
+    ];
+    const seraphina = mkChar({ name: 'Seraphina', avatar: 'ser.png' });
+    const marcus = mkChar({ name: 'Marcus', avatar: 'mar.png' });
+    const breakdown = createPromptBreakdown('group');
+    buildGroupConversationContext(
+      messages,
+      [seraphina, marcus],
+      seraphina,
+      undefined,
+      undefined,
+      undefined,
+      mkWiOut(messages),
+      true,
+      breakdown
+    );
+    const record = breakdown.wi.entries.find((e) => e.entryId === 'e-gdepth-clamp');
+    expect(record, 'e-gdepth-clamp never produced a wi.entries record').toBeDefined();
+    expect(record!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 1 });
+    const clamped = breakdown.wi.entries.find((e) => e.entryId === 'e-gdepth-negative');
+    expect(clamped, 'e-gdepth-negative never produced a wi.entries record').toBeDefined();
+    expect(clamped!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 0 });
+  });
+
+  it('a trim-cut at-depth entry\'s reported placement.depth is floored, not the raw stored depth', () => {
+    resetStores();
+    secondExtContributions = [];
+    useGenerationStore.setState({
+      context: { ...DEFAULT_CONTEXT_CONFIG, maxTokens: 1600, responseReserve: 256, tokenAware: true },
+    });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-trim-depth-clamp', [
+          mkEntry('e-trim-depth-clamp', {
+            content: 'Lore at a fractional depth, old enough that the trim reaches it.',
+            position: 'at_depth',
+            depth: 20.7,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-trim-depth-clamp'],
+    });
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 24; i++) {
+      const isUser = i % 2 === 0;
+      messages.push(
+        mkMsg(`tdc${i}`, `Turn ${i}. ${'ledger '.repeat(20).trim()}`, {
+          isUser,
+          name: isUser ? 'User' : 'Ivy',
+        })
+      );
+    }
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png' }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    expect(breakdown.flags.droppedFromHistory, 'the trim did not bite — wrong fixture shape').toBeGreaterThan(0);
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find(
+      (e) => e.entryId === 'e-trim-depth-clamp'
+    );
+    expect(trimmed, 'e-trim-depth-clamp never produced a trimmedFromHistoryEntries record').toBeDefined();
+    expect(trimmed!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 20 });
+  });
+
+  it('a trim-cut at-depth entry\'s reported placement.depth is clamped to zero, not the raw negative stored depth', () => {
+    resetStores();
+    secondExtContributions = [];
+    useGenerationStore.setState({
+      context: { ...DEFAULT_CONTEXT_CONFIG, maxTokens: 1600, responseReserve: 256, tokenAware: true },
+    });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-trim-negative', [
+          mkEntry('e-trim-negative', {
+            content: 'Lore stored at a negative depth.',
+            position: 'at_depth',
+            depth: -2.5,
+            constant: true,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-trim-negative'],
+    });
+    const messages = [
+      mkMsg('tn1', 'Hello.'),
+      mkMsg('tn2', 'Hi there.', { isUser: false, name: 'Ivy' }),
+      mkMsg('tn3', 'Anything new?'),
+    ];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png', description: 'detail '.repeat(1200) }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find(
+      (e) => e.entryId === 'e-trim-negative'
+    );
+    expect(trimmed, 'e-trim-negative never reached trimmedFromHistoryEntries — wrong fixture shape').toBeDefined();
+    expect(trimmed!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 0 });
   });
 });
 

@@ -579,11 +579,25 @@ export interface RetrievalContextActivationDTO {
  * guarded at the point of use rather than here, so an absent `activations`
  * degrades to "no activation detail" instead of the whole response being
  * rejected as malformed.
+ *
+ * `evictedEntryIds` (E2-S4 PR1) is the same kind of additive/optional field,
+ * for the same reason: a pre-E4-S0 backend never sends the key at all, and
+ * that MUST NOT be treated as malformed (see serverRetrieval.ts's
+ * `tryServerRetrieval` — this key is deliberately absent from its
+ * malformed-response guard, the same LANDMINE comment as `activations`
+ * documents). Entries that activated this turn — freshly or as a sticky
+ * carry-over — and were then dropped by the server's budget trim; NOT the
+ * complement of `activatedEntryIds` (that also excludes evicted sticky
+ * carry-overs, which never appear in `activatedEntryIds` either). Absent
+ * and `[]` are different facts and must not collapse: absent means "this
+ * backend doesn't report eviction," `[]` means "this backend reports
+ * eviction, and nothing was evicted this turn."
  */
 export interface RetrievalContextDTO {
   entries: RetrievalContextEntryDTO[];
   turnNo: number;
   activatedEntryIds: string[];
+  evictedEntryIds?: string[];
   activations?: Record<string, RetrievalContextActivationDTO>;
 }
 
