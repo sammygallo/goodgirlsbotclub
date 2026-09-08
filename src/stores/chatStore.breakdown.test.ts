@@ -4,7 +4,7 @@
  * WHAT THE GOLDENS CANNOT DO: `promptGoldens.test.ts` proves the
  * instrumentation changed nothing about what the model is sent. It cannot
  * prove the instrumentation MEASURED anything — an accounting layer that
- * silently computes zero leaves all 142 goldens green. That is this file's
+ * silently computes zero leaves all the goldens green. That is this file's
  * job, and it is why every test below names the cheapest wrong implementation
  * it exists to kill.
  *
@@ -474,7 +474,7 @@ const STAGE_C_MARKERS: Array<[string, string]> = [
 describe('token breakdown — per-section attribution', () => {
   it('bills every Stage-A section its own recomputed cost, under its own id', () => {
     // KILLS: any drift between `systemPartIds[i]` and `systemParts[i]`. The
-    // sum identity, the POST_HISTORY membership test and all 142 goldens are
+    // sum identity, the POST_HISTORY membership test and all the goldens are
     // invariant under a permutation of those ids — reversing every one of them
     // leaves the whole suite green while every number in the panel sits on the
     // wrong row, telling a user tuning spend that their selfie instruction is
