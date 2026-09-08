@@ -265,15 +265,15 @@
     </div>
     <div class="stamp">
       <b>7 Sep 2026</b><br>
-      main <b>57d3832a</b><br>
-      active <b>E2-S4 · PR1 in review</b>
+      main <b>d4c90056</b><br>
+      active <b>E2-S4 · PR1 merged</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">16</div><div class="k">Gated</div></div>
@@ -319,20 +319,20 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E2">
-          <div class="id">E2-S4 · PR1</div>
-          <div class="t">Per-entry World Info capture + server eviction facts</div>
-          <div class="m"><a href="https://github.com/sammygallo/goodgirlsbotclub/pull/525">#525</a> · leg 1 of 2, opened 7 Sep. Captures per-entry World Info cost inside <b>both</b> prompt builders and plumbs the backend&rsquo;s <code>evictedEntryIds</code>, which the client had never read. Intake found the card&rsquo;s own method <b>dead</b>: E4-S0 inverted <code>activatedEntryIds &minus; entries</code>, so following the card would have hard-coded &ldquo;nothing was evicted&rdquo; on every server turn &mdash; the exact lie AC4 exists to forbid, one layer below AC4&rsquo;s defences. <b>9 review rounds, 168 agents, 0 errors:</b> 12 &rarr; 11 &rarr; 8 &rarr; 0, QA then found 4 more, then 3 &rarr; 4 &rarr; 3 &rarr; 1 &rarr; <b>0</b>. <b>Zero behavior defects were ever confirmed in the production logic</b>; the recurring defect was fix rounds writing false checkable claims (6, then 3), which a deletion-only prose rule took to zero. QA D1&ndash;D7 pass &mdash; the macro double-execution canary fails <code>expected &#39;2&#39; to be &#39;1&#39;</code> in both builders. 2063 tests; goldens 146/146, <code>__goldens__/</code> untouched. Verification ~14.1M against the ~6.2&ndash;18.5M class row: inside on tokens, over on rounds. <b>Stops for Sammy at the did-not-converge gate.</b></div>
-          <div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate free">E2-S2a ✓</span><span class="gate free">E2-S5 ✓</span><span class="gate hot">merge gate</span></div>
-        </article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E2">
+          <div class="id">E2-S4 · PR1</div>
+          <div class="t">Per-entry World Info capture + server eviction facts</div>
+          <div class="m">8 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/525">#525</a> &rarr; <code>d4c90056</code>, merged by Sammy at the did-not-converge gate. Frontend-only, no migration, no backend change. <b>PR2 is not built</b>, so E2-S4 is incomplete and all four ACs stay PARTIAL &mdash; what is on <code>main</code> is an inert data layer with no consumer. <b>9 rounds, 168 agents, 0 errors, converged at zero.</b> Zero behavior defects were ever confirmed in the production logic; the recurring class was fix rounds writing false checkable claims (6, then 3 &rarr; 0 under a deletion-only prose rule). Intake killed three dead carriers: the card&rsquo;s own eviction derivation, E2-S2&rsquo;s rotted golden count, and E5-S1&rsquo;s non-historical token figure. 2063 tests; goldens 146/146 untouched.</div>
+          <div class="gates"><span class="gate">PR2 owed</span><span class="gate free">unblocks nothing yet</span></div>
+        </article>
       </div>
     </section>
 
@@ -436,7 +436,7 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S4 · PR1 — in review, awaiting the merge gate</h2>
+    <h2>E2-S4 · PR1 — merged 8 Sep, awaiting deploy</h2>
     <p class="sub">The data layer E5's Optimization Agent reads. E5-S1 has to be able to say "entry X fired 0 times in the last 25 chats and costs ~450 tokens a turn when it is active" <em>and be honest about which half of that it cannot actually see</em> — so the API's job is as much to refuse a question as to answer one. Split <b>N=2 by assembly surface</b>: PR1 captures per-entry World Info cost inside both prompt builders; PR2 derives the consumer API from it and never imports a builder.</p>
 
     <div class="steps">
@@ -445,8 +445,8 @@
       <div class="step done"><div class="sn">Build</div><div class="sv">PR1 + 4 fix rounds</div></div>
       <div class="step done"><div class="sn">Review</div><div class="sv">9 rounds &rarr; converged at 0</div></div>
       <div class="step done"><div class="sn">QA</div><div class="sv">D1&ndash;D7 pass · 4 AC partial</div></div>
-      <div class="step now"><div class="sn">Merge</div><div class="sv">Sammy &mdash; trigger fired</div></div>
-      <div class="step"><div class="sn">Deploy</div><div class="sv">n/a for PR1</div></div>
+      <div class="step done"><div class="sn">Merge</div><div class="sv">d4c90056 &mdash; Sammy&rsquo;s go</div></div>
+      <div class="step now"><div class="sn">Deploy</div><div class="sv">Sammy&rsquo;s gate &mdash; nothing required</div></div>
     </div>
 
     <div class="note crit" style="margin-bottom:18px">
