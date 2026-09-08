@@ -101,13 +101,23 @@ const lensResults = await parallel(lenses.map(l => () =>
     { label: `lens:${l.key}`, phase: 'Lens review', schema: FINDINGS_SCHEMA, model: 'opus', effort: 'high' } // lenses: broad hunting, opus+high
   )))
 // Barrier is deliberate: dedup needs every lens's findings at once.
-// #526: index BEFORE filtering. `filter(Boolean).flatMap((r,i) => lenses[i])` re-indexes,
-// so one dead lens misattributes every surviving lens's findings to the wrong lens — silently,
-// and only in the degraded condition where attribution matters most.
+// #526: index BEFORE filtering. `filter(Boolean).flatMap((r,i) => lenses[i])` re-indexed, so a dead
+// lens shifted the label of every lens ORIGINALLY AFTER it by one; lenses before it kept the correct
+// label, so the damage was positional, not total. Silent, and only in the degraded condition where
+// attribution matters most.
 const all = lensResults.flatMap((r, i) => r ? r.findings.map(f => ({ ...f, lens: lenses[i].key })) : [])
 const deadLenses = lenses.filter((_, i) => !lensResults[i]).map(l => l.key)
 log(`lenses: ${lenses.length - deadLenses.length}/${lenses.length} returned` +
     (deadLenses.length ? ` — DIED: ${deadLenses.join(', ')} (this round hunted with fewer lenses)` : ''))
+// Every lens dead is NOT a clean round. Without this the run returns empty verdict arrays byte-identical
+// to a genuinely converged pass, and §8 checklist item 3 keys on exactly that shape. Same remedy as the
+// budget hold below: null the four verdict keys so a downstream count throws instead of reading zero.
+if (lenses.length && deadLenses.length === lenses.length) {
+  log(`ALL ${lenses.length} lenses died — NOT A REVIEW ROUND, nothing was hunted.`)
+  return { story: args.story, mode, status: 'all_lenses_died',
+           confirmed: null, plausible: null, refuted: null, unverified: null,
+           deadLenses, lensCount: lenses.length }
+}
 const seen = new Set()
 const deduped = all.filter(f => {
   const k = `${f.repo || ''}|${f.file || ''}|${(f.title || '').toLowerCase().slice(0, 60)}`
@@ -204,5 +214,5 @@ const refuted = results.filter(f => f.status === 'refuted')
 const unverified = results.filter(f => f.status === 'unverified')
 log(`confirmed ${confirmed.length} · plausible ${plausible.length} · refuted ${refuted.length} · unverified ${unverified.length}`)
 if (unverified.length) log(`WARNING: ${unverified.length} finding(s) got no surviving skeptic vote — UNVERIFIED, do not treat as confirmed`)
-return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length,
+return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length, deadLenses,
          gateArmed, classBudgetTokens, spentTokens, projectedAgents, projectedTokens, cumulativeTokens }

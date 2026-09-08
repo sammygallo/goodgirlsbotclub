@@ -82,13 +82,16 @@ function loadScript() {
   )
 }
 
-function makeHarness({ findingsPerLens, args }) {
+function makeHarness({ findingsPerLens, args, deadLenses }) {
   const calls = { lens: 0, skeptic: 0, logs: [] }
   const agent = async (_prompt, opts = {}) => {
     const label = opts.label || ''
     if (label.startsWith('lens:')) {
       calls.lens++
       const key = label.slice('lens:'.length)
+      // A dead lens is `null` — exactly what agent() returns on a terminal error
+      // or a user skip. #526's defect only exists in this state.
+      if ((deadLenses || []).includes(key)) return null
       return { findings: (findingsPerLens[key] || []) }
     }
     if (label.startsWith('skeptic')) {
@@ -353,6 +356,56 @@ console.log('story-review cost gate')
   check('held run logs NOT A REVIEW ROUND',
         held.calls.logs.some((l) => l.includes('NOT A REVIEW ROUND')),
         `logs=${JSON.stringify(held.calls.logs)}`)
+}
+
+// --- #526: lens attribution and liveness ---------------------------------
+// WHY THESE ARE HERE. The fix for #526 shipped with zero coverage: the whole
+// change could be reverted and every existing assertion stayed green, because
+// no case in this file ever killed a lens.
+//
+//   8. a lens dying must NOT relabel the survivors. The pre-fix expression
+//      `filter(Boolean).flatMap((r,i) => lenses[i])` re-indexed, shifting the
+//      label of every lens ORIGINALLY AFTER the dead one. The dead lens here is
+//      index 0 precisely because that is the case where the old code was wrong
+//      about every survivor — kill a LATER index and the old code still passes.
+//   9. the death must be REPORTED, in the log and on the returned object. A
+//      round that hunted with fewer lenses than it claims is not the round the
+//      PM thinks they read.
+//  10. ALL lenses dying must not look like a clean pass — the same null-verdict
+//      contract as the budget hold (case 7), for the same reason.
+{
+  const THREE = [{ key: 'a', focus: 'a' }, { key: 'b', focus: 'b' }, { key: 'c', focus: 'c' }]
+  const h = makeHarness({
+    findingsPerLens: { b: [finding('from-b')], c: [finding('from-c')] },
+    deadLenses: ['a'],
+    args: baseArgs({ lenses: THREE }),
+  })
+  const out = await h.run()
+  const labels = [...(out.confirmed || []), ...(out.plausible || []), ...(out.refuted || [])]
+    .map((f) => `${f.title}:${f.lens}`).sort().join(',')
+  check('a dead lens does not relabel the survivors (#526)',
+        labels === 'from-b:b,from-c:c',
+        `got ${labels} — pre-fix this was from-b:a,from-c:b`)
+  check('a dead lens is named in the run log',
+        h.calls.logs.some((l) => l.includes('DIED') && l.includes('a')),
+        `logs=${JSON.stringify(h.calls.logs)}`)
+  check('a dead lens is surfaced on the returned object',
+        Array.isArray(out.deadLenses) && out.deadLenses.join() === 'a',
+        `deadLenses=${JSON.stringify(out.deadLenses)}`)
+}
+
+{
+  const h = makeHarness({
+    findingsPerLens: {},
+    deadLenses: ['a', 'b'],
+    args: baseArgs({ lenses: LENSES }),
+  })
+  const out = await h.run()
+  check('all lenses dead is NOT a review round', out.status === 'all_lenses_died', `status=${out.status}`)
+  check('all lenses dead nulls the four verdict keys, not []',
+        out.confirmed === null && out.plausible === null && out.refuted === null && out.unverified === null,
+        `confirmed=${JSON.stringify(out.confirmed)}`)
+  check('all lenses dead spawns zero skeptics', h.calls.skeptic === 0, `skeptics=${h.calls.skeptic}`)
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)
