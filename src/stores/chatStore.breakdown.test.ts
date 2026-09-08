@@ -2117,6 +2117,47 @@ describe('token breakdown — world-info per-entry records', () => {
     expect(trimmed, 'e-trim-depth-clamp never produced a trimmedFromHistoryEntries record').toBeDefined();
     expect(trimmed!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 20 });
   });
+
+  it('a trim-cut at-depth entry\'s reported placement.depth is clamped to zero, not the raw negative stored depth', () => {
+    resetStores();
+    secondExtContributions = [];
+    useGenerationStore.setState({
+      context: { ...DEFAULT_CONTEXT_CONFIG, maxTokens: 1600, responseReserve: 256, tokenAware: true },
+    });
+    useWorldInfoStore.setState({
+      books: [
+        mkBook('b-trim-negative', [
+          mkEntry('e-trim-negative', {
+            content: 'Lore stored at a negative depth.',
+            position: 'at_depth',
+            depth: -2.5,
+            constant: true,
+          }),
+        ]),
+      ],
+      activeBookIds: ['b-trim-negative'],
+    });
+    const messages = [
+      mkMsg('tn1', 'Hello.'),
+      mkMsg('tn2', 'Hi there.', { isUser: false, name: 'Ivy' }),
+      mkMsg('tn3', 'Anything new?'),
+    ];
+    const breakdown = createPromptBreakdown('solo');
+    buildConversationContext(
+      messages,
+      mkChar({ name: 'Ivy', avatar: 'ivy.png', description: 'detail '.repeat(1200) }),
+      undefined,
+      mkWiOut(messages),
+      undefined,
+      undefined,
+      breakdown
+    );
+    const trimmed = breakdown.wi.trimmedFromHistoryEntries.find(
+      (e) => e.entryId === 'e-trim-negative'
+    );
+    expect(trimmed, 'e-trim-negative never reached trimmedFromHistoryEntries — wrong fixture shape').toBeDefined();
+    expect(trimmed!.placement).toEqual({ stage: 'B', cls: 'wi_at_depth', depth: 0 });
+  });
 });
 
 // ---------------------------------------------------------------------------
