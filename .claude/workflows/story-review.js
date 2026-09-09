@@ -4,7 +4,8 @@ export const meta = {
   whenToUse: 'REVIEW stage of /run-story for L/XL stories or trigger-list hits; design mode for red-teaming design docs',
   phases: [
     { title: 'Lens review', detail: 'independent perspectives over the diff' },
-    { title: 'Skeptic verify', detail: 'each finding attacked by skeptics; majority-refute kills' },
+    { title: 'Cluster', detail: 'collapse findings describing the same defect, before the wave is priced' },
+    { title: 'Skeptic verify', detail: 'each finding attacked by two skeptics; majority-refute kills' },
   ],
 }
 
@@ -20,6 +21,12 @@ export const meta = {
 //     across its 1-2 passes rather than each pass in isolation.
 //   confirmOverBudget: true — proceed past that hold. Pair it with resumeFromRunId or the lenses re-roll.
 //   lenses: optional [{ key, focus }] override
+//   skepticBatchSize: optional number, default 4 — how many findings one skeptic agent judges.
+//     1 restores the pre-2026-09-09 shape exactly (one agent per finding per skeptic).
+//   skepticSliceSize: optional number, default 25 — how many skeptic agents run before the
+//     script awaits them. A backstop on kill blast radius; see the wave below.
+//   clusterMinFindings: optional number, default 6 — below this the clustering agent is skipped
+//     (it cannot save more than it costs on a tiny set).
 // }
 const DEFAULT_DIFF_LENSES = [
   { key: 'correctness', focus: 'regressions and logic defects: concrete inputs/state that produce wrong output, crashes, or broken existing behavior' },
@@ -48,6 +55,26 @@ const VERDICT_SCHEMA = {
   type: 'object', required: ['refuted', 'reason'],
   properties: { refuted: { type: 'boolean' }, reason: { type: 'string' } },
 }
+// One skeptic agent now judges a BATCH, so its verdicts are index-addressed.
+// `index` is the position in the deduped list, not in the batch — an agent that
+// renumbers its own batch would otherwise vote on someone else's finding.
+const BATCH_VERDICT_SCHEMA = {
+  type: 'object', required: ['verdicts'],
+  properties: { verdicts: { type: 'array', items: {
+    type: 'object', required: ['index', 'refuted', 'reason'],
+    properties: {
+      index: { type: 'number' }, refuted: { type: 'boolean' }, reason: { type: 'string' },
+    } } } },
+}
+const CLUSTER_SCHEMA = {
+  type: 'object', required: ['groups'],
+  properties: { groups: { type: 'array', items: {
+    type: 'object', required: ['members'],
+    properties: {
+      members: { type: 'array', items: { type: 'number' } },
+      reason: { type: 'string' },
+    } } } },
+}
 
 const mode = args.mode || 'diff'
 const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAULT_DIFF_LENSES)
@@ -56,16 +83,21 @@ const subject = mode === 'design'
   : `Diff targets (read each with: git -C <path> diff <base>...<branch>, plus surrounding files for context):\n` +
     args.targets.map(t => `- ${t.repo}: path=${t.path} base=${t.base} branch=${t.branch}`).join('\n')
 
-// Lens stance condenses .claude/agents/adversarial-reviewer.md (preamble, ## Stance,
-// ## Never, and ## Report format's zero-findings sentence; the per-finding field
-// list lives in FINDINGS_SCHEMA) — kept inline so this script runs even in sessions where
-// custom agent types are not loaded. Change one, change both: the postmortem agent
-// diffs the pair at CURATE (postmortem.md §B5). The constant shipped condensed in
-// 1a0b67c9 and has lacked three ## Stance items ever since; E9-S7's postmortem
-// (ledger 2026-09-02) reported the safety-gate bullet missing here, and #517's
-// re-diff also found the lens-scope bullet and the refuting-your-own-candidate
-// clause absent.
-const stance = `You are an adversarial review lens on the GGBC agent team. Find defects that are REAL — for every finding construct the concrete failure scenario (inputs/state → wrong output/crash/bypass); no scenario, no finding. Check whether a co-located gate already masks a candidate before reporting it — refuting your own candidate is a valid, valuable outcome. When you have an assigned lens, hunt from it only and trust the other lenses to cover theirs. Safety-gate diffs get special suspicion: ask what an API client (not the honest UI) can do, whether the gate binds to CONTENT or to a mutable reference, and whether every path re-verifies fail-closed. Never patch anything. If you verify a coverage claim by MUTATION (temporarily editing code to prove a test stays green), do it in a THROWAWAY checkout — git worktree add <scratchpad-path> --detach <sha> — NEVER in the target worktree, and remove the throwaway when done; the target must stay byte-identical to its committed state (pilot E1-S1 lesson: a reviewer's uncommitted mutation was found sitting in the shared worktree). A comment, docstring, fixture header or test name inside the diff is a claim, and a false one IS a finding: the failure-scenario bar above is written for runtime failures, while a false comment fails when the next reader acts on it — so do not leave it to whichever lens happens to read the line; check every checkable assertion the diff's own prose makes (a count, an ordering, a last/only/always/never, an attribution, a file:line cite) against the code it describes, in this diff or in the other repo when the sentence is about the other repo's behaviour, and report the false ones naming the check that fails (E9-S10: a brand-new module's docstring claimed four post-history sections are "the last thing the model reads"; four cannot each be last, the full trigger-tier round passed it, and it cost a follow-up PR after merge). Wording you merely dislike is still a style nit. Do not pad the report with hypotheticals, style nits, or findings you could not ground in a failure scenario. Zero findings is a legitimate result — say what you checked and why it held.`
+// Lens stance. GENERATED from `.claude/agents/adversarial-reviewer.md` — the
+// region between its `mirror:start` / `mirror:end` markers, minus its
+// `mirror:skip` spans. DO NOT EDIT THIS LINE BY HAND: edit the .md, then run
+// `node .claude/workflows/story-review.test.mjs --fix`. The suite asserts the
+// two byte-for-byte, so a drifted copy fails the gate instead of surviving in
+// silence.
+//
+// It is duplicated at all because this script must run in sessions where custom
+// agent types are not loaded. It was duplicated BY HAND until 2026-09-09, under
+// a "change one, change both" comment in both files, and drifted from the day
+// both were created in `1a0b67c9`: the copy was missing the safety-gate bullet
+// (E9-S7's postmortem), the lens-scope bullet and the refuting-your-own-
+// candidate clause (#517's re-diff). Three readers caught it over two weeks and
+// it survived all three, because a comment is not a gate.
+const stance = "You are one review lens on the GGBC agent team (charter: `docs/agent-team.md`). You receive a diff target (repo path, base, branch) and an assigned lens (e.g. correctness/regression, security/bypass, contract coherence, test adequacy). Your job is to find defects that are REAL \u2014 reachable with concrete inputs \u2014 not stylistic preferences. Hunt from your assigned lens only; trust other lenses to cover theirs. For every candidate finding, construct the concrete failure scenario: inputs/state \u2192 wrong output, crash, or bypass. If you cannot construct one, it is not a finding. Read enough surrounding code to know whether a co-located check already masks the issue \u2014 the house has shipped \"findings\" that a neighboring gate made unreachable, and refuting your own candidate is a valid, valuable outcome. Safety-gate diffs get special suspicion: ask what an API client (not the honest UI) can do, whether the gate binds to CONTENT or to a mutable reference, and whether every path re-verifies fail-closed. A comment, docstring, fixture header or test name inside the diff is a claim, and a false one is a finding \u2014 the class `feedback_adversarial_review_catches_real_bugs` calls D-T4. The failure-scenario bar above is written for runtime failures; a false comment fails when the next reader acts on it \u2014 a future session, a roadmap card, the other repo's copy of the sentence \u2014 so a lens hunting from its assigned focus reads prose as context and catches this class only when it happens to read the line (E2-S2a's and E9-S9's rounds did; ggbc-backend#87's did not). Make it a check, not luck: every checkable assertion the diff's own prose makes (a count, an ordering, a last / only / always / never, an attribution, a `file:line` cite) is verified against the code it describes \u2014 in this diff, or in the other repo when the sentence is about the other repo's behaviour \u2014 and a false one is reported naming the check that fails. Wording you merely dislike is still a style nit; the bar is a named failing check, not a preference. (E9-S10, 2026-09-05: `app/providers/system_placement.py` was NEW in `sammygallo/ggbc-backend#87`; its module docstring said the four post-history sections are emitted \"precisely so they are the last thing the model reads\" \u2014 four sections cannot each be last, and the frontend's continue/impersonate call sites append a user turn after all of them, a check that lives in `chatStore.ts`. The full trigger-tier round over that diff \u2014 four lenses plus skeptics \u2014 passed it; a standard-tier eight-angle review of the frontend's docs caught it, and it cost follow-up PR `ggbc-backend#88` after merge.) Zero findings is a legitimate report \u2014 say what you checked and why it held. Never do any of the following: Patch the code, commit, or \"quickly fix\" anything \u2014 fixes flow through the dev/PM so branch history stays coherent. Mutate the target checkout. If you verify a coverage claim by MUTATION (temporarily editing code to prove a test stays green), do it in a THROWAWAY checkout \u2014 `git worktree add <scratchpad-path> --detach <sha>` \u2014 never in the target worktree, and remove it when done; the target stays byte-identical to its committed state. (Pilot E1-S1: a reviewer's uncommitted mutation was found sitting in the shared worktree.) Pad the report with hypotheticals, style nits, or findings you couldn't ground in a failure scenario."
 
 // Validate the gate's inputs BEFORE spending anything. The house writes budgets
 // as "9.8M" in prose, and a string is truthy while `n > "9.8M"` is false — which
@@ -119,17 +151,132 @@ if (lenses.length && deadLenses.length === lenses.length) {
            deadLenses, lensCount: lenses.length }
 }
 const seen = new Set()
-const deduped = all.filter(f => {
+const exact = all.filter(f => {
   const k = `${f.repo || ''}|${f.file || ''}|${(f.title || '').toLowerCase().slice(0, 60)}`
   if (seen.has(k)) return false
   seen.add(k); return true
 })
-log(`${all.length} raw findings → ${deduped.length} after dedup`)
+
+// --- Semantic clustering -------------------------------------------------
+// The exact-match filter above is a near no-op and always was: it keys on a
+// byte-identical lowercased title, and independent lens agents hunting the same
+// defect from different angles essentially never write the same title. So every
+// near-duplicate reached the wave and was verified TWICE, at ~160k a copy.
+//
+// Measured on E9-S9 (ledger 2026-09-03): its six rounds ran 37/33/43/61/41/61
+// agents, which back-solve through the old `lenses + 2 x deduped` formula to
+// 16/14/19/28/18/28 deduped findings. Those rounds confirmed 10/13/17/20/9/22
+// findings, which the PM then reduced by hand to 5/6/6/6/4 DISTINCT items —
+// i.e. the collapse was real, it just happened after the money was spent. Round
+// 4 bought 56 skeptics to produce 6 actionable items.
+//
+// This stage moves that collapse in front of the wave. It is one cheap agent
+// that reads TITLES AND CLAIMS ONLY — never the diff — so it costs about what a
+// single skeptic used to, against a wave it can cut by a third to a half.
+//
+// THE ASYMMETRY THAT SHAPES THE PROMPT: under-merging costs money; over-merging
+// hides a real defect behind an unrelated one and is a silent review hole. The
+// prompt therefore biases hard toward keeping findings separate when unsure,
+// and `applyClusters` below refuses any grouping that is not an exact partition
+// of the input — a clusterer that drops, invents or double-counts an index gets
+// its whole answer thrown away and the round proceeds unclustered.
+const SEVERITY_RANK = { critical: 0, major: 1, minor: 2 }
+const clusterMin = Math.max(2, Math.floor(args.clusterMinFindings ?? 6))
+
+// Returns the collapsed list, or null if `groups` is not an exact partition of
+// `findings` — the ONLY shape that cannot lose a finding. Fail-open is
+// deliberate and is the safe direction: an unclustered round is merely
+// expensive, a silently dropped finding is an unreviewed defect.
+const applyClusters = (groups, findings) => {
+  if (!Array.isArray(groups) || groups.length === 0) return null
+  const claimed = new Set()
+  for (const g of groups) {
+    if (!g || !Array.isArray(g.members) || g.members.length === 0) return null
+    for (const m of g.members) {
+      if (!Number.isInteger(m) || m < 0 || m >= findings.length || claimed.has(m)) return null
+      claimed.add(m)
+    }
+  }
+  if (claimed.size !== findings.length) return null
+  return groups.map(g => {
+    // Representative = highest severity, ties by original order. Deterministic:
+    // no Math.random() in a workflow script, and resume must replay identically.
+    const members = g.members.slice().sort((a, b) =>
+      ((SEVERITY_RANK[findings[a].severity] ?? 3) - (SEVERITY_RANK[findings[b].severity] ?? 3)) || (a - b))
+    const rep = findings[members[0]]
+    if (members.length === 1) return rep
+    return {
+      ...rep,
+      // Independent corroboration is signal, not noise: a defect three lenses
+      // found separately is stronger evidence than one that only `tests` saw.
+      lenses: [...new Set(members.map(i => findings[i].lens))],
+      // The skeptic gets every phrasing, so a merge cannot narrow what it checks.
+      merged_from: members.slice(1).map(i => ({
+        lens: findings[i].lens, title: findings[i].title, claim: findings[i].claim,
+      })),
+    }
+  })
+}
+
+let deduped = exact
+let clusterOutcome = 'skipped'
+if (exact.length >= clusterMin) {
+  phase('Cluster')
+  const roster = exact.map((f, i) =>
+    `${i}. [lens:${f.lens}] ${f.repo || '-'} ${f.file || '-'}${f.line ? ':' + f.line : ''} — ${f.title}\n` +
+    `   claim: ${f.claim}\n   scenario: ${f.failure_scenario}`).join('\n')
+  const grouped = await agent(
+    `${exact.length} findings below came from independent review lenses over the same subject, so several ` +
+    `may describe THE SAME underlying defect in different words. Partition them into groups.\n\n` +
+    `Two findings belong in one group ONLY if fixing the single underlying defect resolves both. ` +
+    `Same file, same area, or same theme is NOT enough — two distinct bugs in one function are two groups.\n\n` +
+    `BIAS STRONGLY TOWARD SEPARATE GROUPS. Leaving a duplicate unmerged costs a little money. Merging two ` +
+    `distinct defects hides one of them from verification entirely and it ships. When you are not sure, ` +
+    `put them in separate groups.\n\n` +
+    `Return EVERY index exactly once, across all groups. A singleton group is the normal case.\n\n` +
+    `${roster}`,
+    { label: 'cluster', phase: 'Cluster', schema: CLUSTER_SCHEMA, model: 'sonnet', effort: 'low' }
+  )
+  const applied = grouped && applyClusters(grouped.groups, exact)
+  if (applied) {
+    deduped = applied
+    clusterOutcome = `${exact.length} → ${deduped.length}`
+  } else {
+    // Loud, because the round now costs what it used to and the record must say why.
+    clusterOutcome = grouped ? 'REJECTED (not an exact partition)' : 'REJECTED (clusterer died)'
+    log(`clustering ${clusterOutcome} — proceeding UNCLUSTERED at ${exact.length} findings`)
+  }
+}
+log(`${all.length} raw findings → ${exact.length} after exact dedup → ${deduped.length} after clustering ` +
+    `(${clusterOutcome})`)
+
+// --- Skeptic batching ----------------------------------------------------
+// Every finding still gets TWO independent skeptic votes. What changed is that
+// one agent now judges several findings, because most of a skeptic's ~80k was
+// re-reading the same diff to rule on one finding, and that read amortizes.
+//
+// The two partitions are built DIFFERENTLY on purpose:
+//   partition 1 — contiguous runs   [0,1,2,3] [4,5,6,7] ...
+//   partition 2 — strided           [0,4,8..] [1,5,9..] ...
+// so two findings that share a batch in one partition almost never share one in
+// the other. That decorrelates the anchoring a batch introduces (an agent that
+// talks itself into refuting everything in front of it) and it bounds the blast
+// radius of a dead agent: a finding loses at most one of its two votes to any
+// single death, and `votes.length === 0` still reports UNVERIFIED rather than
+// confirmed. skepticBatchSize:1 collapses both partitions to one-agent-per-
+// finding, i.e. exactly the pre-2026-09-09 behaviour, and is the escape hatch.
+const skepticBatchSize = Math.max(1, Math.floor(args.skepticBatchSize ?? 4))
+const batchCount = Math.ceil(deduped.length / skepticBatchSize)
+const partitionFor = (n) => {
+  const batches = Array.from({ length: batchCount }, () => [])
+  deduped.forEach((_, i) => batches[n === 1 ? Math.floor(i / skepticBatchSize) : i % batchCount].push(i))
+  return batches.filter(b => b.length)
+}
 
 // --- Cost gate (E8-S1 postmortem P4) -------------------------------------
 // The skeptic wave is nearly the whole cost of a pass and its size is EXACT
 // here, before a single skeptic launches: one agent per lens already ran, and
-// verification spawns two per deduped finding. E8-S1 learned this ~18M late —
+// verification spawns two agents per BATCH of deduped findings. E8-S1 learned this ~18M late —
 // its round 1 logged 70 deduped (145 agents, ~10.3M) against a whole-story
 // claim-set budget of ~3.4–9.8M, and nothing read the number until the top of
 // the next fix round.
@@ -162,9 +309,24 @@ log(`${all.length} raw findings → ${deduped.length} after dedup`)
 // together at the next recalibration, or the gate under-projects and silently
 // fails to fire, which is its one invisible failure direction.
 const PER_AGENT_TOKENS = 80_000 // midpoint of the ~70–90k band recorded in roadmap §5
+// A batched skeptic costs more than a single-finding one, but far less than the
+// findings it covers would cost separately: the subject read is paid once and
+// only the per-finding reasoning repeats. BATCH_MARGINAL is the share of a full
+// agent that each ADDITIONAL finding in a batch adds. It is a provisional
+// estimate — like PER_AGENT_TOKENS itself, which roadmap §5 already flags as
+// provisional and partly circular — and it is deliberately pessimistic, so the
+// gate over-projects rather than under-projects. Re-derive both at the next
+// recalibration from a round's actuals; the AGENT COUNT below is exact either way.
+const BATCH_MARGINAL = 0.35
 
-const projectedAgents = lenses.length + 2 * deduped.length
-const projectedTokens = projectedAgents * PER_AGENT_TOKENS
+// The clusterer already ran, but it counts: projectedAgents has always meant
+// "agents this round costs", lenses included, not "agents still to launch".
+const clusterAgents = clusterOutcome === 'skipped' ? 0 : 1
+const skepticAgents = 2 * batchCount
+const projectedAgents = lenses.length + clusterAgents + skepticAgents
+const projectedTokens = Math.round(
+  (lenses.length + clusterAgents) * PER_AGENT_TOKENS +
+  skepticAgents * PER_AGENT_TOKENS * (1 + BATCH_MARGINAL * (skepticBatchSize - 1)))
 const cumulativeTokens = spentTokens + projectedTokens
 log(`skeptic wave projection: ${projectedAgents} agents ≈ ${(projectedTokens / 1e6).toFixed(1)}M` +
     (spentTokens ? ` (story total would reach ${(cumulativeTokens / 1e6).toFixed(1)}M)` : '') +
@@ -180,34 +342,78 @@ if (gateArmed && cumulativeTokens > classBudgetTokens && args.confirmOverBudget 
     confirmed: null, plausible: null, refuted: null, unverified: null,
     projectedAgents, projectedTokens, spentTokens, cumulativeTokens,
     classBudgetTokens, gateArmed,
-    rawFindings: all.length, dedupedFindings: deduped.length,
+    rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
+    clusterOutcome, skepticBatchSize,
     lensCount: lenses.length, unverifiedFindings: deduped,
   }
 }
 
 phase('Skeptic verify')
-const judged = await parallel(deduped.map(f => () =>
-  parallel([1, 2].map(n => () =>
-    agent(
-      `${stance}\n\nYou are a SKEPTIC. Try to REFUTE this finding from story ${args.story}. Default to refuted=true unless the failure scenario demonstrably holds against the actual code/doc.\n\nFinding: ${JSON.stringify(f)}\n\n${subject}\n\nVerify against the source, then verdict.`,
-      { label: `skeptic${n}:${f.title.slice(0, 30)}`, phase: 'Skeptic verify', schema: VERDICT_SCHEMA, effort: 'high' } // skeptics pin no model: they inherit the SESSION's model (lenses above are pinned to opus), so a limit on the session tier takes out verifiers first — run the trigger tier from the strongest tier; never economize on verifiers
-    )))
-    .then(vs => {
-      const votes = vs.filter(Boolean)
-      const refutes = votes.filter(v => v.refuted).length
-      // Zero surviving votes means NO verification happened (skeptics died —
-      // model limit, terminal API error). That must never read as 'confirmed':
-      // a silent verifier failure is false confidence, the exact thing this
-      // workflow exists to prevent. Surface it as its own status. (E2-S1 retro:
-      // a Fable-limit outage killed 42 skeptics and 21 unverified findings were
-      // reported as confirmed.)
-      const status = votes.length === 0 ? 'unverified'
-        : refutes === votes.length ? 'refuted'
-        : refutes === 0 ? 'confirmed'
-        : 'plausible'
-      return { ...f, status, skepticVotes: votes.length, skeptic_reasons: votes.map(v => v.reason) }
-    })))
-const results = judged.filter(Boolean)
+// Votes accumulate here by finding index. A batch agent that dies, returns
+// nothing, skips a member, or votes on an index outside its own batch simply
+// contributes no vote for the affected findings — which lands them in
+// 'unverified' below, never in 'confirmed'. Every degradation path in this
+// stage has to fail toward LESS confidence; that is the invariant.
+const votesByFinding = deduped.map(() => [])
+const recordVerdicts = (batch, result) => {
+  if (!result || !Array.isArray(result.verdicts)) return
+  const allowed = new Set(batch)
+  const taken = new Set()
+  for (const v of result.verdicts) {
+    if (!v || !Number.isInteger(v.index) || !allowed.has(v.index) || taken.has(v.index)) continue
+    if (typeof v.refuted !== 'boolean') continue
+    taken.add(v.index)
+    votesByFinding[v.index].push({ refuted: v.refuted, reason: v.reason })
+  }
+}
+const skepticThunks = []
+for (const n of [1, 2]) {
+  for (const batch of partitionFor(n)) {
+    skepticThunks.push(() => agent(
+      `${stance}\n\nYou are a SKEPTIC. Try to REFUTE each of the ${batch.length} finding(s) below from story ` +
+      `${args.story}. Default to refuted=true unless the failure scenario demonstrably holds against the ` +
+      `actual code/doc.\n\n` +
+      `Judge each finding INDEPENDENTLY and on its own merits. They were grouped for efficiency, not because ` +
+      `they are related — a batch commonly contains a mix of real and refuted, and the verdict on one tells ` +
+      `you nothing about the next.\n\n` +
+      `Return one verdict per finding, keyed by the index shown. Do not omit any.\n\n` +
+      batch.map(i => `--- index ${i} ---\n${JSON.stringify(deduped[i])}`).join('\n\n') +
+      `\n\n${subject}\n\nVerify each against the source, then give one verdict per index.`,
+      // skeptics pin no model: they inherit the SESSION's model (lenses above are pinned to opus), so a limit
+      // on the session tier takes out verifiers first — run the trigger tier from the strongest tier; never
+      // economize on verifiers. Batching changes the agent COUNT, never the tier.
+      { label: `skeptic${n}:${batch.length}×[${batch[0]}…]`, phase: 'Skeptic verify', schema: BATCH_VERDICT_SCHEMA, effort: 'high' }
+    ).then(r => recordVerdicts(batch, r)))
+  }
+}
+// Sliced, so a mid-wave kill loses at most one slice of IN-FLIGHT agents rather
+// than the whole wave (completed agents are journaled and replay on resume
+// either way). 10.2% of this pipeline's total spend — 30.4M across the ledger
+// to 2026-09-09 — went to usage-limit kills, every one of them in a wave of
+// 57-347 agents; batching above is the primary mitigation and this is the
+// backstop for the rounds batching does not shrink enough.
+const sliceSize = Math.max(1, Math.floor(args.skepticSliceSize ?? 25))
+for (let i = 0; i < skepticThunks.length; i += sliceSize) {
+  await parallel(skepticThunks.slice(i, i + sliceSize))
+  if (skepticThunks.length > sliceSize) {
+    log(`skeptic wave: ${Math.min(i + sliceSize, skepticThunks.length)}/${skepticThunks.length} agents done`)
+  }
+}
+const results = deduped.map((f, i) => {
+  const votes = votesByFinding[i]
+  const refutes = votes.filter(v => v.refuted).length
+  // Zero surviving votes means NO verification happened (skeptics died —
+  // model limit, terminal API error). That must never read as 'confirmed':
+  // a silent verifier failure is false confidence, the exact thing this
+  // workflow exists to prevent. Surface it as its own status. (E2-S1 retro:
+  // a Fable-limit outage killed 42 skeptics and 21 unverified findings were
+  // reported as confirmed.)
+  const status = votes.length === 0 ? 'unverified'
+    : refutes === votes.length ? 'refuted'
+    : refutes === 0 ? 'confirmed'
+    : 'plausible'
+  return { ...f, status, skepticVotes: votes.length, skeptic_reasons: votes.map(v => v.reason) }
+})
 const confirmed = results.filter(f => f.status === 'confirmed')
 const plausible = results.filter(f => f.status === 'plausible')
 const refuted = results.filter(f => f.status === 'refuted')
@@ -215,4 +421,6 @@ const unverified = results.filter(f => f.status === 'unverified')
 log(`confirmed ${confirmed.length} · plausible ${plausible.length} · refuted ${refuted.length} · unverified ${unverified.length}`)
 if (unverified.length) log(`WARNING: ${unverified.length} finding(s) got no surviving skeptic vote — UNVERIFIED, do not treat as confirmed`)
 return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length, deadLenses,
-         gateArmed, classBudgetTokens, spentTokens, projectedAgents, projectedTokens, cumulativeTokens }
+         gateArmed, classBudgetTokens, spentTokens, projectedAgents, projectedTokens, cumulativeTokens,
+         rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
+         clusterOutcome, skepticBatchSize }

@@ -61,12 +61,59 @@
 //
 // Run: node .claude/workflows/story-review.test.mjs
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const SRC = readFileSync(join(here, 'story-review.js'), 'utf8')
+const SRC_PATH = join(here, 'story-review.js')
+const SRC = readFileSync(SRC_PATH, 'utf8')
+const REVIEWER_PATH = join(here, '..', 'agents', 'adversarial-reviewer.md')
+
+// --- stance parity -------------------------------------------------------
+// The lens stance exists twice by necessity: `.claude/agents/adversarial-
+// reviewer.md` is the contract, and story-review.js carries an inline copy
+// because the workflow must run in sessions where custom agent types are not
+// loaded. Both files said "change one, change both" from the day they were
+// created in 1a0b67c9 — and the copy has been out of step ever since, missing
+// three ## Stance items: the safety-gate bullet (found by E9-S7's postmortem),
+// the lens-scope bullet and the refuting-your-own-candidate clause (both found
+// by #517's re-diff). Three separate readers noticed over two weeks; none of
+// them was a gate, so the drift survived all three.
+//
+// Prose cannot hold two files in step. So the .md is now the SOURCE and the
+// constant is DERIVED from it by the mechanical transform below, asserted
+// byte-for-byte. `node story-review.test.mjs --fix` regenerates the constant;
+// nothing else should ever edit it by hand.
+const deriveStance = (md) => {
+  const start = md.indexOf('<!-- mirror:start -->')
+  const end = md.indexOf('<!-- mirror:end -->')
+  if (start < 0 || end < 0) throw new Error('adversarial-reviewer.md is missing its mirror:start/end markers')
+  return md.slice(start, end)
+    // Spans the contract carries for its human readers but a lens must not be
+    // told — the notes documenting this mirror, and the per-finding field list
+    // that FINDINGS_SCHEMA already enforces.
+    .replace(/<!-- mirror:skip:start -->[\s\S]*?<!-- mirror:skip:end -->/g, ' ')
+    // `## Never`'s bullets are bare imperatives ("Patch the code..."). Stripping
+    // the heading without this would invert every one of them into an order.
+    .replace(/<!-- mirror:text:\s*([\s\S]*?)\s*-->/g, ' $1 ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/^#{1,6} .*$/gm, ' ')
+    .replace(/^\s*- /gm, ' ')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+const STANCE_RE = /^const stance = ("(?:[^"\\]|\\.)*")$/m
+const expectedStance = deriveStance(readFileSync(REVIEWER_PATH, 'utf8'))
+
+if (process.argv.includes('--fix')) {
+  if (!STANCE_RE.test(SRC)) throw new Error('could not locate the `const stance = "…"` line to regenerate')
+  writeFileSync(SRC_PATH, SRC.replace(STANCE_RE, () => `const stance = ${JSON.stringify(expectedStance)}`))
+  console.log(`regenerated stance from adversarial-reviewer.md (${expectedStance.length} chars)`)
+  process.exit(0)
+}
 
 // The workflow runtime wraps the script in an async function and injects its
 // globals, which is why the file legally ends in a top-level `return` and why
@@ -82,9 +129,19 @@ function loadScript() {
   )
 }
 
-function makeHarness({ findingsPerLens, args, deadLenses }) {
-  const calls = { lens: 0, skeptic: 0, logs: [] }
-  const agent = async (_prompt, opts = {}) => {
+// `cluster` returns the grouping the clustering agent would produce: a function
+// of the finding list, or the string 'dead' for an agent that returns null.
+// Default is all-singletons, i.e. a clusterer that merges nothing, so a case
+// that is not about clustering keeps predictable arithmetic.
+//
+// `skeptic` is called once per BATCH agent with {n, indices, call} and returns
+// the verdict rows that agent emits, or null for a dead agent. Default: one
+// non-refuting verdict per index. Batching means "how many agents" and "how
+// many votes" are now different numbers, so the harness counts both — the vote
+// count is the invariant that must not move when the batch size does.
+function makeHarness({ findingsPerLens, args, deadLenses, cluster, skeptic }) {
+  const calls = { lens: 0, skeptic: 0, votes: 0, cluster: 0, batches: [], slices: [], logs: [] }
+  const agent = async (prompt, opts = {}) => {
     const label = opts.label || ''
     if (label.startsWith('lens:')) {
       calls.lens++
@@ -94,24 +151,52 @@ function makeHarness({ findingsPerLens, args, deadLenses }) {
       if ((deadLenses || []).includes(key)) return null
       return { findings: (findingsPerLens[key] || []) }
     }
+    if (label === 'cluster') {
+      calls.cluster++
+      // The roster the script builds is what a real clusterer indexes against.
+      const n = (prompt.match(/^\d+\. \[lens:/gm) || []).length
+      if (cluster === 'dead') return null
+      if (typeof cluster === 'function') return cluster(n)
+      return { groups: Array.from({ length: n }, (_, i) => ({ members: [i] })) }
+    }
     if (label.startsWith('skeptic')) {
       calls.skeptic++
-      return { refuted: false, reason: 'stub' }
+      const n = Number(label.slice('skeptic'.length, label.indexOf(':')))
+      const indices = [...prompt.matchAll(/^--- index (\d+) ---$/gm)].map((m) => Number(m[1]))
+      calls.batches.push({ n, indices })
+      const rows = skeptic
+        ? skeptic({ n, indices, call: calls.skeptic })
+        : indices.map((i) => ({ index: i, refuted: false, reason: 'stub' }))
+      if (rows === null) return null
+      calls.votes += rows.length
+      return { verdicts: rows }
     }
     throw new Error(`unexpected agent label: ${label}`)
   }
-  const parallel = async (thunks) => Promise.all(thunks.map((t) => t()))
+  const parallel = async (thunks) => {
+    calls.slices.push(thunks.length)
+    return Promise.all(thunks.map((t) => t()))
+  }
   const pipeline = async () => { throw new Error('pipeline not used by this script') }
   const phase = () => {}
   const log = (m) => calls.logs.push(String(m))
   return { calls, run: () => loadScript()(agent, parallel, pipeline, phase, log, args, { total: null }, null) }
 }
 
+// Cases 1-13 and the #526 pair are about the COST GATE and lens attribution, not
+// about clustering or batching. They pin skepticBatchSize:1 and push the cluster
+// threshold out of reach so their arithmetic stays the fixed target it was
+// written against — which is also the assertion that the escape hatch is real:
+// under these two args the script must behave exactly as it did before
+// 2026-09-09. Clustering and batching get their own cases (14-19) that exercise
+// the DEFAULTS, so neither path ships untested.
 const baseArgs = (extra = {}) => ({
   story: 'TEST-1',
   mode: 'design',
   docPath: '/tmp/doc.md',
   context: 'test',
+  skepticBatchSize: 1,
+  clusterMinFindings: 999,
   ...extra,
 })
 
@@ -406,6 +491,268 @@ console.log('story-review cost gate')
         out.confirmed === null && out.plausible === null && out.refuted === null && out.unverified === null,
         `confirmed=${JSON.stringify(out.confirmed)}`)
   check('all lenses dead spawns zero skeptics', h.calls.skeptic === 0, `skeptics=${h.calls.skeptic}`)
+}
+
+// --- clustering, batching, slicing (2026-09-09 efficiency batch) ----------
+// WHY THESE ARE HERE. Cases 1-13 pin skepticBatchSize:1 and clusterMinFindings
+// out of reach, so they assert the ESCAPE HATCH and would stay green if the new
+// default path were entirely broken. These exercise the defaults.
+//
+//  14. clustering collapses the wave, and the collapse reaches the projection
+//      (the gate must price what will actually run, not what would have)
+//  15. a clusterer that is not an exact partition is REJECTED WHOLE. This is
+//      the safety property: under-merging costs money, over-merging or dropping
+//      hides a defect from verification entirely. Five distinct malformations,
+//      because each is a different way to lose a finding silently.
+//  16. a dead clusterer degrades to unclustered, loudly
+//  17. two votes per finding survive batching — the invariant that must not
+//      move when the batch size does
+//  18. batch-mates differ between the two partitions, so one dead agent cannot
+//      take both of a finding's votes, and a batch that omits or forges a
+//      verdict degrades toward UNVERIFIED and never toward confirmed
+//  19. no parallel() call exceeds the slice size
+//  20. the documented defaults are the actual defaults
+//  21. stance parity with adversarial-reviewer.md
+
+// 14 — clustering collapses the wave and the projection follows it
+{
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    // six findings -> three groups of two
+    cluster: () => ({ groups: [{ members: [0, 1] }, { members: [2, 3] }, { members: [4, 5] }] }),
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 6 }),
+  })
+  const r = await h.run()
+  check('clustering collapses 6 -> 3', r.exactDedupedFindings === 6 && r.dedupedFindings === 3,
+        `exact=${r.exactDedupedFindings} deduped=${r.dedupedFindings}`)
+  // 3 findings at batch size 4 -> 1 batch -> 2 skeptic agents (was 12)
+  check('projection prices the CLUSTERED count', r.projectedAgents === 2 + 1 + 2,
+        `agents=${r.projectedAgents}`)
+  check('clustering cuts the skeptic wave', h.calls.skeptic === 2, `skeptics=${h.calls.skeptic}`)
+  check('every clustered finding still gets 2 votes',
+        [...r.confirmed, ...r.plausible, ...r.refuted].every((f) => f.skepticVotes === 2))
+  const merged = [...r.confirmed, ...r.plausible, ...r.refuted]
+  check('a merged finding carries its alternates and every lens that found it',
+        merged.every((f) => f.merged_from.length === 1 && f.lenses.length >= 1),
+        JSON.stringify(merged.map((f) => [f.title, f.lenses, f.merged_from.length])))
+  check('clusterOutcome is recorded', r.clusterOutcome === '6 → 3', `outcome=${r.clusterOutcome}`)
+}
+
+// 15 — a malformed grouping is rejected WHOLE, never partially applied
+{
+  const bad = {
+    'drops an index': { groups: [{ members: [0, 1] }, { members: [2, 3] }] },            // 4 and 5 vanish
+    'duplicates an index': { groups: [{ members: [0, 1] }, { members: [1, 2, 3, 4, 5] }] },
+    'invents an index': { groups: [{ members: [0, 1, 2, 3, 4, 5] }, { members: [6] }] },
+    'out of range': { groups: [{ members: [0, 1, 2, 3, 4, 99] }] },
+    'empty group': { groups: [{ members: [] }, { members: [0, 1, 2, 3, 4, 5] }] },
+    'no groups': { groups: [] },
+  }
+  for (const [kind, grouping] of Object.entries(bad)) {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      cluster: () => grouping,
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 6 }),
+    })
+    const r = await h.run()
+    const judged = [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified]
+    check(`clusterer that ${kind} -> rejected, nothing lost`,
+          r.dedupedFindings === 6 && judged.length === 6 && /REJECTED/.test(r.clusterOutcome),
+          `deduped=${r.dedupedFindings} judged=${judged.length} outcome=${r.clusterOutcome}`)
+    check(`clusterer that ${kind} -> says so in the log`,
+          h.calls.logs.some((l) => l.includes('REJECTED')), `logs=${JSON.stringify(h.calls.logs)}`)
+  }
+}
+
+// 16 — a dead clusterer must degrade to unclustered, not to zero findings
+{
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    cluster: 'dead',
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 6 }),
+  })
+  const r = await h.run()
+  check('dead clusterer -> proceeds unclustered with all 6',
+        r.dedupedFindings === 6 && /clusterer died/.test(r.clusterOutcome), `outcome=${r.clusterOutcome}`)
+}
+
+// 17 — the vote invariant: batching changes agent count, never votes per finding
+{
+  for (const size of [1, 2, 3, 4, 6, 99]) {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: size, clusterMinFindings: 999 }),
+    })
+    const r = await h.run()
+    const all = [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified]
+    const expectedAgents = 2 * Math.ceil(6 / size)
+    check(`batch size ${size}: every finding gets exactly 2 votes`,
+          all.length === 6 && all.every((f) => f.skepticVotes === 2),
+          `judged=${all.length} votes=${all.map((f) => f.skepticVotes).join(',')}`)
+    check(`batch size ${size}: ${expectedAgents} skeptic agents, ${h.calls.votes} votes`,
+          h.calls.skeptic === expectedAgents && h.calls.votes === 12,
+          `agents=${h.calls.skeptic} votes=${h.calls.votes}`)
+  }
+}
+
+// 18 — degradation must always run toward LESS confidence
+{
+  // (a) the two partitions must not be the same partition, or a dead agent
+  //     takes both votes for everything it was judging
+  {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    await h.run()
+    const p1 = h.calls.batches.filter((b) => b.n === 1).map((b) => b.indices.join(','))
+    const p2 = h.calls.batches.filter((b) => b.n === 2).map((b) => b.indices.join(','))
+    check('partition 2 is not partition 1', p1.join('|') !== p2.join('|'), `p1=${p1} p2=${p2}`)
+    const shared = p1.filter((b) => p2.includes(b))
+    check('no batch is identical across partitions', shared.length === 0, `shared=${shared}`)
+  }
+  // (b) one dead batch costs at most ONE of each affected finding's two votes
+  {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: ({ n, indices, call }) => (call === 1 ? null : indices.map((i) => ({ index: i, refuted: false, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const r = await h.run()
+    const all = [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified]
+    check('a dead batch leaves every finding with >= 1 vote',
+          all.every((f) => f.skepticVotes >= 1), `votes=${all.map((f) => f.skepticVotes).join(',')}`)
+    check('a dead batch produces no unverified findings here',
+          r.unverified.length === 0, `unverified=${r.unverified.length}`)
+  }
+  // (c) both batches covering a finding dying -> UNVERIFIED, never confirmed
+  {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: () => null,
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const r = await h.run()
+    check('all skeptic batches dead -> all findings UNVERIFIED, none confirmed',
+          r.unverified.length === 6 && r.confirmed.length === 0,
+          `unverified=${r.unverified.length} confirmed=${r.confirmed.length}`)
+    check('all batches dead is warned about',
+          h.calls.logs.some((l) => l.includes('UNVERIFIED')), `logs=${JSON.stringify(h.calls.logs)}`)
+  }
+  // (d) a batch that silently omits a verdict must not confirm that finding on
+  //     the strength of the other partition's single vote count alone
+  {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: ({ indices }) => indices.filter((i) => i !== 0).map((i) => ({ index: i, refuted: false, reason: 'r' })),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const r = await h.run()
+    const zero = [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified].find((f) => f.title === 'one')
+    check('a finding both batches omit is UNVERIFIED', zero.status === 'unverified' && zero.skepticVotes === 0,
+          `status=${zero.status} votes=${zero.skepticVotes}`)
+  }
+  // (e) a batch voting on an index outside its own batch is ignored — otherwise
+  //     one confused agent can cast unlimited votes on findings it never read
+  {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: ({ indices, call }) => (call === 1
+        ? [...indices, 97, 98].map((i) => ({ index: i, refuted: true, reason: 'forged' }))
+        : indices.map((i) => ({ index: i, refuted: false, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const r = await h.run()
+    const all = [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified]
+    check('out-of-batch verdicts are discarded',
+          all.length === 6 && all.every((f) => f.skepticVotes <= 2),
+          `votes=${all.map((f) => f.skepticVotes).join(',')}`)
+  }
+  // (f) a batch double-voting on one of its own members counts once
+  {
+    const h = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: ({ indices }) => [...indices, indices[0]].map((i) => ({ index: i, refuted: false, reason: 'r' })),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const r = await h.run()
+    const all = [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified]
+    check('a repeated index inside a batch counts once',
+          all.every((f) => f.skepticVotes === 2), `votes=${all.map((f) => f.skepticVotes).join(',')}`)
+  }
+}
+
+// 19 — slicing bounds how many agents are in flight at once
+{
+  const many = {
+    a: Array.from({ length: 30 }, (_, i) => finding(`a${i}`)),
+    b: Array.from({ length: 30 }, (_, i) => finding(`b${i}`)),
+  }
+  const h = makeHarness({
+    findingsPerLens: many,
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 1, clusterMinFindings: 999, skepticSliceSize: 25 }),
+  })
+  await h.run()
+  // 60 findings, batch size 1 -> 120 skeptic agents, capped at 25 per parallel()
+  const skepticSlices = h.calls.slices.filter((n) => n > 0 && n <= 25)
+  check('no skeptic slice exceeds skepticSliceSize',
+        h.calls.slices.every((n) => n <= 25) && h.calls.skeptic === 120,
+        `slices=${h.calls.slices.join(',')} skeptics=${h.calls.skeptic}`)
+  check('slicing does not lose agents', skepticSlices.reduce((a, b) => a + b, 0) >= 120,
+        `sum=${skepticSlices.reduce((a, b) => a + b, 0)}`)
+  check('slice progress is logged', h.calls.logs.some((l) => /skeptic wave: \d+\/120/.test(l)))
+}
+
+// 20 — the documented defaults must be the real ones. Without this, cases 14-19
+//      all pin their args explicitly and a changed default ships untested.
+{
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    args: { story: 'T', mode: 'design', docPath: '/tmp/d.md', context: 't', lenses: LENSES },
+  })
+  const r = await h.run()
+  check('default skepticBatchSize is 4', r.skepticBatchSize === 4, `size=${r.skepticBatchSize}`)
+  // 6 findings >= default clusterMinFindings of 6 -> the clusterer runs
+  check('default clusterMinFindings is 6 (clusterer ran on 6 findings)', h.calls.cluster === 1,
+        `clusterCalls=${h.calls.cluster}`)
+  const h5 = makeHarness({
+    findingsPerLens: { a: [finding('1'), finding('2'), finding('3')], b: [finding('4'), finding('5')] },
+    args: { story: 'T', mode: 'design', docPath: '/tmp/d.md', context: 't', lenses: LENSES },
+  })
+  const r5 = await h5.run()
+  check('5 findings is below the default threshold -> clusterer skipped',
+        h5.calls.cluster === 0 && r5.clusterOutcome === 'skipped', `outcome=${r5.clusterOutcome}`)
+}
+
+// 21 — stance parity. The constant is GENERATED from adversarial-reviewer.md;
+//      this is what makes "change one, change both" enforceable instead of
+//      aspirational. Regenerate with `--fix`, never by hand.
+{
+  const m = SRC.match(STANCE_RE)
+  check('stance is a generated string literal', !!m, 'no `const stance = "…"` line found')
+  if (m) {
+    check('stance matches adversarial-reviewer.md byte-for-byte',
+          JSON.parse(m[1]) === expectedStance,
+          'run: node .claude/workflows/story-review.test.mjs --fix')
+  }
+  // The three items the hand-maintained copy was missing for two weeks. Named
+  // individually so a transform that silently drops a section fails loudly.
+  for (const [what, probe] of [
+    ['lens-scope bullet', 'Hunt from your assigned lens only'],
+    ['refute-your-own-candidate clause', 'refuting your own candidate is a valid'],
+    ['safety-gate bullet', 'Safety-gate diffs get special suspicion'],
+    ['D-T4 false-prose bullet', 'is a claim, and a false one is a finding'],
+    ['zero-findings sentence', 'Zero findings is a legitimate report'],
+  ]) check(`stance carries the ${what}`, expectedStance.includes(probe))
+  // The contract's own meta-prose must NOT reach a lens prompt.
+  check('stance excludes the mirror meta-notes',
+        !expectedStance.includes('Mirrored, by necessity') && !expectedStance.includes('Change one, change both'))
+  check('stance excludes the per-finding field list (FINDINGS_SCHEMA carries it)',
+        !expectedStance.includes('suggested_kill_test'))
+  // `## Never`'s bullets are bare imperatives; dropping the heading without a
+  // lead-in would turn every prohibition into an instruction.
+  check('the Never section keeps a negating lead-in',
+        /Never do any of the following:\s*Patch the code/.test(expectedStance))
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)
