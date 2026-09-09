@@ -31,11 +31,11 @@ t() { # t <want-exit> <label> <mutation...>
 }
 
 # Line-addressed mutations were the original shape of these cases, and they rot:
-# every absolute number below pointed at different content the moment SKILL.md
-# grew (measured 2026-09-09 — a batch of §5 edits shifted the file and "a single
-# checklist line deleted" started passing a lint that no longer saw a deletion,
-# while five sibling cases silently began mutating the wrong lines and asserting
-# nothing). `del_at` addresses by CONTENT: find the line holding the anchor, cut
+# every absolute number below pointed at different content once SKILL.md grew.
+# Any edit above a case's line range does it; the 2026-09-09 batch is simply
+# where it was noticed — "a single checklist line deleted" started passing a lint
+# that no longer saw a deletion, while five sibling cases silently began mutating
+# the wrong lines and asserting nothing. `del_at` addresses by CONTENT: find the line holding the anchor, cut
 # N lines from there. A missing anchor is a hard error, so a rename fails the
 # suite instead of quietly disarming a case.
 del_at() { # del_at <file> <anchor-substring> <count>
@@ -74,16 +74,16 @@ t 1 "amputation of §6/§7/§8" \
 
 # Round-2 bypasses: body damage under a surviving heading.
 t 1 "all 9 escalation-trigger bullets deleted" "del_at '$S' '- **Vision divergence.**' 9"
-t 1 "whole §9 DEPLOY body deleted"             "del_at '$S' '**This gate did not move.**' 11"
+t 1 "§9 DEPLOY body gutted"                    "del_at '$S' '**This gate did not move.**' 9"
 t 1 "all 5 Hard rules deleted"                 "del_at '$S' '- **You may MERGE a story PR yourself' 5"
 t 1 "merge-checklist items 1-3 deleted"        "del_at '$S' '1. Every AC verified with evidence' 3"
 t 1 "a single checklist line deleted"          "del_at '$S' '2. Every **confirmed** review finding' 1"
 
 # Round-3 bypasses: line-count-preserving substitution.
 t 1 "§9 body replaced with blank lines" \
-  "replace_at '$S' '**This gate did not move.**' 12 ''"
+  "replace_at '$S' '**This gate did not move.**' 9 ''"
 t 1 "§9 body replaced with same-count filler" \
-  "replace_at '$S' '**This gate did not move.**' 12 'Deploy when ready.'"
+  "replace_at '$S' '**This gate did not move.**' 9 'Deploy when ready.'"
 t 1 "§8's trigger header reworded away" \
   "python3 -c \"import pathlib;p=pathlib.Path('$S');p.write_text(p.read_text().replace('ESCALATION TRIGGERS','ADVISORY NOTES',1))\""
 
