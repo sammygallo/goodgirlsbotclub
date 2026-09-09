@@ -56,7 +56,7 @@ done
 #    reviewable instead of silent.
 declare -a floor_name=("1 · INTAKE" "2 · BRIEF" "3 · PLAN" "4 · BUILD" "5 · REVIEW" \
                        "6 · QA" "7 · PR" "8 · MERGE" "9 · DEPLOY" "10 · CLOSE")
-declare -a floor_min=(5 12 8 1 5 1 2 22 8 17)   # EXACT current NON-BLANK sizes, no slack:
+declare -a floor_min=(5 12 8 1 17 1 2 22 9 23)   # EXACT current NON-BLANK sizes, no slack:
 i=0
 for name in "${floor_name[@]}"; do
   n=$(awk -v want="### $name" '

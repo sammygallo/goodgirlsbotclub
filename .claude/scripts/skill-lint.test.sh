@@ -30,6 +30,42 @@ t() { # t <want-exit> <label> <mutation...>
   else echo "  FAIL  $label (wanted $want, got $got)"; fail=$((fail+1)); fi
 }
 
+# Line-addressed mutations were the original shape of these cases, and they rot:
+# every absolute number below pointed at different content once SKILL.md grew.
+# Any edit above a case's line range does it; the 2026-09-09 batch is simply
+# where it was noticed — "a single checklist line deleted" started passing a lint
+# that no longer saw a deletion, while five sibling cases silently began mutating
+# the wrong lines and asserting nothing. `del_at` addresses by CONTENT: find the line holding the anchor, cut
+# N lines from there. A missing anchor is a hard error, so a rename fails the
+# suite instead of quietly disarming a case.
+del_at() { # del_at <file> <anchor-substring> <count>
+  python3 - "$1" "$2" "$3" <<'PYEOF'
+import sys, pathlib
+path, anchor, count = sys.argv[1], sys.argv[2], int(sys.argv[3])
+p = pathlib.Path(path); lines = p.read_text().split("\n")
+hits = [i for i, l in enumerate(lines) if anchor in l]
+if not hits:
+    sys.exit(f"del_at: anchor not found: {anchor!r}")
+i = hits[0]
+del lines[i:i + count]
+p.write_text("\n".join(lines))
+PYEOF
+}
+
+replace_at() { # replace_at <file> <anchor-substring> <count> <filler>
+  python3 - "$1" "$2" "$3" "$4" <<'PYEOF'
+import sys, pathlib
+path, anchor, count, filler = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+p = pathlib.Path(path); lines = p.read_text().split("\n")
+hits = [i for i, l in enumerate(lines) if anchor in l]
+if not hits:
+    sys.exit(f"replace_at: anchor not found: {anchor!r}")
+i = hits[0]
+lines[i:i + count] = [filler] * count
+p.write_text("\n".join(lines))
+PYEOF
+}
+
 echo "skill-lint.sh"
 
 # The original accident: an index-arithmetic edit boundary ate three stages.
@@ -37,17 +73,17 @@ t 1 "amputation of §6/§7/§8" \
   "python3 -c \"import pathlib;p=pathlib.Path('$S');x=p.read_text();p.write_text(x[:x.index('### 6 · QA')]+x[x.index('### 9 · DEPLOY'):])\""
 
 # Round-2 bypasses: body damage under a surviving heading.
-t 1 "all 9 escalation-trigger bullets deleted" "sed -i '' '84,92d' '$S'"
-t 1 "whole §9 DEPLOY body deleted"             "sed -i '' '103,113d' '$S'"
-t 1 "all 5 Hard rules deleted"                 "sed -i '' '12,16d' '$S'"
-t 1 "merge-checklist items 1-3 deleted"        "sed -i '' '74,76d' '$S'"
-t 1 "a single checklist line deleted"          "sed -i '' '75d' '$S'"
+t 1 "all 9 escalation-trigger bullets deleted" "del_at '$S' '- **Vision divergence.**' 9"
+t 1 "whole §9 DEPLOY body deleted"             "del_at '$S' '**This gate did not move.**' 14"
+t 1 "all 5 Hard rules deleted"                 "del_at '$S' '- **You may MERGE a story PR yourself' 5"
+t 1 "merge-checklist items 1-3 deleted"        "del_at '$S' '1. Every AC verified with evidence' 3"
+t 1 "a single checklist line deleted"          "del_at '$S' '2. Every **confirmed** review finding' 1"
 
 # Round-3 bypasses: line-count-preserving substitution.
 t 1 "§9 body replaced with blank lines" \
-  "python3 -c \"import pathlib;p=pathlib.Path('$S');l=p.read_text().split(chr(10));l[102:114]=['']*12;p.write_text(chr(10).join(l))\""
+  "replace_at '$S' '**This gate did not move.**' 14 ''"
 t 1 "§9 body replaced with same-count filler" \
-  "python3 -c \"import pathlib;p=pathlib.Path('$S');l=p.read_text().split(chr(10));l[102:114]=['Deploy when ready.']*12;p.write_text(chr(10).join(l))\""
+  "replace_at '$S' '**This gate did not move.**' 14 'Deploy when ready.'"
 t 1 "§8's trigger header reworded away" \
   "python3 -c \"import pathlib;p=pathlib.Path('$S');p.write_text(p.read_text().replace('ESCALATION TRIGGERS','ADVISORY NOTES',1))\""
 
@@ -61,6 +97,25 @@ t 1 "a dangling §11 reference introduced" \
 t 0 "benign prose reword"        "sed -i '' 's/Sanity-check the plan/Sanity check the plan/' '$S'"
 t 0 "adding blank lines"         "python3 -c \"import pathlib;p=pathlib.Path('$S');p.write_text(p.read_text().replace('### 4 · BUILD','### 4 · BUILD'+chr(10)+chr(10),1))\""
 t 0 "expanding a stage"          "python3 -c \"import pathlib;p=pathlib.Path('$S');p.write_text(p.read_text().replace('### 4 · BUILD','### 4 · BUILD'+chr(10)+'- an added note.',1))\""
+
+# The floors are documented as "EXACT current NON-BLANK sizes, no slack", and
+# that is load-bearing: any slack is content a wide edit can eat with the lint
+# still reporting INTACT. Nothing checked it, so any edit that grew a stage
+# without raising its floor opened that gap silently. This pins the invariant:
+# floor MUST equal actual on the pristine file.
+{
+  cp "$sandbox/pristine.md" "$S"
+  mismatch=""
+  names=("1 · INTAKE" "2 · BRIEF" "3 · PLAN" "4 · BUILD" "5 · REVIEW" "6 · QA" "7 · PR" "8 · MERGE" "9 · DEPLOY" "10 · CLOSE")
+  declared=$(sed -n 's/^declare -a floor_min=(\([^)]*\)).*/\1/p' "$here/skill-lint.sh")
+  read -r -a floors <<< "$declared"
+  for i in "${!names[@]}"; do
+    n=$(awk -v want="### ${names[$i]}" 'index($0, want)==1 {inb=1; next} /^### / {inb=0} inb && NF {c++} END {print c+0}' "$S")
+    [ "$n" -ne "${floors[$i]}" ] && mismatch="$mismatch §${names[$i]}(floor=${floors[$i]} actual=$n)"
+  done
+  if [ -z "$mismatch" ]; then echo "  PASS  every stage floor equals its actual size (no slack)"; pass=$((pass+1))
+  else echo "  FAIL  stage floors have slack —$mismatch"; echo "        raise floor_min in skill-lint.sh to match, in the SAME commit"; fail=$((fail+1)); fi
+}
 
 echo
 echo "  $pass passed, $fail failed"
