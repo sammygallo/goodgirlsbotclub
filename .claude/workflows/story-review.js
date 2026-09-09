@@ -265,15 +265,14 @@ log(`${all.length} raw findings → ${exact.length} after exact dedup → ${dedu
 // different company. It also bounds a dead agent: a finding's two votes are
 // always two different agents, so one death takes at most one of them, and
 // `votes.length === 0` still reports UNVERIFIED rather than confirmed. skepticBatchSize:1 collapses both partitions to one-agent-per-
-// finding, i.e. exactly the pre-2026-09-09 behaviour, and is the escape hatch.
+// finding, which reproduces the pre-2026-09-09 agent count, and is the escape hatch.
 const skepticBatchSize = Math.max(1, Math.floor(args.skepticBatchSize ?? 4))
 // FLOOR OF 2 BATCHES whenever there is more than one finding. Without it, any
 // round with `deduped <= skepticBatchSize` collapses to a single batch, both
 // partitions become the SAME batch, and the decorrelation this whole scheme
 // rests on silently does not exist — at the shipped default that is every round
-// of four findings or fewer, and one dead agent then takes BOTH of a finding's
-// votes instead of one. So `skepticBatchSize` is a ceiling on batch size, not a
-// target: the effective size is min(skepticBatchSize, ceil(deduped / 2)).
+// of four findings or fewer. So `skepticBatchSize` is a ceiling on batch size, not a
+// target.
 const batchCount = deduped.length <= 1
   ? deduped.length
   : Math.max(2, Math.ceil(deduped.length / skepticBatchSize))
@@ -321,8 +320,8 @@ const partitionFor = (n) => {
 // per story across 1-2 passes, and without this the gate misses the second
 // half of an overrun — replaying E8-S1 at the class ceiling, round 1 holds and
 // round 2 does not, although round 2 is what carried the story to 1.9x.
-// NOTE: this figure has THREE carriers — here, roadmap §5's unit sentence, and
-// the literal in story-review.test.mjs's PROJECTED_TOKENS. All three move
+// NOTE: this figure is carried here, in roadmap §5's unit sentence, and in
+// story-review.test.mjs (which hard-codes it in several assertions). They move
 // together at the next recalibration, or the gate under-projects and silently
 // fails to fire, which is its one invisible failure direction.
 const PER_AGENT_TOKENS = 80_000 // midpoint of the ~70–90k band recorded in roadmap §5
@@ -390,9 +389,10 @@ const recordVerdicts = (batch, result) => {
 // order would make the wave's whole second half consist of second votes, so a
 // kill part-way through strips one vote from many findings rather than both
 // votes from some — and a lone surviving non-refuting vote scores `confirmed`.
-// That inverts the fail-toward-less-confidence invariant: the old nesting
-// launched a finding's two skeptics adjacently, so a truncated tail landed in
-// `unverified` with a warning. Interleaving restores that.
+// Interleaving reduces that band; it does not remove it, because a finding's two
+// agents are in different batches and are never adjacent. Single-vote survivors
+// after a truncation are therefore expected, and the WARNING below is what names
+// them.
 const skepticThunks = []
 const partitions = [partitionFor(1), partitionFor(2)]
 for (let b = 0; b < batchCount; b++) {

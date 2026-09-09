@@ -74,16 +74,16 @@ t 1 "amputation of §6/§7/§8" \
 
 # Round-2 bypasses: body damage under a surviving heading.
 t 1 "all 9 escalation-trigger bullets deleted" "del_at '$S' '- **Vision divergence.**' 9"
-t 1 "§9 DEPLOY body gutted"                    "del_at '$S' '**This gate did not move.**' 9"
+t 1 "whole §9 DEPLOY body deleted"             "del_at '$S' '**This gate did not move.**' 14"
 t 1 "all 5 Hard rules deleted"                 "del_at '$S' '- **You may MERGE a story PR yourself' 5"
 t 1 "merge-checklist items 1-3 deleted"        "del_at '$S' '1. Every AC verified with evidence' 3"
 t 1 "a single checklist line deleted"          "del_at '$S' '2. Every **confirmed** review finding' 1"
 
 # Round-3 bypasses: line-count-preserving substitution.
 t 1 "§9 body replaced with blank lines" \
-  "replace_at '$S' '**This gate did not move.**' 9 ''"
+  "replace_at '$S' '**This gate did not move.**' 14 ''"
 t 1 "§9 body replaced with same-count filler" \
-  "replace_at '$S' '**This gate did not move.**' 9 'Deploy when ready.'"
+  "replace_at '$S' '**This gate did not move.**' 14 'Deploy when ready.'"
 t 1 "§8's trigger header reworded away" \
   "python3 -c \"import pathlib;p=pathlib.Path('$S');p.write_text(p.read_text().replace('ESCALATION TRIGGERS','ADVISORY NOTES',1))\""
 
@@ -100,10 +100,9 @@ t 0 "expanding a stage"          "python3 -c \"import pathlib;p=pathlib.Path('$S
 
 # The floors are documented as "EXACT current NON-BLANK sizes, no slack", and
 # that is load-bearing: any slack is content a wide edit can eat with the lint
-# still reporting INTACT. Nothing checked it, and it rotted immediately — the
-# 2026-09-09 batch grew §5 by 12 lines and §10 by 6 without raising either
-# floor, so every rule it added was deletable under a green lint. This pins the
-# invariant: floor MUST equal actual on the pristine file.
+# still reporting INTACT. Nothing checked it, so any edit that grew a stage
+# without raising its floor opened that gap silently. This pins the invariant:
+# floor MUST equal actual on the pristine file.
 {
   cp "$sandbox/pristine.md" "$S"
   mismatch=""

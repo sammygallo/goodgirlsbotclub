@@ -22,12 +22,14 @@
 //                                 gate)
 //   4. over budget + confirm   -> proceeds (the escape hatch must work, or the
 //                                 gate becomes a cap; roadmap §5 forbids caps)
-//   5. projection arithmetic   -> lenses + clusterer + 2 x ceil(deduped /
-//                                 skepticBatchSize), exactly. Cases 1-13 pin
-//                                 batch size 1 and no clusterer, where that
-//                                 reduces to the pre-2026-09-09 lenses + 2 x
-//                                 deduped — which is the point: the escape
-//                                 hatch must reproduce the old arithmetic.
+//   5. projection arithmetic   -> lenses + clusterer + 2 x batchCount, where
+//                                 batchCount is max(2, ceil(deduped /
+//                                 skepticBatchSize)) above one finding. Cases
+//                                 1-13 pin batch size 1 and no clusterer, where
+//                                 that gives the same agent count as the
+//                                 pre-2026-09-09 lenses + 2 x deduped — which is
+//                                 the point: the escape hatch must reproduce the
+//                                 old arithmetic.
 //   6. dedup unchanged         -> the gate must not perturb what it measures
 //   7. held run is not a round -> the four verdict keys are null, NOT absent and
 //                                 NOT [], so a downstream count throws rather
@@ -215,6 +217,10 @@ const LENSES = [
 ]
 const finding = (title) => ({
   title, claim: 'c', severity: 'major', failure_scenario: 'f', file: 'x.md', repo: 'r',
+  // line and suggested_kill_test are here so the merged-alternate assertion can
+  // actually see them dropped. Without them the check passed against a payload
+  // that still discarded both.
+  line: 7, suggested_kill_test: 'k',
 })
 
 // Mirrors the script's batch-count rule, including the floor of 2 that keeps the
@@ -292,7 +298,7 @@ console.log('story-review cost gate')
   })
   const r = await h.run()
   // batch size 1, clusterer skipped: lenses + 0 + 2 x ceil(1/1) = the old formula
-  check('projection = lenses + clusterer + 2 x ceil(deduped / batch)',
+  check('projection = lenses + clusterer + 2 x batchCount',
         r.projectedAgents === 2 + 0 + 2 * 1, `agents=${r.projectedAgents}`)
 }
 
@@ -556,9 +562,12 @@ console.log('story-review cost gate')
         JSON.stringify(merged.map((f) => [f.title, f.lenses, f.merged_from.length])))
   // C2: the alternate must arrive WHOLE. Dropping failure_scenario narrows the
   // cluster to one scenario on the exact field the skeptic prompt tests against.
+  // Every field FINDINGS_SCHEMA defines, named individually: a summary payload
+  // that keeps three of them must fail this, which is what it did before.
+  const ALT_FIELDS = ['title', 'claim', 'severity', 'failure_scenario', 'file', 'repo',
+                      'line', 'suggested_kill_test', 'lens']
   check('a merged alternate carries its full finding, not a summary',
-        merged.every((f) => f.merged_from.every((m) =>
-          m.failure_scenario !== undefined && m.file !== undefined && m.severity !== undefined)),
+        merged.every((f) => f.merged_from.every((m) => ALT_FIELDS.every((k) => m[k] !== undefined))),
         JSON.stringify(merged[0] && merged[0].merged_from))
   check('clusterOutcome is recorded', r.clusterOutcome === '6 → 3', `outcome=${r.clusterOutcome}`)
 }
