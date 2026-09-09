@@ -22,7 +22,12 @@
 //                                 gate)
 //   4. over budget + confirm   -> proceeds (the escape hatch must work, or the
 //                                 gate becomes a cap; roadmap §5 forbids caps)
-//   5. projection arithmetic   -> lenses + 2 x deduped, exactly
+//   5. projection arithmetic   -> lenses + clusterer + 2 x ceil(deduped /
+//                                 skepticBatchSize), exactly. Cases 1-13 pin
+//                                 batch size 1 and no clusterer, where that
+//                                 reduces to the pre-2026-09-09 lenses + 2 x
+//                                 deduped — which is the point: the escape
+//                                 hatch must reproduce the old arithmetic.
 //   6. dedup unchanged         -> the gate must not perturb what it measures
 //   7. held run is not a round -> the four verdict keys are null, NOT absent and
 //                                 NOT [], so a downstream count throws rather
@@ -53,6 +58,10 @@
 //  13. gate log content       -> the ARMED/DISARMED/NOT-A-REVIEW-ROUND lines are
 //                                 asserted, because deleting them left the
 //                                 suite green when they were the deliverable
+//
+// Cases 14-21 cover clustering, skeptic batching, slicing and stance parity;
+// they carry their own list at the point they are defined rather than extending
+// this one, because this list is about the COST GATE and they are not.
 //
 // Keep this list in step with the cases below. It went stale once already, in
 // the commit that added cases 7-9, and a whitespace-mismatched patch then
@@ -280,7 +289,9 @@ console.log('story-review cost gate')
     args: baseArgs({ lenses: LENSES, classBudgetTokens: 100_000 }),
   })
   const r = await h.run()
-  check('projection = lenses + 2 x deduped', r.projectedAgents === 2 + 2 * 1, `agents=${r.projectedAgents}`)
+  // batch size 1, clusterer skipped: lenses + 0 + 2 x ceil(1/1) = the old formula
+  check('projection = lenses + clusterer + 2 x ceil(deduped / batch)',
+        r.projectedAgents === 2 + 0 + 2 * 1, `agents=${r.projectedAgents}`)
 }
 
 // 6 — the gate must not perturb what it measures: dedup still collapses
