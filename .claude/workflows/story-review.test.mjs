@@ -83,12 +83,9 @@ const REVIEWER_PATH = join(here, '..', 'agents', 'adversarial-reviewer.md')
 // The lens stance exists twice by necessity: `.claude/agents/adversarial-
 // reviewer.md` is the contract, and story-review.js carries an inline copy
 // because the workflow must run in sessions where custom agent types are not
-// loaded. Both files said "change one, change both" from the day they were
-// created in 1a0b67c9 — and the copy has been out of step ever since, missing
-// three ## Stance items: the safety-gate bullet (found by E9-S7's postmortem),
-// the lens-scope bullet and the refuting-your-own-candidate clause (both found
-// by #517's re-diff). Three separate readers noticed over two weeks; none of
-// them was a gate, so the drift survived all three.
+// loaded. The pair drifted before: #517 (merged 2026-09-06) re-synced it after
+// finding the copy missing three ## Stance items. Hand-syncing is what let that
+// happen; nothing checked the pair.
 //
 // Prose cannot hold two files in step. So the .md is now the SOURCE and the
 // constant is DERIVED from it by the mechanical transform below, asserted
@@ -219,6 +216,11 @@ const LENSES = [
 const finding = (title) => ({
   title, claim: 'c', severity: 'major', failure_scenario: 'f', file: 'x.md', repo: 'r',
 })
+
+// Mirrors the script's batch-count rule, including the floor of 2 that keeps the
+// two partitions from collapsing into one. Kept as an expression the cases read
+// so a change to the rule shows up as a diff here, not as silent drift.
+const expectedBatchCount = (n, size) => (n <= 1 ? n : Math.max(2, Math.ceil(n / size)))
 
 let failures = 0
 const check = (name, cond, detail = '') => {
@@ -513,8 +515,8 @@ console.log('story-review cost gate')
 //      (the gate must price what will actually run, not what would have)
 //  15. a clusterer that is not an exact partition is REJECTED WHOLE. This is
 //      the safety property: under-merging costs money, over-merging or dropping
-//      hides a defect from verification entirely. Five distinct malformations,
-//      because each is a different way to lose a finding silently.
+//      hides a defect from verification entirely. Each entry is a different way
+//      to lose a finding silently.
 //  16. a dead clusterer degrades to unclustered, loudly
 //  17. two votes per finding survive batching — the invariant that must not
 //      move when the batch size does
@@ -529,23 +531,35 @@ console.log('story-review cost gate')
 {
   const h = makeHarness({
     findingsPerLens: SIX,
-    // six findings -> three groups of two
-    cluster: () => ({ groups: [{ members: [0, 1] }, { members: [2, 3] }, { members: [4, 5] }] }),
+    // Six findings -> three groups of two, each pairing a lens-a finding (0-2)
+    // with a lens-b one (3-5). Cross-lens on purpose: a same-lens grouping would
+    // make the "names every lens" assertion below unfalsifiable.
+    cluster: () => ({ groups: [{ members: [0, 3] }, { members: [1, 4] }, { members: [2, 5] }] }),
     args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 6 }),
   })
   const r = await h.run()
   check('clustering collapses 6 -> 3', r.exactDedupedFindings === 6 && r.dedupedFindings === 3,
         `exact=${r.exactDedupedFindings} deduped=${r.dedupedFindings}`)
-  // 3 findings at batch size 4 -> 1 batch -> 2 skeptic agents (was 12)
-  check('projection prices the CLUSTERED count', r.projectedAgents === 2 + 1 + 2,
+  // 3 clustered findings at batch size 4 -> batchCount floors to 2 -> 4 skeptic
+  // agents (was 12 unclustered at size 1). The floor is why this is 4 and not 2.
+  check('projection prices the CLUSTERED count', r.projectedAgents === 2 + 1 + 4,
         `agents=${r.projectedAgents}`)
-  check('clustering cuts the skeptic wave', h.calls.skeptic === 2, `skeptics=${h.calls.skeptic}`)
+  check('clustering cuts the skeptic wave', h.calls.skeptic === 4, `skeptics=${h.calls.skeptic}`)
   check('every clustered finding still gets 2 votes',
         [...r.confirmed, ...r.plausible, ...r.refuted].every((f) => f.skepticVotes === 2))
   const merged = [...r.confirmed, ...r.plausible, ...r.refuted]
-  check('a merged finding carries its alternates and every lens that found it',
-        merged.every((f) => f.merged_from.length === 1 && f.lenses.length >= 1),
+  // NOT `lenses.length >= 1`, which every possible implementation satisfies.
+  // Each group here pairs one lens-a finding with one lens-b finding, so the
+  // merged representative must name BOTH lenses and carry exactly one alternate.
+  check('a merged finding names every lens that found it (2 distinct)',
+        merged.every((f) => f.merged_from.length === 1 && [...new Set(f.lenses)].length === 2),
         JSON.stringify(merged.map((f) => [f.title, f.lenses, f.merged_from.length])))
+  // C2: the alternate must arrive WHOLE. Dropping failure_scenario narrows the
+  // cluster to one scenario on the exact field the skeptic prompt tests against.
+  check('a merged alternate carries its full finding, not a summary',
+        merged.every((f) => f.merged_from.every((m) =>
+          m.failure_scenario !== undefined && m.file !== undefined && m.severity !== undefined)),
+        JSON.stringify(merged[0] && merged[0].merged_from))
   check('clusterOutcome is recorded', r.clusterOutcome === '6 → 3', `outcome=${r.clusterOutcome}`)
 }
 
@@ -596,7 +610,7 @@ console.log('story-review cost gate')
     })
     const r = await h.run()
     const all = [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified]
-    const expectedAgents = 2 * Math.ceil(6 / size)
+    const expectedAgents = 2 * expectedBatchCount(6, size)
     check(`batch size ${size}: every finding gets exactly 2 votes`,
           all.length === 6 && all.every((f) => f.skepticVotes === 2),
           `judged=${all.length} votes=${all.map((f) => f.skepticVotes).join(',')}`)
@@ -746,8 +760,7 @@ console.log('story-review cost gate')
           JSON.parse(m[1]) === expectedStance,
           'run: node .claude/workflows/story-review.test.mjs --fix')
   }
-  // The three items the hand-maintained copy was missing for two weeks. Named
-  // individually so a transform that silently drops a section fails loudly.
+  // Named individually so a transform that silently drops a section fails loudly.
   for (const [what, probe] of [
     ['lens-scope bullet', 'Hunt from your assigned lens only'],
     ['refute-your-own-candidate clause', 'refuting your own candidate is a valid'],
@@ -764,6 +777,183 @@ console.log('story-review cost gate')
   // lead-in would turn every prohibition into an instruction.
   check('the Never section keeps a negating lead-in',
         /Never do any of the following:\s*Patch the code/.test(expectedStance))
+}
+
+
+// --- 22: regressions for the #528 red-team's confirmed findings -----------
+// Every case below is a defect the design red-team of this change set found in
+// it. They are grouped here rather than folded into 14-21 because each names a
+// specific finding, and a future reader should be able to delete the fix and
+// watch a NAMED case go red.
+//
+//  C1  partition-major dispatch let a truncating outage strip second votes
+//  C2  the cluster merge dropped failure_scenario/file/line from alternates
+//  C4  both partitions were IDENTICAL whenever deduped <= skepticBatchSize
+//  C13 the batched token projection was entirely unasserted
+//  C15 cluster representative selection by severity was untested
+//  C16 skepticSliceSize's default of 25 was untested
+//  C19 four of applyClusters' rejection branches were untested
+
+// C4 — the partitions must differ for EVERY finding count above one, most of
+// all at the counts where batchCount would otherwise be 1. This is the case
+// that was silently false at the shipped default for every round of <= 4.
+{
+  for (const n of [2, 3, 4, 5, 6, 9]) {
+    const findings = Array.from({ length: n }, (_, i) => finding(`f${i}`))
+    const h = makeHarness({
+      findingsPerLens: { a: findings, b: [] },
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 999 }),
+    })
+    const r = await h.run()
+    const p1 = h.calls.batches.filter((b) => b.n === 1).map((b) => b.indices.join(','))
+    const p2 = h.calls.batches.filter((b) => b.n === 2).map((b) => b.indices.join(','))
+    // The property that must hold is PER FINDING, not per pair. Contiguous-vs-
+    // strided cannot keep every PAIR from co-occurring twice (n=5: findings 0
+    // and 2 share a batch in both), and it does not need to: what matters is
+    // that each finding's two votes come from different agents — structural,
+    // since they are different partitions — and that the CONTEXT those two
+    // votes are cast in differs, i.e. its batch-mates are not the same set both
+    // times. That is what decorrelates batch anchoring.
+    const matesIn = (parts, i) => {
+      const b = parts.map((x) => x.split(',')).find((ix) => ix.includes(String(i))) || []
+      return b.filter((x) => x !== String(i)).sort().join(',')
+    }
+    const sameContext = []
+    for (let i = 0; i < n; i++) {
+      const m1 = matesIn(p1, i), m2 = matesIn(p2, i)
+      if (m1 !== '' && m1 === m2) sameContext.push(i)
+    }
+    check(`C4: n=${n} — no finding is judged twice by the same batch-mates`,
+          sameContext.length === 0,
+          `same-context findings=${sameContext.join(' ')} p1=[${p1.join('] [')}] p2=[${p2.join('] [')}]`)
+    const all = [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified]
+    check(`C4: n=${n} — every finding still gets exactly 2 votes`,
+          all.length === n && all.every((f) => f.skepticVotes === 2),
+          `votes=${all.map((f) => f.skepticVotes).join(',')}`)
+  }
+}
+
+// C1 — dispatch must INTERLEAVE the partitions. Asserted two ways: the order
+// itself, and the behaviour a truncating outage produces.
+{
+  const findings = Array.from({ length: 8 }, (_, i) => finding(`f${i}`))
+  const h = makeHarness({
+    findingsPerLens: { a: findings, b: [] },
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 2, clusterMinFindings: 999 }),
+  })
+  await h.run()
+  const order = h.calls.batches.map((b) => b.n)
+  check('C1: skeptic dispatch alternates between the partitions',
+        order.every((n, i) => (i % 2 === 0 ? n === 1 : n === 2)), `order=${order.join('')}`)
+  // The behavioural half: an outage part-way through the wave. Under
+  // partition-major order this returned every finding `confirmed` on one vote
+  // with no warning; interleaved, the tail loses BOTH votes and reads unverified.
+  const cut = 4
+  const h2 = makeHarness({
+    findingsPerLens: { a: findings, b: [] },
+    skeptic: ({ indices, call }) =>
+      (call > cut ? null : indices.map((i) => ({ index: i, refuted: false, reason: 'r' }))),
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 2, clusterMinFindings: 999 }),
+  })
+  const r2 = await h2.run()
+  check('C1: a truncating outage produces unverified findings, not silent single-vote confirms',
+        r2.unverified.length > 0,
+        `confirmed=${r2.confirmed.length} unverified=${r2.unverified.length}`)
+  check('C1: no finding is confirmed on a single vote without the run saying so',
+        r2.confirmed.every((f) => f.skepticVotes === 2) ||
+          h2.calls.logs.some((l) => /only ONE surviving skeptic vote/.test(l)),
+        `logs=${JSON.stringify(h2.calls.logs)}`)
+}
+
+// C1b — the single-vote warning must exist independently of ordering: one dead
+// batch anywhere means some finding was verified once, and the record says so.
+{
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    skeptic: ({ call, indices }) => (call === 1 ? null : indices.map((i) => ({ index: i, refuted: false, reason: 'r' }))),
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+  })
+  await h.run()
+  check('C1b: single-vote findings are named in the run log',
+        h.calls.logs.some((l) => /only ONE surviving skeptic vote/.test(l)),
+        `logs=${JSON.stringify(h.calls.logs)}`)
+}
+
+// C15 — the representative must be the HIGHEST-severity member. Reversing the
+// comparator would demote a critical to its cluster-mate's severity, and the
+// PM triages off the representative.
+{
+  const sev = (t, severity) => ({ ...finding(t), severity })
+  const h = makeHarness({
+    findingsPerLens: {
+      a: [sev('minor-one', 'minor'), sev('critical-one', 'critical'), sev('major-one', 'major')],
+      b: [sev('minor-two', 'minor'), sev('major-two', 'major'), sev('minor-three', 'minor')],
+    },
+    cluster: () => ({ groups: [{ members: [0, 1, 2] }, { members: [3, 4, 5] }] }),
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 6 }),
+  })
+  const r = await h.run()
+  const reps = [...r.confirmed, ...r.plausible, ...r.refuted].map((f) => f.title).sort()
+  check('C15: the cluster representative is its highest-severity member',
+        reps.join(',') === 'critical-one,major-two', `reps=${reps.join(',')}`)
+}
+
+// C13 — the batched token projection was unasserted, so the gate could be made
+// to under-project (its one invisible failure direction) with the suite green.
+{
+  const h = makeHarness({
+    findingsPerLens: SIX,
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+  })
+  const r = await h.run()
+  // 6 findings, size 3 -> batchCount 2 -> 4 skeptic agents; 2 lenses, 0 clusterer.
+  // Batched agents are priced at 80k x (1 + 0.35 x (size - 1)).
+  const expected = Math.round(2 * 80_000 + 4 * 80_000 * (1 + 0.35 * 2))
+  check('C13: batched projection prices batch size, not just agent count',
+        r.projectedTokens === expected, `got=${r.projectedTokens} want=${expected}`)
+  // And a batched projection must exceed the naive agents x 80k, or the gate
+  // under-projects exactly where batching makes each agent bigger.
+  check('C13: a batched projection exceeds agents x PER_AGENT_TOKENS',
+        r.projectedTokens > r.projectedAgents * 80_000,
+        `tokens=${r.projectedTokens} agents=${r.projectedAgents}`)
+}
+
+// C16 — the documented skepticSliceSize default of 25.
+{
+  const many = { a: Array.from({ length: 30 }, (_, i) => finding(`a${i}`)), b: [] }
+  const h = makeHarness({
+    findingsPerLens: many,
+    args: { story: 'T', mode: 'design', docPath: '/tmp/d.md', context: 't', lenses: LENSES,
+            skepticBatchSize: 1, clusterMinFindings: 999 },
+  })
+  await h.run()
+  check('C16: default skepticSliceSize is 25', h.calls.slices.every((n) => n <= 25) &&
+        h.calls.slices.includes(25), `slices=${h.calls.slices.join(',')}`)
+}
+
+// C19 — the rejection branches no case reached. Each must fail-open to
+// unclustered, never crash and never partially apply.
+{
+  const bad = {
+    'groups is not an array': { groups: 'nope' },
+    'a group is null': { groups: [null, { members: [0, 1, 2, 3, 4, 5] }] },
+    'members is not an array': { groups: [{ members: 'all' }] },
+    'a member is a float': { groups: [{ members: [0, 1, 2, 3, 4, 5.5] }] },
+    'a member is a string': { groups: [{ members: ['0', 1, 2, 3, 4, 5] }] },
+  }
+  for (const [kind, grouping] of Object.entries(bad)) {
+    const h = makeHarness({
+      findingsPerLens: SIX, cluster: () => grouping,
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 6 }),
+    })
+    let threw = false
+    let r = null
+    try { r = await h.run() } catch { threw = true }
+    const judged = r ? [...r.confirmed, ...r.plausible, ...r.refuted, ...r.unverified] : []
+    check(`C19: clusterer where ${kind} -> rejected, no crash, nothing lost`,
+          !threw && r && r.dedupedFindings === 6 && judged.length === 6 && /REJECTED/.test(r.clusterOutcome),
+          `threw=${threw} deduped=${r && r.dedupedFindings} judged=${judged.length}`)
+  }
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)

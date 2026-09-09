@@ -170,7 +170,7 @@ Inherited from roadmap §6 (single source of truth — not duplicated here): rev
 | File | Contents | Size |
 |---|---|---|
 | `.claude/agents/story-dev.md` | Dev contract from §2: conventions, self-gates, structured report, never-list | S |
-| `.claude/agents/adversarial-reviewer.md` | Reviewer persona for lenses AND skeptics: refute-first stance, verdict format, no-drive-by-fix rule — mirrored inline in `story-review.js` as one constant shared by both prompts (change one, change both; a mirrored rule must read right for a skeptic with no assigned lens); spawned as an agent type only ad hoc | S |
+| `.claude/agents/adversarial-reviewer.md` | Reviewer persona for lenses AND skeptics: refute-first stance, verdict format, no-drive-by-fix rule — the source for `story-review.js`'s generated `stance` constant, one text shared by both prompts (so a rule here must read right for a skeptic with no assigned lens); spawned as an agent type only ad hoc | S |
 | `.claude/agents/qa-verifier.md` | AC-walking procedure, evidence format, escalation rule, served-source guard | S |
 | `.claude/skills/run-story/SKILL.md` | The PM pipeline (§3) incl. the design-story variant, DoR/DoD checklists, story-brief template, delegation-map + token-report mandates | M |
 | `.claude/workflows/story-review.js` | **Trigger-tier only** review workflow (lenses → skeptics → mutation-verify); S/M stories use built-in `/code-review` and need no custom code | S–M |

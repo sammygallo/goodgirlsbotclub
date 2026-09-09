@@ -98,6 +98,26 @@ t 0 "benign prose reword"        "sed -i '' 's/Sanity-check the plan/Sanity chec
 t 0 "adding blank lines"         "python3 -c \"import pathlib;p=pathlib.Path('$S');p.write_text(p.read_text().replace('### 4 · BUILD','### 4 · BUILD'+chr(10)+chr(10),1))\""
 t 0 "expanding a stage"          "python3 -c \"import pathlib;p=pathlib.Path('$S');p.write_text(p.read_text().replace('### 4 · BUILD','### 4 · BUILD'+chr(10)+'- an added note.',1))\""
 
+# The floors are documented as "EXACT current NON-BLANK sizes, no slack", and
+# that is load-bearing: any slack is content a wide edit can eat with the lint
+# still reporting INTACT. Nothing checked it, and it rotted immediately — the
+# 2026-09-09 batch grew §5 by 12 lines and §10 by 6 without raising either
+# floor, so every rule it added was deletable under a green lint. This pins the
+# invariant: floor MUST equal actual on the pristine file.
+{
+  cp "$sandbox/pristine.md" "$S"
+  mismatch=""
+  names=("1 · INTAKE" "2 · BRIEF" "3 · PLAN" "4 · BUILD" "5 · REVIEW" "6 · QA" "7 · PR" "8 · MERGE" "9 · DEPLOY" "10 · CLOSE")
+  declared=$(sed -n 's/^declare -a floor_min=(\([^)]*\)).*/\1/p' "$here/skill-lint.sh")
+  read -r -a floors <<< "$declared"
+  for i in "${!names[@]}"; do
+    n=$(awk -v want="### ${names[$i]}" 'index($0, want)==1 {inb=1; next} /^### / {inb=0} inb && NF {c++} END {print c+0}' "$S")
+    [ "$n" -ne "${floors[$i]}" ] && mismatch="$mismatch §${names[$i]}(floor=${floors[$i]} actual=$n)"
+  done
+  if [ -z "$mismatch" ]; then echo "  PASS  every stage floor equals its actual size (no slack)"; pass=$((pass+1))
+  else echo "  FAIL  stage floors have slack —$mismatch"; echo "        raise floor_min in skill-lint.sh to match, in the SAME commit"; fail=$((fail+1)); fi
+}
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
