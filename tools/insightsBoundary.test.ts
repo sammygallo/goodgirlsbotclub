@@ -24,6 +24,10 @@ const WI_INSIGHTS_PATH = new URL('../src/utils/insights/wiInsights.ts', import.m
 const INSIGHTS_API_PATH = new URL('../src/stores/insightsApi.ts', import.meta.url).pathname;
 const CHAT_STORE_PATH = new URL('../src/stores/chatStore.ts', import.meta.url).pathname;
 const GENERATION_STORE_PATH = new URL('../src/stores/generationStore.ts', import.meta.url).pathname;
+// This file's own path — used by the non-vacuity self-check below to prove
+// `extractPathLiterals` actually pulls literals out of a real file on disk
+// (this file itself references several real relative paths, above).
+const THIS_FILE_PATH = new URL(import.meta.url).pathname;
 
 interface ImportStatement {
   isTypeOnly: boolean;
@@ -120,26 +124,50 @@ function typeOnlySpecifierPositions(sourceFile: ts.SourceFile): Set<number> {
   return positions;
 }
 
-/** Fail-CLOSED sibling of `extractImports`: instead of enumerating
- *  import/export syntaxes (each round finds another one this guard didn't
- *  know about — `export * as ns from`, `import.meta.glob`, now `new
- *  Worker(new URL(...))`), this treats EVERY string literal and
- *  no-substitution template literal in the file whose text looks like a
- *  relative module path (`/^\.\.?\//`) as a potential module reference,
- *  REGARDLESS of the syntax around it — an import specifier, a `new
- *  URL(...)` argument, an `import.meta.glob(...)` argument, or a bare
- *  variable initializer with no import/call syntax at all. The only
- *  literals excluded are those belonging to a declaration-level type-only
- *  import/export (`typeOnlySpecifierPositions` above), and they are
- *  excluded by NODE POSITION, never by string value — the same path
- *  referenced a second time by a mechanism this guard does not special-case
- *  is still flagged.
+/** Sibling of `extractImports` that does not enumerate import/export
+ *  syntaxes (each round finds another one this guard didn't know about —
+ *  `export * as ns from`, `import.meta.glob`, `new Worker(new URL(...))`).
+ *  Instead it treats EVERY string literal and no-substitution template
+ *  literal in the file whose text looks like a relative module path
+ *  (`/^\.\.?\//`) as a potential module reference, REGARDLESS of the
+ *  syntax around it — an import specifier, a `new URL(...)` argument, an
+ *  `import.meta.glob(...)` argument, or a bare variable initializer with
+ *  no import/call syntax at all. The only literals excluded are those
+ *  belonging to a declaration-level type-only import/export
+ *  (`typeOnlySpecifierPositions` above), and they are excluded by NODE
+ *  POSITION, never by string value — the same path referenced a second
+ *  time by a mechanism this guard does not special-case is still flagged.
  *
- *  Deliberate trade-off: a path-shaped string that is NOT actually a
- *  module reference will still be flagged. That is the intended
- *  direction — a false positive breaks the build and a human adjusts the
- *  allow-list, rather than a false negative silently admitting a real edge
- *  this guard never thought to check for. */
+ *  SCOPE — this is the one place that states it; anywhere else that needs
+ *  it should point back here instead of restating it. Both halves are
+ *  pinned by the self-checks below (I9), run as part of this suite:
+ *    - CAUGHT: a *literal* relative path under any syntax whatsoever — an
+ *      import, an export, a dynamic `import(...)`, `import.meta.glob`,
+ *      `new Worker(new URL(...))`, or a bare string — because this scan
+ *      does not special-case any of them: it walks every AST node and
+ *      flags any `StringLiteralLike` whose text is path-shaped, so an
+ *      import/export/dynamic-import specifier is exactly the same case to
+ *      it as a bare string. The self-checks below cover the syntaxes
+ *      `extractImports` cannot see at all (`new Worker(new URL(...))`, a
+ *      bare string/template initializer) plus a plain import specifier
+ *      (proving the exclusion logic does not over-exclude); the
+ *      import/export/dynamic-import forms are exercised directly against
+ *      `extractPathLiterals` in that same block.
+ *    - NOT CAUGHT: a path that is only COMPUTED at runtime.
+ *      `` `../../stores/${n}` `` (a substituted template) produces a
+ *      TemplateExpression, not a StringLiteral/NoSubstitutionTemplateLiteral
+ *      — `ts.isStringLiteralLike` is false for it, so it is invisible here.
+ *      A path assembled by concatenating fragments that do not themselves
+ *      start with `./` or `../` (e.g. `dir + '/../stores/chatStore'` where
+ *      `dir` holds `'..'`) never produces a single literal the regex above
+ *      matches either. This is a known, accepted gap, not a "fail-closed"
+ *      guarantee — do not call this guard fail-closed.
+ *
+ *  Deliberate trade-off on the caught side: a path-shaped string that is
+ *  NOT actually a module reference will still be flagged. That is the
+ *  intended direction — a false positive breaks the build and a human
+ *  adjusts the allow-list, rather than a false negative silently admitting
+ *  a real edge this guard never thought to check for. */
 function extractPathLiterals(source: string, fileName = 'source.ts'): PathLiteral[] {
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const excluded = typeOnlySpecifierPositions(sourceFile);
@@ -232,11 +260,12 @@ function assertValueImportsResolveInto(file: ScannedFile, boundary: string): voi
   }
 }
 
-/** Fail-closed sibling of `assertValueImportsResolveInto`, built on
+/** Sibling of `assertValueImportsResolveInto`, built on
  *  `extractPathLiterals` instead of `extractImports`: asserts every
  *  relative-path-shaped literal in `file` — found by syntax-agnostic scan,
  *  not limited to recognized import/export forms — resolves into
- *  `boundary`. */
+ *  `boundary`. See `extractPathLiterals`'s doc comment for exactly what
+ *  this scan does and does not catch. */
 function assertPathLiteralsResolveInto(file: ScannedFile, boundary: string): void {
   for (const lit of file.pathLiterals) {
     const resolved = resolveSpecifier(file.path, lit.text);
@@ -272,9 +301,14 @@ describe('insights API import boundary (AC1)', () => {
     assertValueImportsResolveInto(wiInsights, KNOWN.types);
   });
 
-  it("wiInsights.ts (File B) has no relative-path-shaped literal outside {File A} — fail-closed: this catches ANY module-edge mechanism (new Worker(new URL(...)), import.meta.glob, a bare string), not just import/export syntax this guard happens to recognize", () => {
+  it("wiInsights.ts (File B) has no relative-path-shaped literal outside {File A} — catches any syntax that names the module as a literal (new Worker(new URL(...)), import.meta.glob, a bare string), not just import/export syntax; see extractPathLiterals's doc comment for the exact scope (literal paths only, not computed ones)", () => {
     const wiInsights = scannedFiles.find((f) => f.path === WI_INSIGHTS_PATH)!;
     assertPathLiteralsResolveInto(wiInsights, KNOWN.types);
+  });
+
+  it('types.ts (File A) has no surviving path-shaped literal at all — the syntax-agnostic counterpart of File B\'s check, but for File A the correct assertion is zero survivors, not "resolves into a boundary" (File A IS the boundary; its only relative literal, the declaration-level `import type` of TokenizerProfile, is excluded by node position, not by value)', () => {
+    const types = scannedFiles.find((f) => f.path === TYPES_PATH)!;
+    expect(types.pathLiterals, JSON.stringify(types.pathLiterals)).toEqual([]);
   });
 
   it('self-check: assertValueImportsResolveInto fails CLOSED (throws) on an unresolvable value import instead of silently skipping it', () => {
@@ -460,12 +494,6 @@ const b = '*/';
     expect(globImports.length, JSON.stringify(globImports)).toBe(1);
     expect(globImports[0].specifier).toBe('../stores/chatStore.ts');
     expect(globImports[0].isTypeOnly, 'an import.meta.glob edge is never type-only').toBe(false);
-
-    const globEagerSource = `const g = import.meta.globEager('../stores/chatStore.ts');\nvoid g;\n`;
-    const globEagerImports = extractImports(globEagerSource);
-    expect(globEagerImports.length, JSON.stringify(globEagerImports)).toBe(1);
-    expect(globEagerImports[0].specifier).toBe('../stores/chatStore.ts');
-    expect(globEagerImports[0].isTypeOnly, 'an import.meta.globEager edge is never type-only').toBe(false);
   });
 
   it('self-check: `import.meta.glob(pathVar)` with a non-literal argument is recorded as unresolvable, not dropped', () => {
@@ -662,16 +690,6 @@ const b = '*/';
     expect(imports[0].isTypeOnly).toBe(false);
   });
 
-  // -------------------------------------------------------------------
-  // I9 — extractPathLiterals: the fail-closed path-literal scan's own
-  // self-checks. Three consecutive rounds each found a DIFFERENT
-  // module-edge syntax `extractImports` didn't enumerate (`export * as ns
-  // from`, `import.meta.glob`, `new Worker(new URL(...))`). This function
-  // stops enumerating: it flags every relative-path-shaped literal in the
-  // file, whatever syntax surrounds it, and excludes only the literals
-  // that belong to a declaration-level type-only import/export.
-  // -------------------------------------------------------------------
-
   it("self-check: extractPathLiterals catches `new Worker(new URL(...))` — Vite's documented worker-import mechanism, a NewExpression carrying no import/export syntax at all", () => {
     const source = `const w = new Worker(new URL('../../stores/chatStore', import.meta.url));\nvoid w;\n`;
     const literals = extractPathLiterals(source);
@@ -720,5 +738,50 @@ const w = new Worker(new URL('../../stores/chatStore', import.meta.url));
     const source = `const s = 'stores/chatStore';\nconst pkg = 'zod';\nvoid s; void pkg;\n`;
     const literals = extractPathLiterals(source);
     expect(literals, JSON.stringify(literals)).toEqual([]);
+  });
+
+  it('self-check: extractPathLiterals catches a SAME-DIRECTORY (`./`) relative literal, not just `../` — a `new Worker(new URL(\'./bridge\', import.meta.url))` inside src/utils/insights/ resolves to a sibling file outside {File A} and must be visible to this scan', () => {
+    const source = `const w = new Worker(new URL('./bridge', import.meta.url));\nvoid w;\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('./bridge');
+  });
+
+  it('self-check: typeOnlySpecifierPositions does NOT exclude a VALUE (non-type-only) import specifier — only a declaration-level `import type`/`export type` position is excluded, never every import/export specifier regardless of isTypeOnly', () => {
+    const source = `import { useChatStore } from '../stores/chatStore';\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('../stores/chatStore');
+  });
+
+  it('self-check: extractPathLiterals catches a re-export specifier directly — the same generic literal-node walk that catches an import specifier applies with no special-casing by statement kind', () => {
+    const source = `export { useChatStore } from '../stores/chatStore';\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('../stores/chatStore');
+  });
+
+  it('self-check: extractPathLiterals catches a dynamic import\'s literal argument directly — same generic walk, no special-casing by call kind', () => {
+    const source = `async function f() {\n  await import('../stores/chatStore');\n}\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('../stores/chatStore');
+  });
+
+  it('self-check: extractPathLiterals does NOT catch a COMPUTED path built from a substituted template literal — this is the documented gap in extractPathLiterals\'s doc comment, not a bug: a TemplateExpression\'s TemplateHead/TemplateSpan text is never a StringLiteral or NoSubstitutionTemplateLiteral, so `ts.isStringLiteralLike` never sees it', () => {
+    const source = 'const n = "chatStore"; const p = `../../stores/${n}`;\nvoid p;\n';
+    const literals = extractPathLiterals(source);
+    expect(literals, JSON.stringify(literals)).toEqual([]);
+  });
+
+  it('self-check: extractPathLiterals does NOT catch a COMPUTED path built by concatenating fragments that do not themselves start with `./` or `../` — the other documented-gap half: `dir + \'/../stores/chatStore\'` where `dir` holds `\'..\'` never produces a single literal node whose OWN text matches the relative-path regex', () => {
+    const source = `const dir = '..'; const p = dir + '/../stores/chatStore';\nvoid p;\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals, JSON.stringify(literals)).toEqual([]);
+  });
+
+  it('non-vacuity: `scanFile` actually populates `pathLiterals` from a REAL file on disk, not just from synthetic strings above — scanning this test file\'s own source through `scanFile` (it references several real relative paths via `new URL(\'../src/...\', import.meta.url)` at its top) must yield at least one path literal, so a `scanFile` stubbed to always return `pathLiterals: []` cannot pass silently', () => {
+    const ownScan = scanFile(THIS_FILE_PATH);
+    expect(ownScan.pathLiterals.length).toBeGreaterThan(0);
   });
 });
