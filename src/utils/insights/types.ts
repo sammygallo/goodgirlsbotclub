@@ -327,8 +327,8 @@ export interface TelemetryCoverage {
    *  zero recorded firings (`{}`), which is a positive fact, not a gap. */
   readonly chatsWithTelemetry: Observed<number>;
   readonly turns: TurnCoverage;
-  /** Always `Unobservable` — not because no recency signal exists, but
-   *  because none reaches this client. The backend DOES timestamp chats
+  /** Always `Unobservable` — not because no recency signal exists. The
+   *  backend DOES timestamp chats
    *  (`Chat.updated_at`, ggbc-backend `app/models/chat.py`) and
    *  `/chats/list` already orders by it server-side (`app/routers/
    *  chats.py`); but `api.getChats`'s declared return type is

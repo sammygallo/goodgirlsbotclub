@@ -13,15 +13,11 @@
 // Lives in `tools/` for the same reason as sourceHygiene.test.ts /
 // provenanceWiring.test.ts: it needs node's `fs`/`path`, and
 // tsconfig.app.json ships `types: ["vite/client"]` only, with no node lib.
-//
-// Regex-based, not a real TS parser — same trade `provenanceWiring.test.ts`
-// makes. Kept simple and self-checked (I8) rather than exact: a
-// `verbatimModuleSyntax` codebase writes `import type ...` as its own
-// statement form, which is exactly what this guard keys off.
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import * as ts from 'typescript';
 
 const TYPES_PATH = new URL('../src/utils/insights/types.ts', import.meta.url).pathname;
 const WI_INSIGHTS_PATH = new URL('../src/utils/insights/wiInsights.ts', import.meta.url).pathname;
@@ -30,90 +26,50 @@ const CHAT_STORE_PATH = new URL('../src/stores/chatStore.ts', import.meta.url).p
 const GENERATION_STORE_PATH = new URL('../src/stores/generationStore.ts', import.meta.url).pathname;
 
 interface ImportStatement {
-  raw: string;
   isTypeOnly: boolean;
-  specifier: string;
+  specifier: string | null;
 }
 
-/**
- * Finds every import-shaped edge in `source` — four distinct syntactic
- * forms, each matched by its own regex, tagging whether each is a
- * statement-level `import type` (verbatimModuleSyntax's form for a
- * type-only import — the only form this codebase writes; see File A/B's
- * own headers):
- *
- *   - `import '../x';`              (side-effect — no clause, no `from`,
- *                                     and the `;` itself is optional: ASI)
- *   - `import('../x')`              (dynamic — a call expression; a
- *                                     string or template-literal specifier)
- *   - `import (type)? ... from '../x'`      (static, with a clause)
- *   - `export (type)? { ... } | * from '../x'`  (re-export)
- *
- * The static-import regex uses a lazy `[^;]*?` (not `[\s\S]*?`) between
- * the keyword and `from` — restricted to exclude `;` so the clause can
- * span multiple lines (a multi-name named import wrapped across lines).
- * That restriction is what keeps a side-effect import directly above
- * another import from being swallowed into the SECOND statement's `from`
- * clause (matched instead, correctly, by the side-effect regex on its own
- * pass), PROVIDED the first statement ends in a real `;` — see I8's
- * swallowing self-check. It does nothing for a boundary made by ASI alone
- * (no `;` at all): a `[^;]` character class still matches a newline, so a
- * lazy scan can cross it. That is why the re-export regex below does not
- * use `[^;]*?` at all — its clause is syntactically restricted to `*`
- * (optionally `as name`) or a brace list, so it is matched explicitly
- * instead of scanned for, and cannot cross into an unrelated statement no
- * matter how that statement ends (CONF6).
- */
-function extractImports(source: string): ImportStatement[] {
+function namedImportsAllTypeOnly(bindings: ts.NamedImportBindings | undefined): boolean {
+  if (!bindings || ts.isNamespaceImport(bindings)) return false;
+  return bindings.elements.length > 0 && bindings.elements.every((el) => el.isTypeOnly);
+}
+
+function importClauseIsTypeOnly(clause: ts.ImportClause | undefined): boolean {
+  if (!clause) return false;
+  if (clause.isTypeOnly) return true;
+  if (clause.name) return false;
+  return namedImportsAllTypeOnly(clause.namedBindings);
+}
+
+function namedExportsAllTypeOnly(clause: ts.NamedExportBindings | undefined): boolean {
+  if (!clause || ts.isNamespaceExport(clause)) return false;
+  return clause.elements.length > 0 && clause.elements.every((el) => el.isTypeOnly);
+}
+
+function exportDeclIsTypeOnly(node: ts.ExportDeclaration): boolean {
+  if (node.isTypeOnly) return true;
+  return namedExportsAllTypeOnly(node.exportClause);
+}
+
+function extractImports(source: string, fileName = 'source.ts'): ImportStatement[] {
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const out: ImportStatement[] = [];
 
-  // Side-effect import: a bare string specifier, no clause, no `from`. The
-  // trailing `;` is OPTIONAL — ASI makes `import '../x'` (no semicolon)
-  // legal TS, and there is no `semi` lint rule (eslint.config.js) forcing
-  // one, so this must recognize the statement either way (CONF4).
-  const sideEffectRe = /\bimport\s*(['"])([^'"]+)\1\s*;?/g;
-  let m: RegExpExecArray | null;
-  while ((m = sideEffectRe.exec(source))) {
-    out.push({ raw: m[0], isTypeOnly: false, specifier: m[2] });
+  function visit(node: ts.Node): void {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      out.push({ isTypeOnly: importClauseIsTypeOnly(node.importClause), specifier: node.moduleSpecifier.text });
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      out.push({ isTypeOnly: exportDeclIsTypeOnly(node), specifier: node.moduleSpecifier.text });
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const arg = node.arguments[0];
+      out.push({ isTypeOnly: false, specifier: arg && ts.isStringLiteralLike(arg) ? arg.text : null });
+    }
+    ts.forEachChild(node, visit);
   }
 
-  // Dynamic import: `import('../x')`, anywhere in an expression, specifier
-  // quoted with `'`, `"`, or a template literal (CONF4). Always a
-  // value-level import — there is no type-only dynamic-import syntax.
-  const dynamicRe = /\bimport\s*\(\s*(['"`])([^'"`]+)\1\s*\)/g;
-  while ((m = dynamicRe.exec(source))) {
-    out.push({ raw: m[0], isTypeOnly: false, specifier: m[2] });
-  }
-
-  // Static `import (type)? ... from '../x'`.
-  const fromRe = /\bimport\b\s*(type\s+)?[^;]*?\bfrom\s*(['"])([^'"]+)\2/g;
-  while ((m = fromRe.exec(source))) {
-    out.push({ raw: m[0], isTypeOnly: !!m[1], specifier: m[3] });
-  }
-
-  // Re-export: `export { x } from '../x'`, `export * from '../x'`,
-  // `export type { x } from '../x'`. The clause is matched EXPLICITLY
-  // (`*`, optionally `as name`, or a `{...}` list) rather than scanned for
-  // with `[^;]*?` — see this function's own header for why (CONF6).
-  const reExportRe = /\bexport\b\s*(type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*\bfrom\s*(['"])([^'"]+)\2/g;
-  while ((m = reExportRe.exec(source))) {
-    out.push({ raw: m[0], isTypeOnly: !!m[1], specifier: m[3] });
-  }
-
+  visit(sourceFile);
   return out;
-}
-
-/**
- * Strips `/* ... *\/` block comments (doc comments included) and `// ...`
- * line comments before import-extraction ever runs. Necessary because this
- * very file's own doc comments talk ABOUT imports in prose ("every import
- * is `import type`...") — without stripping, `extractImports`'s lazy
- * `[\s\S]*?\bfrom` would happily treat a comment's prose "import" as the
- * start of a real statement and swallow everything up to the next `from`
- * keyword, real or not.
- */
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
 
 function stripExt(path: string): string {
@@ -135,7 +91,7 @@ interface ScannedFile {
 }
 
 function scanFile(path: string): ScannedFile {
-  return { path, imports: extractImports(stripComments(readFileSync(path, 'utf8'))) };
+  return { path, imports: extractImports(readFileSync(path, 'utf8'), path) };
 }
 
 const KNOWN = {
@@ -158,6 +114,7 @@ function resolveEdges(files: ScannedFile[]): ResolvedEdge[] {
   const edges: ResolvedEdge[] = [];
   for (const file of files) {
     for (const imp of file.imports) {
+      if (imp.specifier === null) continue;
       const resolved = resolveSpecifier(file.path, imp.specifier);
       for (const [name, target] of Object.entries(KNOWN) as [KnownTarget, string][]) {
         if (resolved === target) {
@@ -193,6 +150,9 @@ describe('insights API import boundary (AC1)', () => {
     const wiInsights = scannedFiles.find((f) => f.path === WI_INSIGHTS_PATH)!;
     const valueImports = wiInsights.imports.filter((i) => !i.isTypeOnly);
     for (const imp of valueImports) {
+      if (imp.specifier === null) {
+        throw new Error('wiInsights.ts has an unresolvable dynamic import — cannot verify it stays inside {File A}');
+      }
       const resolved = resolveSpecifier(WI_INSIGHTS_PATH, imp.specifier);
       expect(resolved, `wiInsights.ts has a non-type import of ${imp.specifier}`).toBe(KNOWN.types);
     }
@@ -240,11 +200,10 @@ export const z = 3;
   });
 
   it('self-check: a doc comment that talks ABOUT a value import in prose is not mistaken for a real one', () => {
-    // This is what actually bit the guard once during development: a
-    // header comment saying "every import is `import type` only" contains
-    // the bare word `import` with nothing after it but prose, and without
-    // comment-stripping the lazy `[\s\S]*?\bfrom` regex swallowed the
-    // ENTIRE rest of the file looking for a `from` to close on.
+    // A real parser treats comments as trivia, never as candidate
+    // statements — this pins that a header saying "every import is
+    // `import type`..." inside a `/** ... */` block does not itself
+    // register as an import.
     const source = `
 /**
  * Every import here is \`import type\`, never a real value import like
@@ -252,16 +211,40 @@ export const z = 3;
  */
 import type { TokenizerProfile } from '../tokenizer';
 `;
-    const imports = extractImports(stripComments(source));
-    expect(imports.length).toBe(1);
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../tokenizer');
     expect(imports[0].isTypeOnly).toBe(true);
+  });
+
+  it('self-check: a `//` / `/* */`-shaped sequence living INSIDE A STRING LITERAL, directly above a real import, does not hide or corrupt that import', () => {
+    // A comment-stripping preprocessor (the previous implementation) has
+    // no way to tell a real comment from these bytes appearing inside a
+    // string's contents, and can delete part of a real statement as a
+    // result. A real parser never has this failure mode — string-literal
+    // contents are never comment trivia — so this pins the fix.
+    const source = `
+const s = 'not a // comment, and not a /* block comment either';
+import { useChatStore } from '../stores/chatStore';
+`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
   });
 
   it('self-check: a side-effect import ("import \'x\';", no clause, no `from`) is detected', () => {
     const source = `import '../stores/chatStore';\nexport const x = 1;\n`;
     const imports = extractImports(source);
     expect(imports.length).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly, 'a side-effect import is never type-only').toBe(false);
+  });
+
+  it('self-check: a semicolon-less side-effect import (ASI, legal TS — no `semi` rule in eslint.config.js) is still detected', () => {
+    const source = `import '../stores/chatStore'\nexport const x = 1;\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');
     expect(imports[0].isTypeOnly, 'a side-effect import is never type-only').toBe(false);
   });
@@ -274,6 +257,32 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports[0].isTypeOnly, 'a dynamic import is never type-only').toBe(false);
   });
 
+  it('self-check: a dynamic import with a template-literal specifier is detected', () => {
+    const source = 'async function f() {\n  await import(`../stores/chatStore`);\n}\n';
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly, 'a dynamic import is never type-only').toBe(false);
+  });
+
+  it('self-check: a dynamic import whose argument is NOT a string literal is recorded as unresolvable, not dropped', () => {
+    // `import(pathVar)` cannot be resolved statically — this must still
+    // produce a record (so a caller can see the edge exists and refuse
+    // to certify it as safe) rather than silently vanishing.
+    const source = `async function f(pathVar: string) {\n  await import(pathVar);\n}\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier, 'a non-literal dynamic import specifier cannot be resolved').toBeNull();
+    expect(imports[0].isTypeOnly, 'a dynamic import is never type-only').toBe(false);
+  });
+
+  it('self-check: `import.meta` (and `import.meta.env`) is not an import edge — it must produce nothing, even directly above a real import', () => {
+    const source = `const mode = import.meta.env.MODE;\nimport { useChatStore } from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+  });
+
   it('self-check: a re-export ("export { x } from \'...\'") is detected', () => {
     const source = `export { useChatStore } from '../stores/chatStore';\n`;
     const imports = extractImports(source);
@@ -282,11 +291,7 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports[0].isTypeOnly).toBe(false);
   });
 
-  it('self-check: a re-export ("export * from \'...\'") — the star alternative of the CONF6-rewritten regex — is detected', () => {
-    // The rewritten reExportRe matches the clause explicitly (`*`,
-    // optionally `as name`, or a brace list) instead of scanning for it —
-    // this exercises the `*` arm specifically, which no other test in
-    // this file reached even before the rewrite.
+  it('self-check: a re-export ("export * from \'...\'") is detected', () => {
     const source = `export * from '../stores/chatStore';\n`;
     const imports = extractImports(source);
     expect(imports.length).toBe(1);
@@ -294,8 +299,24 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports[0].isTypeOnly).toBe(false);
   });
 
-  it('self-check: a re-export with a namespace alias ("export * as ns from \'...\'") is detected — kills deleting the `(?:\\s+as\\s+\\w+)?` sub-arm of the CONF6-rewritten regex', () => {
+  it('self-check: a tight bare-star re-export ("export*from\'...\';", no spaces) is detected', () => {
+    const source = `export*from'../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: a re-export with a namespace alias ("export * as ns from \'...\'") is detected', () => {
     const source = `export * as ns from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: a tight namespace-alias re-export ("export*as ns from\'...\';", no spaces around `*`) is detected', () => {
+    const source = `export*as ns from'../stores/chatStore';\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');
@@ -310,12 +331,15 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports[0].isTypeOnly).toBe(true);
   });
 
-  it('self-check: a side-effect import directly above a type-only import produces TWO correct records, not one wrong one', () => {
-    // This is the swallowing bug itself: the OLD `[\s\S]*?` clause matcher
-    // would span from this statement's own "import" keyword all the way
-    // to the SECOND statement's "from", producing one record with the
-    // wrong specifier ('../other') and isTypeOnly:false — and reporting
-    // ZERO records for '../stores/chatStore'.
+  it('self-check: a tight type-only re-export ("export type{A}from\'...\';", no spaces) is detected as type-only', () => {
+    const source = `export type{A}from'../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(true);
+  });
+
+  it('self-check: a side-effect import directly above a type-only import produces TWO correct records, not one merged one', () => {
     const source = `import '../stores/chatStore';\nimport type { Foo } from '../other';\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(2);
@@ -329,28 +353,7 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(typeOnly!.isTypeOnly).toBe(true);
   });
 
-  it('self-check: a semicolon-less side-effect import (ASI, legal TS — no `semi` rule in eslint.config.js) is still detected (CONF4)', () => {
-    const source = `import '../stores/chatStore'\nexport const x = 1;\n`;
-    const imports = extractImports(source);
-    expect(imports.length, JSON.stringify(imports)).toBe(1);
-    expect(imports[0].specifier).toBe('../stores/chatStore');
-    expect(imports[0].isTypeOnly, 'a side-effect import is never type-only').toBe(false);
-  });
-
-  it('self-check: a dynamic import with a template-literal specifier is detected (CONF4)', () => {
-    const source = "async function f() {\n  await import(`../stores/chatStore`);\n}\n";
-    const imports = extractImports(source);
-    expect(imports.length, JSON.stringify(imports)).toBe(1);
-    expect(imports[0].specifier).toBe('../stores/chatStore');
-    expect(imports[0].isTypeOnly, 'a dynamic import is never type-only').toBe(false);
-  });
-
-  it('self-check: an unrelated statement directly above an import, with no semicolon between them (ASI), is not swallowed into a spurious re-export record (CONF6)', () => {
-    // `export const A = 1` has no `;` before the next line's `import` — the
-    // OLD reExportRe's lazy `[^;]*?` would cross that newline (a character
-    // class excluding only `;` still matches `\n`) and misread the SECOND
-    // statement's `from '../stores/chatStore'` as this `export`'s own
-    // clause: one spurious record, `isTypeOnly: false`.
+  it('self-check: an unrelated statement directly above an import, with no semicolon between them (ASI), produces one correct record', () => {
     const source = `export const A = 1\nimport type { b } from '../stores/chatStore';\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);
@@ -358,12 +361,28 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports[0].isTypeOnly).toBe(true);
   });
 
-  it('self-check: a whitespace-less static import ("import{x}from\'...\';", legal TS — no spacing rule in eslint.config.js) is detected — kills reverting fromRe to requiring `\\s+` after `import`', () => {
+  it('self-check: a multi-line import statement (named import list spanning several lines) is detected', () => {
+    const source = `import {\n  useChatStore,\n  isWiFiredCoveragePartial,\n} from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: a whitespace-less static import ("import{x}from\'...\';", legal TS — no spacing rule in eslint.config.js) is detected', () => {
     const source = `import{useChatStore}from'../stores/chatStore';\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');
     expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: a whitespace-less `import type{X}from\'...\';` is still detected as type-only', () => {
+    const source = `import type{TokenizerProfile}from'../tokenizer';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../tokenizer');
+    expect(imports[0].isTypeOnly, 'a tight `import type{...}` must still be type-only').toBe(true);
   });
 
   it('self-check: a whitespace-less side-effect import ("import\'x\';") is detected', () => {
@@ -377,12 +396,12 @@ import type { TokenizerProfile } from '../tokenizer';
   it('self-check: a whitespace-less re-export ("export{x}from\'...\';") is detected', () => {
     const source = `export{useChatStore}from'../stores/chatStore';\n`;
     const imports = extractImports(source);
-    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports.length).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');
     expect(imports[0].isTypeOnly).toBe(false);
   });
 
-  it('self-check: an identifier beginning with "import" is not mistaken for the import keyword by the `\\bimport\\b` boundary fromRe now uses', () => {
+  it('self-check: an identifier beginning with "import" is not mistaken for the import keyword', () => {
     const source = `const importantFlag = true;\nimport { useChatStore } from '../stores/chatStore';\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);
@@ -390,8 +409,16 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports[0].isTypeOnly).toBe(false);
   });
 
-  it('self-check: an identifier beginning with "export" is not mistaken for the export keyword by the `\\bexport\\b` boundary reExportRe now uses', () => {
+  it('self-check: an identifier beginning with "export" is not mistaken for the export keyword', () => {
     const source = `const exportedFlag = true;\nexport { useChatStore } from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: an identifier containing "from" (`fromEntries`) is not mistaken for the `from` keyword', () => {
+    const source = `const result = Object.fromEntries(pairs);\nimport { useChatStore } from '../stores/chatStore';\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');

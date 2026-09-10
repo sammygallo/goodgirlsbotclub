@@ -965,7 +965,7 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
     // bookId is deliberately irrelevant to the caller's key here — the
     // backend's evictedEntryIds list carries no book pairing to check it
-    // against (server-reports-id-only's own doc comment, types.ts).
+    // against.
     const [agg] = getEntryFiringAggregate([{ bookId: 'irrelevant-book', entryId: 'target-entry' }]);
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-evicted-but-bookid-unverified' });
   });
@@ -1005,8 +1005,8 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
 
   it('the server arm never consults droppedEntries, even when one is (unreachably) populated with a matching entry', () => {
     // `wi.droppedEntries` is structurally `[]` on every real server turn
-    // (chatStore.ts's `serverMatchedEntries !== undefined` short-circuit —
-    // see wiInsights.ts's own header) — hand-built here only to prove the
+    // (chatStore.ts's `serverMatchedEntries !== undefined` short-circuit)
+    // — hand-built here only to prove the
     // server arm never reads it. A mutant that consulted it anyway would
     // find the matching entry and report `entry-never-rendered` instead of
     // the correct `entry-not-accounted-for-this-turn`.
