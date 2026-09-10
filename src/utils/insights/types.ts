@@ -58,8 +58,27 @@ export const OBSERVED_FALSE_REASONS = [
   'server-facts-missing',
   'backend-does-not-report-eviction',
   'server-reports-id-only',
+  // Evaluated this turn, then evicted before rendering — the entry is
+  // actually present (in `droppedEntries` on the client path) with a null
+  // `emittedTokens`. Distinct from `entry-not-activated-this-turn` below:
+  // this entry WAS a candidate.
   'entry-never-rendered',
+  // Absent from `entries`, `trimmedFromHistoryEntries`, AND
+  // `droppedEntries` for this turn — never activated/evaluated at all,
+  // not merely evicted after being considered.
+  'entry-not-activated-this-turn',
+  // Present in `trimmedFromHistoryEntries`: it WAS rendered with a real,
+  // non-null `emittedTokens` (wrapWiContent ran on it), then cut by the
+  // history trim before reaching the model. Distinct from
+  // `entry-never-rendered` — this entry really did render.
+  'entry-trimmed-from-history',
   'client-scan-computes-no-activation-reason',
+  // A server-scanned entry whose record carries no `activationReason` at
+  // all (the backend reported the entry but sent no reason for it).
+  // Distinct from `client-scan-computes-no-activation-reason`: no client
+  // scan ever ran on this turn, so naming "the client scan" would name a
+  // mechanism that was never invoked.
+  'server-reports-no-activation-reason',
   'no-observed-turn',
   'breakdown-slot-empty',
   'breakdown-slot-describes-another-turn',
@@ -67,6 +86,13 @@ export const OBSERVED_FALSE_REASONS = [
   'chat-not-hydrated',
   'telemetry-coverage-partial',
   'transcript-not-in-memory',
+  // The open chat IS in scope, but chatStore cannot vouch for `messages`
+  // matching it right now: `loadChat`/`loadGroupChat` set
+  // `currentChatFile` before awaiting the fetch, and their catch path
+  // never restores it or clears `messages` on failure — so a load in
+  // flight (`isLoading`) or one that errored (`error`) can leave
+  // `currentChatFile` and `messages` describing two different chats.
+  'chat-switch-unconfirmed',
   'turn-telemetry-not-persisted',
   'chat-recency-not-recorded',
 ] as const;
@@ -96,9 +122,8 @@ export type Observed<T> = { readonly observed: true; readonly value: T } | Unobs
 /**
  * A token count that names its own basis and the estimator that produced
  * it. A bare `number` is never a token figure anywhere in this API — see
- * `tools/insightsBoundary.test.ts`'s recursive-walker test (I9) and
- * `insightsApi.test.ts`'s own copy (I15), which both fail a figure that
- * loses either field.
+ * `wiInsights.test.ts`'s recursive-walker test (I9), which fails a figure
+ * that loses either field.
  */
 export interface TokenFigure {
   /** `'emitted'`: post-macro, post-wrapper cost of what actually reached
@@ -194,9 +219,9 @@ interface CommonTurnWiInsight {
   readonly entries: readonly WiEntryInsight[];
   readonly trimmedFromHistoryEntries: readonly WiEntryInsight[];
   /** The WI budget itself — raw basis. Real and observable on the client
-   *  path (the scan always ran); on the server path this is the backend's
-   *  OWN reported budget, always estimator `'generic'`, and refuses
-   *  `server-facts-missing` when the server never stamped facts at all. */
+   *  path (the scan always ran); on the server path, always estimator
+   *  `'generic'`, and refuses `server-facts-missing` when the server
+   *  never stamped facts at all. */
   readonly budget: Observed<TokenFigure>;
 }
 
@@ -252,7 +277,9 @@ export interface TurnCoverage {
   /** AI-turn count (prior non-user, non-system messages) of the chat
    *  currently open in `chatStore` — the only chat with a transcript held
    *  in memory. Refuses `transcript-not-in-memory` when no chat in scope
-   *  is the open one. */
+   *  is the open one, and `chat-switch-unconfirmed` when the open chat IS
+   *  in scope but its identity isn't confirmed yet — see that reason's
+   *  own comment (OBSERVED_FALSE_REASONS, above) for why. */
   readonly aiTurnsInScope: Observed<number>;
   /**
    * Always `Unobservable` — the type itself says so, not just the runtime
@@ -281,10 +308,18 @@ export interface TelemetryCoverage {
    *  zero recorded firings (`{}`), which is a positive fact, not a gap. */
   readonly chatsWithTelemetry: Observed<number>;
   readonly turns: TurnCoverage;
-  /** Always `Unobservable`. `getChats`'s `last_mes` is a message-text
-   *  preview (ggbc-backend `_last_message_preview`), not a timestamp, and
-   *  a chat-filename epoch is a creation time `renameChat` can overwrite —
-   *  there is no recency signal this API may honestly report. */
+  /** Always `Unobservable` — not because no recency signal exists, but
+   *  because none reaches this client. The backend DOES timestamp chats
+   *  (`Chat.updated_at`, ggbc-backend `app/models/chat.py`) and
+   *  `/chats/list` already orders by it server-side (`app/routers/
+   *  chats.py`); but `api.getChats`'s declared return type is
+   *  `{file_name, message_count, last_mes}` only, and chatStore's
+   *  `fetchChatFiles` copies exactly those three fields into `chatFiles`
+   *  — `updated_at` never crosses into this app's in-memory state, so
+   *  this API has nothing to read. `last_mes` is a message-text preview
+   *  (ggbc-backend `_last_message_preview`), not a timestamp, and a
+   *  chat-filename epoch is a creation time `renameChat` can overwrite —
+   *  neither substitutes. */
   readonly recency: Unobservable;
 }
 

@@ -156,11 +156,26 @@ function computeCoverage(scope: ChatScope, files: readonly string[]): TelemetryC
   const hydrated = files.map((f) => getWiFiredForChat(f) !== undefined);
   const chatsWithTelemetryCount = hydrated.filter(Boolean).length;
 
-  const { currentChatFile, messages } = useChatStore.getState();
+  const { currentChatFile, messages, isLoading, error } = useChatStore.getState();
   const openChatInScope = currentChatFile !== null && files.includes(currentChatFile);
-  const aiTurnsInScope: Observed<number> = openChatInScope
+  // `loadChat`/`loadGroupChat` (chatStore.ts) set `currentChatFile` BEFORE
+  // awaiting the fetch, and their catch path never restores it or clears
+  // `messages` on failure — so while a load is in flight, or after one
+  // errored, `currentChatFile` and `messages` can describe two different
+  // chats indefinitely. chatStore exposes no per-file confirmation of
+  // this, only the blunt `isLoading`/`error` flags shared with unrelated
+  // operations — so this can over-refuse (e.g. an unrelated save error,
+  // or a `fetchChatFiles` in flight) but never under-refuse: it will not
+  // read possibly-stale `messages` as this chat's own count. See
+  // `chat-switch-unconfirmed` (types.ts) for the reason code.
+  const switchUnconfirmed = isLoading || error !== null;
+  const canCountOpenChat = openChatInScope && !switchUnconfirmed;
+  const aiTurnsInScope: Observed<number> = canCountOpenChat
     ? { observed: true, value: countAiTurns(messages) }
-    : { observed: false, why: 'transcript-not-in-memory' };
+    : {
+        observed: false,
+        why: openChatInScope ? 'chat-switch-unconfirmed' : 'transcript-not-in-memory',
+      };
 
   return {
     scope,
@@ -171,7 +186,7 @@ function computeCoverage(scope: ChatScope, files: readonly string[]): TelemetryC
       turnsWithTelemetry: { observed: false, why: 'turn-telemetry-not-persisted' },
       chatsWithUncountedTurns: {
         observed: true,
-        value: files.length - (openChatInScope ? 1 : 0),
+        value: files.length - (canCountOpenChat ? 1 : 0),
       },
     },
     recency: { observed: false, why: 'chat-recency-not-recorded' },
@@ -233,28 +248,47 @@ function computeFiringCount(
 /**
  * The one live-turn sample this API can ever offer for an entry —
  * `sampledTurns` is always the literal `1` (`EntryEmittedSample`'s own doc
- * comment). Deliberately searches only `wi.entries` (what actually
- * reached the assembled prompt), not `wi.trimmedFromHistoryEntries`: a
- * trimmed entry rendered but never reached the model, so counting it
- * would misrepresent what this turn actually cost.
+ * comment). Only `wi.entries` (what actually reached the assembled
+ * prompt) can produce a real sample. A miss there is not one fact but
+ * three, and each gets its own declared reason — see
+ * `OBSERVED_FALSE_REASONS` (types.ts) for what each means:
+ * `wi.trimmedFromHistoryEntries` (rendered, then cut before reaching the
+ * model), `wi.droppedEntries` (evaluated, evicted before rendering), or
+ * absent from all three (never activated this turn at all).
  */
 function computeEmittedSample(key: { bookId: string; entryId: string }): Observed<EntryEmittedSample> {
   const breakdown = useGenerationStore.getState().lastPromptBreakdown;
   if (!breakdown) return { observed: false, why: 'no-observed-turn' };
 
-  const match = breakdown.wi.entries.find(
-    (e) => e.bookId === key.bookId && e.entryId === key.entryId
-  );
-  if (!match || match.emittedTokens === null) {
+  const matchesKey = (e: { bookId: string; entryId: string }): boolean =>
+    e.bookId === key.bookId && e.entryId === key.entryId;
+
+  const rendered = breakdown.wi.entries.find(matchesKey);
+  if (rendered) {
+    if (rendered.emittedTokens !== null) {
+      return {
+        observed: true,
+        value: {
+          sampledTurns: 1,
+          tokens: { basis: 'emitted', estimator: breakdown.profile, tokens: rendered.emittedTokens },
+        },
+      };
+    }
+    // Defensive: `wi.entries` should never carry a null cost (see
+    // SourceWiEntryRecord's own invariant) — but if it ever does, that's
+    // still "evaluated, never rendered," not "never activated at all."
     return { observed: false, why: 'entry-never-rendered' };
   }
-  return {
-    observed: true,
-    value: {
-      sampledTurns: 1,
-      tokens: { basis: 'emitted', estimator: breakdown.profile, tokens: match.emittedTokens },
-    },
-  };
+
+  if (breakdown.wi.trimmedFromHistoryEntries.some(matchesKey)) {
+    return { observed: false, why: 'entry-trimmed-from-history' };
+  }
+
+  if (breakdown.wi.droppedEntries.some(matchesKey)) {
+    return { observed: false, why: 'entry-never-rendered' };
+  }
+
+  return { observed: false, why: 'entry-not-activated-this-turn' };
 }
 
 /**

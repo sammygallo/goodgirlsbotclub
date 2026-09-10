@@ -78,16 +78,12 @@ function placementSlot(placement: SourceWiPlacement): string {
  * full records, unlike the server's bare id list — see
  * `EvictedEntryInsight`'s doc comment).
  *
- * `engine` decides `activationReason` only: the client scanner computes no
- * activation reason at all (structural, not a gap — every client-scanned
- * entry refuses `client-scan-computes-no-activation-reason` regardless of
- * what the record happens to carry), while a server-scanned entry reports
- * the reason the backend sent, refusing the SAME code when the backend
- * didn't report one (the historical missing-`dto.activations` case,
- * serverRetrieval.ts) — `client-scan-computes-no-activation-reason` is the
- * one declared reason that fits "no activation reason is knowable for
- * this entry from this data source," so both cases reuse it rather than
- * inventing an undeclared one.
+ * `engine` decides `activationReason`: client turns always refuse
+ * `client-scan-computes-no-activation-reason`; server turns report the
+ * reason the backend sent, or refuse `server-reports-no-activation-reason`
+ * when it didn't (the historical missing-`dto.activations` case,
+ * serverRetrieval.ts). See `OBSERVED_FALSE_REASONS` (types.ts) for what
+ * each code means and why they're kept distinct.
  */
 function projectEntry(
   record: SourceWiEntryRecord,
@@ -113,8 +109,10 @@ function projectEntry(
       : { observed: true, value: { slot: placementSlot(record.placement) } };
 
   const activationReason: Observed<WiActivationReason> =
-    engine === 'server' && record.activationReason !== undefined
-      ? { observed: true, value: record.activationReason }
+    engine === 'server'
+      ? record.activationReason !== undefined
+        ? { observed: true, value: record.activationReason }
+        : { observed: false, why: 'server-reports-no-activation-reason' }
       : { observed: false, why: 'client-scan-computes-no-activation-reason' };
 
   return {
