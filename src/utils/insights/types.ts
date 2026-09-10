@@ -60,7 +60,7 @@ export const OBSERVED_FALSE_REASONS = [
   'server-reports-id-only',
   // The queried (bookId, entryId) key's id appears in a server-scanned
   // turn's `evictedEntryIds` — but that list is bare ids only, never
-  // paired with a bookId (see `server-reports-id-only` above), so this
+  // paired with a bookId, so this
   // only confirms an id-string match against the caller's key, never the
   // full (bookId, entryId) identity (two different books could share an
   // entryId).
@@ -77,9 +77,7 @@ export const OBSERVED_FALSE_REASONS = [
   // worldInfoStore.ts) that never enters `initial`; losing its group's
   // pick (`resolveGroups`, worldInfoStore.ts — the reconcile step only
   // ever removes a loser from `matchedIds`, recording it nowhere); a
-  // disabled or absent `promptOrder` section, a macro-empty render, or a
-  // budget-trimmed at-depth insertion (see the comment above the
-  // `injectedWi` derivation in chatStore.ts's `buildConversationContext`);
+  // disabled or absent `promptOrder` section, or a macro-empty render;
   // or, on the server path, the backend reporting only its activated and
   // evicted sets, never its full candidate scope.
   'entry-not-accounted-for-this-turn',
@@ -103,9 +101,9 @@ export const OBSERVED_FALSE_REASONS = [
   'telemetry-coverage-partial',
   'transcript-not-in-memory',
   // The open chat IS in scope, but nothing in chatStore proves `messages`
-  // belongs to it: `loadChat`/`loadGroupChat` are the only writers that
-  // move `currentChatFile` without `messages` in the same atomic set, and
-  // neither stamps any per-file confirmation a reader could check. True
+  // belongs to it: `loadChat`/`loadGroupChat` move `currentChatFile`
+  // without `messages` in the same atomic set, and neither stamps any
+  // per-file confirmation a reader could check. True
   // UNCONDITIONALLY — even with no load in flight and none errored, not
   // merely during one — so `aiTurnsInScope` refuses with this whenever the
   // open chat is in scope, full stop. The fix belongs in chatStore, out of

@@ -719,9 +719,6 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
       error: null,
     });
     const coverage = getTelemetryCoverage();
-    // A mutant that drops `files.includes(currentChatFile)` would see a
-    // non-null `currentChatFile` and report `{observed:true, value:1}`
-    // here instead.
     expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-not-in-memory' });
   });
 
@@ -748,8 +745,8 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
 // ---------------------------------------------------------------------------
 // Round 2, Critical 2 — aiTurnsInScope is an UNCONDITIONAL refusal.
 // Transcript identity is unprovable from existing chatStore state:
-// `loadChat`/`loadGroupChat` are the only writers that move
-// `currentChatFile` without `messages` in the same atomic set, and neither
+// `loadChat`/`loadGroupChat` move `currentChatFile` without `messages` in
+// the same atomic set, and neither
 // stamps a per-file confirmation a reader could check — true whether or not
 // a load is in flight or one errored, not only during one (the old
 // `isLoading || error !== null` predicate under-refused on at least three
@@ -909,6 +906,32 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
 // ---------------------------------------------------------------------------
 
 describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Critical 1)', () => {
+  it('server engine with the queried entry present in wi.entries carrying a real emittedTokens -> observed sample, not server-facts-missing or any other server-arm refusal — kills hoisting the activationSource === "server" check above the wi.entries lookup', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.activationSource = 'server';
+    breakdown.wi.entries = [
+      {
+        entryId: 'server-rendered-entry',
+        bookId: 'server-rendered-book',
+        emittedTokens: 55,
+        emittedChars: 130,
+        rawTokens: 40,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([
+      { bookId: 'server-rendered-book', entryId: 'server-rendered-entry' },
+    ]);
+    expect(agg.emittedSample).toEqual({
+      observed: true,
+      value: { sampledTurns: 1, tokens: { basis: 'emitted', estimator: 'gpt', tokens: 55 } },
+    });
+  });
+
   it('server engine, wi.server undefined -> server-facts-missing', () => {
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');

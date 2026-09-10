@@ -86,7 +86,7 @@ function extractImports(source: string): ImportStatement[] {
   }
 
   // Static `import (type)? ... from '../x'`.
-  const fromRe = /\bimport\s+(type\s+)?[^;]*?\bfrom\s+(['"])([^'"]+)\2/g;
+  const fromRe = /\bimport\b\s*(type\s+)?[^;]*?\bfrom\s*(['"])([^'"]+)\2/g;
   while ((m = fromRe.exec(source))) {
     out.push({ raw: m[0], isTypeOnly: !!m[1], specifier: m[3] });
   }
@@ -95,7 +95,7 @@ function extractImports(source: string): ImportStatement[] {
   // `export type { x } from '../x'`. The clause is matched EXPLICITLY
   // (`*`, optionally `as name`, or a `{...}` list) rather than scanned for
   // with `[^;]*?` — see this function's own header for why (CONF6).
-  const reExportRe = /\bexport\s+(type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*\bfrom\s+(['"])([^'"]+)\2/g;
+  const reExportRe = /\bexport\b\s*(type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*\bfrom\s*(['"])([^'"]+)\2/g;
   while ((m = reExportRe.exec(source))) {
     out.push({ raw: m[0], isTypeOnly: !!m[1], specifier: m[3] });
   }
@@ -294,6 +294,14 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports[0].isTypeOnly).toBe(false);
   });
 
+  it('self-check: a re-export with a namespace alias ("export * as ns from \'...\'") is detected — kills deleting the `(?:\\s+as\\s+\\w+)?` sub-arm of the CONF6-rewritten regex', () => {
+    const source = `export * as ns from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
   it('self-check: a type-only re-export is detected as type-only', () => {
     const source = `export type { ChatMessage } from '../stores/chatStore';\n`;
     const imports = extractImports(source);
@@ -342,12 +350,51 @@ import type { TokenizerProfile } from '../tokenizer';
     // OLD reExportRe's lazy `[^;]*?` would cross that newline (a character
     // class excluding only `;` still matches `\n`) and misread the SECOND
     // statement's `from '../stores/chatStore'` as this `export`'s own
-    // clause: one spurious record, `isTypeOnly: false`, and the real
-    // type-only import lost entirely.
+    // clause: one spurious record, `isTypeOnly: false`.
     const source = `export const A = 1\nimport type { b } from '../stores/chatStore';\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');
     expect(imports[0].isTypeOnly).toBe(true);
+  });
+
+  it('self-check: a whitespace-less static import ("import{x}from\'...\';", legal TS — no spacing rule in eslint.config.js) is detected — kills reverting fromRe to requiring `\\s+` after `import`', () => {
+    const source = `import{useChatStore}from'../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: a whitespace-less side-effect import ("import\'x\';") is detected', () => {
+    const source = `import'../stores/chatStore';\nexport const x = 1;\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly, 'a side-effect import is never type-only').toBe(false);
+  });
+
+  it('self-check: a whitespace-less re-export ("export{x}from\'...\';") is detected', () => {
+    const source = `export{useChatStore}from'../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: an identifier beginning with "import" is not mistaken for the import keyword by the `\\bimport\\b` boundary fromRe now uses', () => {
+    const source = `const importantFlag = true;\nimport { useChatStore } from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: an identifier beginning with "export" is not mistaken for the export keyword by the `\\bexport\\b` boundary reExportRe now uses', () => {
+    const source = `const exportedFlag = true;\nexport { useChatStore } from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
   });
 });

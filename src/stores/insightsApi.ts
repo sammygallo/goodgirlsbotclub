@@ -154,8 +154,8 @@ function computeCoverage(scope: ChatScope, files: readonly string[]): TelemetryC
   const openChatInScope = currentChatFile !== null && files.includes(currentChatFile);
   // Transcript identity is UNPROVABLE from existing chatStore state (PM
   // ruling, issue #530) — `aiTurnsInScope` refuses UNCONDITIONALLY.
-  // `loadChat`/`loadGroupChat` are the only writers that move
-  // `currentChatFile` without `messages` in the same atomic set, and
+  // `loadChat`/`loadGroupChat` move `currentChatFile` without `messages`
+  // in the same atomic set, and
   // neither stamps any per-file confirmation a reader could check — true
   // even with no load in flight and none errored, not only during one
   // (the old `isLoading || error !== null` predicate under-refused on at
@@ -243,7 +243,7 @@ function computeFiringCount(
  * Past that point absence means something different per engine: on the
  * client arm the scan always ran, so `wi.droppedEntries` is real and can
  * be consulted directly; on the server arm that array is structurally
- * `[]` (see wiInsights.ts's own header) and must never be read, so
+ * `[]` and must never be read, so
  * `classifyServerUnaccounted` below handles it instead. Engine is read
  * off `wi.activationSource`, NEVER `wi.server`'s truthiness — same rule,
  * same highest-priority mutation, as I14 (getTurnWiInsight, above).
@@ -306,9 +306,9 @@ function classifyServerUnaccounted(
     return { observed: false, why: 'backend-does-not-report-eviction' };
   }
   if (server.evictedEntryIds.includes(entryId)) {
-    // Bare id match only — evictedEntryIds carries no bookId pairing (see
-    // `server-reports-id-only`'s own comment), so this can't confirm the
-    // caller's full (bookId, entryId) key, only the entryId string.
+    // Bare id match only — evictedEntryIds carries no bookId pairing, so
+    // this can't confirm the caller's full (bookId, entryId) key, only the
+    // entryId string.
     return { observed: false, why: 'entry-evicted-but-bookid-unverified' };
   }
   return { observed: false, why: 'entry-not-accounted-for-this-turn' };
