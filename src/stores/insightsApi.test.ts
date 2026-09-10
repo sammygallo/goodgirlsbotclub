@@ -538,10 +538,13 @@ describe('getTelemetryCoverage — numerator (I4)', () => {
 // ---------------------------------------------------------------------------
 // I6 — partial coverage, paired with a hydrated/non-partial case
 // (reuses the legacy-remap setup from chatStore.wiFiredLegacyRemap.test.ts).
-// Round 11: `generations` no longer has a clean/complete arm AT ALL — see
+// Round 11: `generations` has no clean arm for any NON-EMPTY scope — see
 // the round-11 describe block below for why even the in-memory scope
 // can't earn one, and OBSERVED_FALSE_REASONS's own comment on
 // `chat-file-names-not-verified-distinct` (types.ts) for the mechanism.
+// (Round 12 gives it back a clean arm for the one scope where the
+// mechanism can't apply at all: a provably empty one — see the
+// "empty CALLER-SUPPLIED chat list" test above.)
 // ---------------------------------------------------------------------------
 
 describe('getEntryFiringAggregate — generations (I6)', () => {
@@ -628,6 +631,13 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
     useChatStore.setState({ chatFiles: [], messages: [], currentChatFile: null });
     const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }]);
     expect(agg.generations).toEqual({ observed: false, why: 'chat-list-not-loaded' });
+  });
+
+  it('an empty CALLER-SUPPLIED chat list -> generations is a real Observed<number> 0, the pair that proves the empty-in-memory refusal above is real and not vacuous (round 12 carve-out): summing zero chats can never collide, the same reasoning `chatsInScope`/`chatsWithTelemetry`/`chatsWithUncountedTurns` already got', () => {
+    resetStores();
+    const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }], { chatFiles: [] });
+    expect(agg.coverage.scope).toBe('caller-supplied');
+    expect(agg.generations).toEqual({ observed: true, value: 0 });
   });
 
   it('two distinct keys queried in one call each get their OWN bookId/entryId/generations — no swap, no shared hardcoded key (round 10, job 2)', async () => {
@@ -1374,7 +1384,11 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     const [agg] = getEntryFiringAggregate([{ bookId: 'sample-book', entryId: 'sample-entry' }]);
     expect(agg.emittedSample).toEqual({
       observed: true,
-      value: { sampledTurns: 1, tokens: { basis: 'emitted', estimator: 'gpt', tokens: 42 } },
+      value: {
+        sampledTurns: 1,
+        tokens: { basis: 'emitted', estimator: 'gpt', tokens: 42 },
+        turn: { chatFile: breakdown.chatFile, publishedAt: breakdown.publishedAt },
+      },
     });
   });
 
@@ -1440,6 +1454,46 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     const [agg] = getEntryFiringAggregate([{ bookId: 'b-dropped', entryId: 'e-dropped' }]);
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-never-rendered' });
   });
+
+  it('round 12: the sample names the chat file and publish time of the live turn it came from, and a fixture where that turn belongs to a chat OUTSIDE the queried scope shows the consumer can tell — computeEmittedSample reads lastPromptBreakdown directly and never checks it against `opts.chatFiles`', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.chatFile = 'chat-B.jsonl';
+    breakdown.publishedAt = 555555;
+    breakdown.wi.entries = [
+      {
+        entryId: 'cross-scope-entry',
+        bookId: 'cross-scope-book',
+        emittedTokens: 21,
+        emittedChars: 50,
+        rawTokens: 15,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+
+    // Scope is chat-A only; the live turn's own chatFile is chat-B.
+    const [agg] = getEntryFiringAggregate([{ bookId: 'cross-scope-book', entryId: 'cross-scope-entry' }], {
+      chatFiles: ['chat-A.jsonl'],
+    });
+    expect(agg.emittedSample).toEqual({
+      observed: true,
+      value: {
+        sampledTurns: 1,
+        tokens: { basis: 'emitted', estimator: 'gpt', tokens: 21 },
+        turn: { chatFile: 'chat-B.jsonl', publishedAt: 555555 },
+      },
+    });
+    // The consumer's own check, made possible by `turn`: the sampled
+    // turn's chat is not among the chats it queried, even though this
+    // aggregate is nominally scoped to chat-A.
+    expect(agg.emittedSample.observed).toBe(true);
+    if (agg.emittedSample.observed) {
+      expect(['chat-A.jsonl']).not.toContain(agg.emittedSample.value.turn.chatFile);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1473,7 +1527,11 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
     ]);
     expect(agg.emittedSample).toEqual({
       observed: true,
-      value: { sampledTurns: 1, tokens: { basis: 'emitted', estimator: 'gpt', tokens: 55 } },
+      value: {
+        sampledTurns: 1,
+        tokens: { basis: 'emitted', estimator: 'gpt', tokens: 55 },
+        turn: { chatFile: breakdown.chatFile, publishedAt: breakdown.publishedAt },
+      },
     });
   });
 
@@ -1843,17 +1901,19 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       const [partialAgg] = getEntryFiringAggregate([{ bookId: LEGACY_BOOK, entryId: LEGACY_ENTRY }], {
         chatFiles: [PARTIAL_CHAT],
       });
-      // `generations` (TelemetryDerivedCount) narrows on `observed` alone —
-      // the true arm is always `UnverifiedCount`, never a clean one — so
-      // every applicable reason in its `reasons` tuple gets recorded,
-      // including the mandatory trailing collision code.
-      if (partialAgg.generations.observed) {
+      // `generations` is `ChatCountFigure` (round 12) — both scopes here
+      // are non-empty, so the true arm is always `UnverifiedCount`, never
+      // the clean `Observed<number>` one; `'reasons' in` narrows to that
+      // arm specifically so every applicable reason in its `reasons`
+      // tuple gets recorded, including the mandatory trailing collision
+      // code.
+      if (partialAgg.generations.observed && 'reasons' in partialAgg.generations) {
         for (const r of partialAgg.generations.reasons) record(r);
       }
       const [unhydratedAgg] = getEntryFiringAggregate([{ bookId: 'z', entryId: 'z' }], {
         chatFiles: [NEVER_OPENED],
       });
-      if (unhydratedAgg.generations.observed) {
+      if (unhydratedAgg.generations.observed && 'reasons' in unhydratedAgg.generations) {
         for (const r of unhydratedAgg.generations.reasons) record(r);
       }
     }
@@ -1877,7 +1937,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       const [callerSuppliedAgg] = getEntryFiringAggregate([{ bookId: 'i18-book', entryId: 'i18-entry' }], {
         chatFiles: [CHAT_FILE],
       });
-      if (callerSuppliedAgg.generations.observed) {
+      if (callerSuppliedAgg.generations.observed && 'reasons' in callerSuppliedAgg.generations) {
         for (const r of callerSuppliedAgg.generations.reasons) record(r);
       }
     }

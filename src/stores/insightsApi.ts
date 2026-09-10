@@ -40,7 +40,6 @@ import type {
   ObservedFalseReason,
   ServerTurnSource,
   TelemetryCoverage,
-  TelemetryDerivedCount,
   TurnWiInsight,
   Unobservable,
 } from '../utils/insights/types';
@@ -240,10 +239,13 @@ export function getTelemetryCoverage(opts?: { chatFiles?: readonly string[] }): 
  * it, `loadChat`/`loadGroupChat` merge into it, regardless of which
  * character is open) — hydration answers "does this map key exist",
  * never "is this map key's history solely the chat I meant." That is why
- * the sum below is ALWAYS wrapped as `TelemetryDerivedCount`'s unverified
- * arm once observed, in every scope, never just for a caller-supplied one
- * — see `chat-file-names-not-verified-distinct`'s own comment
- * (OBSERVED_FALSE_REASONS, types.ts) for the full mechanism. This module
+ * the sum below is wrapped as `TelemetryDerivedCount`'s unverified arm
+ * once observed, in every NON-EMPTY scope — in-memory included, never
+ * just for a caller-supplied one — see `chat-file-names-not-verified-
+ * distinct`'s own comment (OBSERVED_FALSE_REASONS, types.ts) for the full
+ * mechanism. A provably EMPTY scope is the one exception (see the early
+ * return below): summing over zero chats can never collide, so it reports
+ * a real `ChatCountFigure` `Observed<number>` `0` instead. This module
  * cannot say whether an affected sum reads higher or lower than a single
  * chat's own true count — `captureWiFired` can only add to a shared key,
  * `deleteChat` can wipe one out from under an unrelated character's chat —
@@ -253,9 +255,21 @@ function computeFiringCount(
   key: { bookId: string; entryId: string },
   files: readonly string[],
   coverage: TelemetryCoverage
-): TelemetryDerivedCount {
+): ChatCountFigure {
   if (!coverage.chatsInScope.observed) {
     return { observed: false, why: coverage.chatsInScope.why };
+  }
+
+  // Reachable here with `files.length === 0` only via an explicit
+  // caller-supplied `chatFiles: []` — an empty in-memory scope already
+  // returned above (`chatsInScope.observed` is false there,
+  // `chat-list-not-loaded`). A caller-supplied empty scope is a
+  // deliberate, unambiguous "zero chats": summing over none of them can
+  // never collide on a shared `wiFiredByFile` key, so this is real, not
+  // unverified — the same carve-out `wrapChatCount` gives
+  // `chatsInScope`/`chatsWithTelemetry`/`chatsWithUncountedTurns`.
+  if (files.length === 0) {
+    return { observed: true, value: 0 };
   }
 
   const wanted = wiFiredKey(key.bookId, key.entryId);
@@ -320,6 +334,7 @@ function computeEmittedSample(key: { bookId: string; entryId: string }): Observe
         value: {
           sampledTurns: 1,
           tokens: { basis: 'emitted', estimator: breakdown.profile, tokens: rendered.emittedTokens },
+          turn: { chatFile: breakdown.chatFile, publishedAt: breakdown.publishedAt },
         },
       };
     }

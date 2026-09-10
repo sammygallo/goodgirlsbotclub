@@ -412,14 +412,17 @@ export interface UnverifiedCount {
 export type TelemetryDerivedCount = UnverifiedCount | Unobservable;
 
 /**
- * `TelemetryCoverage.chatsInScope`/`chatsWithTelemetry` and
- * `TurnCoverage.chatsWithUncountedTurns` share this shape: a real,
- * verified `Observed<number>` in the states where nothing about chat-file
- * NAME identity is in doubt, and `TelemetryDerivedCount` everywhere else.
- * See each field's own doc comment for which states are which — the split
- * is not the same for all three, because `chatsWithTelemetry` reads
- * `wiFiredByFile` directly while the other two only ever count the
- * scope's own name list.
+ * `TelemetryCoverage.chatsInScope`/`chatsWithTelemetry`,
+ * `TurnCoverage.chatsWithUncountedTurns`, and
+ * `EntryFiringAggregate.generations` share this shape: a real, verified
+ * `Observed<number>` in the states where nothing about chat-file NAME
+ * identity is in doubt, and `TelemetryDerivedCount` everywhere else. See
+ * each field's own doc comment for which states are which — the split is
+ * not the same for all four: `chatsWithTelemetry` and `generations` both
+ * read `wiFiredByFile` directly and are clean ONLY for a provably empty
+ * scope, while `chatsInScope`/`chatsWithUncountedTurns` only ever count
+ * the scope's own name list and are clean for an empty scope OR the
+ * in-memory scope.
  */
 export type ChatCountFigure = Observed<number> | TelemetryDerivedCount;
 
@@ -433,12 +436,25 @@ export type ChatCountFigure = Observed<number> | TelemetryDerivedCount;
 export interface EntryEmittedSample {
   readonly sampledTurns: 1;
   readonly tokens: TokenFigure;
+  /** Which live turn this sample was measured from. `computeEmittedSample`
+   *  (insightsApi.ts) builds this sample from `lastPromptBreakdown`
+   *  directly and never checks its `chatFile` against a caller's queried
+   *  scope, so the turn this names can be outside that scope. This field
+   *  is what makes the sample self-describing about that instead of
+   *  silent — a consumer compares it against its own scope rather than
+   *  this module gating on the consumer's behalf. */
+  readonly turn: { readonly chatFile: string | null; readonly publishedAt: number };
 }
 
 export interface EntryFiringAggregate {
   readonly bookId: string;
   readonly entryId: string;
-  readonly generations: TelemetryDerivedCount;
+  /** Real (`Observed<number>`) for a provably empty scope — summing zero
+   *  chats can never collide on a shared telemetry key — and
+   *  `TelemetryDerivedCount`'s unverified arm otherwise, in every
+   *  NON-EMPTY scope including in-memory. See `ChatCountFigure`'s own doc
+   *  comment and `computeFiringCount` (insightsApi.ts). */
+  readonly generations: ChatCountFigure;
   /** REQUIRED, not optional — AC3's "a coverage figure accompanies every
    *  historical aggregate" is a type-level guarantee here, not a
    *  convention a caller could skip reading. */
