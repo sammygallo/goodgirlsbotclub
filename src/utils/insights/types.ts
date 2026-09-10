@@ -58,15 +58,31 @@ export const OBSERVED_FALSE_REASONS = [
   'server-facts-missing',
   'backend-does-not-report-eviction',
   'server-reports-id-only',
+  // The queried (bookId, entryId) key's id appears in a server-scanned
+  // turn's `evictedEntryIds` — but that list is bare ids only, never
+  // paired with a bookId (see `server-reports-id-only` above), so this
+  // only confirms an id-string match against the caller's key, never the
+  // full (bookId, entryId) identity (two different books could share an
+  // entryId).
+  'entry-evicted-but-bookid-unverified',
   // Evaluated this turn, then evicted before rendering — the entry is
-  // actually present (in `droppedEntries` on the client path) with a null
-  // `emittedTokens`. Distinct from `entry-not-activated-this-turn` below:
-  // this entry WAS a candidate.
+  // actually present (in `droppedEntries` on the client path, or in
+  // `wi.entries` itself with a defensively-null cost) with a null
+  // `emittedTokens`. Distinct from `entry-not-accounted-for-this-turn`
+  // below: this entry WAS a candidate.
   'entry-never-rendered',
-  // Absent from `entries`, `trimmedFromHistoryEntries`, AND
-  // `droppedEntries` for this turn — never activated/evaluated at all,
-  // not merely evicted after being considered.
-  'entry-not-activated-this-turn',
+  // Absent from every one of this turn's accounted WI records — NOT
+  // evidence the entry was never a candidate. A real candidate can miss
+  // every accounted record via a probability roll (`rollProbability`,
+  // worldInfoStore.ts) that never enters `initial`; losing its group's
+  // pick (`resolveGroups`, worldInfoStore.ts — the reconcile step only
+  // ever removes a loser from `matchedIds`, recording it nowhere); a
+  // disabled or absent `promptOrder` section, a macro-empty render, or a
+  // budget-trimmed at-depth insertion (see the comment above the
+  // `injectedWi` derivation in chatStore.ts's `buildConversationContext`);
+  // or, on the server path, the backend reporting only its activated and
+  // evicted sets, never its full candidate scope.
+  'entry-not-accounted-for-this-turn',
   // Present in `trimmedFromHistoryEntries`: it WAS rendered with a real,
   // non-null `emittedTokens` (wrapWiContent ran on it), then cut by the
   // history trim before reaching the model. Distinct from
@@ -86,13 +102,15 @@ export const OBSERVED_FALSE_REASONS = [
   'chat-not-hydrated',
   'telemetry-coverage-partial',
   'transcript-not-in-memory',
-  // The open chat IS in scope, but chatStore cannot vouch for `messages`
-  // matching it right now: `loadChat`/`loadGroupChat` set
-  // `currentChatFile` before awaiting the fetch, and their catch path
-  // never restores it or clears `messages` on failure — so a load in
-  // flight (`isLoading`) or one that errored (`error`) can leave
-  // `currentChatFile` and `messages` describing two different chats.
-  'chat-switch-unconfirmed',
+  // The open chat IS in scope, but nothing in chatStore proves `messages`
+  // belongs to it: `loadChat`/`loadGroupChat` are the only writers that
+  // move `currentChatFile` without `messages` in the same atomic set, and
+  // neither stamps any per-file confirmation a reader could check. True
+  // UNCONDITIONALLY — even with no load in flight and none errored, not
+  // merely during one — so `aiTurnsInScope` refuses with this whenever the
+  // open chat is in scope, full stop. The fix belongs in chatStore, out of
+  // this API's scope (filed as issue #530).
+  'transcript-identity-unprovable',
   'turn-telemetry-not-persisted',
   'chat-recency-not-recorded',
 ] as const;
@@ -275,11 +293,13 @@ export type ChatScope = 'in-memory-chat-list' | 'caller-supplied';
 
 export interface TurnCoverage {
   /** AI-turn count (prior non-user, non-system messages) of the chat
-   *  currently open in `chatStore` — the only chat with a transcript held
-   *  in memory. Refuses `transcript-not-in-memory` when no chat in scope
-   *  is the open one, and `chat-switch-unconfirmed` when the open chat IS
-   *  in scope but its identity isn't confirmed yet — see that reason's
-   *  own comment (OBSERVED_FALSE_REASONS, above) for why. */
+   *  currently open in `chatStore`. UNCONDITIONALLY refuses (issue #530):
+   *  transcript identity is unprovable from existing chatStore state, so
+   *  this never reports a count, only which of two reasons applies —
+   *  `transcript-not-in-memory` when no chat in scope is the open one, or
+   *  `transcript-identity-unprovable` when the open chat IS in scope but
+   *  nothing proves `messages` belongs to it (see that reason's own
+   *  comment, OBSERVED_FALSE_REASONS above, for why). */
   readonly aiTurnsInScope: Observed<number>;
   /**
    * Always `Unobservable` — the type itself says so, not just the runtime
@@ -289,8 +309,9 @@ export interface TurnCoverage {
    * any chat, ever.
    */
   readonly turnsWithTelemetry: Unobservable;
-  /** Chats in scope whose turn count this API structurally cannot count
-   *  (every chat except the open one — no transcript in memory for it). */
+  /** Chats in scope whose turn count this API structurally cannot count —
+   *  now every chat in scope, unconditionally: `aiTurnsInScope` never
+   *  observes a count any more (see its own comment above, and #530). */
   readonly chatsWithUncountedTurns: Observed<number>;
 }
 

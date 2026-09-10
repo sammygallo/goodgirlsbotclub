@@ -675,7 +675,11 @@ describe('getEntryFiringAggregate — coverage accompanies every result (I15)', 
 // ---------------------------------------------------------------------------
 
 describe('getTelemetryCoverage — turn coverage (I16)', () => {
-  it('7 AI turns, 9 user turns, 1 system message -> aiTurnsInScope is 7, not 17', () => {
+  it('an open, in-scope chat refuses aiTurnsInScope unconditionally (transcript-identity-unprovable), even with a rich transcript in memory — #530', () => {
+    // Round 2: this used to assert a real count (7 AI turns out of 17
+    // messages) — the PM has since ruled that transcript identity can
+    // never be confirmed from existing chatStore state (Critical 2), so
+    // this now refuses regardless of how populated `messages` is.
     resetStores();
     const CHAT_FILE = 'i16-open.jsonl';
     const messages = [
@@ -691,7 +695,7 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
 
     expect(messages.length).toBe(17); // sanity: the fixture really has 17 messages total.
     const coverage = getTelemetryCoverage();
-    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: true, value: 7 });
+    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-identity-unprovable' });
   });
 
   it('no open chat in scope -> aiTurnsInScope refuses transcript-not-in-memory', () => {
@@ -721,7 +725,9 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
     expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-not-in-memory' });
   });
 
-  it('chatsWithUncountedTurns is total files minus the open one — kills a constant 0 (C9)', () => {
+  it('chatsWithUncountedTurns is every file in scope, unconditionally — aiTurnsInScope never counts the open chat any more (#530) (C9)', () => {
+    // Round 2: used to be "total minus the open one" (value 2 here) — now
+    // nothing is ever counted, so it's every file in scope (value 3).
     resetStores();
     useChatStore.setState({
       chatFiles: [
@@ -735,49 +741,24 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
       error: null,
     });
     const coverage = getTelemetryCoverage();
-    expect(coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 2 });
+    expect(coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 3 });
   });
 });
 
 // ---------------------------------------------------------------------------
-// C3 — aiTurnsInScope must refuse (not report a possibly-stale count) while
-// chatStore cannot vouch that `messages` actually belongs to `currentChatFile`:
-// a load in flight, or one that errored. chatStore.loadChat/loadGroupChat set
-// `currentChatFile` BEFORE awaiting the fetch, and their catch path never
-// restores it or clears `messages` on failure.
+// Round 2, Critical 2 — aiTurnsInScope is an UNCONDITIONAL refusal.
+// Transcript identity is unprovable from existing chatStore state:
+// `loadChat`/`loadGroupChat` are the only writers that move
+// `currentChatFile` without `messages` in the same atomic set, and neither
+// stamps a per-file confirmation a reader could check — true whether or not
+// a load is in flight or one errored, not only during one (the old
+// `isLoading || error !== null` predicate under-refused on at least three
+// reachable paths). PM ruling: fail closed always; the store-side fix is
+// out of this API's scope (issue #530, filed).
 // ---------------------------------------------------------------------------
 
-describe('getTelemetryCoverage — chat switch identity (C3)', () => {
-  it('a load in flight (isLoading true) refuses chat-switch-unconfirmed even though the open chat is in scope', () => {
-    resetStores();
-    useChatStore.setState({
-      chatFiles: [{ fileName: 'c3-in-flight.jsonl', messageCount: 0, lastMessage: '' }],
-      currentChatFile: 'c3-in-flight.jsonl',
-      messages: [],
-      isLoading: true,
-      error: null,
-    });
-    const coverage = getTelemetryCoverage();
-    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'chat-switch-unconfirmed' });
-    expect(coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 1 });
-    useChatStore.setState({ isLoading: false }); // don't leak into later tests
-  });
-
-  it('a load that errored (error set) refuses chat-switch-unconfirmed, distinct from transcript-not-in-memory', () => {
-    resetStores();
-    useChatStore.setState({
-      chatFiles: [{ fileName: 'c3-errored.jsonl', messageCount: 0, lastMessage: '' }],
-      currentChatFile: 'c3-errored.jsonl',
-      messages: [mkMsg('stale-1', 'from a different chat', { isUser: false, isSystem: false })],
-      isLoading: false,
-      error: 'Failed to load chat',
-    });
-    const coverage = getTelemetryCoverage();
-    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'chat-switch-unconfirmed' });
-    useChatStore.setState({ error: null }); // don't leak into later tests
-  });
-
-  it('paired baseline: isLoading false and error null reports the real count — proves the refusal above is real, not vacuous', () => {
+describe('getTelemetryCoverage — transcript identity is unprovable (#530)', () => {
+  it('the open chat refuses transcript-identity-unprovable even when isLoading is false and error is null — kills aiTurnsInScope ever reporting a count again', () => {
     resetStores();
     useChatStore.setState({
       chatFiles: [{ fileName: 'c3-settled.jsonl', messageCount: 0, lastMessage: '' }],
@@ -787,7 +768,42 @@ describe('getTelemetryCoverage — chat switch identity (C3)', () => {
       error: null,
     });
     const coverage = getTelemetryCoverage();
-    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: true, value: 1 });
+    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-identity-unprovable' });
+  });
+
+  it('a load in flight and a load that errored refuse the IDENTICAL way — isLoading/error no longer change the result', () => {
+    resetStores();
+    useChatStore.setState({
+      chatFiles: [{ fileName: 'c3-in-flight.jsonl', messageCount: 0, lastMessage: '' }],
+      currentChatFile: 'c3-in-flight.jsonl',
+      messages: [],
+      isLoading: true,
+      error: null,
+    });
+    expect(getTelemetryCoverage().turns.aiTurnsInScope).toEqual({
+      observed: false,
+      why: 'transcript-identity-unprovable',
+    });
+
+    useChatStore.setState({ isLoading: false, error: 'Failed to load chat' });
+    expect(getTelemetryCoverage().turns.aiTurnsInScope).toEqual({
+      observed: false,
+      why: 'transcript-identity-unprovable',
+    });
+    useChatStore.setState({ error: null }); // don't leak into later tests
+  });
+
+  it('a chat in scope but NOT the open one still refuses transcript-not-in-memory, not transcript-identity-unprovable — the two codes stay distinct, never collapsed into one', () => {
+    resetStores();
+    useChatStore.setState({
+      chatFiles: [{ fileName: 'c3-not-open.jsonl', messageCount: 0, lastMessage: '' }],
+      currentChatFile: null,
+      messages: [],
+      isLoading: false,
+      error: null,
+    });
+    const coverage = getTelemetryCoverage();
+    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-not-in-memory' });
   });
 });
 
@@ -827,15 +843,17 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     expect(agg.emittedSample).toEqual({ observed: false, why: 'no-observed-turn' });
   });
 
-  it('a live breakdown absent from entries/trimmedFromHistoryEntries/droppedEntries -> refuses entry-not-activated-this-turn, NOT entry-never-rendered (C1)', () => {
-    // Never even a candidate this turn — distinct from `entry-never-
+  it('a live breakdown absent from entries/trimmedFromHistoryEntries/droppedEntries -> refuses entry-not-accounted-for-this-turn, NOT entry-never-rendered (C1)', () => {
+    // Not accounted for anywhere this turn — distinct from `entry-never-
     // rendered` (C1's other two cases below), which means it WAS
-    // evaluated.
+    // evaluated. (Round 2: renamed from `entry-not-activated-this-turn` —
+    // this API cannot actually prove non-candidacy, only absence from the
+    // accounted records; see that code's own comment, types.ts.)
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
     const [agg] = getEntryFiringAggregate([{ bookId: 'missing-book', entryId: 'missing-entry' }]);
-    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-activated-this-turn' });
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
   });
 
   it('present ONLY in trimmedFromHistoryEntries -> refuses entry-trimmed-from-history, even though it carries a REAL emitted cost (C1/C11)', () => {
@@ -878,6 +896,166 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     ];
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
     const [agg] = getEntryFiringAggregate([{ bookId: 'b-dropped', entryId: 'e-dropped' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-never-rendered' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 2, Critical 1 — computeEmittedSample's server arm. A measured
+// emission in `wi.entries` outranks any absence claim on BOTH engines
+// (checked first, before any engine split); past that, absence means
+// something different per engine, and the server arm's classifier is typed
+// `Unobservable` so it is a type error for it to ever manufacture a value.
+// ---------------------------------------------------------------------------
+
+describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Critical 1)', () => {
+  it('server engine, wi.server undefined -> server-facts-missing', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.activationSource = 'server';
+    // wi.server left undefined.
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'server-facts-missing' });
+  });
+
+  it('server engine, evictedEntryIds undefined -> backend-does-not-report-eviction', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.activationSource = 'server';
+    breakdown.wi.server = { budgetRequested: 10, budgetEstimator: 'generic', activatedEntryIds: [] };
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'backend-does-not-report-eviction' });
+  });
+
+  it('server engine, evictedEntryIds contains the queried id -> entry-evicted-but-bookid-unverified, regardless of bookId', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.activationSource = 'server';
+    breakdown.wi.server = {
+      budgetRequested: 10,
+      budgetEstimator: 'generic',
+      evictedEntryIds: ['target-entry'],
+      activatedEntryIds: [],
+    };
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    // bookId is deliberately irrelevant to the caller's key here — the
+    // backend's evictedEntryIds list carries no book pairing to check it
+    // against (server-reports-id-only's own doc comment, types.ts).
+    const [agg] = getEntryFiringAggregate([{ bookId: 'irrelevant-book', entryId: 'target-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-evicted-but-bookid-unverified' });
+  });
+
+  it('server engine, evictedEntryIds present but lacking the id -> entry-not-accounted-for-this-turn', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.activationSource = 'server';
+    breakdown.wi.server = {
+      budgetRequested: 10,
+      budgetEstimator: 'generic',
+      evictedEntryIds: ['some-other-id'],
+      activatedEntryIds: [],
+    };
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'target-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
+  });
+
+  it('engine must be read off activationSource, never wi.server truthiness — a hand-built server turn with wi.server undefined still refuses server-facts-missing (I14, restated for computeEmittedSample)', () => {
+    // Unreachable through real store actions (see I14's own comment on
+    // getTurnWiInsight, above) — the state AC4 exists to defend against. A
+    // mutant reading `wi.server`'s truthiness instead of `activationSource`
+    // would see a falsy `wi.server` and route this through the CLIENT arm
+    // instead, which — since `droppedEntries` here is empty — would report
+    // `entry-not-accounted-for-this-turn` rather than the correct
+    // `server-facts-missing`.
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.activationSource = 'server';
+    // wi.server left undefined; wi.droppedEntries stays at its real
+    // zeroed default ([]) from createPromptBreakdown, matching production.
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'server-facts-missing' });
+  });
+
+  it('the server arm never consults droppedEntries, even when one is (unreachably) populated with a matching entry', () => {
+    // `wi.droppedEntries` is structurally `[]` on every real server turn
+    // (chatStore.ts's `serverMatchedEntries !== undefined` short-circuit —
+    // see wiInsights.ts's own header) — hand-built here only to prove the
+    // server arm never reads it. A mutant that consulted it anyway would
+    // find the matching entry and report `entry-never-rendered` instead of
+    // the correct `entry-not-accounted-for-this-turn`.
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.activationSource = 'server';
+    breakdown.wi.server = {
+      budgetRequested: 10,
+      budgetEstimator: 'generic',
+      evictedEntryIds: [],
+      activatedEntryIds: [],
+    };
+    breakdown.wi.droppedEntries = [
+      {
+        entryId: 'planted-in-dropped',
+        bookId: 'planted-book',
+        emittedTokens: null,
+        emittedChars: null,
+        rawTokens: 3,
+        placement: null,
+        wrapper: null,
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'planted-book', entryId: 'planted-in-dropped' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
+  });
+
+  it('a populated trimmedFromHistoryEntries that does NOT contain the queried key does not refuse entry-trimmed-from-history — kills `.some(matchesKey)` -> `.length > 0` (CONF5)', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.trimmedFromHistoryEntries = [
+      {
+        entryId: 'other-trimmed',
+        bookId: 'other-book',
+        emittedTokens: 9,
+        emittedChars: 20,
+        rawTokens: 6,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    // A `.length > 0` mutant would report entry-trimmed-from-history here
+    // (the array is non-empty) even though the queried key isn't in it.
+    const [agg] = getEntryFiringAggregate([{ bookId: 'unmatched-book', entryId: 'unmatched-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
+  });
+
+  it('present in wi.entries itself with a null emittedTokens executes the defensive fallback -> entry-never-rendered (CONF7)', () => {
+    // Production only ever puts entries that reached `wrapWiContent` (and
+    // so carry a real cost) into `wi.entries` — but the TYPE does not
+    // forbid a null one, so this branch exists and must actually run
+    // somewhere, rather than being a claim no fixture ever checks.
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.entries = [
+      {
+        entryId: 'e-null-cost',
+        bookId: 'b-null-cost',
+        emittedTokens: null,
+        emittedChars: null,
+        rawTokens: 5,
+        placement: null,
+        wrapper: null,
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'b-null-cost', entryId: 'e-null-cost' }]);
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-never-rendered' });
   });
 });
@@ -972,6 +1150,23 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       }
     }
 
+    // entry-evicted-but-bookid-unverified: computeEmittedSample's
+    // server-arm classifier, queried entryId present in evictedEntryIds.
+    {
+      resetStores();
+      const breakdown = createPromptBreakdown('solo', 'gpt');
+      breakdown.wi.activationSource = 'server';
+      breakdown.wi.server = {
+        budgetRequested: 10,
+        budgetEstimator: 'generic',
+        evictedEntryIds: ['i18-evicted-id'],
+        activatedEntryIds: [],
+      };
+      useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+      const [evictedIdAgg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'i18-evicted-id' }]);
+      if (!evictedIdAgg.emittedSample.observed) record(evictedIdAgg.emittedSample.why);
+    }
+
     // entry-never-rendered: a hand-built turn whose only entry sits in
     // droppedEntries with a null emittedTokens — evaluated, then evicted
     // before rendering. (A real sendMessage turn can't exercise this
@@ -1011,9 +1206,9 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       }
     }
 
-    // entry-not-activated-this-turn: a key absent from this turn's
-    // entries, trimmedFromHistoryEntries, AND droppedEntries alike — never
-    // a candidate this turn at all, not merely evicted after being one.
+    // entry-not-accounted-for-this-turn: a key absent from every one of
+    // this turn's accounted WI records — see that code's own comment
+    // (types.ts) for why that is not evidence of non-candidacy.
     {
       const [missAgg] = getEntryFiringAggregate([{ bookId: 'nope', entryId: 'nope' }]);
       if (!missAgg.emittedSample.observed) record(missAgg.emittedSample.why);
@@ -1106,20 +1301,17 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       record(coverage.recency.why);
     }
 
-    // chat-switch-unconfirmed: the open chat IS in scope, but a load is
-    // (deliberately, for this test) left in flight.
+    // transcript-identity-unprovable: the open chat IS in scope — refuses
+    // unconditionally now (#530), regardless of isLoading/error.
     {
       resetStores();
       useChatStore.setState({
         chatFiles: [{ fileName: 'i18-switch.jsonl', messageCount: 0, lastMessage: '' }],
         currentChatFile: 'i18-switch.jsonl',
         messages: [],
-        isLoading: true,
-        error: null,
       });
       const coverage = getTelemetryCoverage();
       if (!coverage.turns.aiTurnsInScope.observed) record(coverage.turns.aiTurnsInScope.why);
-      useChatStore.setState({ isLoading: false }); // don't leak into later tests
     }
 
     expect(produced).toEqual(new Set(OBSERVED_FALSE_REASONS));

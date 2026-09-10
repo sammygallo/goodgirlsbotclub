@@ -41,7 +41,9 @@ import type {
   ServerTurnSource,
   TelemetryCoverage,
   TurnWiInsight,
+  Unobservable,
 } from '../utils/insights/types';
+import type { ServerActivationFacts } from '../utils/promptBreakdown';
 
 // ---------------------------------------------------------------------------
 // getTurnWiInsight
@@ -110,14 +112,6 @@ function resolveChatFileScope(opts?: {
   };
 }
 
-function countAiTurns(messages: readonly { isUser: boolean; isSystem: boolean }[]): number {
-  let n = 0;
-  for (const m of messages) {
-    if (!m.isUser && !m.isSystem) n++;
-  }
-  return n;
-}
-
 /**
  * `chatFiles === []` refuses (`chat-list-not-loaded`) ONLY for the
  * in-memory scope: `chatStore.chatFiles` starts empty and is populated by
@@ -156,26 +150,23 @@ function computeCoverage(scope: ChatScope, files: readonly string[]): TelemetryC
   const hydrated = files.map((f) => getWiFiredForChat(f) !== undefined);
   const chatsWithTelemetryCount = hydrated.filter(Boolean).length;
 
-  const { currentChatFile, messages, isLoading, error } = useChatStore.getState();
+  const { currentChatFile } = useChatStore.getState();
   const openChatInScope = currentChatFile !== null && files.includes(currentChatFile);
-  // `loadChat`/`loadGroupChat` (chatStore.ts) set `currentChatFile` BEFORE
-  // awaiting the fetch, and their catch path never restores it or clears
-  // `messages` on failure — so while a load is in flight, or after one
-  // errored, `currentChatFile` and `messages` can describe two different
-  // chats indefinitely. chatStore exposes no per-file confirmation of
-  // this, only the blunt `isLoading`/`error` flags shared with unrelated
-  // operations — so this can over-refuse (e.g. an unrelated save error,
-  // or a `fetchChatFiles` in flight) but never under-refuse: it will not
-  // read possibly-stale `messages` as this chat's own count. See
-  // `chat-switch-unconfirmed` (types.ts) for the reason code.
-  const switchUnconfirmed = isLoading || error !== null;
-  const canCountOpenChat = openChatInScope && !switchUnconfirmed;
-  const aiTurnsInScope: Observed<number> = canCountOpenChat
-    ? { observed: true, value: countAiTurns(messages) }
-    : {
-        observed: false,
-        why: openChatInScope ? 'chat-switch-unconfirmed' : 'transcript-not-in-memory',
-      };
+  // Transcript identity is UNPROVABLE from existing chatStore state (PM
+  // ruling, issue #530) — `aiTurnsInScope` refuses UNCONDITIONALLY.
+  // `loadChat`/`loadGroupChat` are the only writers that move
+  // `currentChatFile` without `messages` in the same atomic set, and
+  // neither stamps any per-file confirmation a reader could check — true
+  // even with no load in flight and none errored, not only during one
+  // (the old `isLoading || error !== null` predicate under-refused on at
+  // least three reachable paths). Failing closed always, rather than
+  // guessing from those two flags or adding a staleness mechanism to
+  // chatStore, is the fix; see `transcript-identity-unprovable`
+  // (OBSERVED_FALSE_REASONS, types.ts).
+  const aiTurnsInScope: Observed<number> = {
+    observed: false,
+    why: openChatInScope ? 'transcript-identity-unprovable' : 'transcript-not-in-memory',
+  };
 
   return {
     scope,
@@ -184,10 +175,9 @@ function computeCoverage(scope: ChatScope, files: readonly string[]): TelemetryC
     turns: {
       aiTurnsInScope,
       turnsWithTelemetry: { observed: false, why: 'turn-telemetry-not-persisted' },
-      chatsWithUncountedTurns: {
-        observed: true,
-        value: files.length - (canCountOpenChat ? 1 : 0),
-      },
+      // Every chat in scope, unconditionally — aiTurnsInScope never
+      // observes a count any more (see its own comment above, and #530).
+      chatsWithUncountedTurns: { observed: true, value: files.length },
     },
     recency: { observed: false, why: 'chat-recency-not-recorded' },
   };
@@ -248,13 +238,15 @@ function computeFiringCount(
 /**
  * The one live-turn sample this API can ever offer for an entry —
  * `sampledTurns` is always the literal `1` (`EntryEmittedSample`'s own doc
- * comment). Only `wi.entries` (what actually reached the assembled
- * prompt) can produce a real sample. A miss there is not one fact but
- * three, and each gets its own declared reason — see
- * `OBSERVED_FALSE_REASONS` (types.ts) for what each means:
- * `wi.trimmedFromHistoryEntries` (rendered, then cut before reaching the
- * model), `wi.droppedEntries` (evaluated, evicted before rendering), or
- * absent from all three (never activated this turn at all).
+ * comment). A measured emission in `wi.entries` outranks any absence
+ * claim — checked first, on BOTH engines, before any engine split runs.
+ * Past that point absence means something different per engine: on the
+ * client arm the scan always ran, so `wi.droppedEntries` is real and can
+ * be consulted directly; on the server arm that array is structurally
+ * `[]` (see wiInsights.ts's own header) and must never be read, so
+ * `classifyServerUnaccounted` below handles it instead. Engine is read
+ * off `wi.activationSource`, NEVER `wi.server`'s truthiness — same rule,
+ * same highest-priority mutation, as I14 (getTurnWiInsight, above).
  */
 function computeEmittedSample(key: { bookId: string; entryId: string }): Observed<EntryEmittedSample> {
   const breakdown = useGenerationStore.getState().lastPromptBreakdown;
@@ -274,9 +266,10 @@ function computeEmittedSample(key: { bookId: string; entryId: string }): Observe
         },
       };
     }
-    // Defensive: `wi.entries` should never carry a null cost (see
-    // SourceWiEntryRecord's own invariant) — but if it ever does, that's
-    // still "evaluated, never rendered," not "never activated at all."
+    // Defensive: production only ever puts entries that reached
+    // `wrapWiContent` (and so carry a real cost) into `wi.entries`, but
+    // the TYPE does not forbid a null one — and a null cost here still
+    // means "evaluated, never rendered," not "never accounted for."
     return { observed: false, why: 'entry-never-rendered' };
   }
 
@@ -284,11 +277,41 @@ function computeEmittedSample(key: { bookId: string; entryId: string }): Observe
     return { observed: false, why: 'entry-trimmed-from-history' };
   }
 
+  if (breakdown.wi.activationSource === 'server') {
+    return classifyServerUnaccounted(key.entryId, breakdown.wi.server);
+  }
+
+  // Client arm only past this point — the scan always ran.
   if (breakdown.wi.droppedEntries.some(matchesKey)) {
     return { observed: false, why: 'entry-never-rendered' };
   }
+  return { observed: false, why: 'entry-not-accounted-for-this-turn' };
+}
 
-  return { observed: false, why: 'entry-not-activated-this-turn' };
+/**
+ * The server arm's classifier for an entry that reached neither
+ * `wi.entries` nor `wi.trimmedFromHistoryEntries` on a server-scanned
+ * turn. Return type `Unobservable`, not `Observed<...>` — a type error
+ * for this function to ever manufacture a value, the per-entry twin of
+ * `ServerTurnWiInsight.pinnedTokens` (types.ts). Never reads
+ * `wi.droppedEntries` — see `computeEmittedSample`'s own call site for
+ * why that array is unreachable on this arm.
+ */
+function classifyServerUnaccounted(
+  entryId: string,
+  server: ServerActivationFacts | undefined
+): Unobservable {
+  if (server === undefined) return { observed: false, why: 'server-facts-missing' };
+  if (server.evictedEntryIds === undefined) {
+    return { observed: false, why: 'backend-does-not-report-eviction' };
+  }
+  if (server.evictedEntryIds.includes(entryId)) {
+    // Bare id match only — evictedEntryIds carries no bookId pairing (see
+    // `server-reports-id-only`'s own comment), so this can't confirm the
+    // caller's full (bookId, entryId) key, only the entryId string.
+    return { observed: false, why: 'entry-evicted-but-bookid-unverified' };
+  }
+  return { observed: false, why: 'entry-not-accounted-for-this-turn' };
 }
 
 /**
