@@ -99,18 +99,27 @@ export const OBSERVED_FALSE_REASONS = [
   'chat-list-not-loaded',
   'chat-not-hydrated',
   'telemetry-coverage-partial',
-  // A caller-supplied `chatFiles` scope names chats by bare file name —
-  // and a file name is a chat identity only within the ONE character's
-  // chat list it came from (`chatStore.chatFiles`, populated per-character
-  // by `fetchChatFiles(avatarUrl)`). `wiFiredByFile` (chatStore.ts) is one
-  // module-level map keyed by bare file name across EVERY character, so if
-  // two different characters' chats happen to share a file name, their
-  // firings are already merged under that one key before this API ever
-  // runs. A caller-supplied list can be assembled across characters, so
-  // this API cannot verify its names denote distinct chats — the firing
-  // count for that scope is always a lower bound, never `exact`, even when
-  // every named chat is hydrated and non-partial. The in-memory scope has
-  // no such gap: its own file names really are identities.
+  // `wiFiredByFile` (chatStore.ts) is ONE module-level map keyed by bare
+  // chat file name across EVERY character: `loadChat`/`loadGroupChat`
+  // merge a chat's server-recorded telemetry into it under that bare name,
+  // and `captureWiFired` accretes new counts under the same bare name,
+  // both regardless of which character's chat is open. Two different
+  // characters' chats that share a file name are indistinguishable to
+  // this map, so any figure read THROUGH it — `chatsWithTelemetry` and a
+  // `generations` sum — cannot be verified to describe only the chat(s)
+  // the caller meant, in EITHER scope: the in-memory scope's own file
+  // names ARE real, backend-guaranteed identities WITHIN one character's
+  // chat list (`fetchChatFiles(avatarUrl)`), but that list says nothing
+  // about whether some OTHER character's same-named chat was ever loaded
+  // this session and wrote into the same map entry. A caller-supplied
+  // `chatFiles` scope carries a second, independent gap on top: the scope
+  // LIST itself can name chats assembled across characters, so even a
+  // plain count of the names in scope (`chatsInScope`,
+  // `chatsWithUncountedTurns`) — which never touches `wiFiredByFile` at
+  // all — cannot be verified to count distinct chats either. This module
+  // cannot determine whether an affected figure ends up higher or lower
+  // than a single chat's own true value, only that it cannot vouch for
+  // the figure as reported.
   'chat-file-names-not-verified-distinct',
   'transcript-not-in-memory',
   // The open chat IS in scope, but nothing in chatStore proves `messages`
@@ -320,23 +329,40 @@ export interface TurnCoverage {
   readonly turnsWithTelemetry: Unobservable;
   /** Chats in scope whose turn count this API structurally cannot count —
    *  now every chat in scope, unconditionally: `aiTurnsInScope` never
-   *  observes a count any more (see its own comment above, and #530). */
-  readonly chatsWithUncountedTurns: Observed<number>;
+   *  observes a count any more (see its own comment above, and #530).
+   *  Mirrors `chatsInScope`'s own count exactly (same `files.length`), so
+   *  it carries the same `ChatCountFigure` split — real for an empty
+   *  scope or the in-memory scope's own name list, unverified for a
+   *  non-empty caller-supplied one (`chat-file-names-not-verified-
+   *  distinct`, OBSERVED_FALSE_REASONS above). */
+  readonly chatsWithUncountedTurns: ChatCountFigure;
 }
 
 export interface TelemetryCoverage {
   readonly scope: ChatScope;
-  /** The denominator. Refuses `chat-list-not-loaded` when the in-memory
-   *  chat list is empty — empty is indistinguishable from never-fetched,
-   *  so this never reports a bare `0` for that case. A caller-supplied
-   *  empty list is a deliberate, unambiguous "zero chats" and DOES report
-   *  a real `0` — see `insightsApi.ts`'s own comment at the point this is
-   *  decided. */
-  readonly chatsInScope: Observed<number>;
+  /** The denominator: a count of the NAMES in scope. Refuses
+   *  `chat-list-not-loaded` when the in-memory chat list is empty — empty
+   *  is indistinguishable from never-fetched, so this never reports a
+   *  bare `0` for that case. A caller-supplied empty list is a deliberate,
+   *  unambiguous "zero chats" and DOES report a real `0` — see
+   *  `insightsApi.ts`'s own comment at the point this is decided. Past
+   *  that empty case, real (`Observed<number>`) only for the in-memory
+   *  scope, whose own file-name list the backend keeps unique per
+   *  character; a non-empty caller-supplied scope can name chats across
+   *  characters, so this can't verify its names count distinct chats
+   *  either, and reports `ChatCountFigure`'s unverified arm instead
+   *  (`chat-file-names-not-verified-distinct`, OBSERVED_FALSE_REASONS
+   *  above). */
+  readonly chatsInScope: ChatCountFigure;
   /** The numerator: chats in scope this session has actually opened
    *  (`getWiFiredForChat(f) !== undefined`) — including a chat opened with
-   *  zero recorded firings (`{}`), which is a positive fact, not a gap. */
-  readonly chatsWithTelemetry: Observed<number>;
+   *  zero recorded firings (`{}`), which is a positive fact, not a gap.
+   *  Reads `wiFiredByFile` (chatStore.ts) directly, and that map has no
+   *  per-character partition at all — so unlike `chatsInScope`, this has
+   *  no scope where the name-identity gap stops applying except an empty
+   *  one: real for zero chats in scope, `ChatCountFigure`'s unverified arm
+   *  otherwise, in EITHER scope. */
+  readonly chatsWithTelemetry: ChatCountFigure;
   readonly turns: TurnCoverage;
   /** Always `Unobservable` — not because no recency signal exists. The
    *  backend DOES timestamp chats
@@ -353,24 +379,49 @@ export interface TelemetryCoverage {
 }
 
 /**
- * How many times one entry fired, across the chats a `TelemetryCoverage`
- * claims. `exact` only when every in-scope chat both has been opened this
- * session AND has no legacy-remap partial-coverage flag AND the scope is
- * `'in-memory-chat-list'` — a caller-supplied scope's file names cannot be
- * verified to denote distinct chats (`chat-file-names-not-verified-
- * distinct`, OBSERVED_FALSE_REASONS above), so it is never `exact`, even
- * when every named chat is hydrated and non-partial. Otherwise the number
- * is a LOWER BOUND (`atLeast`) and is never spelled `exact`.
+ * A count read through `wiFiredByFile` (chatStore.ts) or through a scope's
+ * own chat-file-name list, in a state where this module cannot verify that
+ * every name in play denotes one distinct chat (`chat-file-names-not-
+ * verified-distinct`, OBSERVED_FALSE_REASONS above — see that reason's own
+ * comment for the two independent ways a name can fail to be an identity).
+ * `verified` is the literal `false`, not `boolean`: reinstating a `true`
+ * claim for this data means adding a new union arm to
+ * `TelemetryDerivedCount`/`ChatCountFigure` below, never editing this
+ * interface's own field.
  */
-export type FiringCount =
-  | { readonly observed: true; readonly complete: true; readonly exact: number }
-  | {
-      readonly observed: true;
-      readonly complete: false;
-      readonly atLeast: number;
-      readonly why: ObservedFalseReason;
-    }
-  | Unobservable;
+export interface UnverifiedCount {
+  readonly observed: true;
+  readonly verified: false;
+  /** The sum (or count) over the chats this session could actually read.
+   *  Asserts nothing about completeness, direction, or provenance — this
+   *  is neither a floor nor a ceiling on the true value, just what this
+   *  module found. */
+  readonly count: number;
+  /** Gap codes a producer chose to name, in priority order — not a claim
+   *  that the list is exhaustive of every gap that could apply. The
+   *  name-identity caveat is pinned as the LAST element by the type
+   *  itself — a leading rest element ahead of one fixed literal — not by
+   *  convention: a later edit that dropped it from a return value would
+   *  fail to compile, not just fail a test. */
+  readonly reasons: readonly [...ObservedFalseReason[], 'chat-file-names-not-verified-distinct'];
+}
+
+/** `UnverifiedCount`'s own refusal twin, for a figure this module cannot
+ *  compute at all (e.g. no chats in scope to read — `computeCoverage`'s
+ *  own `chat-list-not-loaded` branch). */
+export type TelemetryDerivedCount = UnverifiedCount | Unobservable;
+
+/**
+ * `TelemetryCoverage.chatsInScope`/`chatsWithTelemetry` and
+ * `TurnCoverage.chatsWithUncountedTurns` share this shape: a real,
+ * verified `Observed<number>` in the states where nothing about chat-file
+ * NAME identity is in doubt, and `TelemetryDerivedCount` everywhere else.
+ * See each field's own doc comment for which states are which — the split
+ * is not the same for all three, because `chatsWithTelemetry` reads
+ * `wiFiredByFile` directly while the other two only ever count the
+ * scope's own name list.
+ */
+export type ChatCountFigure = Observed<number> | TelemetryDerivedCount;
 
 /**
  * A single measured emission cost for one entry, taken from the CURRENT
@@ -387,7 +438,7 @@ export interface EntryEmittedSample {
 export interface EntryFiringAggregate {
   readonly bookId: string;
   readonly entryId: string;
-  readonly generations: FiringCount;
+  readonly generations: TelemetryDerivedCount;
   /** REQUIRED, not optional — AC3's "a coverage figure accompanies every
    *  historical aggregate" is a type-level guarantee here, not a
    *  convention a caller could skip reading. */

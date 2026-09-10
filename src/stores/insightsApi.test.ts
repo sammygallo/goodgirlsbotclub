@@ -403,10 +403,11 @@ describe('getTelemetryCoverage — empty chat list (I5)', () => {
   it('an empty in-memory chat list refuses chat-list-not-loaded across all 6 of computeCoverage\'s figures — never a false observed 0 anywhere in the shape (round 10, job 2)', () => {
     // The full-object toEqual (not just the two field-by-field expects the
     // previous version of this test had) is the point: `turns.aiTurnsInScope`
-    // and `turns.chatsWithUncountedTurns` are BOTH typed `Observed<number>`,
-    // so either could type-legally be hardcoded to `{ observed: true, value:
-    // 0 }` and pass the OLD two-field version of this test — that flip is
-    // exactly the lie AC2/AC4 exist to prevent.
+    // is `Observed<number>` and `turns.chatsWithUncountedTurns` is the wider
+    // `ChatCountFigure` (`Observed<number> | TelemetryDerivedCount`) — EITHER
+    // could type-legally be hardcoded to `{ observed: true, value: 0 }` and
+    // pass the OLD two-field version of this test — that flip is exactly the
+    // lie AC2/AC4 exist to prevent.
     resetStores();
     useChatStore.setState({ chatFiles: [], messages: [], currentChatFile: null });
     const coverage = getTelemetryCoverage();
@@ -434,11 +435,17 @@ describe('getTelemetryCoverage — empty chat list (I5)', () => {
     expect(coverage.chatsInScope).toEqual({ observed: true, value: 1 });
   });
 
-  it('a caller-supplied empty list is a deliberate zero, not a refusal', () => {
+  it('a caller-supplied empty list is a deliberate zero, not a refusal — and, deliberately, NOT the unverified ChatCountFigure arm either (round 11 carve-out): summing over zero chats can never be inflated or deflated by a name collision, so nothing here is unverified', () => {
     resetStores();
     const coverage = getTelemetryCoverage({ chatFiles: [] });
     expect(coverage.scope).toBe('caller-supplied');
+    // All three name-dependent figures get the SAME carve-out — a mutant
+    // that special-cased only `chatsInScope` (the one this test used to
+    // check alone) would still fail `chatsWithTelemetry`/
+    // `chatsWithUncountedTurns` reverting to the unverified arm here.
     expect(coverage.chatsInScope).toEqual({ observed: true, value: 0 });
+    expect(coverage.chatsWithTelemetry).toEqual({ observed: true, value: 0 });
+    expect(coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 0 });
   });
 });
 
@@ -481,8 +488,18 @@ describe('getTelemetryCoverage — numerator (I4)', () => {
     const coverage = getTelemetryCoverage();
     expect(coverage.chatsInScope).toEqual({ observed: true, value: 2 });
     // Only B has telemetry — A was never opened, and C is out of scope
-    // even though it's in wiFiredByFile.
-    expect(coverage.chatsWithTelemetry).toEqual({ observed: true, value: 1 });
+    // even though it's in wiFiredByFile. `chatsWithTelemetry` itself reads
+    // that same module-level map (chatStore.ts), which has no
+    // per-character partition — round 11 wraps it as the unverified
+    // ChatCountFigure arm even in THIS in-memory scope, unlike
+    // `chatsInScope` above (a plain count of `chatStore.chatFiles`' own
+    // list, which the backend does keep unique per character).
+    expect(coverage.chatsWithTelemetry).toEqual({
+      observed: true,
+      verified: false,
+      count: 1,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
   });
 
   it('chatsWithTelemetry is a real count, not a hardcoded 1 — two opened chats, one never opened (round 10, job 2)', async () => {
@@ -509,20 +526,29 @@ describe('getTelemetryCoverage — numerator (I4)', () => {
     });
     const coverage = getTelemetryCoverage();
     expect(coverage.chatsInScope).toEqual({ observed: true, value: 3 });
-    expect(coverage.chatsWithTelemetry).toEqual({ observed: true, value: 2 });
+    expect(coverage.chatsWithTelemetry).toEqual({
+      observed: true,
+      verified: false,
+      count: 2,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
   });
 });
 
 // ---------------------------------------------------------------------------
-// I6 — partial coverage -> atLeast, paired with a complete case -> exact
-// (reuses the legacy-remap setup from chatStore.wiFiredLegacyRemap.test.ts)
+// I6 — partial coverage, paired with a hydrated/non-partial case
+// (reuses the legacy-remap setup from chatStore.wiFiredLegacyRemap.test.ts).
+// Round 11: `generations` no longer has a clean/complete arm AT ALL — see
+// the round-11 describe block below for why even the in-memory scope
+// can't earn one, and OBSERVED_FALSE_REASONS's own comment on
+// `chat-file-names-not-verified-distinct` (types.ts) for the mechanism.
 // ---------------------------------------------------------------------------
 
-describe('getEntryFiringAggregate — generations completeness (I6)', () => {
+describe('getEntryFiringAggregate — generations (I6)', () => {
   const LEGACY_BOOK = 'wibook_1777000000000_aaaaaa';
   const LEGACY_ENTRY = 'wi_1777000000001_bbbbbb';
 
-  it('a chat with an unresolved legacy wi_fired key -> generations is the atLeast arm', async () => {
+  it('a chat with an unresolved legacy wi_fired key -> generations carries telemetry-coverage-partial ahead of the mandatory collision reason', async () => {
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const CHAT_FILE = 'i6-partial.jsonl';
@@ -540,16 +566,13 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
     });
     expect(agg.generations).toEqual({
       observed: true,
-      complete: false,
-      atLeast: 4,
-      why: 'telemetry-coverage-partial',
+      verified: false,
+      count: 4,
+      reasons: ['telemetry-coverage-partial', 'chat-file-names-not-verified-distinct'],
     });
   });
 
-  it('a chat with an ordinary native-shaped key, in-memory scope -> generations is the exact arm', async () => {
-    // In-memory scope (no `chatFiles` opt) — the file name really is this
-    // character's own chat identity (job 1), so this can legitimately
-    // claim `complete: true`.
+  it('a chat with an ordinary native-shaped key, in-memory scope -> generations is STILL unverified (round 11: wiFiredByFile has no per-character partition, so the in-memory scope does not exempt it the way it exempts chatsInScope)', async () => {
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const CHAT_FILE = 'i6-complete.jsonl';
@@ -563,14 +586,19 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
 
     const [agg] = getEntryFiringAggregate([{ bookId: 'native-book', entryId: 'native-entry' }]);
     expect(agg.coverage.scope).toBe('in-memory-chat-list');
-    expect(agg.generations).toEqual({ observed: true, complete: true, exact: 3 });
+    expect(agg.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 3,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
   });
 
-  it('a hydrated, non-partial, in-memory chat with no recorded firing for the queried key -> generations is exact: 0, the module\'s only provable-absence claim (round 10, job 2)', async () => {
+  it('a hydrated, non-partial, in-memory chat with no recorded firing for the queried key -> generations count: 0, still wrapped unverified (round 10, job 2 / round 11)', async () => {
     // A wrong accumulator (e.g. seeded at 1, or `?? 1` instead of `?? 0`)
-    // stays green under every OTHER exact-arm test in this file, because
-    // every one of them queries a key that really did fire. This is the
-    // only fixture where the true sum is zero.
+    // stays green under every OTHER test in this file that queries a key
+    // that really did fire. This is the only fixture where the true sum
+    // is zero.
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const CHAT_FILE = 'i6-zero.jsonl';
@@ -583,14 +611,19 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
     useChatStore.setState({ chatFiles: [{ fileName: CHAT_FILE, messageCount: 0, lastMessage: '' }] });
 
     const [agg] = getEntryFiringAggregate([{ bookId: 'never-fired-book', entryId: 'never-fired-entry' }]);
-    expect(agg.generations).toEqual({ observed: true, complete: true, exact: 0 });
+    expect(agg.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 0,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
   });
 
   it('an empty in-memory chat list -> generations is the Unobservable arm, carrying the SAME why as coverage.chatsInScope (round 10, job 2)', () => {
-    // FiringCount is a 3-arm union (exact / atLeast+why / Unobservable) —
-    // the exact and atLeast arms are covered elsewhere in this file, but
-    // nothing previously drove `generations` down the plain-refusal arm at
-    // all.
+    // TelemetryDerivedCount is a 2-arm union (UnverifiedCount /
+    // Unobservable) — the UnverifiedCount arm is covered elsewhere in this
+    // file, but nothing previously drove `generations` down the
+    // plain-refusal arm at all.
     resetStores();
     useChatStore.setState({ chatFiles: [], messages: [], currentChatFile: null });
     const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }]);
@@ -625,13 +658,23 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
     ]);
     expect(aggA.bookId).toBe('book-alpha');
     expect(aggA.entryId).toBe('entry-alpha');
-    expect(aggA.generations).toEqual({ observed: true, complete: true, exact: 4 });
+    expect(aggA.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 4,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
     expect(aggB.bookId).toBe('book-beta');
     expect(aggB.entryId).toBe('entry-beta');
-    expect(aggB.generations).toEqual({ observed: true, complete: true, exact: 9 });
+    expect(aggB.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 9,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
   });
 
-  it('an un-hydrated chat, alone in scope -> generations is atLeast with chat-not-hydrated', async () => {
+  it('an un-hydrated chat, alone in scope -> generations carries chat-not-hydrated ahead of the mandatory collision reason', async () => {
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const NEVER_OPENED = 'i6-never-opened.jsonl';
@@ -640,7 +683,12 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
     const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }], {
       chatFiles: [NEVER_OPENED],
     });
-    expect(agg.generations).toEqual({ observed: true, complete: false, atLeast: 0, why: 'chat-not-hydrated' });
+    expect(agg.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 0,
+      reasons: ['chat-not-hydrated', 'chat-file-names-not-verified-distinct'],
+    });
   });
 
   it('BOTH an un-hydrated chat AND a partially-covered chat in scope at once -> chat-not-hydrated wins (C10 — the priority the docstring actually claims)', async () => {
@@ -672,7 +720,12 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
     const [agg] = getEntryFiringAggregate([{ bookId: legacyBook, entryId: legacyEntry }], {
       chatFiles: [PARTIAL_CHAT, NEVER_OPENED],
     });
-    expect(agg.generations).toEqual({ observed: true, complete: false, atLeast: 4, why: 'chat-not-hydrated' });
+    expect(agg.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 4,
+      reasons: ['chat-not-hydrated', 'chat-file-names-not-verified-distinct'],
+    });
   });
 
   it('accumulates counts across multiple fully-hydrated, non-partial chats — kills reporting only one chat\'s count (C10)', async () => {
@@ -701,12 +754,16 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
       ],
     });
 
-    // In-memory scope (no `chatFiles` opt) — both chats are this
-    // character's own, so the exact arm is a legitimate claim (job 1).
+    // In-memory scope (no `chatFiles` opt).
     const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }]);
     // 3 + 5 = 8 — a mutation that reports only the last (5) or first (3)
     // file's count, instead of summing across scope, fails this.
-    expect(agg.generations).toEqual({ observed: true, complete: true, exact: 8 });
+    expect(agg.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 8,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
   });
 
   it('a caller-supplied scope naming the same file twice is deduped before counting — the sum does not double, and the coverage denominator does not double either (CONF3)', async () => {
@@ -727,43 +784,55 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
       chatFiles: [CHAT_FILE, CHAT_FILE],
     });
     // A count of 6 would mean the duplicate file inflated the sum. Once the
-    // scope is a set, the one real chat it names is still fully covered.
-    // This is a caller-supplied scope, so (job 1) it can never claim
-    // `complete: true` — but the SUM must still be the deduped 3, not 6.
+    // scope is a set, the one real chat it names is still fully covered —
+    // the SUM must still be the deduped 3, not 6.
     expect(agg.generations).toEqual({
       observed: true,
-      complete: false,
-      atLeast: 3,
-      why: 'chat-file-names-not-verified-distinct',
+      verified: false,
+      count: 3,
+      reasons: ['chat-file-names-not-verified-distinct'],
     });
     // The coverage denominator must be deduped too, in the SAME object —
     // 1 chat, not 2. A fix that moved the dedupe out of
     // resolveChatFileScope and into computeFiringCount's own loop would
     // leave `files` (and so `coverage`, built from the same `files`)
-    // un-deduped even though `generations.atLeast` looks correct.
-    expect(agg.coverage.chatsInScope).toEqual({ observed: true, value: 1 });
-    expect(agg.coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 1 });
+    // un-deduped even though `generations.count` looks correct. This is a
+    // non-empty caller-supplied scope, so (Note two, round 11) BOTH
+    // scope-list counts are also unverified, not just `generations`.
+    expect(agg.coverage.chatsInScope).toEqual({
+      observed: true,
+      verified: false,
+      count: 1,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
+    expect(agg.coverage.turns.chatsWithUncountedTurns).toEqual({
+      observed: true,
+      verified: false,
+      count: 1,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
   });
 });
 
 // ---------------------------------------------------------------------------
-// Round 10, Job 1 — FiringCount's `exact`/`complete: true` claims an
-// identity the API cannot establish for a caller-supplied scope: a chat
-// file NAME is not a chat IDENTITY. `wiFiredByFile` (chatStore.ts) is one
-// module-level map keyed by bare file name across every character;
-// `chatStore.chatFiles` (`fetchChatFiles`, chatStore.ts) is scoped to ONE
-// character per fetch. Only the in-memory scope's own file names are
-// identities — a caller-supplied list can be assembled across characters,
-// so this API cannot verify its names denote distinct chats. Same
-// hydration, same count, same chat — only the scope differs.
+// Round 11 — the general rule, applied uniformly. `generations` is
+// scope-INDEPENDENT: `wiFiredByFile` (chatStore.ts) has no per-character
+// partition at all, so the in-memory scope's own backend-guaranteed
+// per-character name uniqueness (`fetchChatFiles(avatarUrl)`) does not
+// protect a read through that map — only `chatsInScope`/
+// `chatsWithUncountedTurns`, which never touch `wiFiredByFile` and only
+// ever count the SCOPE'S OWN name list, keep the in-memory/caller-supplied
+// split. Same hydration, same count, same chat — only the scope differs —
+// and that difference now shows up in `coverage.chatsInScope`, never in
+// `generations`.
 // ---------------------------------------------------------------------------
-describe('getEntryFiringAggregate — FiringCount scope identity (round 10, job 1)', () => {
-  it('in-memory scope, fully hydrated and non-partial -> legitimately reports the exact arm', async () => {
+describe('getEntryFiringAggregate — round 11: generations is scope-independent, chatsInScope is not', () => {
+  it('in-memory scope, fully hydrated and non-partial -> generations is STILL the unverified arm (this is what round 10 job 1 got wrong: wiFiredByFile has no per-character partition, so hydration in ANY scope cannot certify the count)', async () => {
     resetStores();
     useWorldInfoStore.getState().resetUser();
-    const BOOK = 'r10j1-book';
-    const ENTRY = 'r10j1-entry';
-    const CHAT_FILE = 'r10j1-in-memory.jsonl';
+    const BOOK = 'r11-book';
+    const ENTRY = 'r11-entry';
+    const CHAT_FILE = 'r11-in-memory.jsonl';
     vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
       header: { wi_fired: { [wiFiredKey(BOOK, ENTRY)]: { first_turn: 0, last_turn: 0, count: 2 } } },
       messages: [],
@@ -775,15 +844,20 @@ describe('getEntryFiringAggregate — FiringCount scope identity (round 10, job 
     // No `chatFiles` opt -> in-memory scope.
     const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }]);
     expect(agg.coverage.scope).toBe('in-memory-chat-list');
-    expect(agg.generations).toEqual({ observed: true, complete: true, exact: 2 });
+    expect(agg.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 2,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
   });
 
-  it('caller-supplied scope, identically hydrated and non-partial -> degrades to atLeast, never claims complete: true (kills the un-degraded exact arm surviving a caller-supplied scope)', async () => {
+  it('caller-supplied scope, identically hydrated and non-partial -> generations reports the IDENTICAL shape as the in-memory case above (same hydration, same count, only the scope differs — and it no longer matters to this figure)', async () => {
     resetStores();
     useWorldInfoStore.getState().resetUser();
-    const BOOK = 'r10j1-book-2';
-    const ENTRY = 'r10j1-entry-2';
-    const CHAT_FILE = 'r10j1-caller-supplied.jsonl';
+    const BOOK = 'r11-book-2';
+    const ENTRY = 'r11-entry-2';
+    const CHAT_FILE = 'r11-caller-supplied.jsonl';
     vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
       header: { wi_fired: { [wiFiredKey(BOOK, ENTRY)]: { first_turn: 0, last_turn: 0, count: 2 } } },
       messages: [],
@@ -797,9 +871,116 @@ describe('getEntryFiringAggregate — FiringCount scope identity (round 10, job 
     expect(agg.coverage.scope).toBe('caller-supplied');
     expect(agg.generations).toEqual({
       observed: true,
-      complete: false,
-      atLeast: 2,
-      why: 'chat-file-names-not-verified-distinct',
+      verified: false,
+      count: 2,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
+  });
+
+  it('the SAME two fixtures above still tell in-memory and caller-supplied apart through chatsInScope — it, unlike generations, never touches wiFiredByFile', async () => {
+    resetStores();
+    useWorldInfoStore.getState().resetUser();
+    const CHAT_FILE = 'r11-chatsinscope-split.jsonl';
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({ header: {}, messages: [], server_ts: 1 });
+    await useChatStore.getState().loadChat('avatar.png', CHAT_FILE);
+    useChatStore.setState({ chatFiles: [{ fileName: CHAT_FILE, messageCount: 0, lastMessage: '' }] });
+
+    const inMemory = getTelemetryCoverage();
+    expect(inMemory.scope).toBe('in-memory-chat-list');
+    expect(inMemory.chatsInScope).toEqual({ observed: true, value: 1 });
+
+    const callerSupplied = getTelemetryCoverage({ chatFiles: [CHAT_FILE] });
+    expect(callerSupplied.scope).toBe('caller-supplied');
+    expect(callerSupplied.chatsInScope).toEqual({
+      observed: true,
+      verified: false,
+      count: 1,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
+  });
+
+  it('the collision state itself: two characters share a chat file name; character B\'s real telemetry is read back under character A\'s in-memory scope, unflagged as foreign — the state TelemetryDerivedCount exists to mark, constructed through the real loadChat API, not hand-built', async () => {
+    resetStores();
+    useWorldInfoStore.getState().resetUser();
+    const SHARED_NAME = 'r11-collision-shared.jsonl';
+    const BOOK = 'r11-collision-book';
+    const ENTRY = 'r11-collision-entry';
+
+    // Character B opens the shared-named chat; its real telemetry lands in
+    // wiFiredByFile under the bare name only — nothing here is hand-built.
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValueOnce({
+      header: { wi_fired: { [wiFiredKey(BOOK, ENTRY)]: { first_turn: 0, last_turn: 0, count: 7 } } },
+      messages: [],
+      server_ts: 1,
+    });
+    await useChatStore.getState().loadChat('character-b-avatar.png', SHARED_NAME);
+
+    // Character A's OWN chat list happens to name the same bare file — A
+    // never opened it this session. Legal: chat-name uniqueness is
+    // per-character only.
+    useChatStore.setState({
+      chatFiles: [{ fileName: SHARED_NAME, messageCount: 0, lastMessage: '' }],
+      currentChatFile: null,
+    });
+
+    const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }]);
+    expect(agg.coverage.scope).toBe('in-memory-chat-list');
+    // B's real count (7) leaks through under A's own in-memory scope,
+    // wrapped unverified rather than reported as a trustworthy 7.
+    expect(agg.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 7,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
+  });
+
+  it('deflation via deleteChat: a real, previously-recorded count reads back as chat-not-hydrated once an UNRELATED character deletes their own same-named chat, because wiFiredByFile is keyed and deleted by bare name only', async () => {
+    // Distinct from "an un-hydrated chat, alone in scope" (I6 above, still
+    // pinned unchanged): that fixture's chat was NEVER opened, so its true
+    // count really is unknown. This one WAS opened and genuinely fired the
+    // entry — the gap is introduced AFTER that, by a different character's
+    // deleteChat wiping the shared map entry out from under it.
+    resetStores();
+    useWorldInfoStore.getState().resetUser();
+    const SHARED_NAME = 'r11-deflation-shared.jsonl';
+    const BOOK = 'r11-deflation-book';
+    const ENTRY = 'r11-deflation-entry';
+
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValueOnce({
+      header: { wi_fired: { [wiFiredKey(BOOK, ENTRY)]: { first_turn: 0, last_turn: 0, count: 5 } } },
+      messages: [],
+      server_ts: 1,
+    });
+    await useChatStore.getState().loadChat('avatar.png', SHARED_NAME);
+    useChatStore.setState({ chatFiles: [{ fileName: SHARED_NAME, messageCount: 0, lastMessage: '' }] });
+
+    // Sanity: before the deletion, the real count is visible.
+    const [before] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }]);
+    expect(before.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 5,
+      reasons: ['chat-file-names-not-verified-distinct'],
+    });
+
+    // An UNRELATED character deletes their own chat that happens to share
+    // this bare name — deleteChat (chatStore.ts) wipes wiFiredByFile by
+    // bare name only, with no character check at all.
+    vi.spyOn(api, 'deleteChat').mockResolvedValueOnce(undefined);
+    vi.spyOn(api, 'getChats').mockResolvedValueOnce([]);
+    await useChatStore.getState().deleteChat('some-other-avatar.png', SHARED_NAME);
+
+    const [after] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }], { chatFiles: [SHARED_NAME] });
+    // The real count is gone — not because it was never observed, but
+    // because an unrelated deletion wiped the shared key a moment later.
+    // `chat-not-hydrated` reads as "unknown," which understates a value
+    // this session actually measured.
+    expect(after.generations).toEqual({
+      observed: true,
+      verified: false,
+      count: 0,
+      reasons: ['chat-not-hydrated', 'chat-file-names-not-verified-distinct'],
     });
   });
 });
@@ -1662,19 +1843,25 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       const [partialAgg] = getEntryFiringAggregate([{ bookId: LEGACY_BOOK, entryId: LEGACY_ENTRY }], {
         chatFiles: [PARTIAL_CHAT],
       });
-      if (partialAgg.generations.observed && !partialAgg.generations.complete) {
-        record(partialAgg.generations.why);
+      // `generations` (TelemetryDerivedCount) narrows on `observed` alone —
+      // the true arm is always `UnverifiedCount`, never a clean one — so
+      // every applicable reason in its `reasons` tuple gets recorded,
+      // including the mandatory trailing collision code.
+      if (partialAgg.generations.observed) {
+        for (const r of partialAgg.generations.reasons) record(r);
       }
       const [unhydratedAgg] = getEntryFiringAggregate([{ bookId: 'z', entryId: 'z' }], {
         chatFiles: [NEVER_OPENED],
       });
-      if (unhydratedAgg.generations.observed && !unhydratedAgg.generations.complete) {
-        record(unhydratedAgg.generations.why);
+      if (unhydratedAgg.generations.observed) {
+        for (const r of unhydratedAgg.generations.reasons) record(r);
       }
     }
 
-    // chat-file-names-not-verified-distinct: a caller-supplied scope, fully
-    // hydrated and non-partial — round 10, job 1.
+    // chat-file-names-not-verified-distinct: also produced by the plain
+    // in-memory-scope case (round 11 — see insightsApi.test.ts's own
+    // "generations is scope-independent" describe block), but exercised
+    // again here via a caller-supplied scope for good measure.
     {
       resetStores();
       useWorldInfoStore.getState().resetUser();
@@ -1690,8 +1877,8 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       const [callerSuppliedAgg] = getEntryFiringAggregate([{ bookId: 'i18-book', entryId: 'i18-entry' }], {
         chatFiles: [CHAT_FILE],
       });
-      if (callerSuppliedAgg.generations.observed && !callerSuppliedAgg.generations.complete) {
-        record(callerSuppliedAgg.generations.why);
+      if (callerSuppliedAgg.generations.observed) {
+        for (const r of callerSuppliedAgg.generations.reasons) record(r);
       }
     }
 

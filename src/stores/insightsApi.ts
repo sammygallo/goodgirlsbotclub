@@ -31,15 +31,16 @@ import { useGenerationStore } from './generationStore';
 import { projectClientTurn, projectServerTurn } from '../utils/insights/wiInsights';
 import { wiFiredKey } from '../utils/wiFired';
 import type {
+  ChatCountFigure,
   ChatScope,
   ClientTurnSource,
   EntryEmittedSample,
   EntryFiringAggregate,
-  FiringCount,
   Observed,
   ObservedFalseReason,
   ServerTurnSource,
   TelemetryCoverage,
+  TelemetryDerivedCount,
   TurnWiInsight,
   Unobservable,
 } from '../utils/insights/types';
@@ -118,7 +119,10 @@ function resolveChatFileScope(opts?: {
  * `fetchChatFiles`, so an empty list there is indistinguishable from
  * "never fetched" — reporting `0` would claim a fact this app does not
  * have. A CALLER-SUPPLIED empty list carries no such ambiguity (the
- * caller said, explicitly, "these zero chats") and reports a real `0`.
+ * caller said, explicitly, "these zero chats") and reports a real `0` —
+ * summing (or counting) over zero chats can never be wrong, so nothing
+ * name-dependent about it needs the unverified wrapping either
+ * (`wrapChatCount` below).
  */
 function computeCoverage(scope: ChatScope, files: readonly string[]): TelemetryCoverage {
   if (scope === 'in-memory-chat-list' && files.length === 0) {
@@ -146,7 +150,9 @@ function computeCoverage(scope: ChatScope, files: readonly string[]): TelemetryC
   // `wiFiredByFile.size` (that counts every chat ever touched THIS
   // SESSION, including ones `resetUser()` dropped from `chatFiles` but not
   // from the module-private map — see chatStore.ts's own comment on that
-  // map).
+  // map). `getWiFiredForChat` reads that same module-level map, shared
+  // across every character, so a `true` here does not prove THIS scope's
+  // own chat was ever opened — see `wrapChatCount` below.
   const hydrated = files.map((f) => getWiFiredForChat(f) !== undefined);
   const chatsWithTelemetryCount = hydrated.filter(Boolean).length;
 
@@ -168,18 +174,48 @@ function computeCoverage(scope: ChatScope, files: readonly string[]): TelemetryC
     why: openChatInScope ? 'transcript-identity-unprovable' : 'transcript-not-in-memory',
   };
 
+  // `chatsInScope`/`chatsWithUncountedTurns` count the NAMES in `files`
+  // itself, never `wiFiredByFile` — real whenever nothing about name
+  // identity is in doubt for that count: an empty scope, or the in-memory
+  // scope's own list (backend-unique per character). `chatsWithTelemetry`
+  // reads `wiFiredByFile` directly (see the comment above), which has no
+  // such safe scope past empty — see types.ts's own doc on each field for
+  // the full reasoning.
+  const scopeListIsClean = files.length === 0 || scope === 'in-memory-chat-list';
+  const telemetryIsClean = files.length === 0;
+
   return {
     scope,
-    chatsInScope: { observed: true, value: files.length },
-    chatsWithTelemetry: { observed: true, value: chatsWithTelemetryCount },
+    chatsInScope: wrapChatCount(files.length, scopeListIsClean),
+    chatsWithTelemetry: wrapChatCount(chatsWithTelemetryCount, telemetryIsClean),
     turns: {
       aiTurnsInScope,
       turnsWithTelemetry: { observed: false, why: 'turn-telemetry-not-persisted' },
       // Every chat in scope, unconditionally — aiTurnsInScope never
       // observes a count any more (see its own comment above, and #530).
-      chatsWithUncountedTurns: { observed: true, value: files.length },
+      chatsWithUncountedTurns: wrapChatCount(files.length, scopeListIsClean),
     },
     recency: { observed: false, why: 'chat-recency-not-recorded' },
+  };
+}
+
+/**
+ * Shared wrapper for `chatsInScope`/`chatsWithTelemetry`/
+ * `chatsWithUncountedTurns` (`ChatCountFigure`, types.ts): a real,
+ * verified `Observed<number>` when `clean` is true, else
+ * `TelemetryDerivedCount`'s unverified arm carrying ONLY the
+ * name-identity caveat — these three counts never have an internal reason
+ * (unlike `computeFiringCount`'s `chat-not-hydrated`/`telemetry-coverage-
+ * partial`), so the reasons tuple here is always exactly the one
+ * mandatory element.
+ */
+function wrapChatCount(value: number, clean: boolean): ChatCountFigure {
+  if (clean) return { observed: true, value };
+  return {
+    observed: true,
+    verified: false,
+    count: value,
+    reasons: ['chat-file-names-not-verified-distinct'],
   };
 }
 
@@ -193,33 +229,31 @@ export function getTelemetryCoverage(opts?: { chatFiles?: readonly string[] }): 
 // ---------------------------------------------------------------------------
 
 /**
- * A recorded firing is a measurement and stays true even when this chat's
- * legacy-remap coverage is partial (PM ruling, F5) — so a partial chat's
- * MATCHED count is always added to the running sum. What downgrades the
- * whole aggregate to a lower bound is an ABSENCE claim becoming
- * untrustworthy: either a chat this session never opened at all (its true
- * count is simply unknown), or a chat whose remap is partial reporting
- * no hit for this key (it may have fired under an unresolved legacy key
- * this lookup can't see). `chat-not-hydrated` takes priority over
- * `telemetry-coverage-partial` when both are present in scope — an
- * entirely un-opened chat is a bigger gap than a partially-mapped one.
- *
- * A third, lower-priority downgrade applies only to a caller-supplied
- * scope: even when every named chat is hydrated and non-partial, a bare
- * file name is a chat identity only within the one character's chat list
- * it came from — `wiFiredByFile` (chatStore.ts) is keyed by bare file name
- * across every character, so a caller-supplied list can silently collapse
- * two different characters' same-named chats onto one key. The sum is
- * still real (nothing here inflates or drops it), but the completeness
- * claim is not, so this arm never reports `complete: true` for that scope
- * (`chat-file-names-not-verified-distinct`, OBSERVED_FALSE_REASONS,
- * types.ts).
+ * `chat-not-hydrated` means `getWiFiredForChat` had NO entry at all under
+ * a scope file's bare name — a bigger gap than a partially-mapped chat's
+ * entry existing but reporting no hit for this key, which is why it takes
+ * priority over `telemetry-coverage-partial` when both are present in
+ * scope. It does NOT mean the count is otherwise trustworthy once every
+ * file IS hydrated: `wiFiredByFile` (chatStore.ts) has no per-character
+ * partition at all, so a "hydrated" entry can belong wholly or partly to a
+ * DIFFERENT character's same-named chat (`captureWiFired` accretes onto
+ * it, `loadChat`/`loadGroupChat` merge into it, regardless of which
+ * character is open) — hydration answers "does this map key exist",
+ * never "is this map key's history solely the chat I meant." That is why
+ * the sum below is ALWAYS wrapped as `TelemetryDerivedCount`'s unverified
+ * arm once observed, in every scope, never just for a caller-supplied one
+ * — see `chat-file-names-not-verified-distinct`'s own comment
+ * (OBSERVED_FALSE_REASONS, types.ts) for the full mechanism. This module
+ * cannot say whether an affected sum reads higher or lower than a single
+ * chat's own true count — `captureWiFired` can only add to a shared key,
+ * `deleteChat` can wipe one out from under an unrelated character's chat —
+ * so `count`'s own doc (types.ts) claims neither direction.
  */
 function computeFiringCount(
   key: { bookId: string; entryId: string },
   files: readonly string[],
   coverage: TelemetryCoverage
-): FiringCount {
+): TelemetryDerivedCount {
   if (!coverage.chatsInScope.observed) {
     return { observed: false, why: coverage.chatsInScope.why };
   }
@@ -239,19 +273,23 @@ function computeFiringCount(
     if (isWiFiredCoveragePartial(file)) anyPartial = true;
   }
 
-  if (anyUnhydrated) return { observed: true, complete: false, atLeast: sum, why: 'chat-not-hydrated' };
-  if (anyPartial) {
-    return { observed: true, complete: false, atLeast: sum, why: 'telemetry-coverage-partial' };
-  }
-  if (coverage.scope === 'caller-supplied') {
+  if (anyUnhydrated) {
     return {
       observed: true,
-      complete: false,
-      atLeast: sum,
-      why: 'chat-file-names-not-verified-distinct',
+      verified: false,
+      count: sum,
+      reasons: ['chat-not-hydrated', 'chat-file-names-not-verified-distinct'],
     };
   }
-  return { observed: true, complete: true, exact: sum };
+  if (anyPartial) {
+    return {
+      observed: true,
+      verified: false,
+      count: sum,
+      reasons: ['telemetry-coverage-partial', 'chat-file-names-not-verified-distinct'],
+    };
+  }
+  return { observed: true, verified: false, count: sum, reasons: ['chat-file-names-not-verified-distinct'] };
 }
 
 /**
