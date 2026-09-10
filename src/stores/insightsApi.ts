@@ -57,7 +57,7 @@ import type { ServerActivationFacts } from '../utils/promptBreakdown';
  * describes whatever the most recent build published, which in a group
  * round is only the LAST speaker's turn (each speaker's build overwrites
  * it). `opts.forChatFile` lets a caller holding a specific chat file
- * refuse rather than silently read a different turn's numbers.
+ * refuse.
  *
  * The client/server split reads `breakdown.wi.activationSource` —
  * NEVER `breakdown.wi.server`'s truthiness. See wiInsights.ts's own

@@ -47,11 +47,7 @@ import type { TokenizerProfile } from '../tokenizer';
 /**
  * Every reason this API can refuse to report a figure. A closed set
  * (`as const`), not an open string — `ObservedFalseReason` derives from it
- * so a typo here is a compile error everywhere, and
- * `tools/insightsBoundary.test.ts`'s sibling suites (`I18`, in
- * `insightsApi.test.ts`) assert SET EQUALITY between this array and the
- * `why` values the test suite actually produces: nothing declared here may
- * go unexercised, and nothing produced may be a value that isn't declared.
+ * so a typo here is a compile error everywhere.
  */
 export const OBSERVED_FALSE_REASONS = [
   'server-path-no-scan-report',
@@ -331,10 +327,7 @@ export interface TurnCoverage {
    *  now every chat in scope, unconditionally: `aiTurnsInScope` never
    *  observes a count any more (see its own comment above, and #530).
    *  Mirrors `chatsInScope`'s own count exactly (same `files.length`), so
-   *  it carries the same `ChatCountFigure` split — real for an empty
-   *  scope or the in-memory scope's own name list, unverified for a
-   *  non-empty caller-supplied one (`chat-file-names-not-verified-
-   *  distinct`, OBSERVED_FALSE_REASONS above). */
+   *  it carries the same `ChatCountFigure` split. */
   readonly chatsWithUncountedTurns: ChatCountFigure;
 }
 
@@ -360,8 +353,7 @@ export interface TelemetryCoverage {
    *  Reads `wiFiredByFile` (chatStore.ts) directly, and that map has no
    *  per-character partition at all — so unlike `chatsInScope`, this has
    *  no scope where the name-identity gap stops applying except an empty
-   *  one: real for zero chats in scope, `ChatCountFigure`'s unverified arm
-   *  otherwise, in EITHER scope. */
+   *  one. */
   readonly chatsWithTelemetry: ChatCountFigure;
   readonly turns: TurnCoverage;
   /** Always `Unobservable` — not because no recency signal exists. The
@@ -392,10 +384,9 @@ export interface TelemetryCoverage {
 export interface UnverifiedCount {
   readonly observed: true;
   readonly verified: false;
-  /** The sum (or count) over the chats this session could actually read.
-   *  Asserts nothing about completeness, direction, or provenance — this
-   *  is neither a floor nor a ceiling on the true value, just what this
-   *  module found. */
+  /** The sum (or count). Asserts nothing about completeness, direction,
+   *  or provenance — this is neither a floor nor a ceiling on the true
+   *  value, just what this module found. */
   readonly count: number;
   /** Gap codes a producer chose to name, in priority order — not a claim
    *  that the list is exhaustive of every gap that could apply. The
@@ -441,8 +432,7 @@ export interface EntryEmittedSample {
    *  directly and never checks its `chatFile` against a caller's queried
    *  scope, so the turn this names can be outside that scope. This field
    *  is what makes the sample self-describing about that instead of
-   *  silent — a consumer compares it against its own scope rather than
-   *  this module gating on the consumer's behalf. */
+   *  silent. */
   readonly turn: { readonly chatFile: string | null; readonly publishedAt: number };
 }
 
