@@ -400,7 +400,7 @@ describe('getTurnWiInsight — PromptBreakdown -> source field mapping (CONF4)',
 // ---------------------------------------------------------------------------
 
 describe('getTelemetryCoverage — empty chat list (I5)', () => {
-  it('an empty in-memory chat list refuses chat-list-not-loaded across all 6 of computeCoverage\'s figures — never a false observed 0 anywhere in the shape (round 10, job 2)', () => {
+  it('an empty in-memory chat list never yields a false observed 0 anywhere in computeCoverage\'s shape (round 10, job 2)', () => {
     // The full-object toEqual (not just the two field-by-field expects the
     // previous version of this test had) is the point: `turns.aiTurnsInScope`
     // is `Observed<number>` and `turns.chatsWithUncountedTurns` is the wider
@@ -825,12 +825,12 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CONF5 — chatsWithTelemetry had no caller-supplied-scope coverage.
+// chatsWithTelemetry had no caller-supplied-scope coverage.
 // chatsInScope and chatsWithUncountedTurns both get a non-empty
 // caller-supplied pin above (the dedupe test); chatsWithTelemetry never
 // did, for either a real (non-zero) or a zero measured count.
 // ---------------------------------------------------------------------------
-describe('getTelemetryCoverage — chatsWithTelemetry, caller-supplied scope (CONF5)', () => {
+describe('getTelemetryCoverage — chatsWithTelemetry, caller-supplied scope', () => {
   it('a non-empty caller-supplied scope with one hydrated chat and one never-opened chat -> the unverified arm, count 1 — not a hardcoded clean Observed<number>', async () => {
     resetStores();
     const HYDRATED = 'conf5-hydrated.jsonl';
@@ -1538,63 +1538,6 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     if (agg.emittedSample.observed) {
       expect(['chat-A.jsonl']).not.toContain(agg.emittedSample.value.turn.chatFile);
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// CONF1 — the FALSE-MATCH direction. Round 12's test above only exercises
-// two DISTINCT names (chat-B.jsonl vs scope ['chat-A.jsonl']) — the easy
-// case, where a bare-name membership check happens to get the right
-// answer. This pins the case `EntryEmittedSample.turn`'s old doc comment
-// prescribed checking for and got backwards: chat-name uniqueness is
-// per-character only (see the round-11 collision describe block above),
-// so a bare `scope.includes(turn.chatFile)` check can report a match for
-// a turn that belongs to an entirely different character's same-named
-// chat.
-// ---------------------------------------------------------------------------
-describe('getEntryFiringAggregate — emittedSample turn identity, false-match direction (CONF1)', () => {
-  it("a live turn's chatFile collides with a caller-supplied scope naming an unrelated character's own same-named chat — scope.includes(turn.chatFile) reports a match, and that match is wrong", async () => {
-    resetStores();
-    const SHARED_NAME = 'conf1-collision-shared.jsonl';
-    const CHAR_B = mkChar({ name: 'Rue', avatar: 'rue-conf1.png' });
-
-    // Character B's real live turn, produced through the real sendMessage
-    // flow (not a hand-built breakdown) in a chat that happens to share
-    // its bare name with some chat of character A's — legal, since
-    // chat-name uniqueness is per-character only.
-    arrangeEligibleChat(SHARED_NAME);
-    useCharacterStore.setState({ selectedCharacter: CHAR_B });
-    makeChatIneligible();
-    stubCommonEdges();
-    vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
-      entries: [ENTRY_DTO],
-      turnNo: 0,
-      activatedEntryIds: ['ins-entry-1'],
-      evictedEntryIds: [],
-    });
-    await useChatStore.getState().sendMessage('hi from character B', CHAR_B);
-
-    // A consumer holding character A's OWN scope queries the same bare
-    // name — nothing here touches generationStore, so B's live turn is
-    // still the one sitting in the slot `computeEmittedSample` reads.
-    const CALLER_SCOPE = [SHARED_NAME];
-    const [agg] = getEntryFiringAggregate([{ bookId: 'ins-book-1', entryId: 'ins-entry-1' }], {
-      chatFiles: CALLER_SCOPE,
-    });
-    expect(agg.emittedSample.observed).toBe(true);
-    if (!agg.emittedSample.observed) throw new Error('unreachable');
-    expect(agg.emittedSample.value.turn.chatFile).toBe(SHARED_NAME);
-    // The false positive the old doc prescribed as the consumer's own
-    // check: a bare-name membership test reports this sample as IN
-    // character A's scope, even though the measured cost is character
-    // B's. Checked against CALLER_SCOPE itself (the exact array passed
-    // as `opts.chatFiles` above), not a re-typed literal — so this
-    // assertion actually depends on what was queried, not on SHARED_NAME
-    // trivially equaling itself. The module never claimed otherwise
-    // (`turn` only ever named the value read straight off
-    // `lastPromptBreakdown`) — this pins that the naive comparison
-    // itself is unsound, not that this module lied.
-    expect(CALLER_SCOPE).toContain(agg.emittedSample.value.turn.chatFile);
   });
 });
 

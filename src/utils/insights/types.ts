@@ -45,9 +45,8 @@ import type { TokenizerProfile } from '../tokenizer';
 // ---------------------------------------------------------------------------
 
 /**
- * Every reason this API can refuse to report a figure. A closed set
- * (`as const`), not an open string — `ObservedFalseReason` derives from it
- * so a typo here is a compile error everywhere.
+ * A closed set (`as const`), not an open string — `ObservedFalseReason`
+ * derives from it so a typo here is a compile error everywhere.
  */
 export const OBSERVED_FALSE_REASONS = [
   'server-path-no-scan-report',
@@ -409,11 +408,7 @@ export type TelemetryDerivedCount = UnverifiedCount | Unobservable;
  * `Observed<number>` in the states where nothing about chat-file NAME
  * identity is in doubt, and `TelemetryDerivedCount` everywhere else. See
  * each field's own doc comment for which states are which — the split is
- * not the same for all four: `chatsWithTelemetry` and `generations` both
- * read `wiFiredByFile` directly and are clean ONLY for a provably empty
- * scope, while `chatsInScope`/`chatsWithUncountedTurns` only ever count
- * the scope's own name list and are clean for an empty scope OR the
- * in-memory scope.
+ * not the same for all four.
  */
 export type ChatCountFigure = Observed<number> | TelemetryDerivedCount;
 

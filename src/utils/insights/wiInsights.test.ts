@@ -87,9 +87,6 @@ describe('pinnedTokens / pinnedOverBudget (I1)', () => {
   });
 
   it('client: pinnedOverBudget false is also reported as false — kills a hardcoded `value: true` (round 10, job 2)', () => {
-    // Every other fixture in this file that asserts `pinnedOverBudget` as
-    // an OUTPUT (the test above, and CONF4/I18 in insightsApi.test.ts) uses
-    // `true` — a hardcoded `value: true` passed all of them.
     const insight = projectClientTurn(
       mkClientSource({ scan: { budget: 500, pinnedTokens: 137, pinnedOverBudget: false, droppedEntries: [] } })
     );
