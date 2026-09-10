@@ -42,33 +42,45 @@ interface ImportStatement {
  * type-only import — the only form this codebase writes; see File A/B's
  * own headers):
  *
- *   - `import '../x';`              (side-effect — no clause, no `from`)
- *   - `import('../x')`              (dynamic — a call expression)
+ *   - `import '../x';`              (side-effect — no clause, no `from`,
+ *                                     and the `;` itself is optional: ASI)
+ *   - `import('../x')`              (dynamic — a call expression; a
+ *                                     string or template-literal specifier)
  *   - `import (type)? ... from '../x'`      (static, with a clause)
  *   - `export (type)? { ... } | * from '../x'`  (re-export)
  *
- * The static-import and re-export regexes use a lazy `[^;]*?` (not
- * `[\s\S]*?`) between the keyword and `from` — restricted to exclude `;`
- * so the clause can span multiple lines (a multi-name named import
- * wrapped across lines) but can never cross a statement terminator. That
- * restriction is what keeps a side-effect import directly above another
- * import from being swallowed into the SECOND statement's `from` clause
- * (matched instead, correctly, by the side-effect regex on its own pass)
- * — see I8's swallowing self-check.
+ * The static-import regex uses a lazy `[^;]*?` (not `[\s\S]*?`) between
+ * the keyword and `from` — restricted to exclude `;` so the clause can
+ * span multiple lines (a multi-name named import wrapped across lines).
+ * That restriction is what keeps a side-effect import directly above
+ * another import from being swallowed into the SECOND statement's `from`
+ * clause (matched instead, correctly, by the side-effect regex on its own
+ * pass), PROVIDED the first statement ends in a real `;` — see I8's
+ * swallowing self-check. It does nothing for a boundary made by ASI alone
+ * (no `;` at all): a `[^;]` character class still matches a newline, so a
+ * lazy scan can cross it. That is why the re-export regex below does not
+ * use `[^;]*?` at all — its clause is syntactically restricted to `*`
+ * (optionally `as name`) or a brace list, so it is matched explicitly
+ * instead of scanned for, and cannot cross into an unrelated statement no
+ * matter how that statement ends (CONF6).
  */
 function extractImports(source: string): ImportStatement[] {
   const out: ImportStatement[] = [];
 
-  // Side-effect import: a bare string specifier, no clause, no `from`.
-  const sideEffectRe = /\bimport\s*(['"])([^'"]+)\1\s*;/g;
+  // Side-effect import: a bare string specifier, no clause, no `from`. The
+  // trailing `;` is OPTIONAL — ASI makes `import '../x'` (no semicolon)
+  // legal TS, and there is no `semi` lint rule (eslint.config.js) forcing
+  // one, so this must recognize the statement either way (CONF4).
+  const sideEffectRe = /\bimport\s*(['"])([^'"]+)\1\s*;?/g;
   let m: RegExpExecArray | null;
   while ((m = sideEffectRe.exec(source))) {
     out.push({ raw: m[0], isTypeOnly: false, specifier: m[2] });
   }
 
-  // Dynamic import: `import('../x')`, anywhere in an expression. Always a
+  // Dynamic import: `import('../x')`, anywhere in an expression, specifier
+  // quoted with `'`, `"`, or a template literal (CONF4). Always a
   // value-level import — there is no type-only dynamic-import syntax.
-  const dynamicRe = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
+  const dynamicRe = /\bimport\s*\(\s*(['"`])([^'"`]+)\1\s*\)/g;
   while ((m = dynamicRe.exec(source))) {
     out.push({ raw: m[0], isTypeOnly: false, specifier: m[2] });
   }
@@ -80,8 +92,10 @@ function extractImports(source: string): ImportStatement[] {
   }
 
   // Re-export: `export { x } from '../x'`, `export * from '../x'`,
-  // `export type { x } from '../x'`.
-  const reExportRe = /\bexport\s+(type\s+)?[^;]*?\bfrom\s+(['"])([^'"]+)\2/g;
+  // `export type { x } from '../x'`. The clause is matched EXPLICITLY
+  // (`*`, optionally `as name`, or a `{...}` list) rather than scanned for
+  // with `[^;]*?` — see this function's own header for why (CONF6).
+  const reExportRe = /\bexport\s+(type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*\bfrom\s+(['"])([^'"]+)\2/g;
   while ((m = reExportRe.exec(source))) {
     out.push({ raw: m[0], isTypeOnly: !!m[1], specifier: m[3] });
   }
@@ -268,6 +282,18 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports[0].isTypeOnly).toBe(false);
   });
 
+  it('self-check: a re-export ("export * from \'...\'") — the star alternative of the CONF6-rewritten regex — is detected', () => {
+    // The rewritten reExportRe matches the clause explicitly (`*`,
+    // optionally `as name`, or a brace list) instead of scanning for it —
+    // this exercises the `*` arm specifically, which no other test in
+    // this file reached even before the rewrite.
+    const source = `export * from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
   it('self-check: a type-only re-export is detected as type-only', () => {
     const source = `export type { ChatMessage } from '../stores/chatStore';\n`;
     const imports = extractImports(source);
@@ -293,5 +319,35 @@ import type { TokenizerProfile } from '../tokenizer';
     const typeOnly = imports.find((i) => i.specifier === '../other');
     expect(typeOnly, JSON.stringify(imports)).toBeTruthy();
     expect(typeOnly!.isTypeOnly).toBe(true);
+  });
+
+  it('self-check: a semicolon-less side-effect import (ASI, legal TS — no `semi` rule in eslint.config.js) is still detected (CONF4)', () => {
+    const source = `import '../stores/chatStore'\nexport const x = 1;\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly, 'a side-effect import is never type-only').toBe(false);
+  });
+
+  it('self-check: a dynamic import with a template-literal specifier is detected (CONF4)', () => {
+    const source = "async function f() {\n  await import(`../stores/chatStore`);\n}\n";
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly, 'a dynamic import is never type-only').toBe(false);
+  });
+
+  it('self-check: an unrelated statement directly above an import, with no semicolon between them (ASI), is not swallowed into a spurious re-export record (CONF6)', () => {
+    // `export const A = 1` has no `;` before the next line's `import` — the
+    // OLD reExportRe's lazy `[^;]*?` would cross that newline (a character
+    // class excluding only `;` still matches `\n`) and misread the SECOND
+    // statement's `from '../stores/chatStore'` as this `export`'s own
+    // clause: one spurious record, `isTypeOnly: false`, and the real
+    // type-only import lost entirely.
+    const source = `export const A = 1\nimport type { b } from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(true);
   });
 });
