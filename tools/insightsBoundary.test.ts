@@ -738,13 +738,13 @@ const w = new Worker(new URL('../../stores/chatStore', import.meta.url));
     expect(literals[0].text).toBe('../stores/chatStore');
   });
 
-  it('self-check: extractPathLiterals does NOT catch a COMPUTED path built from a substituted template literal — this is the documented gap in extractPathLiterals\'s doc comment, not a bug: a TemplateExpression\'s TemplateHead/TemplateSpan text is never a StringLiteral or NoSubstitutionTemplateLiteral, so `ts.isStringLiteralLike` never sees it', () => {
+  it('self-check: extractPathLiterals does NOT catch a COMPUTED path built from a substituted template literal — a TemplateExpression\'s TemplateHead/TemplateSpan text is never a StringLiteral or NoSubstitutionTemplateLiteral, so `ts.isStringLiteralLike` never sees it', () => {
     const source = 'const n = "chatStore"; const p = `../../stores/${n}`;\nvoid p;\n';
     const literals = extractPathLiterals(source);
     expect(literals, JSON.stringify(literals)).toEqual([]);
   });
 
-  it('self-check: extractPathLiterals does NOT catch a COMPUTED path built by concatenating fragments that do not themselves start with `./` or `../` — the other documented-gap half: `dir + \'/../stores/chatStore\'` where `dir` holds `\'..\'` never produces a single literal node whose OWN text matches the relative-path regex', () => {
+  it('self-check: extractPathLiterals does NOT catch a COMPUTED path built by concatenating fragments that do not themselves start with `./` or `../` — `dir + \'/../stores/chatStore\'` where `dir` holds `\'..\'` never produces a single literal node whose OWN text matches the relative-path regex', () => {
     const source = `const dir = '..'; const p = dir + '/../stores/chatStore';\nvoid p;\n`;
     const literals = extractPathLiterals(source);
     expect(literals, JSON.stringify(literals)).toEqual([]);
