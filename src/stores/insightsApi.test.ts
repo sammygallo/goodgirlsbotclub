@@ -361,7 +361,7 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
     expect(agg.generations).toEqual({ observed: true, complete: true, exact: 3 });
   });
 
-  it('an un-hydrated chat in scope -> generations is atLeast with chat-not-hydrated, taking priority over partial', async () => {
+  it('an un-hydrated chat, alone in scope -> generations is atLeast with chat-not-hydrated', async () => {
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const NEVER_OPENED = 'i6-never-opened.jsonl';
@@ -371,6 +371,72 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
       chatFiles: [NEVER_OPENED],
     });
     expect(agg.generations).toEqual({ observed: true, complete: false, atLeast: 0, why: 'chat-not-hydrated' });
+  });
+
+  it('BOTH an un-hydrated chat AND a partially-covered chat in scope at once -> chat-not-hydrated wins (C10 — the priority the docstring actually claims)', async () => {
+    // The old version of this test put ONLY a never-opened chat in scope,
+    // so it could never tell "chat-not-hydrated is checked" apart from
+    // "chat-not-hydrated takes PRIORITY OVER telemetry-coverage-partial" —
+    // swapping computeFiringCount's two `if` blocks stayed green under it.
+    // This fixture puts both gaps in scope simultaneously, so only the
+    // correctly-prioritized implementation passes.
+    resetStores();
+    useWorldInfoStore.getState().resetUser();
+    const legacyBook = 'wibook_1777000000010_eeeeee';
+    const legacyEntry = 'wi_1777000000011_ffffff';
+    const PARTIAL_CHAT = 'i6-priority-partial.jsonl';
+    const NEVER_OPENED = 'i6-priority-never-opened.jsonl';
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
+      header: { wi_fired: { [wiFiredKey(legacyBook, legacyEntry)]: { first_turn: 0, last_turn: 2, count: 4 } } },
+      messages: [],
+      server_ts: 1,
+    });
+    await useChatStore.getState().loadChat('avatar.png', PARTIAL_CHAT);
+    useChatStore.setState({
+      chatFiles: [
+        { fileName: PARTIAL_CHAT, messageCount: 0, lastMessage: '' },
+        { fileName: NEVER_OPENED, messageCount: 0, lastMessage: '' },
+      ],
+    });
+
+    const [agg] = getEntryFiringAggregate([{ bookId: legacyBook, entryId: legacyEntry }], {
+      chatFiles: [PARTIAL_CHAT, NEVER_OPENED],
+    });
+    expect(agg.generations).toEqual({ observed: true, complete: false, atLeast: 4, why: 'chat-not-hydrated' });
+  });
+
+  it('accumulates counts across multiple fully-hydrated, non-partial chats — kills reporting only one chat\'s count (C10)', async () => {
+    resetStores();
+    useWorldInfoStore.getState().resetUser();
+    const BOOK = 'accum-book';
+    const ENTRY = 'accum-entry';
+    const CHAT_1 = 'i6-accum-1.jsonl';
+    const CHAT_2 = 'i6-accum-2.jsonl';
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValueOnce({
+      header: { wi_fired: { [wiFiredKey(BOOK, ENTRY)]: { first_turn: 0, last_turn: 0, count: 3 } } },
+      messages: [],
+      server_ts: 1,
+    });
+    await useChatStore.getState().loadChat('avatar.png', CHAT_1);
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValueOnce({
+      header: { wi_fired: { [wiFiredKey(BOOK, ENTRY)]: { first_turn: 0, last_turn: 0, count: 5 } } },
+      messages: [],
+      server_ts: 1,
+    });
+    await useChatStore.getState().loadChat('avatar.png', CHAT_2);
+    useChatStore.setState({
+      chatFiles: [
+        { fileName: CHAT_1, messageCount: 0, lastMessage: '' },
+        { fileName: CHAT_2, messageCount: 0, lastMessage: '' },
+      ],
+    });
+
+    const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }], {
+      chatFiles: [CHAT_1, CHAT_2],
+    });
+    // 3 + 5 = 8 — a mutation that reports only the last (5) or first (3)
+    // file's count, instead of summing across scope, fails this.
+    expect(agg.generations).toEqual({ observed: true, complete: true, exact: 8 });
   });
 });
 
@@ -638,6 +704,91 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
     const coverage = getTelemetryCoverage();
     expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-not-in-memory' });
   });
+
+  it('an open chat file that is NOT in scope still refuses aiTurnsInScope — kills dropping the scope-membership check (`currentChatFile !== null` alone) (C9)', () => {
+    resetStores();
+    useChatStore.setState({
+      chatFiles: [{ fileName: 'in-scope.jsonl', messageCount: 0, lastMessage: '' }],
+      currentChatFile: 'not-in-scope.jsonl',
+      messages: [mkMsg('a1', 'hello', { isUser: false, isSystem: false })],
+      isLoading: false,
+      error: null,
+    });
+    const coverage = getTelemetryCoverage();
+    // A mutant that drops `files.includes(currentChatFile)` would see a
+    // non-null `currentChatFile` and report `{observed:true, value:1}`
+    // here instead.
+    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-not-in-memory' });
+  });
+
+  it('chatsWithUncountedTurns is total files minus the open one — kills a constant 0 (C9)', () => {
+    resetStores();
+    useChatStore.setState({
+      chatFiles: [
+        { fileName: 'i16-a.jsonl', messageCount: 0, lastMessage: '' },
+        { fileName: 'i16-b.jsonl', messageCount: 0, lastMessage: '' },
+        { fileName: 'i16-c.jsonl', messageCount: 0, lastMessage: '' },
+      ],
+      currentChatFile: 'i16-a.jsonl',
+      messages: [],
+      isLoading: false,
+      error: null,
+    });
+    const coverage = getTelemetryCoverage();
+    expect(coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 2 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C3 — aiTurnsInScope must refuse (not report a possibly-stale count) while
+// chatStore cannot vouch that `messages` actually belongs to `currentChatFile`:
+// a load in flight, or one that errored. chatStore.loadChat/loadGroupChat set
+// `currentChatFile` BEFORE awaiting the fetch, and their catch path never
+// restores it or clears `messages` on failure.
+// ---------------------------------------------------------------------------
+
+describe('getTelemetryCoverage — chat switch identity (C3)', () => {
+  it('a load in flight (isLoading true) refuses chat-switch-unconfirmed even though the open chat is in scope', () => {
+    resetStores();
+    useChatStore.setState({
+      chatFiles: [{ fileName: 'c3-in-flight.jsonl', messageCount: 0, lastMessage: '' }],
+      currentChatFile: 'c3-in-flight.jsonl',
+      messages: [],
+      isLoading: true,
+      error: null,
+    });
+    const coverage = getTelemetryCoverage();
+    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'chat-switch-unconfirmed' });
+    expect(coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 1 });
+    useChatStore.setState({ isLoading: false }); // don't leak into later tests
+  });
+
+  it('a load that errored (error set) refuses chat-switch-unconfirmed, distinct from transcript-not-in-memory', () => {
+    resetStores();
+    useChatStore.setState({
+      chatFiles: [{ fileName: 'c3-errored.jsonl', messageCount: 0, lastMessage: '' }],
+      currentChatFile: 'c3-errored.jsonl',
+      messages: [mkMsg('stale-1', 'from a different chat', { isUser: false, isSystem: false })],
+      isLoading: false,
+      error: 'Failed to load chat',
+    });
+    const coverage = getTelemetryCoverage();
+    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'chat-switch-unconfirmed' });
+    useChatStore.setState({ error: null }); // don't leak into later tests
+  });
+
+  it('paired baseline: isLoading false and error null reports the real count — proves the refusal above is real, not vacuous', () => {
+    resetStores();
+    useChatStore.setState({
+      chatFiles: [{ fileName: 'c3-settled.jsonl', messageCount: 0, lastMessage: '' }],
+      currentChatFile: 'c3-settled.jsonl',
+      messages: [mkMsg('a1', 'hello', { isUser: false, isSystem: false })],
+      isLoading: false,
+      error: null,
+    });
+    const coverage = getTelemetryCoverage();
+    expect(coverage.turns.aiTurnsInScope).toEqual({ observed: true, value: 1 });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -676,11 +827,57 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     expect(agg.emittedSample).toEqual({ observed: false, why: 'no-observed-turn' });
   });
 
-  it('a live breakdown that never rendered this entry -> refuses entry-never-rendered', () => {
+  it('a live breakdown absent from entries/trimmedFromHistoryEntries/droppedEntries -> refuses entry-not-activated-this-turn, NOT entry-never-rendered (C1)', () => {
+    // Never even a candidate this turn — distinct from `entry-never-
+    // rendered` (C1's other two cases below), which means it WAS
+    // evaluated.
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
     const [agg] = getEntryFiringAggregate([{ bookId: 'missing-book', entryId: 'missing-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-activated-this-turn' });
+  });
+
+  it('present ONLY in trimmedFromHistoryEntries -> refuses entry-trimmed-from-history, even though it carries a REAL emitted cost (C1/C11)', () => {
+    // Mutating the lookup to also search `trimmedFromHistoryEntries` for a
+    // sample (instead of refusing) would report this entry's real cost as
+    // if it reached the model — it didn't; the history trim cut it first.
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.trimmedFromHistoryEntries = [
+      {
+        entryId: 'e-trimmed',
+        bookId: 'b-trimmed',
+        emittedTokens: 17,
+        emittedChars: 40,
+        rawTokens: 12,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'b-trimmed', entryId: 'e-trimmed' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-trimmed-from-history' });
+  });
+
+  it('present ONLY in droppedEntries with a null emittedTokens -> refuses entry-never-rendered (evaluated, evicted before rendering) (C1)', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.droppedEntries = [
+      {
+        entryId: 'e-dropped',
+        bookId: 'b-dropped',
+        emittedTokens: null,
+        emittedChars: null,
+        rawTokens: 5,
+        placement: null,
+        wrapper: null,
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'b-dropped', entryId: 'e-dropped' }]);
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-never-rendered' });
   });
 });
@@ -751,6 +948,12 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
             if (!ev.tokens.observed) record(ev.tokens.why);
           }
         }
+        // server-reports-no-activation-reason: ENTRY_DTO's activation was
+        // never sent (no `activations` map on this mocked response), so
+        // the entry the server DID activate carries no reason.
+        for (const e of serverInsight.value.entries) {
+          if (!e.activationReason.observed) record(e.activationReason.why);
+        }
       }
 
       const breakdown = createPromptBreakdown('solo', 'gpt');
@@ -769,24 +972,35 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       }
     }
 
-    // entry-never-rendered (dropped entry + emittedSample miss)
+    // entry-never-rendered: a hand-built turn whose only entry sits in
+    // droppedEntries with a null emittedTokens — evaluated, then evicted
+    // before rendering. (A real sendMessage turn can't exercise this
+    // reliably: `arrangeEligibleChat`'s only WI entry is `constant: true`,
+    // and a pinned entry can never be budget-evicted — see
+    // `WiEntryRecord.pinned`'s own doc comment in promptBreakdown.ts.)
     {
       resetStores();
-      const CHAT_FILE = 'i18-dropped.jsonl';
-      arrangeEligibleChat(CHAT_FILE);
-      makeChatIneligible();
-      useWorldInfoStore.setState({ tokenBudget: 1 });
-      stubCommonEdges();
-      vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
-        entries: [ENTRY_DTO],
-        turnNo: 0,
-        activatedEntryIds: ['ins-entry-1'],
-      });
-      await useChatStore.getState().sendMessage('drop me maybe', CHAR);
-      const breakdown = useGenerationStore.getState().lastPromptBreakdown;
-      if (breakdown) {
-        for (const e of breakdown.wi.droppedEntries) void e; // presence check only
-      }
+      const breakdown = createPromptBreakdown('solo', 'gpt');
+      breakdown.wi.droppedEntries = [
+        {
+          entryId: 'i18-dropped',
+          bookId: 'i18-dropped-book',
+          emittedTokens: null,
+          emittedChars: null,
+          rawTokens: 4,
+          placement: null,
+          wrapper: null,
+          pinned: false,
+        },
+      ];
+      useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+
+      // Via computeEmittedSample (insightsApi.ts):
+      const [droppedAgg] = getEntryFiringAggregate([{ bookId: 'i18-dropped-book', entryId: 'i18-dropped' }]);
+      if (!droppedAgg.emittedSample.observed) record(droppedAgg.emittedSample.why);
+
+      // Via projectEntry's own wrapper/placement/emittedTokens fields
+      // (wiInsights.ts), reached through getTurnWiInsight's evicted list:
       const insight = getTurnWiInsight();
       if (insight.observed && insight.value.engine === 'client' && insight.value.evicted.observed) {
         for (const e of insight.value.evicted.value) {
@@ -795,13 +1009,39 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
           if (!e.emittedTokens.observed) record(e.emittedTokens.why);
         }
       }
+    }
 
+    // entry-not-activated-this-turn: a key absent from this turn's
+    // entries, trimmedFromHistoryEntries, AND droppedEntries alike — never
+    // a candidate this turn at all, not merely evicted after being one.
+    {
       const [missAgg] = getEntryFiringAggregate([{ bookId: 'nope', entryId: 'nope' }]);
       if (!missAgg.emittedSample.observed) record(missAgg.emittedSample.why);
     }
 
-    // no-observed-turn (emittedTotal on a hand-built null-emitted turn, and
-    // an aggregate with no live breakdown at all)
+    // entry-trimmed-from-history: a hand-built turn whose only entry sits
+    // in trimmedFromHistoryEntries with a REAL emitted cost.
+    {
+      resetStores();
+      const breakdown = createPromptBreakdown('solo', 'gpt');
+      breakdown.wi.trimmedFromHistoryEntries = [
+        {
+          entryId: 'i18-trimmed',
+          bookId: 'i18-trimmed-book',
+          emittedTokens: 9,
+          emittedChars: 20,
+          rawTokens: 6,
+          placement: { stage: 'A', sectionId: 'wi_before_char' },
+          wrapper: 'none',
+          pinned: false,
+        },
+      ];
+      useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+      const [trimmedAgg] = getEntryFiringAggregate([{ bookId: 'i18-trimmed-book', entryId: 'i18-trimmed' }]);
+      if (!trimmedAgg.emittedSample.observed) record(trimmedAgg.emittedSample.why);
+    }
+
+    // no-observed-turn (an aggregate with no live breakdown at all)
     {
       resetStores();
       useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
@@ -864,6 +1104,22 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       if (!coverage.turns.aiTurnsInScope.observed) record(coverage.turns.aiTurnsInScope.why);
       record(coverage.turns.turnsWithTelemetry.why);
       record(coverage.recency.why);
+    }
+
+    // chat-switch-unconfirmed: the open chat IS in scope, but a load is
+    // (deliberately, for this test) left in flight.
+    {
+      resetStores();
+      useChatStore.setState({
+        chatFiles: [{ fileName: 'i18-switch.jsonl', messageCount: 0, lastMessage: '' }],
+        currentChatFile: 'i18-switch.jsonl',
+        messages: [],
+        isLoading: true,
+        error: null,
+      });
+      const coverage = getTelemetryCoverage();
+      if (!coverage.turns.aiTurnsInScope.observed) record(coverage.turns.aiTurnsInScope.why);
+      useChatStore.setState({ isLoading: false }); // don't leak into later tests
     }
 
     expect(produced).toEqual(new Set(OBSERVED_FALSE_REASONS));

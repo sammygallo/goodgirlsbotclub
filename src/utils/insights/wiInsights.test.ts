@@ -306,11 +306,14 @@ describe('per-entry activationReason (I13)', () => {
     expect(insight.entries[0].activationReason).toEqual({ observed: true, value: 'semantic' });
   });
 
-  it('server turn with no reason reported: refuses the same declared code (the backend never sent one)', () => {
+  it('server turn with no reason reported: refuses the DISTINCT server code, not the client-scan one (C2)', () => {
+    // The client scanner never ran on this turn at all — naming
+    // `client-scan-computes-no-activation-reason` here would describe a
+    // mechanism that was never invoked.
     const insight = projectServerTurn(mkServerSource({ entries: [mkEntry({ activationReason: undefined })] }));
     expect(insight.entries[0].activationReason).toEqual({
       observed: false,
-      why: 'client-scan-computes-no-activation-reason',
+      why: 'server-reports-no-activation-reason',
     });
   });
 });
@@ -407,5 +410,94 @@ describe('server eviction — Layer 3 rules', () => {
     // report `[]` here instead of the two real evicted ids.
     if (!insight.evicted.observed) throw new Error('unreachable');
     expect(insight.evicted.value.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C11 — trimmedFromHistoryEntries projection: no prior fixture populated
+// this array at all, so the mapping was entirely unexercised. It reuses
+// the SAME `projectEntry` as `entries` — a trimmed entry rendered with a
+// REAL cost (PR1: it reached a wi_at_depth slot and wrapWiContent ran on
+// it), so its projection must be fully observed, never a refusal.
+// ---------------------------------------------------------------------------
+
+describe('trimmedFromHistoryEntries projection (C11)', () => {
+  it('client turn: a trimmed entry projects with its REAL emitted cost, not a refusal', () => {
+    const trimmed = mkEntry({ entryId: 'trimmed-1', emittedTokens: 25, rawTokens: 18 });
+    const insight = projectClientTurn(mkClientSource({ trimmedFromHistoryEntries: [trimmed] }));
+    expect(insight.trimmedFromHistoryEntries).toEqual([
+      {
+        entryId: 'trimmed-1',
+        bookId: 'b1',
+        rawTokens: { basis: 'raw', estimator: 'gpt', tokens: 18 },
+        emittedTokens: { observed: true, value: { basis: 'emitted', estimator: 'gpt', tokens: 25 } },
+        wrapper: { observed: true, value: 'none' },
+        placement: { observed: true, value: { slot: 'A:wi_before_char' } },
+        activationReason: { observed: false, why: 'client-scan-computes-no-activation-reason' },
+        pinned: false,
+      },
+    ]);
+  });
+
+  it('server turn: same real-cost projection, and a reported activationReason observes', () => {
+    const trimmed = mkEntry({
+      entryId: 'trimmed-2',
+      emittedTokens: 33,
+      rawTokens: 20,
+      activationReason: 'sticky',
+    });
+    const insight = projectServerTurn(mkServerSource({ trimmedFromHistoryEntries: [trimmed] }));
+    expect(insight.trimmedFromHistoryEntries[0].emittedTokens).toEqual({
+      observed: true,
+      value: { basis: 'emitted', estimator: 'gpt', tokens: 33 },
+    });
+    expect(insight.trimmedFromHistoryEntries[0].activationReason).toEqual({
+      observed: true,
+      value: 'sticky',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C12 — placementSlot's stage A/B/C branches. No prior fixture ever
+// constructed a stage B or C placement, so those branches never executed;
+// mutating the whole switch to `return ''` was green. These also verify
+// `WiPlacementInsight`'s documented example formats (types.ts) are exactly
+// right, rather than leaving them as unverified prose.
+// ---------------------------------------------------------------------------
+
+describe('placementSlot / WiPlacementInsight.slot format (C12)', () => {
+  it('stage A: "A:<sectionId>" — matches the documented example exactly', () => {
+    const insight = projectClientTurn(
+      mkClientSource({ entries: [mkEntry({ placement: { stage: 'A', sectionId: 'wi_before_char' } })] })
+    );
+    expect(insight.entries[0].placement).toEqual({
+      observed: true,
+      value: { slot: 'A:wi_before_char' },
+    });
+  });
+
+  it('stage B: "B:wi_at_depth:<depth>" — matches the documented example exactly, and the depth is never dropped', () => {
+    const insight = projectClientTurn(
+      mkClientSource({
+        entries: [mkEntry({ placement: { stage: 'B', cls: 'wi_at_depth', depth: 4 } })],
+      })
+    );
+    expect(insight.entries[0].placement).toEqual({
+      observed: true,
+      value: { slot: 'B:wi_at_depth:4' },
+    });
+  });
+
+  it('stage C: "C:<sectionId>" — a real, distinct branch, not a fallthrough from stage A', () => {
+    const insight = projectServerTurn(
+      mkServerSource({
+        entries: [mkEntry({ placement: { stage: 'C', sectionId: 'wi_before_char' } })],
+      })
+    );
+    expect(insight.entries[0].placement).toEqual({
+      observed: true,
+      value: { slot: 'C:wi_before_char' },
+    });
   });
 });
