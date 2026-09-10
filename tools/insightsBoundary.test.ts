@@ -30,26 +30,22 @@ interface ImportStatement {
   specifier: string | null;
 }
 
-function namedImportsAllTypeOnly(bindings: ts.NamedImportBindings | undefined): boolean {
-  if (!bindings || ts.isNamespaceImport(bindings)) return false;
-  return bindings.elements.length > 0 && bindings.elements.every((el) => el.isTypeOnly);
-}
-
+// Type-only-ness is decided at the DECLARATION level ONLY — `clause.isTypeOnly`
+// / `node.isTypeOnly` — never by whether every individual
+// binding happens to carry an inline `type` modifier. Both tsconfigs set
+// `verbatimModuleSyntax: true`, under which `import { type A } from './m'`
+// still emits `import {} from './m';` (a real runtime module edge) while
+// only a declaration-level `import type { A } from './m'` elides entirely
+// — confirmed by compiling both forms with `ts.createProgram` under
+// `verbatimModuleSyntax: true` and reading the emitted JS. Treating an
+// inline `{ type A }` as type-only would let a real value edge to
+// chatStore/generationStore through this guard undetected.
 function importClauseIsTypeOnly(clause: ts.ImportClause | undefined): boolean {
-  if (!clause) return false;
-  if (clause.isTypeOnly) return true;
-  if (clause.name) return false;
-  return namedImportsAllTypeOnly(clause.namedBindings);
-}
-
-function namedExportsAllTypeOnly(clause: ts.NamedExportBindings | undefined): boolean {
-  if (!clause || ts.isNamespaceExport(clause)) return false;
-  return clause.elements.length > 0 && clause.elements.every((el) => el.isTypeOnly);
+  return clause ? clause.isTypeOnly : false;
 }
 
 function exportDeclIsTypeOnly(node: ts.ExportDeclaration): boolean {
-  if (node.isTypeOnly) return true;
-  return namedExportsAllTypeOnly(node.exportClause);
+  return node.isTypeOnly;
 }
 
 function extractImports(source: string, fileName = 'source.ts'): ImportStatement[] {
@@ -62,6 +58,19 @@ function extractImports(source: string, fileName = 'source.ts'): ImportStatement
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
       out.push({ isTypeOnly: exportDeclIsTypeOnly(node), specifier: node.moduleSpecifier.text });
     } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const arg = node.arguments[0];
+      out.push({ isTypeOnly: false, specifier: arg && ts.isStringLiteralLike(arg) ? arg.text : null });
+    } else if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isMetaProperty(node.expression.expression) &&
+      node.expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword
+    ) {
+      // `import.meta.glob(...)` / `import.meta.globEager(...)` — Vite's
+      // build-time module-graph import mechanism, real per this repo's own
+      // `tsconfig.app.json` `types: ["vite/client"]`. A bare property
+      // access with no call (`import.meta.env`, `import.meta.hot`) never
+      // reaches this branch — only an invocation on `import.meta` does.
       const arg = node.arguments[0];
       out.push({ isTypeOnly: false, specifier: arg && ts.isStringLiteralLike(arg) ? arg.text : null });
     }
@@ -126,6 +135,22 @@ function resolveEdges(files: ScannedFile[]): ResolvedEdge[] {
   return edges;
 }
 
+/** Asserts every VALUE import in `file` resolves to `boundary`. Fails
+ *  CLOSED (throws) on a value import this guard cannot resolve statically
+ *  — a specifier of `null` — rather than silently skipping it, since an
+ *  unresolvable value import is exactly the case where a real edge to
+ *  chatStore/generationStore could be hiding. */
+function assertValueImportsResolveInto(file: ScannedFile, boundary: string): void {
+  const valueImports = file.imports.filter((i) => !i.isTypeOnly);
+  for (const imp of valueImports) {
+    if (imp.specifier === null) {
+      throw new Error(`${file.path} has an unresolvable dynamic import — cannot verify it stays inside {File A}`);
+    }
+    const resolved = resolveSpecifier(file.path, imp.specifier);
+    expect(resolved, `${file.path} has a non-type import of ${imp.specifier}`).toBe(boundary);
+  }
+}
+
 describe('insights API import boundary (AC1)', () => {
   const scannedFiles = [scanFile(TYPES_PATH), scanFile(WI_INSIGHTS_PATH), scanFile(INSIGHTS_API_PATH)];
   const resolvedEdges = resolveEdges(scannedFiles);
@@ -148,14 +173,14 @@ describe('insights API import boundary (AC1)', () => {
 
   it("wiInsights.ts (File B)'s runtime imports are a subset of {File A} — none reach chatStore/generationStore/insightsApi", () => {
     const wiInsights = scannedFiles.find((f) => f.path === WI_INSIGHTS_PATH)!;
-    const valueImports = wiInsights.imports.filter((i) => !i.isTypeOnly);
-    for (const imp of valueImports) {
-      if (imp.specifier === null) {
-        throw new Error('wiInsights.ts has an unresolvable dynamic import — cannot verify it stays inside {File A}');
-      }
-      const resolved = resolveSpecifier(WI_INSIGHTS_PATH, imp.specifier);
-      expect(resolved, `wiInsights.ts has a non-type import of ${imp.specifier}`).toBe(KNOWN.types);
-    }
+    assertValueImportsResolveInto(wiInsights, KNOWN.types);
+  });
+
+  it('self-check: assertValueImportsResolveInto fails CLOSED (throws) on an unresolvable value import instead of silently skipping it', () => {
+    const scanned: ScannedFile = { path: WI_INSIGHTS_PATH, imports: [{ isTypeOnly: false, specifier: null }] };
+    expect(() => assertValueImportsResolveInto(scanned, KNOWN.types)).toThrow(
+      'has an unresolvable dynamic import'
+    );
   });
 
   it('only insightsApi.ts (File C) has a value edge to chatStore or generationStore', () => {
@@ -222,10 +247,15 @@ import type { TokenizerProfile } from '../tokenizer';
     // no way to tell a real comment from these bytes appearing inside a
     // string's contents, and can delete part of a real statement as a
     // result. A real parser never has this failure mode — string-literal
-    // contents are never comment trivia — so this pins the fix.
+    // contents are never comment trivia. The two string halves below form
+    // an unterminated `/* ... */` pair that BRACKETS the import — a
+    // strip-then-regex preprocessor's lazy block-comment regex would scan
+    // from the first `/*` to the first `*/` found anywhere afterward and
+    // delete everything between them, import included.
     const source = `
-const s = 'not a // comment, and not a /* block comment either';
+const a = 'x /* y';
 import { useChatStore } from '../stores/chatStore';
+const b = '*/';
 `;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);
@@ -276,11 +306,33 @@ import { useChatStore } from '../stores/chatStore';
     expect(imports[0].isTypeOnly, 'a dynamic import is never type-only').toBe(false);
   });
 
-  it('self-check: `import.meta` (and `import.meta.env`) is not an import edge — it must produce nothing, even directly above a real import', () => {
+  it('self-check: `import.meta.env` (a bare property access, no call) is not an import edge — it must produce nothing, even directly above a real import', () => {
     const source = `const mode = import.meta.env.MODE;\nimport { useChatStore } from '../stores/chatStore';\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');
+  });
+
+  it('self-check: `import.meta.glob(...)` and `import.meta.globEager(...)` ARE import edges — Vite resolves the glob against the module graph at build time (`tsconfig.app.json` ships `types: ["vite/client"]`)', () => {
+    const globSource = `const g = import.meta.glob('../stores/chatStore.ts', { eager: true });\nvoid g;\n`;
+    const globImports = extractImports(globSource);
+    expect(globImports.length, JSON.stringify(globImports)).toBe(1);
+    expect(globImports[0].specifier).toBe('../stores/chatStore.ts');
+    expect(globImports[0].isTypeOnly, 'an import.meta.glob edge is never type-only').toBe(false);
+
+    const globEagerSource = `const g = import.meta.globEager('../stores/chatStore.ts');\nvoid g;\n`;
+    const globEagerImports = extractImports(globEagerSource);
+    expect(globEagerImports.length, JSON.stringify(globEagerImports)).toBe(1);
+    expect(globEagerImports[0].specifier).toBe('../stores/chatStore.ts');
+    expect(globEagerImports[0].isTypeOnly, 'an import.meta.globEager edge is never type-only').toBe(false);
+  });
+
+  it('self-check: `import.meta.glob(pathVar)` with a non-literal argument is recorded as unresolvable, not dropped', () => {
+    const source = `function f(pathVar: string) {\n  return import.meta.glob(pathVar);\n}\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(1);
+    expect(imports[0].specifier, 'a non-literal import.meta.glob argument cannot be resolved').toBeNull();
+    expect(imports[0].isTypeOnly).toBe(false);
   });
 
   it('self-check: a re-export ("export { x } from \'...\'") is detected', () => {
@@ -337,6 +389,50 @@ import { useChatStore } from '../stores/chatStore';
     expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');
     expect(imports[0].isTypeOnly).toBe(true);
+  });
+
+  it('self-check: an inline `{ type A }` named-import specifier is a VALUE edge, not type-only — under `verbatimModuleSyntax: true` only a declaration-level `import type` elides the statement entirely', () => {
+    const inlineType = `import { type A } from '../stores/chatStore';\n`;
+    const declType = `import type { A } from '../stores/chatStore';\n`;
+
+    const inlineImports = extractImports(inlineType);
+    expect(inlineImports.length, JSON.stringify(inlineImports)).toBe(1);
+    expect(inlineImports[0].isTypeOnly, 'an inline `{ type A }` specifier must NOT make the statement type-only').toBe(
+      false
+    );
+
+    const declImports = extractImports(declType);
+    expect(declImports.length, JSON.stringify(declImports)).toBe(1);
+    expect(declImports[0].isTypeOnly, 'a declaration-level `import type` must be type-only').toBe(true);
+  });
+
+  it('self-check: an inline `{ type A }` re-export specifier is a VALUE edge, and a declaration-level `export type` re-export is type-only', () => {
+    const inlineType = `export { type A } from '../stores/chatStore';\n`;
+    const declType = `export type { A } from '../stores/chatStore';\n`;
+
+    const inlineImports = extractImports(inlineType);
+    expect(inlineImports.length, JSON.stringify(inlineImports)).toBe(1);
+    expect(
+      inlineImports[0].isTypeOnly,
+      'an inline `{ type A }` re-export specifier must NOT make the statement type-only'
+    ).toBe(false);
+
+    const declImports = extractImports(declType);
+    expect(declImports.length, JSON.stringify(declImports)).toBe(1);
+    expect(declImports[0].isTypeOnly, 'a declaration-level `export type` re-export must be type-only').toBe(true);
+  });
+
+  it('self-check: `import type * as ns` (namespace) and `import type X` (default) are both type-only', () => {
+    const namespaceType = `import type * as ns from '../stores/chatStore';\n`;
+    const defaultType = `import type X from '../stores/chatStore';\n`;
+
+    const namespaceImports = extractImports(namespaceType);
+    expect(namespaceImports.length, JSON.stringify(namespaceImports)).toBe(1);
+    expect(namespaceImports[0].isTypeOnly, 'a type-only namespace import must be type-only').toBe(true);
+
+    const defaultImports = extractImports(defaultType);
+    expect(defaultImports.length, JSON.stringify(defaultImports)).toBe(1);
+    expect(defaultImports[0].isTypeOnly, 'a type-only default import must be type-only').toBe(true);
   });
 
   it('self-check: a side-effect import directly above a type-only import produces TWO correct records, not one merged one', () => {

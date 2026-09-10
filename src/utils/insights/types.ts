@@ -333,9 +333,8 @@ export interface TelemetryCoverage {
    *  `/chats/list` already orders by it server-side (`app/routers/
    *  chats.py`); but `api.getChats`'s declared return type is
    *  `{file_name, message_count, last_mes}` only, and chatStore's
-   *  `fetchChatFiles` copies exactly those three fields into `chatFiles`
-   *  — `updated_at` never crosses into this app's in-memory state, so
-   *  this API has nothing to read. `last_mes` is a message-text preview
+   *  `fetchChatFiles` copies exactly those three fields into `chatFiles`.
+   *  `last_mes` is a message-text preview
    *  (ggbc-backend `_last_message_preview`), not a timestamp, and a
    *  chat-filename epoch is a creation time `renameChat` can overwrite —
    *  neither substitutes. */
