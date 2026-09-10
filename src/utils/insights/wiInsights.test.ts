@@ -218,6 +218,27 @@ describe('server budget estimator (I10)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// CONF1 — the client budget TokenFigure's three fields, previously pinned
+// by nothing. profile 'claude' (non-generic) and budget != pinnedTokens so
+// all three fields are independently discriminating in one assertion.
+// ---------------------------------------------------------------------------
+
+describe('client budget TokenFigure (CONF1)', () => {
+  it('basis "raw", estimator the turn profile (not "generic"), tokens the scan budget (not pinnedTokens)', () => {
+    const insight = projectClientTurn(
+      mkClientSource({
+        profile: 'claude',
+        scan: { budget: 4096, pinnedTokens: 137, pinnedOverBudget: false, droppedEntries: [] },
+      })
+    );
+    expect(insight.budget).toEqual({
+      observed: true,
+      value: { basis: 'raw', estimator: 'claude', tokens: 4096 },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // I11 — emittedTokens: 0 observes 0, null refuses (opposite-direction kills)
 // ---------------------------------------------------------------------------
 
@@ -281,6 +302,18 @@ describe('per-entry wrapper null-vs-"none" (I12)', () => {
     );
     expect(insight.entries[0].wrapper).toEqual({ observed: true, value: 'persona' });
     expect(insight.entries[1].wrapper).toEqual({ observed: true, value: 'owner' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONF5 — WiEntryInsight.pinned is a straight passthrough, but no prior
+// fixture ever set it to true, so a hardcoded `pinned: false` was invisible.
+// ---------------------------------------------------------------------------
+
+describe('per-entry pinned passthrough (CONF5)', () => {
+  it('a pinned entry projects pinned: true — kills a hardcoded `pinned: false`', () => {
+    const insight = projectClientTurn(mkClientSource({ entries: [mkEntry({ pinned: true })] }));
+    expect(insight.entries[0].pinned).toBe(true);
   });
 });
 

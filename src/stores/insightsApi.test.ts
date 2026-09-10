@@ -235,6 +235,163 @@ describe('getTurnWiInsight — server eviction wire shapes (I2)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// CONF4 — getTurnWiInsight's PromptBreakdown -> source mapping. Every field
+// below gets its own distinct value in the fixture, so a mapping bug that
+// reads the wrong PromptBreakdown field (or drops one) surfaces as a wrong
+// value here rather than being absorbed by two fields sharing one number.
+// ---------------------------------------------------------------------------
+
+describe('getTurnWiInsight — PromptBreakdown -> source field mapping (CONF4)', () => {
+  it('a client-scanned turn maps all 12 client-path fields from their own PromptBreakdown field, not a neighboring one', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('group', 'claude');
+    breakdown.chatFile = 'conf4-client.jsonl';
+    breakdown.publishedAt = 424242;
+    breakdown.wi.emittedTokens = 501;
+    breakdown.wi.rawTokens = 502;
+    breakdown.wi.budget = 601;
+    breakdown.wi.pinnedTokens = 602;
+    breakdown.wi.pinnedOverBudget = true;
+    breakdown.wi.entries = [
+      {
+        entryId: 'conf4-common-entry',
+        bookId: 'conf4-common-book',
+        emittedTokens: 10,
+        emittedChars: 20,
+        rawTokens: 5,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    breakdown.wi.trimmedFromHistoryEntries = [
+      {
+        entryId: 'conf4-trimmed-entry',
+        bookId: 'conf4-trimmed-book',
+        emittedTokens: 11,
+        emittedChars: 21,
+        rawTokens: 6,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    breakdown.wi.droppedEntries = [
+      {
+        entryId: 'conf4-dropped-entry',
+        bookId: 'conf4-dropped-book',
+        emittedTokens: null,
+        emittedChars: null,
+        rawTokens: 7,
+        placement: null,
+        wrapper: null,
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+
+    const insight = getTurnWiInsight();
+    expect(insight.observed).toBe(true);
+    if (!insight.observed) throw new Error('unreachable');
+    expect(insight.value.engine).toBe('client');
+    expect(insight.value.mode).toBe('group');
+    expect(insight.value.chatFile).toBe('conf4-client.jsonl');
+    expect(insight.value.publishedAt).toBe(424242);
+    expect(insight.value.profile).toBe('claude');
+    expect(insight.value.emittedTotal).toEqual({
+      observed: true,
+      value: { basis: 'emitted', estimator: 'claude', tokens: 501 },
+    });
+    expect(insight.value.rawTotal).toEqual({
+      observed: true,
+      value: { basis: 'raw', estimator: 'claude', tokens: 502 },
+    });
+    expect(insight.value.entries.map((e) => e.entryId)).toEqual(['conf4-common-entry']);
+    expect(insight.value.trimmedFromHistoryEntries.map((e) => e.entryId)).toEqual(['conf4-trimmed-entry']);
+    expect(insight.value.budget).toEqual({
+      observed: true,
+      value: { basis: 'raw', estimator: 'claude', tokens: 601 },
+    });
+    expect(insight.value.pinnedTokens).toEqual({
+      observed: true,
+      value: { basis: 'raw', estimator: 'claude', tokens: 602 },
+    });
+    expect(insight.value.pinnedOverBudget).toEqual({ observed: true, value: true });
+    expect(insight.value.evicted.observed).toBe(true);
+    if (!insight.value.evicted.observed) throw new Error('unreachable');
+    expect(insight.value.evicted.value.map((e) => e.entryId)).toEqual(['conf4-dropped-entry']);
+  });
+
+  it('a server-scanned turn maps the shared 8 fields plus `server` from breakdown.wi.server, not a neighboring field', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'claude');
+    breakdown.chatFile = 'conf4-server.jsonl';
+    breakdown.publishedAt = 434343;
+    breakdown.wi.activationSource = 'server';
+    breakdown.wi.emittedTokens = 511;
+    breakdown.wi.rawTokens = 512;
+    breakdown.wi.entries = [
+      {
+        entryId: 'conf4-server-common-entry',
+        bookId: 'conf4-server-common-book',
+        emittedTokens: 12,
+        emittedChars: 22,
+        rawTokens: 8,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    breakdown.wi.trimmedFromHistoryEntries = [
+      {
+        entryId: 'conf4-server-trimmed-entry',
+        bookId: 'conf4-server-trimmed-book',
+        emittedTokens: 13,
+        emittedChars: 23,
+        rawTokens: 9,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    breakdown.wi.server = {
+      budgetRequested: 999,
+      budgetEstimator: 'generic',
+      evictedEntryIds: [],
+      activatedEntryIds: [],
+    };
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+
+    const insight = getTurnWiInsight();
+    expect(insight.observed).toBe(true);
+    if (!insight.observed) throw new Error('unreachable');
+    expect(insight.value.engine).toBe('server');
+    expect(insight.value.mode).toBe('solo');
+    expect(insight.value.chatFile).toBe('conf4-server.jsonl');
+    expect(insight.value.publishedAt).toBe(434343);
+    expect(insight.value.profile).toBe('claude');
+    expect(insight.value.emittedTotal).toEqual({
+      observed: true,
+      value: { basis: 'emitted', estimator: 'claude', tokens: 511 },
+    });
+    expect(insight.value.rawTotal).toEqual({
+      observed: true,
+      value: { basis: 'raw', estimator: 'claude', tokens: 512 },
+    });
+    expect(insight.value.entries.map((e) => e.entryId)).toEqual(['conf4-server-common-entry']);
+    expect(insight.value.trimmedFromHistoryEntries.map((e) => e.entryId)).toEqual([
+      'conf4-server-trimmed-entry',
+    ]);
+    // budgetRequested 999 could only have come from breakdown.wi.server —
+    // no other field on this fixture carries that number.
+    expect(insight.value.budget).toEqual({
+      observed: true,
+      value: { basis: 'raw', estimator: 'generic', tokens: 999 },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // I5 — empty chat list refuses, paired with a non-empty case
 // ---------------------------------------------------------------------------
 
@@ -437,6 +594,29 @@ describe('getEntryFiringAggregate — generations completeness (I6)', () => {
     // 3 + 5 = 8 — a mutation that reports only the last (5) or first (3)
     // file's count, instead of summing across scope, fails this.
     expect(agg.generations).toEqual({ observed: true, complete: true, exact: 8 });
+  });
+
+  it('a caller-supplied scope naming the same file twice is deduped before counting — the sum does not double, and stays the exact arm (CONF3)', async () => {
+    resetStores();
+    useWorldInfoStore.getState().resetUser();
+    const BOOK = 'dup-book';
+    const ENTRY = 'dup-entry';
+    const CHAT_FILE = 'i6-duplicate.jsonl';
+    vi.spyOn(api, 'getChatWithHeader').mockResolvedValue({
+      header: { wi_fired: { [wiFiredKey(BOOK, ENTRY)]: { first_turn: 0, last_turn: 0, count: 3 } } },
+      messages: [],
+      server_ts: 1,
+    });
+    await useChatStore.getState().loadChat('avatar.png', CHAT_FILE);
+    useChatStore.setState({ chatFiles: [{ fileName: CHAT_FILE, messageCount: 0, lastMessage: '' }] });
+
+    const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }], {
+      chatFiles: [CHAT_FILE, CHAT_FILE],
+    });
+    // A count of 6 would mean the duplicate file inflated the sum. Once the
+    // scope is a set, the one real chat it names is still fully covered, so
+    // the count stays the exact arm, not a downgraded atLeast.
+    expect(agg.generations).toEqual({ observed: true, complete: true, exact: 3 });
   });
 });
 

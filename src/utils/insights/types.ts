@@ -137,9 +137,7 @@ export type Observed<T> = { readonly observed: true; readonly value: T } | Unobs
 
 /**
  * A token count that names its own basis and the estimator that produced
- * it. A bare `number` is never a token figure anywhere in this API — see
- * `wiInsights.test.ts`'s recursive-walker test (I9), which fails a figure
- * that loses either field.
+ * it. A bare `number` is never a token figure anywhere in this API.
  */
 export interface TokenFigure {
   /** `'emitted'`: post-macro, post-wrapper cost of what actually reached

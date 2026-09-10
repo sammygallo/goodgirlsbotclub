@@ -105,10 +105,10 @@ export function getTurnWiInsight(opts?: { forChatFile?: string }): Observed<Turn
 function resolveChatFileScope(opts?: {
   chatFiles?: readonly string[];
 }): { scope: ChatScope; files: readonly string[] } {
-  if (opts?.chatFiles) return { scope: 'caller-supplied', files: opts.chatFiles };
+  if (opts?.chatFiles) return { scope: 'caller-supplied', files: [...new Set(opts.chatFiles)] };
   return {
     scope: 'in-memory-chat-list',
-    files: useChatStore.getState().chatFiles.map((f) => f.fileName),
+    files: [...new Set(useChatStore.getState().chatFiles.map((f) => f.fileName))],
   };
 }
 
