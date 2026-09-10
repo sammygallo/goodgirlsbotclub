@@ -99,6 +99,19 @@ export const OBSERVED_FALSE_REASONS = [
   'chat-list-not-loaded',
   'chat-not-hydrated',
   'telemetry-coverage-partial',
+  // A caller-supplied `chatFiles` scope names chats by bare file name —
+  // and a file name is a chat identity only within the ONE character's
+  // chat list it came from (`chatStore.chatFiles`, populated per-character
+  // by `fetchChatFiles(avatarUrl)`). `wiFiredByFile` (chatStore.ts) is one
+  // module-level map keyed by bare file name across EVERY character, so if
+  // two different characters' chats happen to share a file name, their
+  // firings are already merged under that one key before this API ever
+  // runs. A caller-supplied list can be assembled across characters, so
+  // this API cannot verify its names denote distinct chats — the firing
+  // count for that scope is always a lower bound, never `exact`, even when
+  // every named chat is hydrated and non-partial. The in-memory scope has
+  // no such gap: its own file names really are identities.
+  'chat-file-names-not-verified-distinct',
   'transcript-not-in-memory',
   // The open chat IS in scope, but nothing in chatStore proves `messages`
   // belongs to it: `loadChat`/`loadGroupChat` move `currentChatFile`
@@ -342,8 +355,12 @@ export interface TelemetryCoverage {
 /**
  * How many times one entry fired, across the chats a `TelemetryCoverage`
  * claims. `exact` only when every in-scope chat both has been opened this
- * session AND has no legacy-remap partial-coverage flag; otherwise the
- * number is a LOWER BOUND (`atLeast`) and is never spelled `exact`.
+ * session AND has no legacy-remap partial-coverage flag AND the scope is
+ * `'in-memory-chat-list'` — a caller-supplied scope's file names cannot be
+ * verified to denote distinct chats (`chat-file-names-not-verified-
+ * distinct`, OBSERVED_FALSE_REASONS above), so it is never `exact`, even
+ * when every named chat is hydrated and non-partial. Otherwise the number
+ * is a LOWER BOUND (`atLeast`) and is never spelled `exact`.
  */
 export type FiringCount =
   | { readonly observed: true; readonly complete: true; readonly exact: number }

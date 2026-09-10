@@ -85,6 +85,35 @@ describe('pinnedTokens / pinnedOverBudget (I1)', () => {
     });
     expect(insight.pinnedOverBudget).toEqual({ observed: true, value: true });
   });
+
+  it('client: pinnedOverBudget false is also reported as false — kills a hardcoded `value: true` (round 10, job 2)', () => {
+    // Every other fixture in this file that asserts `pinnedOverBudget` as
+    // an OUTPUT (the test above, and CONF4/I18 in insightsApi.test.ts) uses
+    // `true` — a hardcoded `value: true` passed all of them.
+    const insight = projectClientTurn(
+      mkClientSource({ scan: { budget: 500, pinnedTokens: 137, pinnedOverBudget: false, droppedEntries: [] } })
+    );
+    expect(insight.pinnedOverBudget).toEqual({ observed: true, value: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 10, Job 2 — `chatFile: string | null` was never asserted with
+// `null` as an OUTPUT anywhere in this module's test suite (every fixture,
+// in both this file and insightsApi.test.ts, only ever set/asserted a real
+// file-name string) — a coercion like `src.chatFile ?? 'unknown'` would
+// have passed every existing test.
+// ---------------------------------------------------------------------------
+describe('chatFile null passthrough', () => {
+  it('client: chatFile null passes through as null, not a coerced default', () => {
+    const insight = projectClientTurn(mkClientSource({ chatFile: null }));
+    expect(insight.chatFile).toBeNull();
+  });
+
+  it('server: same passthrough', () => {
+    const insight = projectServerTurn(mkServerSource({ chatFile: null }));
+    expect(insight.chatFile).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -532,5 +561,316 @@ describe('placementSlot / WiPlacementInsight.slot format (C12)', () => {
       observed: true,
       value: { slot: 'C:wi_before_char' },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 10, Job 2 — full output-surface inventory. One CLIENT turn and one
+// SERVER turn, each built so every number in the SAME turn is distinct from
+// every other number in that turn (a field swap or wrong-source read can't
+// hide behind a shared value), then every field of ClientTurnWiInsight /
+// ServerTurnWiInsight / WiEntryInsight / EvictedEntryInsight /
+// WiPlacementInsight / TokenFigure reachable from these two turns is
+// asserted as its own table row. Table-driven (`it.each`) so one wrong
+// field reports as one failing row, not a full-object diff — and existing
+// targeted tests above are left in place; this is an additional systematic
+// layer, not a replacement.
+// ---------------------------------------------------------------------------
+describe('full output-surface inventory — every field, both directions', () => {
+  const clientRenderedEntry = mkEntry({
+    entryId: 'inv-client-entry',
+    bookId: 'inv-client-book',
+    emittedTokens: 111,
+    rawTokens: 55,
+    placement: { stage: 'A', sectionId: 'wi_before_char' },
+    wrapper: 'persona',
+    // Set even though the client engine always refuses this field — proves
+    // the refusal is unconditional, not merely "absent because unset".
+    activationReason: 'keyword',
+    pinned: true,
+  });
+  const clientTrimmedEntry = mkEntry({
+    entryId: 'inv-client-trimmed',
+    bookId: 'inv-client-trimmed-book',
+    emittedTokens: 222,
+    rawTokens: 66,
+    placement: { stage: 'B', cls: 'wi_at_depth', depth: 7 },
+    wrapper: 'owner',
+    pinned: false,
+  });
+  const clientDroppedEntry = mkEntry({
+    entryId: 'inv-client-dropped',
+    bookId: 'inv-client-dropped-book',
+    emittedTokens: null,
+    rawTokens: 33,
+    placement: null,
+    wrapper: null,
+    pinned: false,
+  });
+  const client = projectClientTurn(
+    mkClientSource({
+      mode: 'group',
+      chatFile: 'inv-client.jsonl',
+      publishedAt: 90001,
+      profile: 'gemini',
+      emittedTokens: 701,
+      rawTokens: 702,
+      entries: [clientRenderedEntry],
+      trimmedFromHistoryEntries: [clientTrimmedEntry],
+      scan: { budget: 801, pinnedTokens: 802, pinnedOverBudget: true, droppedEntries: [clientDroppedEntry] },
+    })
+  );
+
+  const serverRenderedEntry = mkEntry({
+    entryId: 'inv-server-entry',
+    bookId: 'inv-server-book',
+    emittedTokens: 444,
+    rawTokens: 77,
+    placement: { stage: 'C', sectionId: 'wi_after_char' },
+    wrapper: 'none',
+    activationReason: 'semantic',
+    pinned: true,
+  });
+  const serverTrimmedEntry = mkEntry({
+    entryId: 'inv-server-trimmed',
+    bookId: 'inv-server-trimmed-book',
+    emittedTokens: 555,
+    rawTokens: 88,
+    placement: { stage: 'A', sectionId: 'wi_after_char' },
+    wrapper: 'persona',
+    activationReason: 'sticky',
+    pinned: false,
+  });
+  const server = projectServerTurn(
+    mkServerSource({
+      mode: 'solo',
+      chatFile: 'inv-server.jsonl',
+      publishedAt: 90002,
+      profile: 'llama',
+      emittedTokens: 703,
+      rawTokens: 704,
+      entries: [serverRenderedEntry],
+      trimmedFromHistoryEntries: [serverTrimmedEntry],
+      server: { budgetRequested: 9001, budgetEstimator: 'generic', evictedEntryIds: ['inv-evicted-id'] },
+    })
+  );
+
+  const rows: { label: string; actual: unknown; expected: unknown }[] = [
+    // --- ClientTurnWiInsight: every field of CommonTurnWiInsight plus the
+    // client-only fields (engine, evicted, pinnedTokens, pinnedOverBudget).
+    { label: 'client.mode', actual: client.mode, expected: 'group' },
+    { label: 'client.chatFile', actual: client.chatFile, expected: 'inv-client.jsonl' },
+    { label: 'client.publishedAt', actual: client.publishedAt, expected: 90001 },
+    { label: 'client.profile', actual: client.profile, expected: 'gemini' },
+    { label: 'client.engine', actual: client.engine, expected: 'client' },
+    {
+      label: 'client.emittedTotal',
+      actual: client.emittedTotal,
+      expected: { observed: true, value: { basis: 'emitted', estimator: 'gemini', tokens: 701 } },
+    },
+    {
+      label: 'client.rawTotal',
+      actual: client.rawTotal,
+      expected: { observed: true, value: { basis: 'raw', estimator: 'gemini', tokens: 702 } },
+    },
+    {
+      label: 'client.budget',
+      actual: client.budget,
+      expected: { observed: true, value: { basis: 'raw', estimator: 'gemini', tokens: 801 } },
+    },
+    {
+      label: 'client.pinnedTokens',
+      actual: client.pinnedTokens,
+      expected: { observed: true, value: { basis: 'raw', estimator: 'gemini', tokens: 802 } },
+    },
+    { label: 'client.pinnedOverBudget', actual: client.pinnedOverBudget, expected: { observed: true, value: true } },
+    // --- WiEntryInsight, every field, via entries[0].
+    { label: 'client.entries[0].entryId', actual: client.entries[0].entryId, expected: 'inv-client-entry' },
+    { label: 'client.entries[0].bookId', actual: client.entries[0].bookId, expected: 'inv-client-book' },
+    {
+      label: 'client.entries[0].rawTokens',
+      actual: client.entries[0].rawTokens,
+      expected: { basis: 'raw', estimator: 'gemini', tokens: 55 },
+    },
+    {
+      label: 'client.entries[0].emittedTokens',
+      actual: client.entries[0].emittedTokens,
+      expected: { observed: true, value: { basis: 'emitted', estimator: 'gemini', tokens: 111 } },
+    },
+    {
+      label: 'client.entries[0].wrapper',
+      actual: client.entries[0].wrapper,
+      expected: { observed: true, value: 'persona' },
+    },
+    {
+      label: 'client.entries[0].placement',
+      actual: client.entries[0].placement,
+      expected: { observed: true, value: { slot: 'A:wi_before_char' } },
+    },
+    {
+      label: 'client.entries[0].activationReason',
+      actual: client.entries[0].activationReason,
+      expected: { observed: false, why: 'client-scan-computes-no-activation-reason' },
+    },
+    { label: 'client.entries[0].pinned', actual: client.entries[0].pinned, expected: true },
+    // --- WiEntryInsight again, via trimmedFromHistoryEntries[0] — distinct
+    // values, and the OTHER placement stage (B), so stage A and stage B
+    // can't be told apart by a fallthrough.
+    {
+      label: 'client.trimmedFromHistoryEntries[0].entryId',
+      actual: client.trimmedFromHistoryEntries[0].entryId,
+      expected: 'inv-client-trimmed',
+    },
+    {
+      label: 'client.trimmedFromHistoryEntries[0].bookId',
+      actual: client.trimmedFromHistoryEntries[0].bookId,
+      expected: 'inv-client-trimmed-book',
+    },
+    {
+      label: 'client.trimmedFromHistoryEntries[0].rawTokens',
+      actual: client.trimmedFromHistoryEntries[0].rawTokens,
+      expected: { basis: 'raw', estimator: 'gemini', tokens: 66 },
+    },
+    {
+      label: 'client.trimmedFromHistoryEntries[0].emittedTokens',
+      actual: client.trimmedFromHistoryEntries[0].emittedTokens,
+      expected: { observed: true, value: { basis: 'emitted', estimator: 'gemini', tokens: 222 } },
+    },
+    {
+      label: 'client.trimmedFromHistoryEntries[0].wrapper',
+      actual: client.trimmedFromHistoryEntries[0].wrapper,
+      expected: { observed: true, value: 'owner' },
+    },
+    {
+      label: 'client.trimmedFromHistoryEntries[0].placement',
+      actual: client.trimmedFromHistoryEntries[0].placement,
+      expected: { observed: true, value: { slot: 'B:wi_at_depth:7' } },
+    },
+    {
+      label: 'client.trimmedFromHistoryEntries[0].pinned',
+      actual: client.trimmedFromHistoryEntries[0].pinned,
+      expected: false,
+    },
+    // --- WiEntryInsight a third time, via evicted[0] — the never-rendered
+    // refusal side (entry-never-rendered on emittedTokens/wrapper/placement).
+    {
+      label: 'client.evicted',
+      actual: client.evicted,
+      expected: {
+        observed: true,
+        value: [
+          {
+            entryId: 'inv-client-dropped',
+            bookId: 'inv-client-dropped-book',
+            rawTokens: { basis: 'raw', estimator: 'gemini', tokens: 33 },
+            emittedTokens: { observed: false, why: 'entry-never-rendered' },
+            wrapper: { observed: false, why: 'entry-never-rendered' },
+            placement: { observed: false, why: 'entry-never-rendered' },
+            activationReason: { observed: false, why: 'client-scan-computes-no-activation-reason' },
+            pinned: false,
+          },
+        ],
+      },
+    },
+
+    // --- ServerTurnWiInsight: same field list, a wholly distinct fixture.
+    { label: 'server.mode', actual: server.mode, expected: 'solo' },
+    { label: 'server.chatFile', actual: server.chatFile, expected: 'inv-server.jsonl' },
+    { label: 'server.publishedAt', actual: server.publishedAt, expected: 90002 },
+    { label: 'server.profile', actual: server.profile, expected: 'llama' },
+    { label: 'server.engine', actual: server.engine, expected: 'server' },
+    {
+      label: 'server.emittedTotal',
+      actual: server.emittedTotal,
+      expected: { observed: true, value: { basis: 'emitted', estimator: 'llama', tokens: 703 } },
+    },
+    {
+      label: 'server.rawTotal',
+      actual: server.rawTotal,
+      expected: { observed: true, value: { basis: 'raw', estimator: 'llama', tokens: 704 } },
+    },
+    // budget's estimator is 'generic' (server.budgetEstimator), NEVER the
+    // turn's own profile 'llama' — I10's rule, reinforced here.
+    {
+      label: 'server.budget',
+      actual: server.budget,
+      expected: { observed: true, value: { basis: 'raw', estimator: 'generic', tokens: 9001 } },
+    },
+    {
+      label: 'server.pinnedTokens',
+      actual: server.pinnedTokens,
+      expected: { observed: false, why: 'server-path-no-scan-report' },
+    },
+    {
+      label: 'server.pinnedOverBudget',
+      actual: server.pinnedOverBudget,
+      expected: { observed: false, why: 'server-path-no-scan-report' },
+    },
+    // --- WiEntryInsight, server engine — activationReason CAN observe
+    // here, unlike the client engine above.
+    { label: 'server.entries[0].entryId', actual: server.entries[0].entryId, expected: 'inv-server-entry' },
+    { label: 'server.entries[0].bookId', actual: server.entries[0].bookId, expected: 'inv-server-book' },
+    {
+      label: 'server.entries[0].rawTokens',
+      actual: server.entries[0].rawTokens,
+      expected: { basis: 'raw', estimator: 'llama', tokens: 77 },
+    },
+    {
+      label: 'server.entries[0].emittedTokens',
+      actual: server.entries[0].emittedTokens,
+      expected: { observed: true, value: { basis: 'emitted', estimator: 'llama', tokens: 444 } },
+    },
+    {
+      label: 'server.entries[0].wrapper',
+      actual: server.entries[0].wrapper,
+      expected: { observed: true, value: 'none' },
+    },
+    {
+      label: 'server.entries[0].placement',
+      actual: server.entries[0].placement,
+      expected: { observed: true, value: { slot: 'C:wi_after_char' } },
+    },
+    {
+      label: 'server.entries[0].activationReason',
+      actual: server.entries[0].activationReason,
+      expected: { observed: true, value: 'semantic' },
+    },
+    { label: 'server.entries[0].pinned', actual: server.entries[0].pinned, expected: true },
+    {
+      label: 'server.trimmedFromHistoryEntries[0].placement',
+      actual: server.trimmedFromHistoryEntries[0].placement,
+      expected: { observed: true, value: { slot: 'A:wi_after_char' } },
+    },
+    {
+      label: 'server.trimmedFromHistoryEntries[0].activationReason',
+      actual: server.trimmedFromHistoryEntries[0].activationReason,
+      expected: { observed: true, value: 'sticky' },
+    },
+    {
+      label: 'server.trimmedFromHistoryEntries[0].pinned',
+      actual: server.trimmedFromHistoryEntries[0].pinned,
+      expected: false,
+    },
+    // --- EvictedEntryInsight — entryId is real; bookId/tokens ALWAYS
+    // refuse `server-reports-id-only` (the server never reports either) —
+    // the only arm this type ever takes (see its own doc comment, types.ts).
+    {
+      label: 'server.evicted',
+      actual: server.evicted,
+      expected: {
+        observed: true,
+        value: [
+          {
+            entryId: 'inv-evicted-id',
+            bookId: { observed: false, why: 'server-reports-id-only' },
+            tokens: { observed: false, why: 'server-reports-id-only' },
+          },
+        ],
+      },
+    },
+  ];
+
+  it.each(rows)('$label', ({ actual, expected }) => {
+    expect(actual).toEqual(expected);
   });
 });

@@ -203,6 +203,17 @@ export function getTelemetryCoverage(opts?: { chatFiles?: readonly string[] }): 
  * this lookup can't see). `chat-not-hydrated` takes priority over
  * `telemetry-coverage-partial` when both are present in scope — an
  * entirely un-opened chat is a bigger gap than a partially-mapped one.
+ *
+ * A third, lower-priority downgrade applies only to a caller-supplied
+ * scope: even when every named chat is hydrated and non-partial, a bare
+ * file name is a chat identity only within the one character's chat list
+ * it came from — `wiFiredByFile` (chatStore.ts) is keyed by bare file name
+ * across every character, so a caller-supplied list can silently collapse
+ * two different characters' same-named chats onto one key. The sum is
+ * still real (nothing here inflates or drops it), but the completeness
+ * claim is not, so this arm never reports `complete: true` for that scope
+ * (`chat-file-names-not-verified-distinct`, OBSERVED_FALSE_REASONS,
+ * types.ts).
  */
 function computeFiringCount(
   key: { bookId: string; entryId: string },
@@ -231,6 +242,14 @@ function computeFiringCount(
   if (anyUnhydrated) return { observed: true, complete: false, atLeast: sum, why: 'chat-not-hydrated' };
   if (anyPartial) {
     return { observed: true, complete: false, atLeast: sum, why: 'telemetry-coverage-partial' };
+  }
+  if (coverage.scope === 'caller-supplied') {
+    return {
+      observed: true,
+      complete: false,
+      atLeast: sum,
+      why: 'chat-file-names-not-verified-distinct',
+    };
   }
   return { observed: true, complete: true, exact: sum };
 }
