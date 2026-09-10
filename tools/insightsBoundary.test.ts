@@ -36,21 +36,56 @@ interface ImportStatement {
 }
 
 /**
- * Finds every `import ... from '...'` statement in `source`, tagging
- * whether it is a statement-level `import type` (verbatimModuleSyntax's
- * form for a type-only import — the only form this codebase writes; see
- * File A/B's own headers). The lazy `[\s\S]*?` lets the import clause span
- * multiple lines (a multi-name named import wrapped across lines), and
- * stops at the first `from '...'` it reaches, which is correct for any
- * well-formed single import statement.
+ * Finds every import-shaped edge in `source` — four distinct syntactic
+ * forms, each matched by its own regex, tagging whether each is a
+ * statement-level `import type` (verbatimModuleSyntax's form for a
+ * type-only import — the only form this codebase writes; see File A/B's
+ * own headers):
+ *
+ *   - `import '../x';`              (side-effect — no clause, no `from`)
+ *   - `import('../x')`              (dynamic — a call expression)
+ *   - `import (type)? ... from '../x'`      (static, with a clause)
+ *   - `export (type)? { ... } | * from '../x'`  (re-export)
+ *
+ * The static-import and re-export regexes use a lazy `[^;]*?` (not
+ * `[\s\S]*?`) between the keyword and `from` — restricted to exclude `;`
+ * so the clause can span multiple lines (a multi-name named import
+ * wrapped across lines) but can never cross a statement terminator. That
+ * restriction is what keeps a side-effect import directly above another
+ * import from being swallowed into the SECOND statement's `from` clause
+ * (matched instead, correctly, by the side-effect regex on its own pass)
+ * — see I8's swallowing self-check.
  */
 function extractImports(source: string): ImportStatement[] {
   const out: ImportStatement[] = [];
-  const re = /import\s+(type\s+)?[\s\S]*?\bfrom\s+(['"])([^'"]+)\2/g;
+
+  // Side-effect import: a bare string specifier, no clause, no `from`.
+  const sideEffectRe = /\bimport\s*(['"])([^'"]+)\1\s*;/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(source))) {
+  while ((m = sideEffectRe.exec(source))) {
+    out.push({ raw: m[0], isTypeOnly: false, specifier: m[2] });
+  }
+
+  // Dynamic import: `import('../x')`, anywhere in an expression. Always a
+  // value-level import — there is no type-only dynamic-import syntax.
+  const dynamicRe = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
+  while ((m = dynamicRe.exec(source))) {
+    out.push({ raw: m[0], isTypeOnly: false, specifier: m[2] });
+  }
+
+  // Static `import (type)? ... from '../x'`.
+  const fromRe = /\bimport\s+(type\s+)?[^;]*?\bfrom\s+(['"])([^'"]+)\2/g;
+  while ((m = fromRe.exec(source))) {
     out.push({ raw: m[0], isTypeOnly: !!m[1], specifier: m[3] });
   }
+
+  // Re-export: `export { x } from '../x'`, `export * from '../x'`,
+  // `export type { x } from '../x'`.
+  const reExportRe = /\bexport\s+(type\s+)?[^;]*?\bfrom\s+(['"])([^'"]+)\2/g;
+  while ((m = reExportRe.exec(source))) {
+    out.push({ raw: m[0], isTypeOnly: !!m[1], specifier: m[3] });
+  }
+
   return out;
 }
 
@@ -207,5 +242,56 @@ import type { TokenizerProfile } from '../tokenizer';
     expect(imports.length).toBe(1);
     expect(imports[0].specifier).toBe('../tokenizer');
     expect(imports[0].isTypeOnly).toBe(true);
+  });
+
+  it('self-check: a side-effect import ("import \'x\';", no clause, no `from`) is detected', () => {
+    const source = `import '../stores/chatStore';\nexport const x = 1;\n`;
+    const imports = extractImports(source);
+    expect(imports.length).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly, 'a side-effect import is never type-only').toBe(false);
+  });
+
+  it('self-check: a dynamic import ("await import(...)") is detected', () => {
+    const source = `async function f() {\n  await import('../stores/chatStore');\n}\n`;
+    const imports = extractImports(source);
+    expect(imports.length).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly, 'a dynamic import is never type-only').toBe(false);
+  });
+
+  it('self-check: a re-export ("export { x } from \'...\'") is detected', () => {
+    const source = `export { useChatStore } from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  it('self-check: a type-only re-export is detected as type-only', () => {
+    const source = `export type { ChatMessage } from '../stores/chatStore';\n`;
+    const imports = extractImports(source);
+    expect(imports.length).toBe(1);
+    expect(imports[0].specifier).toBe('../stores/chatStore');
+    expect(imports[0].isTypeOnly).toBe(true);
+  });
+
+  it('self-check: a side-effect import directly above a type-only import produces TWO correct records, not one wrong one', () => {
+    // This is the swallowing bug itself: the OLD `[\s\S]*?` clause matcher
+    // would span from this statement's own "import" keyword all the way
+    // to the SECOND statement's "from", producing one record with the
+    // wrong specifier ('../other') and isTypeOnly:false — and reporting
+    // ZERO records for '../stores/chatStore'.
+    const source = `import '../stores/chatStore';\nimport type { Foo } from '../other';\n`;
+    const imports = extractImports(source);
+    expect(imports.length, JSON.stringify(imports)).toBe(2);
+
+    const sideEffect = imports.find((i) => i.specifier === '../stores/chatStore');
+    expect(sideEffect, JSON.stringify(imports)).toBeTruthy();
+    expect(sideEffect!.isTypeOnly).toBe(false);
+
+    const typeOnly = imports.find((i) => i.specifier === '../other');
+    expect(typeOnly, JSON.stringify(imports)).toBeTruthy();
+    expect(typeOnly!.isTypeOnly).toBe(true);
   });
 });
