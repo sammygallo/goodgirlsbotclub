@@ -24,10 +24,6 @@ const WI_INSIGHTS_PATH = new URL('../src/utils/insights/wiInsights.ts', import.m
 const INSIGHTS_API_PATH = new URL('../src/stores/insightsApi.ts', import.meta.url).pathname;
 const CHAT_STORE_PATH = new URL('../src/stores/chatStore.ts', import.meta.url).pathname;
 const GENERATION_STORE_PATH = new URL('../src/stores/generationStore.ts', import.meta.url).pathname;
-// This file's own path — used by the non-vacuity self-check below to prove
-// `extractPathLiterals` actually pulls literals out of a real file on disk
-// (this file itself references several real relative paths, above).
-const THIS_FILE_PATH = new URL(import.meta.url).pathname;
 
 interface ImportStatement {
   isTypeOnly: boolean;
@@ -138,31 +134,6 @@ function typeOnlySpecifierPositions(sourceFile: ts.SourceFile): Set<number> {
  *  POSITION, never by string value — the same path referenced a second
  *  time by a mechanism this guard does not special-case is still flagged.
  *
- *  SCOPE — this is the one place that states it; anywhere else that needs
- *  it should point back here instead of restating it. Both halves are
- *  pinned by the self-checks below (I9), run as part of this suite:
- *    - CAUGHT: a *literal* relative path under any syntax whatsoever — an
- *      import, an export, a dynamic `import(...)`, `import.meta.glob`,
- *      `new Worker(new URL(...))`, or a bare string — because this scan
- *      does not special-case any of them: it walks every AST node and
- *      flags any `StringLiteralLike` whose text is path-shaped, so an
- *      import/export/dynamic-import specifier is exactly the same case to
- *      it as a bare string. The self-checks below cover the syntaxes
- *      `extractImports` cannot see at all (`new Worker(new URL(...))`, a
- *      bare string/template initializer) plus a plain import specifier
- *      (proving the exclusion logic does not over-exclude); the
- *      import/export/dynamic-import forms are exercised directly against
- *      `extractPathLiterals` in that same block.
- *    - NOT CAUGHT: a path that is only COMPUTED at runtime.
- *      `` `../../stores/${n}` `` (a substituted template) produces a
- *      TemplateExpression, not a StringLiteral/NoSubstitutionTemplateLiteral
- *      — `ts.isStringLiteralLike` is false for it, so it is invisible here.
- *      A path assembled by concatenating fragments that do not themselves
- *      start with `./` or `../` (e.g. `dir + '/../stores/chatStore'` where
- *      `dir` holds `'..'`) never produces a single literal the regex above
- *      matches either. This is a known, accepted gap, not a "fail-closed"
- *      guarantee — do not call this guard fail-closed.
- *
  *  Deliberate trade-off on the caught side: a path-shaped string that is
  *  NOT actually a module reference will still be flagged. That is the
  *  intended direction — a false positive breaks the build and a human
@@ -264,8 +235,7 @@ function assertValueImportsResolveInto(file: ScannedFile, boundary: string): voi
  *  `extractPathLiterals` instead of `extractImports`: asserts every
  *  relative-path-shaped literal in `file` — found by syntax-agnostic scan,
  *  not limited to recognized import/export forms — resolves into
- *  `boundary`. See `extractPathLiterals`'s doc comment for exactly what
- *  this scan does and does not catch. */
+ *  `boundary`. */
 function assertPathLiteralsResolveInto(file: ScannedFile, boundary: string): void {
   for (const lit of file.pathLiterals) {
     const resolved = resolveSpecifier(file.path, lit.text);
@@ -301,7 +271,7 @@ describe('insights API import boundary (AC1)', () => {
     assertValueImportsResolveInto(wiInsights, KNOWN.types);
   });
 
-  it("wiInsights.ts (File B) has no relative-path-shaped literal outside {File A} — catches any syntax that names the module as a literal (new Worker(new URL(...)), import.meta.glob, a bare string), not just import/export syntax; see extractPathLiterals's doc comment for the exact scope (literal paths only, not computed ones)", () => {
+  it('wiInsights.ts (File B) has no relative-path-shaped literal outside {File A} — catches any syntax that names the module as a literal (new Worker(new URL(...)), import.meta.glob, a bare string), not just import/export syntax', () => {
     const wiInsights = scannedFiles.find((f) => f.path === WI_INSIGHTS_PATH)!;
     assertPathLiteralsResolveInto(wiInsights, KNOWN.types);
   });
@@ -780,8 +750,19 @@ const w = new Worker(new URL('../../stores/chatStore', import.meta.url));
     expect(literals, JSON.stringify(literals)).toEqual([]);
   });
 
-  it('non-vacuity: `scanFile` actually populates `pathLiterals` from a REAL file on disk, not just from synthetic strings above — scanning this test file\'s own source through `scanFile` (it references several real relative paths via `new URL(\'../src/...\', import.meta.url)` at its top) must yield at least one path literal, so a `scanFile` stubbed to always return `pathLiterals: []` cannot pass silently', () => {
-    const ownScan = scanFile(THIS_FILE_PATH);
-    expect(ownScan.pathLiterals.length).toBeGreaterThan(0);
+  it('non-vacuity: types.ts (File A) and wiInsights.ts (File B) genuinely contain relative-path specifiers PRE-exclusion — so the zero-survivors assertions above are the type-only exclusion actually firing on something, not an empty scan with nothing to exclude in the first place', () => {
+    const relativeSpecifiers = (file: ScannedFile) =>
+      file.imports.map((i) => i.specifier).filter((s): s is string => s !== null && /^\.\.?\//.test(s));
+
+    const types = scannedFiles.find((f) => f.path === TYPES_PATH)!;
+    expect(relativeSpecifiers(types)).toEqual(['../tokenizer']);
+
+    const wiInsights = scannedFiles.find((f) => f.path === WI_INSIGHTS_PATH)!;
+    expect(relativeSpecifiers(wiInsights)).toEqual(['./types', '../tokenizer']);
+  });
+
+  it("non-vacuity: `scanFile`'s `pathLiterals` extraction really runs against a real scanned file's real content — insightsApi.ts (File C) has non-type-only relative imports (`./chatStore`, `./generationStore`, ...) that `extractPathLiterals` does not exclude, so a `scanFile` stubbed to always return `pathLiterals: []` — which every File A/File B assertion above would pass vacuously, since their own correct pathLiterals is already `[]` — goes red here instead", () => {
+    const insightsApi = scannedFiles.find((f) => f.path === INSIGHTS_API_PATH)!;
+    expect(insightsApi.pathLiterals.length).toBeGreaterThan(0);
   });
 });
