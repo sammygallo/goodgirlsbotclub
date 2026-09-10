@@ -13,14 +13,13 @@
  * `projectServerTurn` — AC4's Layer 1 (lexical split). Which one a given
  * turn goes through is decided by the CALLER (`insightsApi.ts`, reading
  * `PromptBreakdown.wi.activationSource`) — not by this module, and
- * specifically not by whether server facts happen to be present. That
- * distinction is the highest-priority mutation `insightsApi.test.ts`'s
- * I14 guards: deriving the split from `wi.server`'s truthiness instead of
- * `activationSource` would still put a client-scanned turn on the client
- * side and a normal server turn on the server side, but would mis-route a
- * turn stamped `activationSource: 'server'` whose `wi.server` never got
- * recorded — reconstructing exactly the "zeroed wiScanReport read as a
- * real figure" lie AC4 exists to prevent.
+ * specifically not by whether server facts happen to be present. Deriving
+ * the split from `wi.server`'s truthiness instead of `activationSource`
+ * would still put a client-scanned turn on the client side and a normal
+ * server turn on the server side, but would mis-route a turn stamped
+ * `activationSource: 'server'` whose `wi.server` never got recorded —
+ * reconstructing exactly the "zeroed wiScanReport read as a real figure"
+ * lie AC4 exists to prevent.
  *
  * `ServerTurnSource` (types.ts) has no `scan` field at all, so
  * `projectServerTurn` has no lexical way to read a client-scan number even
@@ -130,10 +129,9 @@ function projectEntry(
 
 /**
  * Turn-level aggregate (`emittedTotal`/`rawTotal`). `=== null` (never
- * `?? 0`) and no truthiness test on `tokens` (never `if (!tokens)`) — I11
- * pins both: a mutation to either check fails in the OPPOSITE direction
- * (defaulting null to a false "observed 0", or refusing a genuine 0 as
- * unobserved).
+ * `?? 0`) and no truthiness test on `tokens` (never `if (!tokens)`): a
+ * mutation to either check fails in the OPPOSITE direction (defaulting
+ * null to a false "observed 0", or refusing a genuine 0 as unobserved).
  */
 function projectAggregateTokens(
   tokens: number | null,

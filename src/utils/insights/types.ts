@@ -308,11 +308,9 @@ export interface TurnCoverage {
   /** AI-turn count (prior non-user, non-system messages) of the chat
    *  currently open in `chatStore`. UNCONDITIONALLY refuses (issue #530):
    *  transcript identity is unprovable from existing chatStore state, so
-   *  this never reports a count, only which of two reasons applies —
-   *  `transcript-not-in-memory` when no chat in scope is the open one, or
-   *  `transcript-identity-unprovable` when the open chat IS in scope but
-   *  nothing proves `messages` belongs to it (see that reason's own
-   *  comment, OBSERVED_FALSE_REASONS above, for why). */
+   *  this never reports a count, only a reason for the refusal (see
+   *  OBSERVED_FALSE_REASONS above and `computeCoverage`'s own comment,
+   *  insightsApi.ts, for which apply). */
   readonly aiTurnsInScope: Observed<number>;
   /**
    * Always `Unobservable` — the type itself says so, not just the runtime
@@ -406,9 +404,7 @@ export type TelemetryDerivedCount = UnverifiedCount | Unobservable;
  * `TurnCoverage.chatsWithUncountedTurns`, and
  * `EntryFiringAggregate.generations` share this shape: a real, verified
  * `Observed<number>` in the states where nothing about chat-file NAME
- * identity is in doubt, and `TelemetryDerivedCount` everywhere else. See
- * each field's own doc comment for which states are which — the split is
- * not the same for all four.
+ * identity is in doubt, and `TelemetryDerivedCount` everywhere else.
  */
 export type ChatCountFigure = Observed<number> | TelemetryDerivedCount;
 

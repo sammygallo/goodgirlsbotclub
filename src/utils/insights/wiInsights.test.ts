@@ -72,10 +72,6 @@ describe('pinnedTokens / pinnedOverBudget (I1)', () => {
   });
 
   it('client: reports the EXACT seeded scan number — kills refusing unconditionally', () => {
-    // The pair is the kill: a `projectClientTurn` that also always refused
-    // pinnedTokens (copy-pasted from the server branch) would pass the
-    // test above but fail this one, and only this one proves the two
-    // paths actually diverge.
     const insight = projectClientTurn(
       mkClientSource({ scan: { budget: 500, pinnedTokens: 137, pinnedOverBudget: true, droppedEntries: [] } })
     );
@@ -225,11 +221,6 @@ describe('every token figure is self-describing (I9)', () => {
 
 describe('server budget estimator (I10)', () => {
   it('uses "generic" even though the turn profile is non-generic', () => {
-    // The fixture's own profile is 'claude' (NOT 'generic') — if this
-    // projector ever used `src.profile` for the budget figure instead of
-    // `server.budgetEstimator`, this test (and only this test, since a
-    // 'generic'-profile fixture could never tell the two apart) would
-    // catch it.
     const insight = projectServerTurn(
       mkServerSource({
         profile: 'claude',
@@ -332,11 +323,11 @@ describe('per-entry wrapper null-vs-"none" (I12)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CONF5 — WiEntryInsight.pinned is a straight passthrough, but no prior
-// fixture ever set it to true, so a hardcoded `pinned: false` was invisible.
+// WiEntryInsight.pinned is a straight passthrough, but no prior fixture
+// ever set it to true, so a hardcoded `pinned: false` was invisible.
 // ---------------------------------------------------------------------------
 
-describe('per-entry pinned passthrough (CONF5)', () => {
+describe('per-entry pinned passthrough', () => {
   it('a pinned entry projects pinned: true — kills a hardcoded `pinned: false`', () => {
     const insight = projectClientTurn(mkClientSource({ entries: [mkEntry({ pinned: true })] }));
     expect(insight.entries[0].pinned).toBe(true);

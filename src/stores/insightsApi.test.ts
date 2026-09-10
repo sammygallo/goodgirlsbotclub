@@ -424,7 +424,7 @@ describe('getTelemetryCoverage — empty chat list (I5)', () => {
     });
   });
 
-  it('a non-empty in-memory chat list reports a real chatsInScope count — the pair that proves the refusal is real, not vacuous', () => {
+  it('a non-empty in-memory chat list reports a real chatsInScope count', () => {
     resetStores();
     useChatStore.setState({
       chatFiles: [{ fileName: 'a.jsonl', messageCount: 0, lastMessage: '' }],
@@ -503,11 +503,6 @@ describe('getTelemetryCoverage — numerator (I4)', () => {
   });
 
   it('chatsWithTelemetry is a real count, not a hardcoded 1 — two opened chats, one never opened (round 10, job 2)', async () => {
-    // Every OTHER test in this file that asserts a real (non-refused)
-    // `chatsWithTelemetry` value — including this describe block's own
-    // test above — happens to expect exactly 1. A hardcoded
-    // `chatsWithTelemetryCount = 1` survives every one of them; this
-    // fixture's real answer is 2.
     resetStores();
     const CHAT_A = 'i4-real-count-a.jsonl';
     const CHAT_B = 'i4-real-count-b.jsonl';
@@ -598,10 +593,6 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
   });
 
   it('a hydrated, non-partial, in-memory chat with no recorded firing for the queried key -> generations count: 0, still wrapped unverified (round 10, job 2 / round 11)', async () => {
-    // A wrong accumulator (e.g. seeded at 1, or `?? 1` instead of `?? 0`)
-    // stays green under every OTHER test in this file that queries a key
-    // that really did fire. This is the only fixture where the true sum
-    // is zero.
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const CHAT_FILE = 'i6-zero.jsonl';
@@ -633,7 +624,7 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
     expect(agg.generations).toEqual({ observed: false, why: 'chat-list-not-loaded' });
   });
 
-  it('an empty CALLER-SUPPLIED chat list -> generations is a real Observed<number> 0, the pair that proves the empty-in-memory refusal above is real and not vacuous (round 12 carve-out): summing zero chats can never collide, the same reasoning `chatsInScope`/`chatsWithTelemetry`/`chatsWithUncountedTurns` already got', () => {
+  it('an empty CALLER-SUPPLIED chat list -> generations is a real Observed<number> 0 (round 12 carve-out): summing zero chats can never collide, the same reasoning `chatsInScope`/`chatsWithTelemetry`/`chatsWithUncountedTurns` already got', () => {
     resetStores();
     const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }], { chatFiles: [] });
     expect(agg.coverage.scope).toBe('caller-supplied');
@@ -1051,7 +1042,7 @@ describe('getTurnWiInsight — live-slot identity (I7)', () => {
     expect(getTurnWiInsight()).toEqual({ observed: false, why: 'breakdown-slot-empty' });
   });
 
-  it('a chatFile mismatch refuses breakdown-slot-describes-another-turn, and a match observes', async () => {
+  it('a chatFile mismatch refuses breakdown-slot-describes-another-turn, and a NAME MATCH refuses too — chat-file-names-not-verified-distinct, since a bare name can never prove the slot describes the requested chat', async () => {
     const CHAT_FILE = 'i7-match.jsonl';
     arrangeEligibleChat(CHAT_FILE);
     makeChatIneligible(); // keep this a plain client-scanned turn
@@ -1069,8 +1060,10 @@ describe('getTurnWiInsight — live-slot identity (I7)', () => {
       observed: false,
       why: 'breakdown-slot-describes-another-turn',
     });
-    const matched = getTurnWiInsight({ forChatFile: CHAT_FILE });
-    expect(matched.observed).toBe(true);
+    expect(getTurnWiInsight({ forChatFile: CHAT_FILE })).toEqual({
+      observed: false,
+      why: 'chat-file-names-not-verified-distinct',
+    });
   });
 
   it('a group round with two speakers: the slot holds only the LAST-published speaker, never a merge of both', async () => {
@@ -1531,13 +1524,82 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
         turn: { chatFile: 'chat-B.jsonl', publishedAt: 555555 },
       },
     });
-    // The consumer's own check, made possible by `turn`: the sampled
-    // turn's chat is not among the chats it queried, even though this
-    // aggregate is nominally scoped to chat-A.
-    expect(agg.emittedSample.observed).toBe(true);
-    if (agg.emittedSample.observed) {
-      expect(['chat-A.jsonl']).not.toContain(agg.emittedSample.value.turn.chatFile);
-    }
+  });
+
+  it('two entries sharing a bookId but differing entryId — the sample matches the exact entryId queried, not the other entry under the same book (CONF3)', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.entries = [
+      {
+        entryId: 'other-entry',
+        bookId: 'shared-book',
+        emittedTokens: 999,
+        emittedChars: 999,
+        rawTokens: 999,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+      {
+        entryId: 'wanted-entry',
+        bookId: 'shared-book',
+        emittedTokens: 7,
+        emittedChars: 20,
+        rawTokens: 5,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+
+    const [agg] = getEntryFiringAggregate([{ bookId: 'shared-book', entryId: 'wanted-entry' }]);
+    expect(agg.emittedSample).toEqual({
+      observed: true,
+      value: {
+        sampledTurns: 1,
+        tokens: { basis: 'emitted', estimator: 'gpt', tokens: 7 },
+        turn: { chatFile: breakdown.chatFile, publishedAt: breakdown.publishedAt },
+      },
+    });
+  });
+
+  it('two entries sharing an entryId but differing bookId — the sample matches the exact bookId queried, not the other entry under the same entryId (CONF3)', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.entries = [
+      {
+        entryId: 'shared-entry',
+        bookId: 'other-book',
+        emittedTokens: 999,
+        emittedChars: 999,
+        rawTokens: 999,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+      {
+        entryId: 'shared-entry',
+        bookId: 'wanted-book',
+        emittedTokens: 11,
+        emittedChars: 30,
+        rawTokens: 8,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+
+    const [agg] = getEntryFiringAggregate([{ bookId: 'wanted-book', entryId: 'shared-entry' }]);
+    expect(agg.emittedSample).toEqual({
+      observed: true,
+      value: {
+        sampledTurns: 1,
+        tokens: { basis: 'emitted', estimator: 'gpt', tokens: 11 },
+        turn: { chatFile: breakdown.chatFile, publishedAt: breakdown.publishedAt },
+      },
+    });
   });
 });
 
@@ -1684,7 +1746,7 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
   });
 
-  it('a populated trimmedFromHistoryEntries that does NOT contain the queried key does not refuse entry-trimmed-from-history — kills `.some(matchesKey)` -> `.length > 0` (CONF5)', () => {
+  it('a populated trimmedFromHistoryEntries that does NOT contain the queried key does not refuse entry-trimmed-from-history — kills `.some(matchesKey)` -> `.length > 0`', () => {
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     breakdown.wi.trimmedFromHistoryEntries = [
@@ -1769,10 +1831,15 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       const mismatch = getTurnWiInsight({ forChatFile: 'nope.jsonl' });
       if (!mismatch.observed) record(mismatch.why);
 
-      // client-scan-computes-no-activation-reason (this same client turn)
+      // chat-file-names-not-verified-distinct: a name MATCH refuses too.
       const matched = getTurnWiInsight({ forChatFile: CHAT_FILE });
-      if (matched.observed && matched.value.engine === 'client') {
-        for (const e of matched.value.entries) {
+      if (!matched.observed) record(matched.why);
+
+      // client-scan-computes-no-activation-reason (this same client turn,
+      // read unfiltered since `forChatFile` now always refuses)
+      const unfiltered = getTurnWiInsight();
+      if (unfiltered.observed && unfiltered.value.engine === 'client') {
+        for (const e of unfiltered.value.entries) {
           if (!e.activationReason.observed) record(e.activationReason.why);
         }
       }
@@ -1967,10 +2034,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       }
     }
 
-    // chat-file-names-not-verified-distinct: also produced by the plain
-    // in-memory-scope case (round 11 — see insightsApi.test.ts's own
-    // "generations is scope-independent" describe block), but exercised
-    // again here via a caller-supplied scope for good measure.
+    // chat-file-names-not-verified-distinct, via a caller-supplied scope.
     {
       resetStores();
       useWorldInfoStore.getState().resetUser();
