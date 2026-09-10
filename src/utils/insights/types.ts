@@ -439,11 +439,8 @@ export interface EntryEmittedSample {
 export interface EntryFiringAggregate {
   readonly bookId: string;
   readonly entryId: string;
-  /** Real (`Observed<number>`) for a provably empty scope — summing zero
-   *  chats can never collide on a shared telemetry key — and
-   *  `TelemetryDerivedCount`'s unverified arm otherwise, in every
-   *  NON-EMPTY scope including in-memory. See `ChatCountFigure`'s own doc
-   *  comment and `computeFiringCount` (insightsApi.ts). */
+  /** See `ChatCountFigure`'s own doc comment and `computeFiringCount`
+   *  (insightsApi.ts). */
   readonly generations: ChatCountFigure;
   /** REQUIRED, not optional — AC3's "a coverage figure accompanies every
    *  historical aggregate" is a type-level guarantee here, not a
