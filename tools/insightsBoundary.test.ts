@@ -66,13 +66,92 @@ function extractImports(source: string, fileName = 'source.ts'): ImportStatement
       ts.isMetaProperty(node.expression.expression) &&
       node.expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword
     ) {
-      // `import.meta.glob(...)` / `import.meta.globEager(...)` — Vite's
+      // `import.meta.glob(...)` — Vite's
       // build-time module-graph import mechanism, real per this repo's own
       // `tsconfig.app.json` `types: ["vite/client"]`. A bare property
       // access with no call (`import.meta.env`, `import.meta.hot`) never
       // reaches this branch — only an invocation on `import.meta` does.
       const arg = node.arguments[0];
       out.push({ isTypeOnly: false, specifier: arg && ts.isStringLiteralLike(arg) ? arg.text : null });
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return out;
+}
+
+interface PathLiteral {
+  text: string;
+  pos: number;
+}
+
+/** Node positions (`getStart()`, on the SAME parsed `sourceFile` the caller
+ *  scans for literals) of every string-literal-like specifier belonging to
+ *  a DECLARATION-LEVEL type-only import/export — `import type { X } from
+ *  '...'`, `export type { X } from '...'`, `import type * as ns from
+ *  '...'`, `import type X from '...'`. These are elided entirely at emit
+ *  under this repo's `verbatimModuleSyntax: true` and are the ONLY
+ *  safe-to-ignore module references. An inline `{ type A }` specifier does
+ *  NOT land here (see `importClauseIsTypeOnly` above) — the statement
+ *  itself still emits. */
+function typeOnlySpecifierPositions(sourceFile: ts.SourceFile): Set<number> {
+  const positions = new Set<number>();
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isImportDeclaration(node) &&
+      node.importClause?.isTypeOnly &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      positions.add(node.moduleSpecifier.getStart(sourceFile));
+    } else if (
+      ts.isExportDeclaration(node) &&
+      node.isTypeOnly &&
+      node.moduleSpecifier &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      positions.add(node.moduleSpecifier.getStart(sourceFile));
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return positions;
+}
+
+/** Fail-CLOSED sibling of `extractImports`: instead of enumerating
+ *  import/export syntaxes (each round finds another one this guard didn't
+ *  know about — `export * as ns from`, `import.meta.glob`, now `new
+ *  Worker(new URL(...))`), this treats EVERY string literal and
+ *  no-substitution template literal in the file whose text looks like a
+ *  relative module path (`/^\.\.?\//`) as a potential module reference,
+ *  REGARDLESS of the syntax around it — an import specifier, a `new
+ *  URL(...)` argument, an `import.meta.glob(...)` argument, or a bare
+ *  variable initializer with no import/call syntax at all. The only
+ *  literals excluded are those belonging to a declaration-level type-only
+ *  import/export (`typeOnlySpecifierPositions` above), and they are
+ *  excluded by NODE POSITION, never by string value — the same path
+ *  referenced a second time by a mechanism this guard does not special-case
+ *  is still flagged.
+ *
+ *  Deliberate trade-off: a path-shaped string that is NOT actually a
+ *  module reference will still be flagged. That is the intended
+ *  direction — a false positive breaks the build and a human adjusts the
+ *  allow-list, rather than a false negative silently admitting a real edge
+ *  this guard never thought to check for. */
+function extractPathLiterals(source: string, fileName = 'source.ts'): PathLiteral[] {
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const excluded = typeOnlySpecifierPositions(sourceFile);
+  const out: PathLiteral[] = [];
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isStringLiteralLike(node) &&
+      /^\.\.?\//.test(node.text) &&
+      !excluded.has(node.getStart(sourceFile))
+    ) {
+      out.push({ text: node.text, pos: node.getStart(sourceFile) });
     }
     ts.forEachChild(node, visit);
   }
@@ -97,10 +176,12 @@ function resolveSpecifier(fromFile: string, specifier: string): string {
 interface ScannedFile {
   path: string;
   imports: ImportStatement[];
+  pathLiterals: PathLiteral[];
 }
 
 function scanFile(path: string): ScannedFile {
-  return { path, imports: extractImports(readFileSync(path, 'utf8'), path) };
+  const source = readFileSync(path, 'utf8');
+  return { path, imports: extractImports(source, path), pathLiterals: extractPathLiterals(source, path) };
 }
 
 const KNOWN = {
@@ -151,6 +232,21 @@ function assertValueImportsResolveInto(file: ScannedFile, boundary: string): voi
   }
 }
 
+/** Fail-closed sibling of `assertValueImportsResolveInto`, built on
+ *  `extractPathLiterals` instead of `extractImports`: asserts every
+ *  relative-path-shaped literal in `file` — found by syntax-agnostic scan,
+ *  not limited to recognized import/export forms — resolves into
+ *  `boundary`. */
+function assertPathLiteralsResolveInto(file: ScannedFile, boundary: string): void {
+  for (const lit of file.pathLiterals) {
+    const resolved = resolveSpecifier(file.path, lit.text);
+    expect(
+      resolved,
+      `${file.path} has a path-shaped literal '${lit.text}' that does not resolve into the boundary`
+    ).toBe(boundary);
+  }
+}
+
 describe('insights API import boundary (AC1)', () => {
   const scannedFiles = [scanFile(TYPES_PATH), scanFile(WI_INSIGHTS_PATH), scanFile(INSIGHTS_API_PATH)];
   const resolvedEdges = resolveEdges(scannedFiles);
@@ -176,11 +272,56 @@ describe('insights API import boundary (AC1)', () => {
     assertValueImportsResolveInto(wiInsights, KNOWN.types);
   });
 
+  it("wiInsights.ts (File B) has no relative-path-shaped literal outside {File A} — fail-closed: this catches ANY module-edge mechanism (new Worker(new URL(...)), import.meta.glob, a bare string), not just import/export syntax this guard happens to recognize", () => {
+    const wiInsights = scannedFiles.find((f) => f.path === WI_INSIGHTS_PATH)!;
+    assertPathLiteralsResolveInto(wiInsights, KNOWN.types);
+  });
+
   it('self-check: assertValueImportsResolveInto fails CLOSED (throws) on an unresolvable value import instead of silently skipping it', () => {
-    const scanned: ScannedFile = { path: WI_INSIGHTS_PATH, imports: [{ isTypeOnly: false, specifier: null }] };
+    const scanned: ScannedFile = {
+      path: WI_INSIGHTS_PATH,
+      imports: [{ isTypeOnly: false, specifier: null }],
+      pathLiterals: [],
+    };
     expect(() => assertValueImportsResolveInto(scanned, KNOWN.types)).toThrow(
       'has an unresolvable dynamic import'
     );
+  });
+
+  it('self-check: assertValueImportsResolveInto throws when a resolvable value import lands OUTSIDE the boundary — the central assertion this loop exists to run', () => {
+    const scanned: ScannedFile = {
+      path: WI_INSIGHTS_PATH,
+      imports: [{ isTypeOnly: false, specifier: '../../stores/chatStore' }],
+      pathLiterals: [],
+    };
+    expect(() => assertValueImportsResolveInto(scanned, KNOWN.types)).toThrow();
+  });
+
+  it('self-check: assertValueImportsResolveInto does NOT throw when a resolvable value import lands INSIDE the boundary', () => {
+    const scanned: ScannedFile = {
+      path: WI_INSIGHTS_PATH,
+      imports: [{ isTypeOnly: false, specifier: './types' }],
+      pathLiterals: [],
+    };
+    expect(() => assertValueImportsResolveInto(scanned, KNOWN.types)).not.toThrow();
+  });
+
+  it('self-check: assertPathLiteralsResolveInto throws when a path-shaped literal resolves OUTSIDE the boundary — this is what fires when a Worker/bare-literal/import.meta.glob reference reaches a forbidden module', () => {
+    const scanned: ScannedFile = {
+      path: WI_INSIGHTS_PATH,
+      imports: [],
+      pathLiterals: [{ text: '../../stores/chatStore', pos: 0 }],
+    };
+    expect(() => assertPathLiteralsResolveInto(scanned, KNOWN.types)).toThrow();
+  });
+
+  it('self-check: assertPathLiteralsResolveInto does NOT throw when a path-shaped literal resolves INSIDE the boundary', () => {
+    const scanned: ScannedFile = {
+      path: WI_INSIGHTS_PATH,
+      imports: [],
+      pathLiterals: [{ text: './types', pos: 0 }],
+    };
+    expect(() => assertPathLiteralsResolveInto(scanned, KNOWN.types)).not.toThrow();
   });
 
   it('only insightsApi.ts (File C) has a value edge to chatStore or generationStore', () => {
@@ -248,7 +389,7 @@ import type { TokenizerProfile } from '../tokenizer';
     // string's contents, and can delete part of a real statement as a
     // result. A real parser never has this failure mode — string-literal
     // contents are never comment trivia. The two string halves below form
-    // an unterminated `/* ... */` pair that BRACKETS the import — a
+    // an `/* ... */` pair that BRACKETS the import — a
     // strip-then-regex preprocessor's lazy block-comment regex would scan
     // from the first `/*` to the first `*/` found anywhere afterward and
     // delete everything between them, import included.
@@ -313,7 +454,7 @@ const b = '*/';
     expect(imports[0].specifier).toBe('../stores/chatStore');
   });
 
-  it('self-check: `import.meta.glob(...)` and `import.meta.globEager(...)` ARE import edges — Vite resolves the glob against the module graph at build time (`tsconfig.app.json` ships `types: ["vite/client"]`)', () => {
+  it('self-check: `import.meta.glob(...)` IS an import edge — Vite resolves the glob against the module graph at build time (`tsconfig.app.json` ships `types: ["vite/client"]`)', () => {
     const globSource = `const g = import.meta.glob('../stores/chatStore.ts', { eager: true });\nvoid g;\n`;
     const globImports = extractImports(globSource);
     expect(globImports.length, JSON.stringify(globImports)).toBe(1);
@@ -519,5 +660,65 @@ const b = '*/';
     expect(imports.length, JSON.stringify(imports)).toBe(1);
     expect(imports[0].specifier).toBe('../stores/chatStore');
     expect(imports[0].isTypeOnly).toBe(false);
+  });
+
+  // -------------------------------------------------------------------
+  // I9 — extractPathLiterals: the fail-closed path-literal scan's own
+  // self-checks. Three consecutive rounds each found a DIFFERENT
+  // module-edge syntax `extractImports` didn't enumerate (`export * as ns
+  // from`, `import.meta.glob`, `new Worker(new URL(...))`). This function
+  // stops enumerating: it flags every relative-path-shaped literal in the
+  // file, whatever syntax surrounds it, and excludes only the literals
+  // that belong to a declaration-level type-only import/export.
+  // -------------------------------------------------------------------
+
+  it("self-check: extractPathLiterals catches `new Worker(new URL(...))` — Vite's documented worker-import mechanism, a NewExpression carrying no import/export syntax at all", () => {
+    const source = `const w = new Worker(new URL('../../stores/chatStore', import.meta.url));\nvoid w;\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('../../stores/chatStore');
+  });
+
+  it('self-check: extractPathLiterals catches `import.meta.glob(...)`', () => {
+    const source = `const g = import.meta.glob('../../stores/chatStore');\nvoid g;\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('../../stores/chatStore');
+  });
+
+  it('self-check: extractPathLiterals catches a bare path-shaped string literal with no import/call syntax around it at all', () => {
+    const source = `const p = '../../stores/chatStore';\nvoid p;\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('../../stores/chatStore');
+  });
+
+  it('self-check: extractPathLiterals catches a bare path-shaped no-substitution template literal, not just quoted string literals', () => {
+    const source = 'const p = `../../stores/chatStore`;\nvoid p;\n';
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('../../stores/chatStore');
+  });
+
+  it('self-check: extractPathLiterals does NOT flag a declaration-level `import type` specifier — it is elided entirely at emit', () => {
+    const source = `import type { X } from '../../stores/chatStore';\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals, JSON.stringify(literals)).toEqual([]);
+  });
+
+  it('self-check: exclusion is by NODE POSITION, not by string value — a declaration-level `import type` of a path does not cancel out a SEPARATE non-type-only reference to the same path', () => {
+    const source = `
+import type { A } from '../../stores/chatStore';
+const w = new Worker(new URL('../../stores/chatStore', import.meta.url));
+`;
+    const literals = extractPathLiterals(source);
+    expect(literals.length, JSON.stringify(literals)).toBe(1);
+    expect(literals[0].text).toBe('../../stores/chatStore');
+  });
+
+  it('self-check: extractPathLiterals ignores a string literal that is not path-shaped (no leading `./` or `../`)', () => {
+    const source = `const s = 'stores/chatStore';\nconst pkg = 'zod';\nvoid s; void pkg;\n`;
+    const literals = extractPathLiterals(source);
+    expect(literals, JSON.stringify(literals)).toEqual([]);
   });
 });
