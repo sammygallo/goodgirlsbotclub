@@ -240,6 +240,24 @@ describe('turn-level emittedTotal null-vs-zero (I11)', () => {
   });
 });
 
+describe('per-entry emittedTokens null-vs-zero', () => {
+  it('client: 0 on the rendered entry is a real observed value — kills a truthiness check', () => {
+    const insight = projectClientTurn(mkClientSource({ entries: [mkEntry({ emittedTokens: 0 })] }));
+    expect(insight.entries[0].emittedTokens).toEqual({
+      observed: true,
+      value: { basis: 'emitted', estimator: 'gpt', tokens: 0 },
+    });
+  });
+
+  it('server: same discipline', () => {
+    const insight = projectServerTurn(mkServerSource({ entries: [mkEntry({ emittedTokens: 0 })] }));
+    expect(insight.entries[0].emittedTokens).toEqual({
+      observed: true,
+      value: { basis: 'emitted', estimator: 'gpt', tokens: 0 },
+    });
+  });
+});
+
 describe('per-entry wrapper null-vs-"none" (I12)', () => {
   it('"none" is a real, legal, observed wrapper result — kills `wrapper ?? "none"` collapsing null into it', () => {
     const insight = projectClientTurn(mkClientSource({ entries: [mkEntry({ wrapper: 'none' })] }));

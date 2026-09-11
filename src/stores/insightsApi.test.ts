@@ -907,7 +907,7 @@ describe('getTurnWiInsight — live-slot identity (I7)', () => {
     });
   });
 
-  it('a chatFile mismatch refuses breakdown-slot-describes-another-turn, and a NAME MATCH refuses too — chat-file-names-not-verified-distinct, since a bare name can never prove the slot describes the requested chat', async () => {
+  it('a chatFile mismatch and a NAME MATCH both refuse chat-file-names-not-verified-distinct — a bare name can neither prove nor disprove the slot describes the requested chat', async () => {
     const CHAT_FILE = 'i7-match.jsonl';
     arrangeEligibleChat(CHAT_FILE);
     makeChatIneligible(); // keep this a plain client-scanned turn
@@ -923,7 +923,7 @@ describe('getTurnWiInsight — live-slot identity (I7)', () => {
 
     expect(getTurnWiInsight({ forChatFile: 'some-other-chat.jsonl' })).toEqual({
       observed: false,
-      why: 'breakdown-slot-describes-another-turn',
+      why: 'chat-file-names-not-verified-distinct',
     });
     expect(getTurnWiInsight({ forChatFile: CHAT_FILE })).toEqual({
       observed: false,
@@ -1243,6 +1243,34 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     });
   });
 
+  it('a real emittedTokens of 0 on the queried wi.entries record -> observed sample of 0, not entry-never-rendered — kills a `!== null` -> truthiness check', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.entries = [
+      {
+        entryId: 'zero-cost-entry',
+        bookId: 'zero-cost-book',
+        emittedTokens: 0,
+        emittedChars: 0,
+        rawTokens: 5,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+
+    const [agg] = getEntryFiringAggregate([{ bookId: 'zero-cost-book', entryId: 'zero-cost-entry' }]);
+    expect(agg.emittedSample).toEqual({
+      observed: true,
+      value: {
+        sampledTurns: 1,
+        tokens: { basis: 'emitted', estimator: 'gpt', tokens: 0 },
+        turn: { chatFile: breakdown.chatFile, publishedAt: breakdown.publishedAt },
+      },
+    });
+  });
+
   it('no live breakdown -> refuses no-observed-turn', () => {
     resetStores();
     useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
@@ -1523,6 +1551,50 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
       },
     });
   });
+
+  it('two distinct keys queried in one call each get their OWN emittedSample — kills computeEmittedSample(key) collapsing to computeEmittedSample(keys[0]) (CONF1)', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.entries = [
+      {
+        entryId: 'eA',
+        bookId: 'bA',
+        emittedTokens: 40,
+        emittedChars: 100,
+        rawTokens: 30,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    breakdown.wi.droppedEntries = [
+      {
+        entryId: 'eB',
+        bookId: 'bB',
+        emittedTokens: null,
+        emittedChars: null,
+        rawTokens: 10,
+        placement: null,
+        wrapper: null,
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+
+    const [aA, aB] = getEntryFiringAggregate([
+      { bookId: 'bA', entryId: 'eA' },
+      { bookId: 'bB', entryId: 'eB' },
+    ]);
+    expect(aA.emittedSample).toEqual({
+      observed: true,
+      value: {
+        sampledTurns: 1,
+        tokens: { basis: 'emitted', estimator: 'gpt', tokens: 40 },
+        turn: { chatFile: breakdown.chatFile, publishedAt: breakdown.publishedAt },
+      },
+    });
+    expect(aB.emittedSample).toEqual({ observed: false, why: 'entry-never-rendered' });
+  });
 });
 
 describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Critical 1)', () => {
@@ -1725,7 +1797,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
     const emptySlot = getTurnWiInsight();
     if (!emptySlot.observed) record(emptySlot.why);
 
-    // breakdown-slot-describes-another-turn
+    // chat-file-names-not-verified-distinct
     {
       const CHAT_FILE = 'i18-mismatch.jsonl';
       arrangeEligibleChat(CHAT_FILE);
@@ -1741,7 +1813,6 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       const mismatch = getTurnWiInsight({ forChatFile: 'nope.jsonl' });
       if (!mismatch.observed) record(mismatch.why);
 
-      // chat-file-names-not-verified-distinct
       const matched = getTurnWiInsight({ forChatFile: CHAT_FILE });
       if (!matched.observed) record(matched.why);
 

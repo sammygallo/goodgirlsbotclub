@@ -90,7 +90,6 @@ export const OBSERVED_FALSE_REASONS = [
   'server-reports-no-activation-reason',
   'no-observed-turn',
   'breakdown-slot-empty',
-  'breakdown-slot-describes-another-turn',
   'chat-list-not-loaded',
   'chat-not-hydrated',
   'telemetry-coverage-partial',

@@ -57,8 +57,7 @@ import type { ServerActivationFacts } from '../utils/promptBreakdown';
  * describes whatever the most recent build published, which in a group
  * round is only the LAST speaker's turn (each speaker's build overwrites
  * it). `opts.forChatFile` lets a caller holding a specific chat file
- * refuse the read — a bare name can rule the slot OUT, but can never rule
- * it IN, so a name match refuses too; see the gate's own comment below.
+ * refuse the read.
  *
  * The client/server split reads `breakdown.wi.activationSource` —
  * NEVER `breakdown.wi.server`'s truthiness. See wiInsights.ts's own
@@ -68,12 +67,6 @@ export function getTurnWiInsight(opts?: { forChatFile?: string }): Observed<Turn
   const breakdown = useGenerationStore.getState().lastPromptBreakdown;
   if (!breakdown) return { observed: false, why: 'breakdown-slot-empty' };
   if (opts?.forChatFile !== undefined) {
-    if (breakdown.chatFile !== opts.forChatFile) {
-      return { observed: false, why: 'breakdown-slot-describes-another-turn' };
-    }
-    // A name MATCH still cannot prove the slot's turn belongs to the
-    // requested chat — bare chat file names are not verified distinct, so
-    // this fails closed too, same as an outright mismatch.
     return { observed: false, why: 'chat-file-names-not-verified-distinct' };
   }
 
