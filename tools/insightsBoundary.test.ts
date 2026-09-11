@@ -9,10 +9,6 @@
 //     since every type it needs is erased at compile time.
 //   src/stores/insightsApi.ts       (File C) — the store binder, the ONLY
 //     file of the three allowed a value import of chatStore/generationStore.
-//
-// Lives in `tools/` for the same reason as sourceHygiene.test.ts /
-// provenanceWiring.test.ts: it needs node's `fs`/`path`, and
-// tsconfig.app.json ships `types: ["vite/client"]` only, with no node lib.
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -30,16 +26,12 @@ interface ImportStatement {
   specifier: string | null;
 }
 
-// Type-only-ness is decided at the DECLARATION level ONLY — `clause.isTypeOnly`
-// / `node.isTypeOnly` — never by whether every individual
-// binding happens to carry an inline `type` modifier. Both tsconfigs set
-// `verbatimModuleSyntax: true`, under which `import { type A } from './m'`
-// still emits `import {} from './m';` (a real runtime module edge) while
-// only a declaration-level `import type { A } from './m'` elides entirely
-// — confirmed by compiling both forms with `ts.createProgram` under
-// `verbatimModuleSyntax: true` and reading the emitted JS. Treating an
-// inline `{ type A }` as type-only would let a real value edge to
-// chatStore/generationStore through this guard undetected.
+// Type-only-ness is decided at the DECLARATION level ONLY —
+// `clause.isTypeOnly` / `node.isTypeOnly` — never by whether every
+// individual binding carries an inline `type` modifier. Under this
+// repo's `verbatimModuleSyntax: true`, `import { type A } from './m'`
+// still emits a real runtime import; only a declaration-level
+// `import type { A } from './m'` elides entirely.
 function importClauseIsTypeOnly(clause: ts.ImportClause | undefined): boolean {
   return clause ? clause.isTypeOnly : false;
 }
@@ -66,11 +58,9 @@ function extractImports(source: string, fileName = 'source.ts'): ImportStatement
       ts.isMetaProperty(node.expression.expression) &&
       node.expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword
     ) {
-      // `import.meta.glob(...)` — Vite's
-      // build-time module-graph import mechanism, real per this repo's own
-      // `tsconfig.app.json` `types: ["vite/client"]`. A bare property
-      // access with no call (`import.meta.env`, `import.meta.hot`) never
-      // reaches this branch — only an invocation on `import.meta` does.
+      // Matches only an invocation on `import.meta` (e.g.
+      // `import.meta.glob(...)`) — a bare property access like
+      // `import.meta.env`/`import.meta.hot` never reaches this branch.
       const arg = node.arguments[0];
       out.push({ isTypeOnly: false, specifier: arg && ts.isStringLiteralLike(arg) ? arg.text : null });
     }
@@ -86,15 +76,11 @@ interface PathLiteral {
   pos: number;
 }
 
-/** Node positions (`getStart()`, on the SAME parsed `sourceFile` the caller
- *  scans for literals) of every string-literal-like specifier belonging to
- *  a DECLARATION-LEVEL type-only import/export — `import type { X } from
+/** Node positions of every string-literal-like specifier belonging to a
+ *  DECLARATION-LEVEL type-only import/export — `import type { X } from
  *  '...'`, `export type { X } from '...'`, `import type * as ns from
- *  '...'`, `import type X from '...'`. These are elided entirely at emit
- *  under this repo's `verbatimModuleSyntax: true` and are the ONLY
- *  safe-to-ignore module references. An inline `{ type A }` specifier does
- *  NOT land here (see `importClauseIsTypeOnly` above) — the statement
- *  itself still emits. */
+ *  '...'`, `import type X from '...'`. Elided entirely at emit under
+ *  this repo's `verbatimModuleSyntax: true`. */
 function typeOnlySpecifierPositions(sourceFile: ts.SourceFile): Set<number> {
   const positions = new Set<number>();
 
@@ -121,24 +107,17 @@ function typeOnlySpecifierPositions(sourceFile: ts.SourceFile): Set<number> {
 }
 
 /** Sibling of `extractImports` that does not enumerate import/export
- *  syntaxes (each round finds another one this guard didn't know about —
- *  `export * as ns from`, `import.meta.glob`, `new Worker(new URL(...))`).
- *  Instead it treats EVERY string literal and no-substitution template
- *  literal in the file whose text looks like a relative module path
- *  (`/^\.\.?\//`) as a potential module reference, REGARDLESS of the
- *  syntax around it — an import specifier, a `new URL(...)` argument, an
- *  `import.meta.glob(...)` argument, or a bare variable initializer with
- *  no import/call syntax at all. The only literals excluded are those
- *  belonging to a declaration-level type-only import/export
- *  (`typeOnlySpecifierPositions` above), and they are excluded by NODE
- *  POSITION, never by string value — the same path referenced a second
- *  time by a mechanism this guard does not special-case is still flagged.
- *
- *  Deliberate trade-off on the caught side: a path-shaped string that is
- *  NOT actually a module reference will still be flagged. That is the
- *  intended direction — a false positive breaks the build and a human
- *  adjusts the allow-list, rather than a false negative silently admitting
- *  a real edge this guard never thought to check for. */
+ *  syntaxes (`export * as ns from`, `import.meta.glob`,
+ *  `new Worker(new URL(...))`, etc.). Instead it treats EVERY string
+ *  literal and no-substitution template literal in the file whose text
+ *  looks like a relative module path (`/^\.\.?\//`) as a potential
+ *  module reference, REGARDLESS of the syntax around it — an import
+ *  specifier, a `new URL(...)` argument, an `import.meta.glob(...)`
+ *  argument, or a bare variable initializer with no import/call syntax
+ *  at all. The only literals excluded are those belonging to a
+ *  declaration-level type-only import/export
+ *  (`typeOnlySpecifierPositions` above), excluded by NODE POSITION,
+ *  never by string value. */
 function extractPathLiterals(source: string, fileName = 'source.ts'): PathLiteral[] {
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const excluded = typeOnlySpecifierPositions(sourceFile);
@@ -165,8 +144,7 @@ function stripExt(path: string): string {
 
 /** Resolves a relative import specifier against the importing file's own
  *  directory into a canonical (extension-stripped) absolute path. A bare
- *  (package) specifier is returned unchanged — it can never match one of
- *  the local KNOWN targets below anyway. */
+ *  (package) specifier is returned unchanged. */
 function resolveSpecifier(fromFile: string, specifier: string): string {
   if (!specifier.startsWith('.')) return specifier;
   return stripExt(resolve(dirname(fromFile), specifier));
@@ -216,10 +194,9 @@ function resolveEdges(files: ScannedFile[]): ResolvedEdge[] {
 }
 
 /** Asserts every VALUE import in `file` resolves to `boundary`. Fails
- *  CLOSED (throws) on a value import this guard cannot resolve statically
- *  — a specifier of `null` — rather than silently skipping it, since an
- *  unresolvable value import is exactly the case where a real edge to
- *  chatStore/generationStore could be hiding. */
+ *  CLOSED (throws) on a value import this guard cannot resolve
+ *  statically — a specifier of `null` — rather than silently skipping
+ *  it. */
 function assertValueImportsResolveInto(file: ScannedFile, boundary: string): void {
   const valueImports = file.imports.filter((i) => !i.isTypeOnly);
   for (const imp of valueImports) {
@@ -251,10 +228,6 @@ describe('insights API import boundary (AC1)', () => {
   const resolvedEdges = resolveEdges(scannedFiles);
 
   it('non-vacuity: real files were actually scanned and at least one import edge actually resolved', () => {
-    // A guard whose path resolution silently yields nothing (a typo'd
-    // relative-path join, a wrong `dirname`) would otherwise pass forever
-    // — every rule below is phrased as "no bad edge exists," which a
-    // scanner that finds NO edges at all satisfies trivially.
     expect(scannedFiles.length).toBeGreaterThanOrEqual(2);
     expect(resolvedEdges.length).toBeGreaterThan(0);
   });
@@ -333,16 +306,11 @@ describe('insights API import boundary (AC1)', () => {
       (e) => !e.isTypeOnly && (e.to === 'chatStore' || e.to === 'generationStore') && e.from !== INSIGHTS_API_PATH
     );
     expect(forbidden, JSON.stringify(forbidden)).toEqual([]);
-    // And insightsApi.ts really does — this module has a reason to exist.
     const real = resolvedEdges.filter(
       (e) => !e.isTypeOnly && e.from === INSIGHTS_API_PATH && (e.to === 'chatStore' || e.to === 'generationStore')
     );
     expect(real.length).toBeGreaterThan(0);
   });
-
-  // -------------------------------------------------------------------
-  // I8 — the guard's own self-check
-  // -------------------------------------------------------------------
 
   it('self-check: a planted VALUE import of chatStore is flagged, and a planted `import type` of it is not', () => {
     const withValueImport = `
@@ -370,10 +338,6 @@ export const z = 3;
   });
 
   it('self-check: a doc comment that talks ABOUT a value import in prose is not mistaken for a real one', () => {
-    // A real parser treats comments as trivia, never as candidate
-    // statements — this pins that a header saying "every import is
-    // `import type`..." inside a `/** ... */` block does not itself
-    // register as an import.
     const source = `
 /**
  * Every import here is \`import type\`, never a real value import like
@@ -388,15 +352,6 @@ import type { TokenizerProfile } from '../tokenizer';
   });
 
   it('self-check: a `//` / `/* */`-shaped sequence living INSIDE A STRING LITERAL, directly above a real import, does not hide or corrupt that import', () => {
-    // A comment-stripping preprocessor (the previous implementation) has
-    // no way to tell a real comment from these bytes appearing inside a
-    // string's contents, and can delete part of a real statement as a
-    // result. A real parser never has this failure mode — string-literal
-    // contents are never comment trivia. The two string halves below form
-    // an `/* ... */` pair that BRACKETS the import — a
-    // strip-then-regex preprocessor's lazy block-comment regex would scan
-    // from the first `/*` to the first `*/` found anywhere afterward and
-    // delete everything between them, import included.
     const source = `
 const a = 'x /* y';
 import { useChatStore } from '../stores/chatStore';
@@ -441,9 +396,6 @@ const b = '*/';
   });
 
   it('self-check: a dynamic import whose argument is NOT a string literal is recorded as unresolvable, not dropped', () => {
-    // `import(pathVar)` cannot be resolved statically — this must still
-    // produce a record (so a caller can see the edge exists and refuse
-    // to certify it as safe) rather than silently vanishing.
     const source = `async function f(pathVar: string) {\n  await import(pathVar);\n}\n`;
     const imports = extractImports(source);
     expect(imports.length, JSON.stringify(imports)).toBe(1);

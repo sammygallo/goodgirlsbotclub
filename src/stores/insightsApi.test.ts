@@ -1,12 +1,6 @@
 /**
- * Integration tests for `insightsApi.ts` — everything that needs a real
- * `chatStore`/`generationStore` turn (pure-function tests for the two
- * projectors live in `src/utils/insights/wiInsights.test.ts`).
- *
- * Drives REAL store actions with `api` stubbed at the network edge only —
- * same house style as `chatStore.wiServerFacts.test.ts` and
- * `chatStore.wiFiredServerPath.test.ts`. Every test names the mutation it
- * kills, per the story brief.
+ * Integration tests for `insightsApi.ts` — pure-function tests for the two
+ * projectors live in `src/utils/insights/wiInsights.test.ts`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -116,8 +110,7 @@ const ENTRY_DTO = {
 };
 
 /** Forces a chat ineligible for server retrieval via a persona-linked book
- *  (serverRetrieval.ts's condition 1) — the simplest reliable "never even
- *  tries the network" trigger, same as chatStore.wiServerFacts.test.ts. */
+ *  (serverRetrieval.ts's condition 1). */
 function makeChatIneligible(): void {
   usePersonaStore.setState({
     personas: [
@@ -141,10 +134,6 @@ beforeEach(() => {
   (globalThis.localStorage as unknown as MemoryStorage).clear();
   vi.restoreAllMocks();
 });
-
-// ---------------------------------------------------------------------------
-// I2 — server eviction, four wire shapes, via a real sendMessage turn
-// ---------------------------------------------------------------------------
 
 describe('getTurnWiInsight — server eviction wire shapes (I2)', () => {
   it('absent evictedEntryIds -> backend-does-not-report-eviction', async () => {
@@ -186,10 +175,6 @@ describe('getTurnWiInsight — server eviction wire shapes (I2)', () => {
   });
 
   it("evictedEntryIds: ['e1'] -> observed, one id-only evicted entry (MANDATORY: kills `evicted = breakdown.wi.droppedEntries`)", async () => {
-    // `wi.droppedEntries` is always [] on a server turn (the client scan
-    // never ran) — a projector that read eviction off it instead of
-    // `wi.server.evictedEntryIds` would report `[]` here instead of the
-    // one real evicted id the backend actually sent.
     const CHAT_FILE = 'insights-evict-real.jsonl';
     arrangeEligibleChat(CHAT_FILE);
     stubCommonEdges();
@@ -234,19 +219,8 @@ describe('getTurnWiInsight — server eviction wire shapes (I2)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// CONF4 — getTurnWiInsight's PromptBreakdown -> source mapping. Every field
-// below gets its own distinct value in the fixture, so a mapping bug that
-// reads the wrong PromptBreakdown field (or drops one) surfaces as a wrong
-// value here rather than being absorbed by two fields sharing one number.
-// ---------------------------------------------------------------------------
-
 describe('getTurnWiInsight — PromptBreakdown -> source field mapping (CONF4)', () => {
   it('a client-scanned turn maps all 12 client-path fields from their own PromptBreakdown field, not a neighboring one', () => {
-    // profile 'gemini' — deliberately NOT the server-path fixture's
-    // 'claude' below, so a hardcoded profile/estimator string cannot pass
-    // both tests (round 10, job 2: `profile` was previously constant
-    // across every fixture that asserted it).
     resetStores();
     const breakdown = createPromptBreakdown('group', 'gemini');
     breakdown.chatFile = 'conf4-client.jsonl';
@@ -386,8 +360,6 @@ describe('getTurnWiInsight — PromptBreakdown -> source field mapping (CONF4)',
     expect(insight.value.trimmedFromHistoryEntries.map((e) => e.entryId)).toEqual([
       'conf4-server-trimmed-entry',
     ]);
-    // budgetRequested 999 could only have come from breakdown.wi.server —
-    // no other field on this fixture carries that number.
     expect(insight.value.budget).toEqual({
       observed: true,
       value: { basis: 'raw', estimator: 'generic', tokens: 999 },
@@ -395,19 +367,8 @@ describe('getTurnWiInsight — PromptBreakdown -> source field mapping (CONF4)',
   });
 });
 
-// ---------------------------------------------------------------------------
-// I5 — empty chat list refuses, paired with a non-empty case
-// ---------------------------------------------------------------------------
-
 describe('getTelemetryCoverage — empty chat list (I5)', () => {
   it('an empty in-memory chat list never yields a false observed 0 anywhere in computeCoverage\'s shape (round 10, job 2)', () => {
-    // The full-object toEqual (not just the two field-by-field expects the
-    // previous version of this test had) is the point: `turns.aiTurnsInScope`
-    // is `Observed<number>` and `turns.chatsWithUncountedTurns` is the wider
-    // `ChatCountFigure` (`Observed<number> | TelemetryDerivedCount`) — EITHER
-    // could type-legally be hardcoded to `{ observed: true, value: 0 }` and
-    // pass the OLD two-field version of this test — that flip is exactly the
-    // lie AC2/AC4 exist to prevent.
     resetStores();
     useChatStore.setState({ chatFiles: [], messages: [], currentChatFile: null });
     const coverage = getTelemetryCoverage();
@@ -439,19 +400,11 @@ describe('getTelemetryCoverage — empty chat list (I5)', () => {
     resetStores();
     const coverage = getTelemetryCoverage({ chatFiles: [] });
     expect(coverage.scope).toBe('caller-supplied');
-    // All three name-dependent figures get the SAME carve-out — a mutant
-    // that special-cased only `chatsInScope` (the one this test used to
-    // check alone) would still fail `chatsWithTelemetry`/
-    // `chatsWithUncountedTurns` reverting to the unverified arm here.
     expect(coverage.chatsInScope).toEqual({ observed: true, value: 0 });
     expect(coverage.chatsWithTelemetry).toEqual({ observed: true, value: 0 });
     expect(coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 0 });
   });
 });
-
-// ---------------------------------------------------------------------------
-// I4 — coverage numerator: three seeded chats
-// ---------------------------------------------------------------------------
 
 describe('getTelemetryCoverage — numerator (I4)', () => {
   it('(A) in chatFiles, never opened; (B) in chatFiles, opened with an empty header; (C) in wiFiredByFile but NOT chatFiles', async () => {
@@ -460,16 +413,9 @@ describe('getTelemetryCoverage — numerator (I4)', () => {
     const CHAT_B = 'i4-b-opened-empty.jsonl';
     const CHAT_C = 'i4-c-not-in-scope.jsonl';
 
-    // B: loaded with a header carrying NO wi_fired key at all -> hydrates
-    // to `{}` (getWiFiredForChat(B) !== undefined must be TRUE — kills
-    // `Object.keys(map ?? {}).length > 0`, which would read `{}` as
-    // "no telemetry").
     vi.spyOn(api, 'getChatWithHeader').mockResolvedValueOnce({ header: {}, messages: [], server_ts: 1 });
     await useChatStore.getState().loadChat('avatar.png', CHAT_B);
 
-    // C: loaded too (populating the module-private wiFiredByFile map), but
-    // deliberately excluded from `chatFiles` below — kills
-    // `wiFiredByFile.size` as a numerator, which would count C.
     vi.spyOn(api, 'getChatWithHeader').mockResolvedValueOnce({
       header: { wi_fired: { [wiFiredKey('cbook', 'centry')]: { first_turn: 0, last_turn: 0, count: 1 } } },
       messages: [],
@@ -487,13 +433,6 @@ describe('getTelemetryCoverage — numerator (I4)', () => {
 
     const coverage = getTelemetryCoverage();
     expect(coverage.chatsInScope).toEqual({ observed: true, value: 2 });
-    // Only B has telemetry — A was never opened, and C is out of scope
-    // even though it's in wiFiredByFile. `chatsWithTelemetry` itself reads
-    // that same module-level map (chatStore.ts), which has no
-    // per-character partition — round 11 wraps it as the unverified
-    // ChatCountFigure arm even in THIS in-memory scope, unlike
-    // `chatsInScope` above (a plain count of `chatStore.chatFiles`' own
-    // list, which the backend does keep unique per character).
     expect(coverage.chatsWithTelemetry).toEqual({
       observed: true,
       verified: false,
@@ -529,18 +468,6 @@ describe('getTelemetryCoverage — numerator (I4)', () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// I6 — partial coverage, paired with a hydrated/non-partial case
-// (reuses the legacy-remap setup from chatStore.wiFiredLegacyRemap.test.ts).
-// Round 11: `generations` has no clean arm for any NON-EMPTY scope — see
-// the round-11 describe block below for why even the in-memory scope
-// can't earn one, and OBSERVED_FALSE_REASONS's own comment on
-// `chat-file-names-not-verified-distinct` (types.ts) for the mechanism.
-// (Round 12 gives it back a clean arm for the one scope where the
-// mechanism can't apply at all: a provably empty one — see the
-// "empty CALLER-SUPPLIED chat list" test above.)
-// ---------------------------------------------------------------------------
 
 describe('getEntryFiringAggregate — generations (I6)', () => {
   const LEGACY_BOOK = 'wibook_1777000000000_aaaaaa';
@@ -614,10 +541,6 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
   });
 
   it('an empty in-memory chat list -> generations is the Unobservable arm, carrying the SAME why as coverage.chatsInScope (round 10, job 2)', () => {
-    // TelemetryDerivedCount is a 2-arm union (UnverifiedCount /
-    // Unobservable) — the UnverifiedCount arm is covered elsewhere in this
-    // file, but nothing previously drove `generations` down the
-    // plain-refusal arm at all.
     resetStores();
     useChatStore.setState({ chatFiles: [], messages: [], currentChatFile: null });
     const [agg] = getEntryFiringAggregate([{ bookId: 'any-book', entryId: 'any-entry' }]);
@@ -632,11 +555,6 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
   });
 
   it('two distinct keys queried in one call each get their OWN bookId/entryId/generations — no swap, no shared hardcoded key (round 10, job 2)', async () => {
-    // `EntryFiringAggregate.bookId`/`.entryId` were never asserted
-    // anywhere in this file — a `keys.map(key => ({ bookId: 'x', ... }))`
-    // hardcode, or a swap of the two fields, or a `computeFiringCount`
-    // call that always used `keys[0]` regardless of which key it was
-    // building an aggregate for, would all stay green.
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const CHAT_FILE = 'i6-two-keys.jsonl';
@@ -693,12 +611,6 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
   });
 
   it('BOTH an un-hydrated chat AND a partially-covered chat in scope at once -> chat-not-hydrated wins (C10 — the priority the docstring actually claims)', async () => {
-    // The old version of this test put ONLY a never-opened chat in scope,
-    // so it could never tell "chat-not-hydrated is checked" apart from
-    // "chat-not-hydrated takes PRIORITY OVER telemetry-coverage-partial" —
-    // swapping computeFiringCount's two `if` blocks stayed green under it.
-    // This fixture puts both gaps in scope simultaneously, so only the
-    // correctly-prioritized implementation passes.
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const legacyBook = 'wibook_1777000000010_eeeeee';
@@ -757,8 +669,6 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
 
     // In-memory scope (no `chatFiles` opt).
     const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }]);
-    // 3 + 5 = 8 — a mutation that reports only the last (5) or first (3)
-    // file's count, instead of summing across scope, fails this.
     expect(agg.generations).toEqual({
       observed: true,
       verified: false,
@@ -784,22 +694,12 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
     const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }], {
       chatFiles: [CHAT_FILE, CHAT_FILE],
     });
-    // A count of 6 would mean the duplicate file inflated the sum. Once the
-    // scope is a set, the one real chat it names is still fully covered —
-    // the SUM must still be the deduped 3, not 6.
     expect(agg.generations).toEqual({
       observed: true,
       verified: false,
       count: 3,
       reasons: ['chat-file-names-not-verified-distinct'],
     });
-    // The coverage denominator must be deduped too, in the SAME object —
-    // 1 chat, not 2. A fix that moved the dedupe out of
-    // resolveChatFileScope and into computeFiringCount's own loop would
-    // leave `files` (and so `coverage`, built from the same `files`)
-    // un-deduped even though `generations.count` looks correct. This is a
-    // non-empty caller-supplied scope, so (Note two, round 11) BOTH
-    // scope-list counts are also unverified, not just `generations`.
     expect(agg.coverage.chatsInScope).toEqual({
       observed: true,
       verified: false,
@@ -815,12 +715,6 @@ describe('getEntryFiringAggregate — generations (I6)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// chatsWithTelemetry had no caller-supplied-scope coverage.
-// chatsInScope and chatsWithUncountedTurns both get a non-empty
-// caller-supplied pin above (the dedupe test); chatsWithTelemetry never
-// did, for either a real (non-zero) or a zero measured count.
-// ---------------------------------------------------------------------------
 describe('getTelemetryCoverage — chatsWithTelemetry, caller-supplied scope', () => {
   it('a non-empty caller-supplied scope with one hydrated chat and one never-opened chat -> the unverified arm, count 1 — not a hardcoded clean Observed<number>', async () => {
     resetStores();
@@ -860,18 +754,6 @@ describe('getTelemetryCoverage — chatsWithTelemetry, caller-supplied scope', (
   });
 });
 
-// ---------------------------------------------------------------------------
-// Round 11 — the general rule, applied uniformly. `generations` is
-// scope-INDEPENDENT: `wiFiredByFile` (chatStore.ts) has no per-character
-// partition at all, so the in-memory scope's own backend-guaranteed
-// per-character name uniqueness (`fetchChatFiles(avatarUrl)`) does not
-// protect a read through that map — only `chatsInScope`/
-// `chatsWithUncountedTurns`, which never touch `wiFiredByFile` and only
-// ever count the SCOPE'S OWN name list, keep the in-memory/caller-supplied
-// split. Same hydration, same count, same chat — only the scope differs —
-// and that difference now shows up in `coverage.chatsInScope`, never in
-// `generations`.
-// ---------------------------------------------------------------------------
 describe('getEntryFiringAggregate — round 11: generations is scope-independent, chatsInScope is not', () => {
   it('in-memory scope, fully hydrated and non-partial -> generations is STILL the unverified arm (this is what round 10 job 1 got wrong: wiFiredByFile has no per-character partition, so hydration in ANY scope cannot certify the count)', async () => {
     resetStores();
@@ -911,8 +793,6 @@ describe('getEntryFiringAggregate — round 11: generations is scope-independent
     });
     await useChatStore.getState().loadChat('avatar.png', CHAT_FILE);
 
-    // Same hydration, same count — only the scope differs, via opts,
-    // never touching chatStore.chatFiles at all.
     const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }], { chatFiles: [CHAT_FILE] });
     expect(agg.coverage.scope).toBe('caller-supplied');
     expect(agg.generations).toEqual({
@@ -952,8 +832,6 @@ describe('getEntryFiringAggregate — round 11: generations is scope-independent
     const BOOK = 'r11-collision-book';
     const ENTRY = 'r11-collision-entry';
 
-    // Character B opens the shared-named chat; its real telemetry lands in
-    // wiFiredByFile under the bare name only — nothing here is hand-built.
     vi.spyOn(api, 'getChatWithHeader').mockResolvedValueOnce({
       header: { wi_fired: { [wiFiredKey(BOOK, ENTRY)]: { first_turn: 0, last_turn: 0, count: 7 } } },
       messages: [],
@@ -961,9 +839,6 @@ describe('getEntryFiringAggregate — round 11: generations is scope-independent
     });
     await useChatStore.getState().loadChat('character-b-avatar.png', SHARED_NAME);
 
-    // Character A's OWN chat list happens to name the same bare file — A
-    // never opened it this session. Legal: chat-name uniqueness is
-    // per-character only.
     useChatStore.setState({
       chatFiles: [{ fileName: SHARED_NAME, messageCount: 0, lastMessage: '' }],
       currentChatFile: null,
@@ -971,8 +846,6 @@ describe('getEntryFiringAggregate — round 11: generations is scope-independent
 
     const [agg] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }]);
     expect(agg.coverage.scope).toBe('in-memory-chat-list');
-    // B's real count (7) leaks through under A's own in-memory scope,
-    // wrapped unverified rather than reported as a trustworthy 7.
     expect(agg.generations).toEqual({
       observed: true,
       verified: false,
@@ -982,11 +855,6 @@ describe('getEntryFiringAggregate — round 11: generations is scope-independent
   });
 
   it('deflation via deleteChat: a real, previously-recorded count reads back as chat-not-hydrated once an UNRELATED character deletes their own same-named chat, because wiFiredByFile is keyed and deleted by bare name only', async () => {
-    // Distinct from "an un-hydrated chat, alone in scope" (I6 above, still
-    // pinned unchanged): that fixture's chat was NEVER opened, so its true
-    // count really is unknown. This one WAS opened and genuinely fired the
-    // entry — the gap is introduced AFTER that, by a different character's
-    // deleteChat wiping the shared map entry out from under it.
     resetStores();
     useWorldInfoStore.getState().resetUser();
     const SHARED_NAME = 'r11-deflation-shared.jsonl';
@@ -1001,7 +869,6 @@ describe('getEntryFiringAggregate — round 11: generations is scope-independent
     await useChatStore.getState().loadChat('avatar.png', SHARED_NAME);
     useChatStore.setState({ chatFiles: [{ fileName: SHARED_NAME, messageCount: 0, lastMessage: '' }] });
 
-    // Sanity: before the deletion, the real count is visible.
     const [before] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }]);
     expect(before.generations).toEqual({
       observed: true,
@@ -1010,18 +877,11 @@ describe('getEntryFiringAggregate — round 11: generations is scope-independent
       reasons: ['chat-file-names-not-verified-distinct'],
     });
 
-    // An UNRELATED character deletes their own chat that happens to share
-    // this bare name — deleteChat (chatStore.ts) wipes wiFiredByFile by
-    // bare name only, with no character check at all.
     vi.spyOn(api, 'deleteChat').mockResolvedValueOnce(undefined);
     vi.spyOn(api, 'getChats').mockResolvedValueOnce([]);
     await useChatStore.getState().deleteChat('some-other-avatar.png', SHARED_NAME);
 
     const [after] = getEntryFiringAggregate([{ bookId: BOOK, entryId: ENTRY }], { chatFiles: [SHARED_NAME] });
-    // The real count is gone — not because it was never observed, but
-    // because an unrelated deletion wiped the shared key a moment later.
-    // `chat-not-hydrated` reads as "unknown," which understates a value
-    // this session actually measured.
     expect(after.generations).toEqual({
       observed: true,
       verified: false,
@@ -1031,15 +891,20 @@ describe('getEntryFiringAggregate — round 11: generations is scope-independent
   });
 });
 
-// ---------------------------------------------------------------------------
-// I7 — live-slot identity: null / mismatch / match, plus a group round
-// ---------------------------------------------------------------------------
-
 describe('getTurnWiInsight — live-slot identity (I7)', () => {
   it('null slot refuses breakdown-slot-empty', () => {
     resetStores();
     useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
     expect(getTurnWiInsight()).toEqual({ observed: false, why: 'breakdown-slot-empty' });
+  });
+
+  it('a null slot with forChatFile supplied still refuses breakdown-slot-empty, never reading opts.forChatFile against a null breakdown', () => {
+    resetStores();
+    useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
+    expect(getTurnWiInsight({ forChatFile: 'irrelevant.jsonl' })).toEqual({
+      observed: false,
+      why: 'breakdown-slot-empty',
+    });
   });
 
   it('a chatFile mismatch refuses breakdown-slot-describes-another-turn, and a NAME MATCH refuses too — chat-file-names-not-verified-distinct, since a bare name can never prove the slot describes the requested chat', async () => {
@@ -1121,15 +986,9 @@ describe('getTurnWiInsight — live-slot identity (I7)', () => {
     );
     expect(secondInsight.observed).toBe(true);
     if (!secondInsight.observed) throw new Error('unreachable');
-    // Never merged: the one constant entry should appear once, not
-    // accumulated across the two speaker passes.
     expect(secondInsight.value.entries.length).toBe(1);
   });
 });
-
-// ---------------------------------------------------------------------------
-// I14 — engine derivation, three cases
-// ---------------------------------------------------------------------------
 
 describe('getTurnWiInsight — engine derivation (I14)', () => {
   it('group -> engine "client" (group never calls the server at all)', async () => {
@@ -1188,15 +1047,6 @@ describe('getTurnWiInsight — engine derivation (I14)', () => {
   });
 
   it('hand-built activationSource "server" with wi.server undefined -> engine "server", and the zeroed scan report is never read as real (HIGHEST-PRIORITY kill: `engine = wi.server ? "server" : "client"`)', () => {
-    // This exact combination is unreachable through real store actions —
-    // production always sets activationSource and wi.server together
-    // (chatStore.ts's `serverMatchedEntries !== undefined` test drives
-    // both). It IS the state AC4 exists to defend against: a turn that
-    // says "the server ran this" while carrying the untouched, zeroed
-    // wiScanReport defaults (chatStore.ts:1361-1371) for budget/
-    // pinnedTokens/droppedEntries — exactly as a real server-path turn's
-    // breakdown looks before `recordServerActivation` (or a mutation that
-    // drops it) stamps `wi.server`.
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     breakdown.chatFile = 'i14-handbuilt.jsonl';
@@ -1209,10 +1059,6 @@ describe('getTurnWiInsight — engine derivation (I14)', () => {
     const insight = getTurnWiInsight();
     expect(insight.observed).toBe(true);
     if (!insight.observed) throw new Error('unreachable');
-    // The mutation `engine = wi.server ? 'server' : 'client'` would report
-    // 'client' here, AND would then read the zeroed scan defaults as real
-    // observed figures (pinnedTokens: value 0, budget: value 0, evicted:
-    // value []) instead of every one of these refusing.
     expect(insight.value.engine).toBe('server');
     expect(insight.value.pinnedTokens).toEqual({ observed: false, why: 'server-path-no-scan-report' });
     expect(insight.value.pinnedOverBudget).toEqual({ observed: false, why: 'server-path-no-scan-report' });
@@ -1220,10 +1066,6 @@ describe('getTurnWiInsight — engine derivation (I14)', () => {
     expect(insight.value.evicted).toEqual({ observed: false, why: 'server-facts-missing' });
   });
 });
-
-// ---------------------------------------------------------------------------
-// I15 — coverage accompanies every aggregate (walker + non-vacuity)
-// ---------------------------------------------------------------------------
 
 describe('getEntryFiringAggregate — coverage accompanies every result (I15)', () => {
   it('every returned aggregate carries a well-formed TelemetryCoverage', () => {
@@ -1242,8 +1084,6 @@ describe('getEntryFiringAggregate — coverage accompanies every result (I15)', 
       { bookId: 'book-c', entryId: 'entry-c' },
     ]);
 
-    // Non-vacuity: an empty `keys` array (or a walker that never actually
-    // inspects `.coverage`) must not be how this test passes.
     expect(results.length).toBe(3);
     for (const agg of results) {
       expect(agg.coverage, JSON.stringify(agg)).toBeDefined();
@@ -1256,25 +1096,16 @@ describe('getEntryFiringAggregate — coverage accompanies every result (I15)', 
       });
       expect(agg.coverage.recency).toEqual({ observed: false, why: 'chat-recency-not-recorded' });
     }
-    // Every result shares the SAME coverage object contents — one
-    // denominator computation per call, not per key.
     expect(results[0].coverage).toEqual(results[1].coverage);
     expect(results[1].coverage).toEqual(results[2].coverage);
   });
 });
 
-// ---------------------------------------------------------------------------
-// I16 — turn coverage: the counts must differ, or messages.length passes
-// ---------------------------------------------------------------------------
-
 describe('getTelemetryCoverage — turn coverage (I16)', () => {
   it('an open, in-scope chat refuses aiTurnsInScope unconditionally (transcript-identity-unprovable), even with a rich transcript in memory — #530', () => {
-    // Round 2: this used to assert a real count (7 AI turns out of 17
-    // messages) — the PM has since ruled that transcript identity can
-    // never be confirmed from existing chatStore state (Critical 2), so
-    // this now refuses regardless of how populated `messages` is.
     resetStores();
     const CHAT_FILE = 'i16-open.jsonl';
+    // 9 user, 7 AI, 1 system.
     const messages = [
       ...Array.from({ length: 9 }, (_, i) => mkMsg(`u${i}`, 'hi', { isUser: true, isSystem: false })),
       ...Array.from({ length: 7 }, (_, i) => mkMsg(`a${i}`, 'hello', { isUser: false, isSystem: false })),
@@ -1286,7 +1117,7 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
       messages,
     });
 
-    expect(messages.length).toBe(17); // sanity: the fixture really has 17 messages total.
+    expect(messages.length).toBe(17);
     const coverage = getTelemetryCoverage();
     expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-identity-unprovable' });
   });
@@ -1316,8 +1147,6 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
   });
 
   it('chatsWithUncountedTurns is every file in scope, unconditionally — aiTurnsInScope never counts the open chat any more (#530) (C9)', () => {
-    // Round 2: used to be "total minus the open one" (value 2 here) — now
-    // nothing is ever counted, so it's every file in scope (value 3).
     resetStores();
     useChatStore.setState({
       chatFiles: [
@@ -1334,18 +1163,6 @@ describe('getTelemetryCoverage — turn coverage (I16)', () => {
     expect(coverage.turns.chatsWithUncountedTurns).toEqual({ observed: true, value: 3 });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Round 2, Critical 2 — aiTurnsInScope is an UNCONDITIONAL refusal.
-// Transcript identity is unprovable from existing chatStore state:
-// `loadChat`/`loadGroupChat` move `currentChatFile` without `messages` in
-// the same atomic set, and neither
-// stamps a per-file confirmation a reader could check — true whether or not
-// a load is in flight or one errored, not only during one (the old
-// `isLoading || error !== null` predicate under-refused on at least three
-// reachable paths). PM ruling: fail closed always; the store-side fix is
-// out of this API's scope (issue #530, filed).
-// ---------------------------------------------------------------------------
 
 describe('getTelemetryCoverage — transcript identity is unprovable (#530)', () => {
   it('the open chat refuses transcript-identity-unprovable even when isLoading is false and error is null — kills aiTurnsInScope ever reporting a count again', () => {
@@ -1380,7 +1197,7 @@ describe('getTelemetryCoverage — transcript identity is unprovable (#530)', ()
       observed: false,
       why: 'transcript-identity-unprovable',
     });
-    useChatStore.setState({ error: null }); // don't leak into later tests
+    useChatStore.setState({ error: null });
   });
 
   it('a chat in scope but NOT the open one still refuses transcript-not-in-memory, not transcript-identity-unprovable — the two codes stay distinct, never collapsed into one', () => {
@@ -1396,10 +1213,6 @@ describe('getTelemetryCoverage — transcript identity is unprovable (#530)', ()
     expect(coverage.turns.aiTurnsInScope).toEqual({ observed: false, why: 'transcript-not-in-memory' });
   });
 });
-
-// ---------------------------------------------------------------------------
-// I17 — sampledTurns is the literal 1
-// ---------------------------------------------------------------------------
 
 describe('getEntryFiringAggregate — emittedSample (I17)', () => {
   it('sampledTurns is 1, and the sample is the live turn\'s own emittedTokens', () => {
@@ -1438,11 +1251,6 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
   });
 
   it('a live breakdown absent from entries/trimmedFromHistoryEntries/droppedEntries -> refuses entry-not-accounted-for-this-turn, NOT entry-never-rendered (C1)', () => {
-    // Not accounted for anywhere this turn — distinct from `entry-never-
-    // rendered` (C1's other two cases below), which means it WAS
-    // evaluated. (Round 2: renamed from `entry-not-activated-this-turn` —
-    // this API cannot actually prove non-candidacy, only absence from the
-    // accounted records; see that code's own comment, types.ts.)
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
@@ -1451,9 +1259,6 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
   });
 
   it('present ONLY in trimmedFromHistoryEntries -> refuses entry-trimmed-from-history, even though it carries a REAL emitted cost (C1/C11)', () => {
-    // Mutating the lookup to also search `trimmedFromHistoryEntries` for a
-    // sample (instead of refusing) would report this entry's real cost as
-    // if it reached the model — it didn't; the history trim cut it first.
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     breakdown.wi.trimmedFromHistoryEntries = [
@@ -1471,6 +1276,46 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
     const [agg] = getEntryFiringAggregate([{ bookId: 'b-trimmed', entryId: 'e-trimmed' }]);
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-trimmed-from-history' });
+  });
+
+  it('an entry in trimmedFromHistoryEntries sharing only the queried entryId (different bookId) does not refuse entry-trimmed-from-history — kills matchesKey -> entryId-only at the trimmedFromHistoryEntries call site', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.trimmedFromHistoryEntries = [
+      {
+        entryId: 'wanted-entry',
+        bookId: 'decoy-book',
+        emittedTokens: 9,
+        emittedChars: 20,
+        rawTokens: 6,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'wanted-book', entryId: 'wanted-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
+  });
+
+  it('an entry in trimmedFromHistoryEntries sharing only the queried bookId (different entryId) does not refuse entry-trimmed-from-history — kills matchesKey -> bookId-only at the trimmedFromHistoryEntries call site', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.trimmedFromHistoryEntries = [
+      {
+        entryId: 'decoy-entry',
+        bookId: 'wanted-book',
+        emittedTokens: 9,
+        emittedChars: 20,
+        rawTokens: 6,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'wanted-book', entryId: 'wanted-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
   });
 
   it('present ONLY in droppedEntries with a null emittedTokens -> refuses entry-never-rendered (evaluated, evicted before rendering) (C1)', () => {
@@ -1491,6 +1336,46 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
     const [agg] = getEntryFiringAggregate([{ bookId: 'b-dropped', entryId: 'e-dropped' }]);
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-never-rendered' });
+  });
+
+  it('an entry in droppedEntries sharing only the queried entryId (different bookId) does not refuse entry-never-rendered — kills matchesKey -> entryId-only at the droppedEntries call site', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.droppedEntries = [
+      {
+        entryId: 'wanted-entry',
+        bookId: 'decoy-book',
+        emittedTokens: null,
+        emittedChars: null,
+        rawTokens: 4,
+        placement: null,
+        wrapper: null,
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'wanted-book', entryId: 'wanted-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
+  });
+
+  it('an entry in droppedEntries sharing only the queried bookId (different entryId) does not refuse entry-never-rendered — kills matchesKey -> bookId-only at the droppedEntries call site', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.droppedEntries = [
+      {
+        entryId: 'decoy-entry',
+        bookId: 'wanted-book',
+        emittedTokens: null,
+        emittedChars: null,
+        rawTokens: 4,
+        placement: null,
+        wrapper: null,
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'wanted-book', entryId: 'wanted-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
   });
 
   it('round 12: the sample names the chat file and publish time of the live turn it came from, and a fixture where that turn belongs to a chat OUTSIDE the queried scope shows the consumer can tell — computeEmittedSample reads lastPromptBreakdown directly and never checks it against `opts.chatFiles`', () => {
@@ -1601,15 +1486,44 @@ describe('getEntryFiringAggregate — emittedSample (I17)', () => {
       },
     });
   });
-});
 
-// ---------------------------------------------------------------------------
-// Round 2, Critical 1 — computeEmittedSample's server arm. A measured
-// emission in `wi.entries` outranks any absence claim on BOTH engines
-// (checked first, before any engine split); past that, absence means
-// something different per engine, and the server arm's classifier is typed
-// `Unobservable` so it is a type error for it to ever manufacture a value.
-// ---------------------------------------------------------------------------
+  it('the wanted entry placed FIRST in wi.entries, with an unrelated entry LAST, still returns the wanted entry — kills `.find(matchesKey)` degenerating into always the last element', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.entries = [
+      {
+        entryId: 'wanted-entry',
+        bookId: 'wanted-book',
+        emittedTokens: 13,
+        emittedChars: 30,
+        rawTokens: 9,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+      {
+        entryId: 'unrelated-entry',
+        bookId: 'unrelated-book',
+        emittedTokens: 999,
+        emittedChars: 999,
+        rawTokens: 999,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'wanted-book', entryId: 'wanted-entry' }]);
+    expect(agg.emittedSample).toEqual({
+      observed: true,
+      value: {
+        sampledTurns: 1,
+        tokens: { basis: 'emitted', estimator: 'gpt', tokens: 13 },
+        turn: { chatFile: breakdown.chatFile, publishedAt: breakdown.publishedAt },
+      },
+    });
+  });
+});
 
 describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Critical 1)', () => {
   it('server engine with the queried entry present in wi.entries carrying a real emittedTokens -> observed sample, not server-facts-missing or any other server-arm refusal — kills hoisting the activationSource === "server" check above the wi.entries lookup', () => {
@@ -1673,9 +1587,6 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
       activatedEntryIds: [],
     };
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
-    // bookId is deliberately irrelevant to the caller's key here — the
-    // backend's evictedEntryIds list carries no book pairing to check it
-    // against.
     const [agg] = getEntryFiringAggregate([{ bookId: 'irrelevant-book', entryId: 'target-entry' }]);
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-evicted-but-bookid-unverified' });
   });
@@ -1696,13 +1607,6 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
   });
 
   it('engine must be read off activationSource, never wi.server truthiness — a hand-built server turn with wi.server undefined still refuses server-facts-missing (I14, restated for computeEmittedSample)', () => {
-    // Unreachable through real store actions (see I14's own comment on
-    // getTurnWiInsight, above) — the state AC4 exists to defend against. A
-    // mutant reading `wi.server`'s truthiness instead of `activationSource`
-    // would see a falsy `wi.server` and route this through the CLIENT arm
-    // instead, which — since `droppedEntries` here is empty — would report
-    // `entry-not-accounted-for-this-turn` rather than the correct
-    // `server-facts-missing`.
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     breakdown.wi.activationSource = 'server';
@@ -1714,12 +1618,6 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
   });
 
   it('the server arm never consults droppedEntries, even when one is (unreachably) populated with a matching entry', () => {
-    // `wi.droppedEntries` is structurally `[]` on every real server turn
-    // (chatStore.ts's `serverMatchedEntries !== undefined` short-circuit)
-    // — hand-built here only to prove the
-    // server arm never reads it. A mutant that consulted it anyway would
-    // find the matching entry and report `entry-never-rendered` instead of
-    // the correct `entry-not-accounted-for-this-turn`.
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     breakdown.wi.activationSource = 'server';
@@ -1746,6 +1644,33 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
   });
 
+  it('a server turn where the queried entry is BOTH in trimmedFromHistoryEntries and in evictedEntryIds refuses entry-trimmed-from-history, not entry-evicted-but-bookid-unverified — pins the trimmed check running before the server classifier', () => {
+    resetStores();
+    const breakdown = createPromptBreakdown('solo', 'gpt');
+    breakdown.wi.activationSource = 'server';
+    breakdown.wi.trimmedFromHistoryEntries = [
+      {
+        entryId: 'contested-entry',
+        bookId: 'contested-book',
+        emittedTokens: 25,
+        emittedChars: 60,
+        rawTokens: 18,
+        placement: { stage: 'A', sectionId: 'wi_before_char' },
+        wrapper: 'none',
+        pinned: false,
+      },
+    ];
+    breakdown.wi.server = {
+      budgetRequested: 10,
+      budgetEstimator: 'generic',
+      evictedEntryIds: ['contested-entry'],
+      activatedEntryIds: [],
+    };
+    useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
+    const [agg] = getEntryFiringAggregate([{ bookId: 'contested-book', entryId: 'contested-entry' }]);
+    expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-trimmed-from-history' });
+  });
+
   it('a populated trimmedFromHistoryEntries that does NOT contain the queried key does not refuse entry-trimmed-from-history — kills `.some(matchesKey)` -> `.length > 0`', () => {
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
@@ -1762,17 +1687,11 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
       },
     ];
     useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
-    // A `.length > 0` mutant would report entry-trimmed-from-history here
-    // (the array is non-empty) even though the queried key isn't in it.
     const [agg] = getEntryFiringAggregate([{ bookId: 'unmatched-book', entryId: 'unmatched-entry' }]);
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-not-accounted-for-this-turn' });
   });
 
   it('present in wi.entries itself with a null emittedTokens executes the defensive fallback -> entry-never-rendered (CONF7)', () => {
-    // Production only ever puts entries that reached `wrapWiContent` (and
-    // so carry a real cost) into `wi.entries` — but the TYPE does not
-    // forbid a null one, so this branch exists and must actually run
-    // somewhere, rather than being a claim no fixture ever checks.
     resetStores();
     const breakdown = createPromptBreakdown('solo', 'gpt');
     breakdown.wi.entries = [
@@ -1792,15 +1711,6 @@ describe('getEntryFiringAggregate — emittedSample, server-arm classifier (Crit
     expect(agg.emittedSample).toEqual({ observed: false, why: 'entry-never-rendered' });
   });
 });
-
-// ---------------------------------------------------------------------------
-// I18 — every declared ObservedFalseReason is actually produced somewhere
-// (set equality against OBSERVED_FALSE_REASONS) — as either a `why` value
-// or a `reasons[]` tuple member; `record()` below captures both, which is
-// why three reasons that only ever appear inside a `reasons` tuple
-// (`chat-not-hydrated`, `telemetry-coverage-partial`,
-// `chat-file-names-not-verified-distinct`) still count as produced.
-// ---------------------------------------------------------------------------
 
 describe('every declared ObservedFalseReason is produced (I18)', () => {
   it('a purpose-built battery of scenarios hits every declared reason, and nothing else', async () => {
@@ -1831,12 +1741,11 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       const mismatch = getTurnWiInsight({ forChatFile: 'nope.jsonl' });
       if (!mismatch.observed) record(mismatch.why);
 
-      // chat-file-names-not-verified-distinct: a name MATCH refuses too.
+      // chat-file-names-not-verified-distinct
       const matched = getTurnWiInsight({ forChatFile: CHAT_FILE });
       if (!matched.observed) record(matched.why);
 
-      // client-scan-computes-no-activation-reason (this same client turn,
-      // read unfiltered since `forChatFile` now always refuses)
+      // client-scan-computes-no-activation-reason
       const unfiltered = getTurnWiInsight();
       if (unfiltered.observed && unfiltered.value.engine === 'client') {
         for (const e of unfiltered.value.entries) {
@@ -1868,9 +1777,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
             if (!ev.tokens.observed) record(ev.tokens.why);
           }
         }
-        // server-reports-no-activation-reason: ENTRY_DTO's activation was
-        // never sent (no `activations` map on this mocked response), so
-        // the entry the server DID activate carries no reason.
+        // server-reports-no-activation-reason
         for (const e of serverInsight.value.entries) {
           if (!e.activationReason.observed) record(e.activationReason.why);
         }
@@ -1892,8 +1799,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       }
     }
 
-    // entry-evicted-but-bookid-unverified: computeEmittedSample's
-    // server-arm classifier, queried entryId present in evictedEntryIds.
+    // entry-evicted-but-bookid-unverified
     {
       resetStores();
       const breakdown = createPromptBreakdown('solo', 'gpt');
@@ -1909,12 +1815,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       if (!evictedIdAgg.emittedSample.observed) record(evictedIdAgg.emittedSample.why);
     }
 
-    // entry-never-rendered: a hand-built turn whose only entry sits in
-    // droppedEntries with a null emittedTokens — evaluated, then evicted
-    // before rendering. (A real sendMessage turn can't exercise this
-    // reliably: `arrangeEligibleChat`'s only WI entry is `constant: true`,
-    // and a pinned entry can never be budget-evicted — see
-    // `WiEntryRecord.pinned`'s own doc comment in promptBreakdown.ts.)
+    // entry-never-rendered
     {
       resetStores();
       const breakdown = createPromptBreakdown('solo', 'gpt');
@@ -1932,12 +1833,9 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       ];
       useGenerationStore.setState({ lastPromptBreakdown: breakdown, lastPromptBreakdownTag: null });
 
-      // Via computeEmittedSample (insightsApi.ts):
       const [droppedAgg] = getEntryFiringAggregate([{ bookId: 'i18-dropped-book', entryId: 'i18-dropped' }]);
       if (!droppedAgg.emittedSample.observed) record(droppedAgg.emittedSample.why);
 
-      // Via projectEntry's own wrapper/placement/emittedTokens fields
-      // (wiInsights.ts), reached through getTurnWiInsight's evicted list:
       const insight = getTurnWiInsight();
       if (insight.observed && insight.value.engine === 'client' && insight.value.evicted.observed) {
         for (const e of insight.value.evicted.value) {
@@ -1948,16 +1846,13 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       }
     }
 
-    // entry-not-accounted-for-this-turn: a key absent from every one of
-    // this turn's accounted WI records — see that code's own comment
-    // (types.ts) for why that is not evidence of non-candidacy.
+    // entry-not-accounted-for-this-turn
     {
       const [missAgg] = getEntryFiringAggregate([{ bookId: 'nope', entryId: 'nope' }]);
       if (!missAgg.emittedSample.observed) record(missAgg.emittedSample.why);
     }
 
-    // entry-trimmed-from-history: a hand-built turn whose only entry sits
-    // in trimmedFromHistoryEntries with a REAL emitted cost.
+    // entry-trimmed-from-history
     {
       resetStores();
       const breakdown = createPromptBreakdown('solo', 'gpt');
@@ -1978,7 +1873,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       if (!trimmedAgg.emittedSample.observed) record(trimmedAgg.emittedSample.why);
     }
 
-    // no-observed-turn (an aggregate with no live breakdown at all)
+    // no-observed-turn
     {
       resetStores();
       useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
@@ -2017,12 +1912,6 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       const [partialAgg] = getEntryFiringAggregate([{ bookId: LEGACY_BOOK, entryId: LEGACY_ENTRY }], {
         chatFiles: [PARTIAL_CHAT],
       });
-      // `generations` is `ChatCountFigure` (round 12) — both scopes here
-      // are non-empty, so the true arm is always `UnverifiedCount`, never
-      // the clean `Observed<number>` one; `'reasons' in` narrows to that
-      // arm specifically so every applicable reason in its `reasons`
-      // tuple gets recorded, including the mandatory trailing collision
-      // code.
       if (partialAgg.generations.observed && 'reasons' in partialAgg.generations) {
         for (const r of partialAgg.generations.reasons) record(r);
       }
@@ -2034,7 +1923,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       }
     }
 
-    // chat-file-names-not-verified-distinct, via a caller-supplied scope.
+    // chat-file-names-not-verified-distinct
     {
       resetStores();
       useWorldInfoStore.getState().resetUser();
@@ -2070,8 +1959,7 @@ describe('every declared ObservedFalseReason is produced (I18)', () => {
       record(coverage.recency.why);
     }
 
-    // transcript-identity-unprovable: the open chat IS in scope — refuses
-    // unconditionally now (#530), regardless of isLoading/error.
+    // transcript-identity-unprovable
     {
       resetStores();
       useChatStore.setState({

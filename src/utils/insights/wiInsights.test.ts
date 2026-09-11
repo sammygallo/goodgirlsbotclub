@@ -2,8 +2,6 @@
  * Pure-function tests for `wiInsights.ts`'s two projectors — everything
  * that doesn't need a real chatStore/generationStore turn (those live in
  * `src/stores/insightsApi.test.ts`, which drives real store actions).
- *
- * Every test names the mutation it kills, per the story brief.
  */
 import { describe, it, expect } from 'vitest';
 import { projectClientTurn, projectServerTurn } from './wiInsights';
@@ -12,10 +10,6 @@ import type {
   ServerTurnSource,
   SourceWiEntryRecord,
 } from './types';
-
-// ---------------------------------------------------------------------------
-// Fixture builders
-// ---------------------------------------------------------------------------
 
 function mkEntry(over: Partial<SourceWiEntryRecord> = {}): SourceWiEntryRecord {
   return {
@@ -60,10 +54,6 @@ function mkServerSource(over: Partial<ServerTurnSource> = {}): ServerTurnSource 
   };
 }
 
-// ---------------------------------------------------------------------------
-// I1 — server pinned unobservable, paired with the exact client number
-// ---------------------------------------------------------------------------
-
 describe('pinnedTokens / pinnedOverBudget (I1)', () => {
   it('server: always refuses server-path-no-scan-report, regardless of server facts', () => {
     const insight = projectServerTurn(mkServerSource());
@@ -90,13 +80,6 @@ describe('pinnedTokens / pinnedOverBudget (I1)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Round 10, Job 2 — `chatFile: string | null` was never asserted with
-// `null` as an OUTPUT anywhere in this module's test suite (every fixture,
-// in both this file and insightsApi.test.ts, only ever set/asserted a real
-// file-name string) — a coercion like `src.chatFile ?? 'unknown'` would
-// have passed every existing test.
-// ---------------------------------------------------------------------------
 describe('chatFile null passthrough', () => {
   it('client: chatFile null passes through as null, not a coerced default', () => {
     const insight = projectClientTurn(mkClientSource({ chatFile: null }));
@@ -108,10 +91,6 @@ describe('chatFile null passthrough', () => {
     expect(insight.chatFile).toBeNull();
   });
 });
-
-// ---------------------------------------------------------------------------
-// I3 — client empty eviction is a positive fact, not a refusal
-// ---------------------------------------------------------------------------
 
 describe('client eviction (I3)', () => {
   it('an empty scan-dropped list is {observed:true, value:[]} — NOT a refusal', () => {
@@ -149,10 +128,6 @@ describe('client eviction (I3)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// I9 — every token figure carries basis+estimator (recursive walker)
-// ---------------------------------------------------------------------------
-
 /** Finds every TokenFigure-shaped leaf in an arbitrary result tree. */
 function findTokenFigures(node: unknown, out: Record<string, unknown>[] = []): Record<string, unknown>[] {
   if (node === null || typeof node !== 'object') return out;
@@ -181,10 +156,6 @@ describe('every token figure is self-describing (I9)', () => {
       })
     );
     const figures = findTokenFigures(insight);
-    // Non-vacuity: a walker whose path resolution silently found nothing
-    // (or a `projectClientTurn` that refused every figure) must not pass.
-    // Expected here: emittedTotal, rawTotal, budget, pinnedTokens,
-    // rendered.rawTokens, rendered.emittedTokens, dropped.rawTokens = 7.
     expect(figures.length).toBeGreaterThanOrEqual(6);
     for (const f of figures) {
       expect(typeof f.basis, JSON.stringify(f)).toBe('string');
@@ -204,8 +175,6 @@ describe('every token figure is self-describing (I9)', () => {
       })
     );
     const figures = findTokenFigures(insight);
-    // emittedTotal, rawTotal, budget, rendered.rawTokens, rendered.emittedTokens = 5.
-    // (evicted entries are id-only — no TokenFigure to find there.)
     expect(figures.length).toBeGreaterThanOrEqual(5);
     for (const f of figures) {
       expect(typeof f.basis).toBe('string');
@@ -214,10 +183,6 @@ describe('every token figure is self-describing (I9)', () => {
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// I10 — the server budget uses estimator 'generic' unconditionally
-// ---------------------------------------------------------------------------
 
 describe('server budget estimator (I10)', () => {
   it('uses "generic" even though the turn profile is non-generic', () => {
@@ -234,12 +199,6 @@ describe('server budget estimator (I10)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// CONF1 — the client budget TokenFigure's three fields, previously pinned
-// by nothing. profile 'claude' (non-generic) and budget != pinnedTokens so
-// all three fields are independently discriminating in one assertion.
-// ---------------------------------------------------------------------------
-
 describe('client budget TokenFigure (CONF1)', () => {
   it('basis "raw", estimator the turn profile (not "generic"), tokens the scan budget (not pinnedTokens)', () => {
     const insight = projectClientTurn(
@@ -254,10 +213,6 @@ describe('client budget TokenFigure (CONF1)', () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// I11 — emittedTokens: 0 observes 0, null refuses (opposite-direction kills)
-// ---------------------------------------------------------------------------
 
 describe('turn-level emittedTotal null-vs-zero (I11)', () => {
   it('0 is a real observed value — kills a truthiness check (`if (!tokens)`)', () => {
@@ -284,10 +239,6 @@ describe('turn-level emittedTotal null-vs-zero (I11)', () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// I12 — per-entry wrapper: 'none' observes 'none', null refuses
-// ---------------------------------------------------------------------------
 
 describe('per-entry wrapper null-vs-"none" (I12)', () => {
   it('"none" is a real, legal, observed wrapper result — kills `wrapper ?? "none"` collapsing null into it', () => {
@@ -322,21 +273,12 @@ describe('per-entry wrapper null-vs-"none" (I12)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// WiEntryInsight.pinned is a straight passthrough, but no prior fixture
-// ever set it to true, so a hardcoded `pinned: false` was invisible.
-// ---------------------------------------------------------------------------
-
 describe('per-entry pinned passthrough', () => {
   it('a pinned entry projects pinned: true — kills a hardcoded `pinned: false`', () => {
     const insight = projectClientTurn(mkClientSource({ entries: [mkEntry({ pinned: true })] }));
     expect(insight.entries[0].pinned).toBe(true);
   });
 });
-
-// ---------------------------------------------------------------------------
-// I13 — activationReason: client always refuses, server with a reason observes
-// ---------------------------------------------------------------------------
 
 describe('per-entry activationReason (I13)', () => {
   it('client turn: refuses client-scan-computes-no-activation-reason even if the record happens to carry one', () => {
@@ -357,9 +299,6 @@ describe('per-entry activationReason (I13)', () => {
   });
 
   it('server turn with no reason reported: refuses the DISTINCT server code, not the client-scan one (C2)', () => {
-    // The client scanner never ran on this turn at all — naming
-    // `client-scan-computes-no-activation-reason` here would describe a
-    // mechanism that was never invoked.
     const insight = projectServerTurn(mkServerSource({ entries: [mkEntry({ activationReason: undefined })] }));
     expect(insight.entries[0].activationReason).toEqual({
       observed: false,
@@ -368,16 +307,8 @@ describe('per-entry activationReason (I13)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// I17 — sampledTurns lives on EntryEmittedSample (insightsApi.ts), not here;
-// I19 — emittedTotal is not re-summed from entries
-// ---------------------------------------------------------------------------
-
 describe('emittedTotal is not re-derived from entries (I19)', () => {
   it('two entries summing to a DIFFERENT number than emittedTokens: the aggregate wins, not the sum', () => {
-    // Mirrors the real join-residual gap (stageAJoinResidual's own doc
-    // comment in promptBreakdown.ts): the joined-string measurement
-    // legitimately differs from the per-entry sum.
     const insight = projectClientTurn(
       mkClientSource({
         emittedTokens: 999, // deliberately NOT entry1 + entry2
@@ -388,8 +319,6 @@ describe('emittedTotal is not re-derived from entries (I19)', () => {
       observed: true,
       value: { basis: 'emitted', estimator: 'gpt', tokens: 999 },
     });
-    // Sanity: the entries kept their own real numbers rather than being
-    // coerced to match the total.
     expect(insight.entries[0].emittedTokens).toEqual({
       observed: true,
       value: { basis: 'emitted', estimator: 'gpt', tokens: 10 },
@@ -413,13 +342,6 @@ describe('emittedTotal is not re-derived from entries (I19)', () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// AC4 Layer 3 — server eviction (unit-level slice of I2; the full
-// integration proof through a real sendMessage turn lives in
-// insightsApi.test.ts, since serverRetrieval.ts's absent/garbage-mapping
-// is what actually collapses the wire shapes before this ever runs).
-// ---------------------------------------------------------------------------
 
 describe('server eviction — Layer 3 rules', () => {
   it('server undefined -> server-facts-missing', () => {
@@ -455,21 +377,10 @@ describe('server eviction — Layer 3 rules', () => {
         { entryId: 'e2', bookId: { observed: false, why: 'server-reports-id-only' }, tokens: { observed: false, why: 'server-reports-id-only' } },
       ],
     });
-    // KILLS `evicted = breakdown.wi.droppedEntries` (always [] on a server
-    // turn, per chatStore.ts's zeroed wiScanReport) — that mutation would
-    // report `[]` here instead of the two real evicted ids.
     if (!insight.evicted.observed) throw new Error('unreachable');
     expect(insight.evicted.value.length).toBe(2);
   });
 });
-
-// ---------------------------------------------------------------------------
-// C11 — trimmedFromHistoryEntries projection: no prior fixture populated
-// this array at all, so the mapping was entirely unexercised. It reuses
-// the SAME `projectEntry` as `entries` — a trimmed entry rendered with a
-// REAL cost (PR1: it reached a wi_at_depth slot and wrapWiContent ran on
-// it), so its projection must be fully observed, never a refusal.
-// ---------------------------------------------------------------------------
 
 describe('trimmedFromHistoryEntries projection (C11)', () => {
   it('client turn: a trimmed entry projects with its REAL emitted cost, not a refusal', () => {
@@ -508,14 +419,6 @@ describe('trimmedFromHistoryEntries projection (C11)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// C12 — placementSlot's stage A/B/C branches. No prior fixture ever
-// constructed a stage B or C placement, so those branches never executed;
-// mutating the whole switch to `return ''` was green. These also verify
-// `WiPlacementInsight`'s documented example formats (types.ts) are exactly
-// right, rather than leaving them as unverified prose.
-// ---------------------------------------------------------------------------
-
 describe('placementSlot / WiPlacementInsight.slot format (C12)', () => {
   it('stage A: "A:<sectionId>" — matches the documented example exactly', () => {
     const insight = projectClientTurn(
@@ -552,18 +455,6 @@ describe('placementSlot / WiPlacementInsight.slot format (C12)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Round 10, Job 2 — full output-surface inventory. One CLIENT turn and one
-// SERVER turn, each built so every number in the SAME turn is distinct from
-// every other number in that turn (a field swap or wrong-source read can't
-// hide behind a shared value), then every field of ClientTurnWiInsight /
-// ServerTurnWiInsight / WiEntryInsight / EvictedEntryInsight /
-// WiPlacementInsight / TokenFigure reachable from these two turns is
-// asserted as its own table row. Table-driven (`it.each`) so one wrong
-// field reports as one failing row, not a full-object diff — and existing
-// targeted tests above are left in place; this is an additional systematic
-// layer, not a replacement.
-// ---------------------------------------------------------------------------
 describe('full output-surface inventory — every field, both directions', () => {
   const clientRenderedEntry = mkEntry({
     entryId: 'inv-client-entry',
@@ -572,8 +463,6 @@ describe('full output-surface inventory — every field, both directions', () =>
     rawTokens: 55,
     placement: { stage: 'A', sectionId: 'wi_before_char' },
     wrapper: 'persona',
-    // Set even though the client engine always refuses this field — proves
-    // the refusal is unconditional, not merely "absent because unset".
     activationReason: 'keyword',
     pinned: true,
   });
@@ -644,8 +533,6 @@ describe('full output-surface inventory — every field, both directions', () =>
   );
 
   const rows: { label: string; actual: unknown; expected: unknown }[] = [
-    // --- ClientTurnWiInsight: every field of CommonTurnWiInsight plus the
-    // client-only fields (engine, evicted, pinnedTokens, pinnedOverBudget).
     { label: 'client.mode', actual: client.mode, expected: 'group' },
     { label: 'client.chatFile', actual: client.chatFile, expected: 'inv-client.jsonl' },
     { label: 'client.publishedAt', actual: client.publishedAt, expected: 90001 },
@@ -672,7 +559,6 @@ describe('full output-surface inventory — every field, both directions', () =>
       expected: { observed: true, value: { basis: 'raw', estimator: 'gemini', tokens: 802 } },
     },
     { label: 'client.pinnedOverBudget', actual: client.pinnedOverBudget, expected: { observed: true, value: true } },
-    // --- WiEntryInsight, every field, via entries[0].
     { label: 'client.entries[0].entryId', actual: client.entries[0].entryId, expected: 'inv-client-entry' },
     { label: 'client.entries[0].bookId', actual: client.entries[0].bookId, expected: 'inv-client-book' },
     {
@@ -701,9 +587,6 @@ describe('full output-surface inventory — every field, both directions', () =>
       expected: { observed: false, why: 'client-scan-computes-no-activation-reason' },
     },
     { label: 'client.entries[0].pinned', actual: client.entries[0].pinned, expected: true },
-    // --- WiEntryInsight again, via trimmedFromHistoryEntries[0] — distinct
-    // values, and the OTHER placement stage (B), so stage A and stage B
-    // can't be told apart by a fallthrough.
     {
       label: 'client.trimmedFromHistoryEntries[0].entryId',
       actual: client.trimmedFromHistoryEntries[0].entryId,
@@ -739,8 +622,6 @@ describe('full output-surface inventory — every field, both directions', () =>
       actual: client.trimmedFromHistoryEntries[0].pinned,
       expected: false,
     },
-    // --- WiEntryInsight a third time, via evicted[0] — the never-rendered
-    // refusal side (entry-never-rendered on emittedTokens/wrapper/placement).
     {
       label: 'client.evicted',
       actual: client.evicted,
@@ -761,7 +642,6 @@ describe('full output-surface inventory — every field, both directions', () =>
       },
     },
 
-    // --- ServerTurnWiInsight: same field list, a wholly distinct fixture.
     { label: 'server.mode', actual: server.mode, expected: 'solo' },
     { label: 'server.chatFile', actual: server.chatFile, expected: 'inv-server.jsonl' },
     { label: 'server.publishedAt', actual: server.publishedAt, expected: 90002 },
@@ -777,8 +657,6 @@ describe('full output-surface inventory — every field, both directions', () =>
       actual: server.rawTotal,
       expected: { observed: true, value: { basis: 'raw', estimator: 'llama', tokens: 704 } },
     },
-    // budget's estimator is 'generic' (server.budgetEstimator), NEVER the
-    // turn's own profile 'llama' — I10's rule, reinforced here.
     {
       label: 'server.budget',
       actual: server.budget,
@@ -794,8 +672,6 @@ describe('full output-surface inventory — every field, both directions', () =>
       actual: server.pinnedOverBudget,
       expected: { observed: false, why: 'server-path-no-scan-report' },
     },
-    // --- WiEntryInsight, server engine — activationReason CAN observe
-    // here, unlike the client engine above.
     { label: 'server.entries[0].entryId', actual: server.entries[0].entryId, expected: 'inv-server-entry' },
     { label: 'server.entries[0].bookId', actual: server.entries[0].bookId, expected: 'inv-server-book' },
     {
@@ -839,9 +715,6 @@ describe('full output-surface inventory — every field, both directions', () =>
       actual: server.trimmedFromHistoryEntries[0].pinned,
       expected: false,
     },
-    // --- EvictedEntryInsight — entryId is real; bookId/tokens ALWAYS
-    // refuse `server-reports-id-only` (the server never reports either) —
-    // the only arm this type ever takes (see its own doc comment, types.ts).
     {
       label: 'server.evicted',
       actual: server.evicted,
