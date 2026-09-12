@@ -79,7 +79,7 @@ import {
   type WiEntryRecord,
   type WiWrapperKind,
 } from '../utils/promptBreakdown';
-import { createPromptCapture, type PromptCapture, type PromptCaptureSeam } from '../utils/promptCapture';
+import { createPromptCapture, structurallyEqual, type PromptCapture, type PromptCaptureSeam } from '../utils/promptCapture';
 import { useUsageStore } from './usageStore';
 import { usePromptTemplateStore } from './promptTemplateStore';
 import { getInstructTemplate, formatInstructPrompt } from '../utils/instructTemplates';
@@ -3562,7 +3562,6 @@ async function runGenerateInterceptors(
   characterName: string,
 ): Promise<{ messages: ContextMessage[]; replaced: boolean }> {
   let result = context;
-  let replaced = false;
   try {
     const { useServerExtensionStore } = await import('./serverExtensionStore');
     const { installed, manifests } = useServerExtensionStore.getState();
@@ -3575,7 +3574,6 @@ async function runGenerateInterceptors(
           { method: 'POST', body: JSON.stringify({ messages: result, character: characterName }) },
         );
         if (resp?.messages && Array.isArray(resp.messages)) {
-          if (JSON.stringify(resp.messages) !== JSON.stringify(result)) replaced = true;
           result = resp.messages;
         }
       } catch {
@@ -3585,7 +3583,13 @@ async function runGenerateInterceptors(
   } catch {
     // Store not available — skip
   }
-  return { messages: result, replaced };
+  // Structural, not `JSON.stringify`, comparison: an interceptor that
+  // re-serializes the same content with keys in a different order (a
+  // non-JS runtime, a typed struct) must not read as a replacement, and
+  // comparing the FINAL result against the ORIGINAL context (rather than
+  // accumulating a flag hop-by-hop) means a later hop restoring an earlier
+  // hop's rewrite is correctly reported as unchanged.
+  return { messages: result, replaced: !structurallyEqual(result, context) };
 }
 
 /**

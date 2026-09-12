@@ -209,6 +209,91 @@ describe('exact-prompt capture flags', () => {
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
   });
 
+  it('replacedByInterceptor stays false when an interceptor re-serializes the same content with keys in a different order', async () => {
+    // A non-JS runtime (a typed struct, a pydantic model, Go's sorted map
+    // keys) can echo the same {role, content} pairs back with the fields in
+    // a different order — JSON.stringify would call that a replacement;
+    // structural comparison must not.
+    arrange();
+    useServerExtensionStore.setState({
+      installed: [{ type: 'local', name: 'third-party/echo-swap' }],
+      manifests: { 'third-party/echo-swap': { generate_interceptor: true } },
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/csrf-token') {
+        return { ok: true, json: async () => ({ token: 'csrf-test' }), text: async () => '{}' } as Response;
+      }
+      if (url.includes('/generate-interceptors')) {
+        const body = JSON.parse(String(init?.body)) as { messages: { role: string; content: string }[] };
+        const reordered = body.messages.map((m) => ({ content: m.content, role: m.role }));
+        return {
+          ok: true,
+          json: async () => ({ messages: reordered }),
+          text: async () => JSON.stringify({ messages: reordered }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(sseOnce('reply'));
+    vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    await useChatStore.getState().sendMessage('hi', IVY);
+
+    const c = capture()!;
+    expect(c.replacedByInterceptor).toBe(false);
+    expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
+  });
+
+  it('replacedByInterceptor stays false across two hops when the second restores what the first changed', async () => {
+    arrange();
+    useServerExtensionStore.setState({
+      installed: [
+        { type: 'local', name: 'third-party/hop-a' },
+        { type: 'local', name: 'third-party/hop-b' },
+      ],
+      manifests: {
+        'third-party/hop-a': { generate_interceptor: true },
+        'third-party/hop-b': { generate_interceptor: true },
+      },
+    });
+    let original: unknown = null;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/csrf-token') {
+        return { ok: true, json: async () => ({ token: 'csrf-test' }), text: async () => '{}' } as Response;
+      }
+      if (url.includes('/hop-a/generate-interceptors')) {
+        const body = JSON.parse(String(init?.body)) as { messages: { role: string; content: string }[] };
+        original = body.messages;
+        const rewritten = body.messages.map((m) => ({ role: m.role, content: `${m.content} [hop-a]` }));
+        return {
+          ok: true,
+          json: async () => ({ messages: rewritten }),
+          text: async () => JSON.stringify({ messages: rewritten }),
+        } as Response;
+      }
+      if (url.includes('/hop-b/generate-interceptors')) {
+        // Restores hop-a's own input, so the FINAL array equals the
+        // original context even though an intermediate hop changed it.
+        return {
+          ok: true,
+          json: async () => ({ messages: original }),
+          text: async () => JSON.stringify({ messages: original }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(sseOnce('reply'));
+    vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    await useChatStore.getState().sendMessage('hi', IVY);
+
+    const c = capture()!;
+    expect(c.replacedByInterceptor).toBe(false);
+    expect(c.messages).toEqual(original);
+  });
+
   it('both flags are true when instruct collapses AND an interceptor then replaces the collapsed array', async () => {
     arrange();
     useGenerationStore.setState({ instruct: { ...DEFAULT_INSTRUCT_CONFIG, enabled: true, templateId: 'chatml' } });
