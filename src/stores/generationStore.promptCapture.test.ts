@@ -184,6 +184,10 @@ describe('resetUser', () => {
 
 describe('showExactPrompt persistence', () => {
   it('the persisted shape has exactly the expected key set, and never carries the capture fields', () => {
+    const c = mkCapture();
+    useGenerationStore.getState().setLastPromptCapture(c);
+    useGenerationStore.getState().tagLastPromptCaptureMessage(c.id, 'msg-1', 0);
+
     useGenerationStore.getState().setShowExactPrompt(true);
 
     expect(patchServerKey).toHaveBeenCalled();
@@ -207,6 +211,11 @@ describe('showExactPrompt persistence', () => {
     expect(shape.showExactPrompt).toBe(true);
     expect(shape).not.toHaveProperty('lastPromptCapture');
     expect(shape).not.toHaveProperty('lastPromptCaptureTag');
+
+    const stored = JSON.parse(memoryStorage.getItem('sillytavern_generation_settings_v1')!) as Record<string, unknown>;
+    expect(Object.keys(stored).sort()).toEqual(Object.keys(shape).sort());
+    expect(stored).not.toHaveProperty('lastPromptCapture');
+    expect(stored).not.toHaveProperty('lastPromptCaptureTag');
   });
 
   it('survives a store re-init from localStorage', async () => {
@@ -241,6 +250,21 @@ describe('showExactPrompt persistence', () => {
     useGenerationStore.setState({ showExactPrompt: true });
     shouldReuploadSection.mockReturnValue(false);
     getSettingsBlob.mockResolvedValue({ stm_generation: { showExactPrompt: false, _ts: 1 } });
+
+    await useGenerationStore.getState().fetchPrefs();
+
+    expect(useGenerationStore.getState().showExactPrompt).toBe(false);
+    expect(useGenerationStore.getState().lastPromptCapture).toBeNull();
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toBeNull();
+  });
+
+  it('fetchPrefs defaults showExactPrompt to false when the server blob has no showExactPrompt key at all', async () => {
+    const c = mkCapture();
+    useGenerationStore.getState().setLastPromptCapture(c);
+    useGenerationStore.getState().tagLastPromptCaptureMessage(c.id, 'msg-1', 0);
+    useGenerationStore.setState({ showExactPrompt: true });
+    shouldReuploadSection.mockReturnValue(false);
+    getSettingsBlob.mockResolvedValue({ stm_generation: { instruct: { enabled: false }, _ts: 1 } });
 
     await useGenerationStore.getState().fetchPrefs();
 
