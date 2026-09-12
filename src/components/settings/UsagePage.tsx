@@ -5,6 +5,8 @@ import { useUsageStore, formatTokens } from '../../stores/usageStore';
 import { useGenerationStore } from '../../stores/generationStore';
 import { computeBreakdownView } from '../../utils/breakdownBuckets';
 import { PromptBreakdownView } from '../chat/PromptBreakdownView';
+import { PromptCaptureView } from '../chat/PromptCaptureView';
+import { computeCaptureAttribution } from '../../utils/promptCapture';
 import { Button, Input } from '../ui';
 
 /** Parse a budget entry like "2m", "500k", or "1500000" into a token count. */
@@ -44,6 +46,8 @@ export function UsagePage() {
   const setContextMeterEnabled = useUsageStore((s) => s.setContextMeterEnabled);
   const clearAll = useUsageStore((s) => s.clearAll);
   const lastPromptBreakdown = useGenerationStore((s) => s.lastPromptBreakdown);
+  const lastPromptCapture = useGenerationStore((s) => s.lastPromptCapture);
+  const showExactPrompt = useGenerationStore((s) => s.showExactPrompt);
 
   const [budgetInput, setBudgetInput] = useState('');
   const [budgetError, setBudgetError] = useState<string | null>(null);
@@ -213,6 +217,29 @@ export function UsagePage() {
           ) : (
             <p className="text-xs text-[var(--color-text-secondary)]">
               No prompt assembled yet this session — send a message to see its breakdown.
+            </p>
+          )}
+        </section>
+
+        {/* Last exact prompt (E2-S3) — same "no owning message" reasoning as
+            the breakdown section above: this page reads `lastPromptCapture`
+            directly, with no tag check, because there is nothing here for a
+            tag to compare against. */}
+        <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
+          <div className="flex items-center gap-2 mb-3">
+            <ReceiptText size={18} className="text-[var(--color-primary)]" />
+            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Last exact prompt</h2>
+          </div>
+          {lastPromptCapture ? (
+            <PromptCaptureView
+              capture={lastPromptCapture}
+              attribution={computeCaptureAttribution(lastPromptCapture, lastPromptBreakdown)}
+            />
+          ) : (
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              {showExactPrompt
+                ? 'No prompt captured yet this session — send a message to see it.'
+                : 'Exact prompt capture is off. Turn it on under Settings → Generation → Prompts.'}
             </p>
           )}
         </section>
