@@ -479,6 +479,21 @@ export function mergePromptOrder(
   return result;
 }
 
+/**
+ * The state patch for writing `showExactPrompt` (E2-S3, R2-C7): turning it
+ * off clears `lastPromptCapture`/`lastPromptCaptureTag` along with the flag.
+ * Both writers of the field — `setShowExactPrompt` and the `fetchPrefs`
+ * apply branch — go through this, so `lastPromptCapture`'s own doc comment
+ * ("cleared whenever showExactPrompt is off") holds regardless of which one
+ * flips it, rather than being true for only one of the two call sites.
+ */
+function showExactPromptPatch(
+  v: boolean
+): Pick<GenerationState, 'showExactPrompt'> &
+  Partial<Pick<GenerationState, 'lastPromptCapture' | 'lastPromptCaptureTag'>> {
+  return v ? { showExactPrompt: v } : { showExactPrompt: v, lastPromptCapture: null, lastPromptCaptureTag: null };
+}
+
 const initial = loadFromStorage();
 
 export const useGenerationStore = create<GenerationState>((set, get) => ({
@@ -877,9 +892,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       // — see `lastPromptCapture`'s own doc comment. Turning it on leaves
       // whatever is there alone; nothing is captured until the next
       // dispatch, which is what the empty-state copy says.
-      return v
-        ? { showExactPrompt: v }
-        : { showExactPrompt: v, lastPromptCapture: null, lastPromptCaptureTag: null };
+      return showExactPromptPatch(v);
     });
   },
 
@@ -964,7 +977,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         context: merged.context,
         instruct: merged.instruct,
         promptOrder: merged.promptOrder,
-        showExactPrompt: merged.showExactPrompt,
+        ...showExactPromptPatch(merged.showExactPrompt),
       });
     } catch { /* non-fatal — localStorage values remain active */ }
   },

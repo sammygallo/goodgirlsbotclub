@@ -226,6 +226,21 @@ describe('showExactPrompt persistence', () => {
     expect(useGenerationStore.getState().showExactPrompt).toBe(true);
   });
 
+  it('fetchPrefs clears the capture and its tag when the server turns showExactPrompt off (R2-C7)', async () => {
+    const c = mkCapture();
+    useGenerationStore.getState().setLastPromptCapture(c);
+    useGenerationStore.getState().tagLastPromptCaptureMessage(c.id, 'msg-1', 0);
+    useGenerationStore.setState({ showExactPrompt: true });
+    shouldReuploadSection.mockReturnValue(false);
+    getSettingsBlob.mockResolvedValue({ stm_generation: { showExactPrompt: false, _ts: 1 } });
+
+    await useGenerationStore.getState().fetchPrefs();
+
+    expect(useGenerationStore.getState().showExactPrompt).toBe(false);
+    expect(useGenerationStore.getState().lastPromptCapture).toBeNull();
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toBeNull();
+  });
+
   it('fetchPrefs re-uploads showExactPrompt from local state on the dirty-local branch', async () => {
     useGenerationStore.setState({ showExactPrompt: true });
     shouldReuploadSection.mockReturnValue(true);

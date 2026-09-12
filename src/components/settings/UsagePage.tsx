@@ -226,10 +226,9 @@ export function UsagePage() {
             directly, with no tag check, because there is nothing here for a
             tag to compare against. Gated on `showExactPrompt` itself, not
             just on the slot being non-null: the toggle clears the slot when
-            turned off, but this section must not render a capture even in
-            the moment before that clear has been observed. Attribution uses
-            the capture's OWN breakdown, never `lastPromptBreakdown` — that
-            slot can belong to a different turn. */}
+            turned off. Attribution uses the capture's OWN breakdown, never
+            `lastPromptBreakdown` — that slot can belong to a different
+            turn. */}
         <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
           <div className="flex items-center gap-2 mb-3">
             <ReceiptText size={18} className="text-[var(--color-primary)]" />
