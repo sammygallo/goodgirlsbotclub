@@ -61,6 +61,7 @@ const { useServerExtensionStore } = await import('./serverExtensionStore');
 const { api } = await import('../api/client');
 const { GROUP_FIXTURES, mkChar, mkMsg, resetStores } = await import('./promptGoldens.fixtures');
 const { computeCaptureAttribution } = await import('../utils/promptCapture');
+const { createPromptBreakdown } = await import('../utils/promptBreakdown');
 const { estimateConversationTokens, profileForProvider } = await import('../utils/tokenizer');
 
 import type { CharacterInfo } from '../api/client';
@@ -158,6 +159,42 @@ function stubInterceptorReplacement(replacement: { role: string; content: string
     throw new Error(`unexpected fetch: ${url}`);
   });
   vi.stubGlobal('fetch', fetchMock);
+}
+
+/** Same interceptor arrangement as `stubInterceptorReplacement`, except the
+ *  `/generate-interceptors` response stays pending until the caller resolves
+ *  it by hand — for pinning what `dispatchWithCapture` reads while it is
+ *  parked in that `await`. `issued` settles once the request has actually
+ *  gone out. */
+function stubInterceptorReplacementDeferred(replacement: { role: string; content: string }[]) {
+  useServerExtensionStore.setState({
+    installed: [{ type: 'local', name: 'third-party/echo-swap' }],
+    manifests: { 'third-party/echo-swap': { generate_interceptor: true } },
+  });
+  let markIssued: () => void;
+  const issued = new Promise<void>((res) => { markIssued = res; });
+  let resolveResponse: (value: Response) => void;
+  const response = new Promise<Response>((res) => { resolveResponse = res; });
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url === '/csrf-token') {
+      return { ok: true, json: async () => ({ token: 'csrf-test' }), text: async () => '{}' } as Response;
+    }
+    if (url.includes('/generate-interceptors')) {
+      markIssued();
+      return response;
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return {
+    issued,
+    resolve: () =>
+      resolveResponse({
+        ok: true,
+        json: async () => ({ messages: replacement }),
+        text: async () => JSON.stringify({ messages: replacement }),
+      } as Response),
+  };
 }
 
 /** One entry per solo dispatch seam, so AC1 can be proven under a transform
@@ -486,6 +523,40 @@ describe('AC1 under a transform, at every solo seam (C5)', () => {
   }
 });
 
+describe('the capture carries its OWN breakdown, not whatever is in lastPromptBreakdown by publish time (R7-C6)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useServerExtensionStore.setState({ installed: [], manifests: {} });
+  });
+
+  it('sendMessage: publishes the breakdown its own dispatch built, even when lastPromptBreakdown is overwritten while the interceptor is pending', async () => {
+    arrangeSolo();
+    const edges = stubEdges();
+    const stub = stubInterceptorReplacementDeferred([{ role: 'user', content: 'from the interceptor' }]);
+
+    const turn = useChatStore.getState().sendMessage('Anyone there?', IVY);
+    await stub.issued;
+
+    const foreign = createPromptBreakdown('solo');
+    useGenerationStore.setState({ lastPromptBreakdown: foreign });
+
+    stub.resolve();
+    await turn;
+
+    expect(edges.generate).toHaveBeenCalled();
+    const c = capture()!;
+    expect(c, 'a capture should have been published').not.toBeNull();
+    expect(c.breakdown).not.toBeNull();
+    expect(c.breakdown).not.toBe(foreign);
+  });
+});
+
 describe('capture metadata matches the dispatch on the non-fallback path (C7)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -507,8 +578,7 @@ describe('capture metadata matches the dispatch on the non-fallback path (C7)', 
     // Values distinct from any literal `dispatchWithCapture`/`createPromptCapture`
     // could hardcode (R2-C13) — 'openai'/'gpt-4o' are also settingsStore's own
     // defaults, so a hardcoded capture would still coincidentally match them.
-    // Also vision-capable (supportsVision needs provider 'claude' + a
-    // 'claude-3' model), so the image attachments still fold.
+    // Also vision-capable, so the image attachments still fold.
     useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
     const edges = stubEdges();
     const dataUrls = [
@@ -578,6 +648,7 @@ describe('publishes before send, even when the dispatch rejects (C9)', () => {
     expect(c, 'a capture should have been published even though the dispatch rejected').not.toBeNull();
     expect(c.seam).toBe('send');
     expect(c.messages).toEqual(edges.generate.mock.calls[0][0]);
+    expect(JSON.stringify(c.messages)).toBe(JSON.stringify(edges.generate.mock.calls[0][0]));
     // R2-C12: proves this ran the plain path, not a leftover interceptor
     // replacement from a describe that ran earlier.
     expect(c.replacedByInterceptor).toBe(false);
