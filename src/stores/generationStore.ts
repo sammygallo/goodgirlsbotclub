@@ -977,7 +977,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         context: merged.context,
         instruct: merged.instruct,
         promptOrder: merged.promptOrder,
-        ...showExactPromptPatch(merged.showExactPrompt),
+        ...showExactPromptPatch(merged.showExactPrompt ?? false),
       });
     } catch { /* non-fatal — localStorage values remain active */ }
   },

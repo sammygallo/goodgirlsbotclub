@@ -170,7 +170,7 @@ describe('PromptCaptureSheet ownership states', () => {
     // A DIFFERENT breakdown, same slice lengths, sitting in the
     // independently-tagged lastPromptBreakdown slot.
     const foreignBreakdown = createPromptBreakdown('solo');
-    addSlice(foreignBreakdown, { stage: 'A', id: 'persona' }, 10, 12);
+    addSlice(foreignBreakdown, { stage: 'A', id: 'persona_before_char' }, 10, 12);
     addSlice(foreignBreakdown, { stage: 'B', cls: 'authors_note' }, 4, 5);
     useGenerationStore.setState({ lastPromptBreakdown: foreignBreakdown });
 

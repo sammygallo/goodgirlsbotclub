@@ -147,7 +147,7 @@ describe('UsagePage — Last exact prompt section (E2-S3, gated on showExactProm
     // would still "succeed" but with the wrong labels — proving the page
     // reads the capture's own breakdown, not this slot.
     const foreignBreakdown = createPromptBreakdown('solo');
-    addSlice(foreignBreakdown, { stage: 'A', id: 'persona' }, 10, 12);
+    addSlice(foreignBreakdown, { stage: 'A', id: 'persona_before_char' }, 10, 12);
     addSlice(foreignBreakdown, { stage: 'B', cls: 'authors_note' }, 4, 5);
 
     useGenerationStore.setState({
