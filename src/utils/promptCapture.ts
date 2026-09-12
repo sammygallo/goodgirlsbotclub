@@ -203,10 +203,8 @@ function describeSectionKind(kind: SectionKind): string {
  * it in `context`, so slice order and entry order can disagree. When a
  * non-history candidate's `chars` also matches some OTHER post-Stage-A
  * entry, positions alone cannot tell that insertion apart from an ordinary
- * message of equal length, so the match is refused. History entries are
- * exempt from that refusal: two equal-length messages are ordinary. The
- * function returns `null` for anything it cannot verify, never a best
- * guess.
+ * message of equal length, so the match is refused. The function returns
+ * `null` for anything it cannot verify, never a best guess.
  */
 export function computeCaptureAttribution(
   capture: PromptCapture,
