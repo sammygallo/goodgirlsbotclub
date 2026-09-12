@@ -11,9 +11,7 @@
  *
  * WHAT IT MUST NOT DO: mutate or freeze the array it was handed (that array
  * is the live object about to be dispatched — see `snapshotMessages`), or
- * infer meaning from array content by pattern-matching. Both transform flags
- * come from the transforms' own return values, never from comparing the
- * before/after arrays.
+ * infer meaning from array content by pattern-matching.
  */
 
 import type { PromptBreakdown, SectionKind } from './promptBreakdown';
