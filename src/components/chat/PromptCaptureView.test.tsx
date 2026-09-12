@@ -141,6 +141,17 @@ describe('PromptCaptureView', () => {
     render(<PromptCaptureView capture={mkCapture()} attribution={null} />);
     expect(screen.queryByText(/\(fallback\)/)).toBeNull();
   });
+
+  it('renders the header\'s seam label and the provider/model pair the fallback marker qualifies (R6-C6)', () => {
+    const capture = {
+      ...mkCapture({ seam: 'swipe', provider: 'anthropic', model: 'claude-x' }),
+      usedFallback: true,
+    };
+    const { container } = render(<PromptCaptureView capture={capture} attribution={null} />);
+    const text = container.textContent ?? '';
+    expect(text).toContain('Seam: swipe');
+    expect(text).toContain('anthropic/claude-x (fallback)');
+  });
 });
 
 describe('PromptCaptureSheet ownership states', () => {
