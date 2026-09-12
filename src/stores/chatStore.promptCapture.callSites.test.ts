@@ -14,7 +14,7 @@
  * happens not to weight still reddens).
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('../utils/serverSettings', () => ({
   getSettingsBlob: vi.fn(async () => ({})),
@@ -60,6 +60,7 @@ const { useGenerationStore, DEFAULT_INSTRUCT_CONFIG } = await import('./generati
 const { useServerExtensionStore } = await import('./serverExtensionStore');
 const { api } = await import('../api/client');
 const { GROUP_FIXTURES, mkChar, mkMsg, resetStores } = await import('./promptGoldens.fixtures');
+const { computeCaptureAttribution } = await import('../utils/promptCapture');
 
 import type { CharacterInfo } from '../api/client';
 import type { ChatMessage, GroupChatInfo } from './chatStore';
@@ -214,6 +215,12 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.seam).toBe('send');
     expect(c.collapsedByInstruct).toBe(false);
     expect(c.replacedByInterceptor).toBe(false);
+    // R2-C10: pins that THIS seam's own breakdown, not just some breakdown,
+    // reached the capture — an empty/foreign breakdown fails the count check
+    // inside computeCaptureAttribution immediately.
+    expect(c.breakdown).not.toBeNull();
+    expect(c.breakdown!.slices.length).toBeGreaterThan(0);
+    expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
   });
 
   it('swipeRight captures the array api.generateMessage received', async () => {
@@ -228,6 +235,9 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('swipe');
+    expect(c.breakdown).not.toBeNull();
+    expect(c.breakdown!.slices.length).toBeGreaterThan(0);
+    expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
   });
 
   it('continueMessage captures the array api.generateMessage received', async () => {
@@ -241,6 +251,9 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('continue');
+    expect(c.breakdown).not.toBeNull();
+    expect(c.breakdown!.slices.length).toBeGreaterThan(0);
+    expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
   });
 
   it('impersonate captures the array api.generateMessage received', async () => {
@@ -254,6 +267,9 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('impersonate');
+    expect(c.breakdown).not.toBeNull();
+    expect(c.breakdown!.slices.length).toBeGreaterThan(0);
+    expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
   });
 
   it('editMessageAndRegenerate captures the array api.generateMessage received', async () => {
@@ -268,6 +284,9 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('regenerate');
+    expect(c.breakdown).not.toBeNull();
+    expect(c.breakdown!.slices.length).toBeGreaterThan(0);
+    expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
   });
 
   it('sendMessage records the fallback provider/model when the primary call rejects', async () => {
@@ -316,6 +335,9 @@ describe('exact-prompt capture is wired at the group generation call site', () =
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('group');
+    expect(c.breakdown).not.toBeNull();
+    expect(c.breakdown!.slices.length).toBeGreaterThan(0);
+    expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
   });
 });
 
@@ -346,6 +368,18 @@ describe('AC1 under a transform, at every solo seam (C5)', () => {
       showExactPrompt: true,
       instruct: { ...DEFAULT_INSTRUCT_CONFIG },
     });
+    useServerExtensionStore.setState({ installed: [], manifests: {} });
+  });
+
+  // R2-C12: `stubInterceptorReplacement` (used by the REPLACED-array case
+  // below) leaves a stubbed `fetch` and an installed interceptor extension
+  // behind — nothing in this describe's own beforeEach undoes them, and
+  // vitest.config.ts sets neither `unstubGlobals` nor `restoreMocks`. Without
+  // this cleanup, every describe that runs AFTER this one inherits the
+  // leftover fetch stub and interceptor, so its "plain path" tests silently
+  // run against the last seam's replacement array instead.
+  afterEach(() => {
+    vi.unstubAllGlobals();
     useServerExtensionStore.setState({ installed: [], manifests: {} });
   });
 
@@ -390,13 +424,27 @@ describe('AC1 under a transform, at every solo seam (C5)', () => {
 describe('capture metadata matches the dispatch on the non-fallback path (C7)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+    useGenerationStore.setState({
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: true,
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+    });
+    // R2-C12: this describe runs after C5, whose interceptor-replacement
+    // case leaves a stubbed `fetch` and an installed extension behind if
+    // C5's own cleanup didn't run — reassert the plain path holds here too.
+    useServerExtensionStore.setState({ installed: [], manifests: {} });
   });
 
   it('sendMessage: imagesFolded and the header fields match what api.generateMessage received', async () => {
     arrangeSolo();
     const { useSettingsStore } = await import('./settingsStore');
-    useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4o' });
+    // Values distinct from any literal `dispatchWithCapture`/`createPromptCapture`
+    // could hardcode (R2-C13) — 'openai'/'gpt-4o' are also settingsStore's own
+    // defaults, so a hardcoded capture would still coincidentally match them.
+    // Also vision-capable (supportsVision needs provider 'claude' + a
+    // 'claude-3' model), so the image attachments still fold.
+    useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
     const edges = stubEdges();
     const dataUrls = [
       'data:image/png;base64,aaa',
@@ -411,8 +459,32 @@ describe('capture metadata matches the dispatch on the non-fallback path (C7)', 
     expect((call[6] as unknown[] | undefined)?.length).toBe(2);
     expect(c.provider).toBe(call[2]);
     expect(c.model).toBe(call[3]);
+    expect(c.provider).toBe('claude');
+    expect(c.model).toBe('claude-3-test');
     expect(c.characterName).toBe(call[1]);
     expect(c.textCompletionMode).toBe(call[7]);
+    expect(c.textCompletionMode).toBe(false);
+    // R2-C12: proves this ran the plain path, not a leftover interceptor
+    // replacement from a describe that ran earlier.
+    expect(c.replacedByInterceptor).toBe(false);
+    expect(JSON.stringify(c.messages)).toContain(IVY.description);
+  });
+
+  it('sendMessage: textCompletionMode true is forwarded from meta, not hardcoded (R2-C13)', async () => {
+    arrangeSolo();
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'anthropic', activeModel: 'claude-x' });
+    useGenerationStore.setState({
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG, completionMode: 'text' },
+    });
+    const edges = stubEdges();
+
+    await useChatStore.getState().sendMessage('Anyone there?', IVY);
+
+    const call = edges.generate.mock.calls[0];
+    const c = capture()!;
+    expect(c.textCompletionMode).toBe(true);
+    expect(call[7]).toBe(true);
   });
 });
 
@@ -420,6 +492,9 @@ describe('publishes before send, even when the dispatch rejects (C9)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+    // R2-C12: guard against a leftover fetch stub / installed interceptor
+    // from a describe that ran earlier — see the C5 afterEach.
+    useServerExtensionStore.setState({ installed: [], manifests: {} });
   });
 
   it('sendMessage: a rejecting dispatch with no fallback still leaves a capture in the slot', async () => {
@@ -435,5 +510,9 @@ describe('publishes before send, even when the dispatch rejects (C9)', () => {
     expect(c, 'a capture should have been published even though the dispatch rejected').not.toBeNull();
     expect(c.seam).toBe('send');
     expect(c.messages).toEqual(edges.generate.mock.calls[0][0]);
+    // R2-C12: proves this ran the plain path, not a leftover interceptor
+    // replacement from a describe that ran earlier.
+    expect(c.replacedByInterceptor).toBe(false);
+    expect(JSON.stringify(c.messages)).toContain(IVY.description);
   });
 });
