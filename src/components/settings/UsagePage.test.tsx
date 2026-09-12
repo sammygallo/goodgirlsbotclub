@@ -123,4 +123,43 @@ describe('UsagePage — Last exact prompt section (E2-S3, gated on showExactProm
     render(<UsagePage />);
     expect(screen.getByText(/SENTINEL_SHOULD_RENDER/)).toBeTruthy();
   });
+
+  it('attributes using the capture\'s OWN breakdown, not the independently-tagged lastPromptBreakdown slot (R2-C11)', () => {
+    const captureBreakdown = createPromptBreakdown('solo');
+    addSlice(captureBreakdown, { stage: 'A', id: 'main_prompt' }, 10, 12);
+    addSlice(captureBreakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 5);
+    const capture = createPromptCapture({
+      seam: 'send',
+      messages: [
+        { role: 'system', content: 'x'.repeat(12) },
+        { role: 'user', content: 'x'.repeat(5) },
+      ],
+      collapsedByInstruct: false,
+      replacedByInterceptor: false,
+      provider: 'openai',
+      model: 'gpt-4o',
+      textCompletionMode: false,
+      imagesFolded: 0,
+      characterName: 'Ivy',
+      breakdown: captureBreakdown,
+    });
+    // A DIFFERENT breakdown, same slice lengths so a slot-paired lookup
+    // would still "succeed" but with the wrong labels — proving the page
+    // reads the capture's own breakdown, not this slot.
+    const foreignBreakdown = createPromptBreakdown('solo');
+    addSlice(foreignBreakdown, { stage: 'A', id: 'persona' }, 10, 12);
+    addSlice(foreignBreakdown, { stage: 'B', cls: 'authors_note' }, 4, 5);
+
+    useGenerationStore.setState({
+      lastPromptCapture: capture,
+      lastPromptBreakdown: foreignBreakdown,
+      showExactPrompt: true,
+    });
+    render(<UsagePage />);
+
+    expect(screen.getByText(/main_prompt/)).toBeTruthy();
+    expect(screen.getByText(/history \(user\)/)).toBeTruthy();
+    expect(screen.queryByText(/persona/)).toBeNull();
+    expect(screen.queryByText(/authors_note/)).toBeNull();
+  });
 });

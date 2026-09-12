@@ -78,8 +78,8 @@ export function PromptCaptureView({ capture, attribution }: PromptCaptureViewPro
         )}
         {capture.imagesFolded > 0 && (
           <p className="text-[var(--color-text-secondary)]">
-            This request also carried {capture.imagesFolded} image attachment(s). They are not
-            part of the captured array and are not shown below.
+            {capture.imagesFolded} image attachment(s) were attached to this message. They are
+            not part of the captured array and are not shown below.
           </p>
         )}
         {capture.textCompletionMode && (

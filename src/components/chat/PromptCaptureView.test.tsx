@@ -11,6 +11,7 @@ import { PromptCaptureView } from './PromptCaptureView';
 import { PromptCaptureSheet } from './PromptCaptureSheet';
 import { useGenerationStore } from '../../stores/generationStore';
 import { createPromptCapture, type PromptCapture, type CaptureAttribution } from '../../utils/promptCapture';
+import { createPromptBreakdown, addSlice } from '../../utils/promptBreakdown';
 
 afterEach(cleanup);
 
@@ -63,19 +64,21 @@ describe('PromptCaptureView', () => {
     expect(screen.getByText(/generate-interceptor replaced this payload/)).toBeTruthy();
   });
 
-  it('shows the image-fold notice with the actual count', () => {
+  it('shows the image-attachment notice with the actual count', () => {
     render(<PromptCaptureView capture={mkCapture({ imagesFolded: 2 })} attribution={null} />);
-    expect(screen.getByText(/carried 2 image attachment/)).toBeTruthy();
+    expect(screen.getByText(/2 image attachment/)).toBeTruthy();
   });
 
-  it('the image-attachment notice does not claim a fold in text completion mode', () => {
+  it('the image-attachment notice makes no carried/fold claim in text completion mode', () => {
     render(
       <PromptCaptureView
         capture={mkCapture({ imagesFolded: 2, textCompletionMode: true })}
         attribution={null}
       />
     );
-    expect(screen.getByText(/carried 2 image attachment/).textContent).not.toMatch(/fold/i);
+    const notice = screen.getByText(/2 image attachment/).textContent;
+    expect(notice).not.toMatch(/carried/i);
+    expect(notice).not.toMatch(/fold/i);
   });
 
   it('shows the text-completion notice when textCompletionMode is true', () => {
@@ -148,5 +151,33 @@ describe('PromptCaptureSheet ownership states', () => {
     useGenerationStore.getState().tagLastPromptCaptureMessage(c.id, 'm1', 0);
     render(<PromptCaptureSheet isOpen={true} onClose={() => {}} messageId="m2" swipeIndex={0} />);
     expect(screen.getByText(/no longer available for this turn/)).toBeTruthy();
+  });
+
+  it('attributes using the capture\'s OWN breakdown, not the independently-tagged lastPromptBreakdown slot (R2-C11)', () => {
+    const captureBreakdown = createPromptBreakdown('solo');
+    addSlice(captureBreakdown, { stage: 'A', id: 'main_prompt' }, 10, 12);
+    addSlice(captureBreakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 5);
+    const c = mkCapture({
+      messages: [
+        { role: 'system', content: 'x'.repeat(12) },
+        { role: 'user', content: 'x'.repeat(5) },
+      ],
+      breakdown: captureBreakdown,
+    });
+    useGenerationStore.getState().setLastPromptCapture(c);
+    useGenerationStore.getState().tagLastPromptCaptureMessage(c.id, 'm1', 0);
+
+    // A DIFFERENT breakdown, same slice lengths, sitting in the
+    // independently-tagged lastPromptBreakdown slot.
+    const foreignBreakdown = createPromptBreakdown('solo');
+    addSlice(foreignBreakdown, { stage: 'A', id: 'persona' }, 10, 12);
+    addSlice(foreignBreakdown, { stage: 'B', cls: 'authors_note' }, 4, 5);
+    useGenerationStore.setState({ lastPromptBreakdown: foreignBreakdown });
+
+    render(<PromptCaptureSheet isOpen={true} onClose={() => {}} messageId="m1" swipeIndex={0} />);
+
+    expect(screen.getByText(/main_prompt/)).toBeTruthy();
+    expect(screen.queryByText(/persona/)).toBeNull();
+    expect(screen.queryByText(/authors_note/)).toBeNull();
   });
 });
