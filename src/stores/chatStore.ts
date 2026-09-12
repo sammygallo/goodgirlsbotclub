@@ -3589,8 +3589,8 @@ async function runGenerateInterceptors(
 /**
  * E2-S3: wraps the transform pipeline + exact-prompt capture + dispatch for
  * one generation seam, so "captured after both transforms" is the only
- * ordering there is rather than a rule six call sites each have to follow.
- * `finalContext` (the local this function computes) is reachable only through
+ * ordering there is rather than a rule each call site has to follow on its
+ * own. `finalContext` (the local this function computes) is reachable only through
  * `send`'s parameter — a seam cannot pass `context` itself to its dispatch
  * call by mistake, because it never has a name for anything else.
  *

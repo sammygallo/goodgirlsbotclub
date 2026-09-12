@@ -3,9 +3,10 @@
  * come from the transforms' own return values (`maybeApplyInstructMode`,
  * `runGenerateInterceptors`), never from comparing the before/after arrays
  * or from `instruct.enabled` directly. Exercised through the `sendMessage`
- * seam: the flag logic lives entirely inside the shared `dispatchWithCapture`
- * helper, so one seam is enough to pin it — `chatStore.promptCapture.callSites.test.ts`
- * is what proves every seam actually calls that helper.
+ * seam: the flag logic lives inside the shared `dispatchWithCapture` helper
+ * rather than at each call site, so one seam is enough to pin it —
+ * `chatStore.promptCapture.callSites.test.ts` covers the call sites
+ * themselves.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -115,8 +116,6 @@ describe('exact-prompt capture flags', () => {
   });
 
   it('collapsedByInstruct is true when instruct mode actually collapses the array', async () => {
-    // KILLS: hardcoding `collapsedByInstruct` to false, or deriving it from
-    // `instruct.enabled` (see the next test for why that's a distinct bug).
     arrange();
     useGenerationStore.setState({ instruct: { ...DEFAULT_INSTRUCT_CONFIG, enabled: true, templateId: 'chatml' } });
     vi.spyOn(api, 'generateMessage').mockResolvedValue(sseOnce('reply'));
@@ -130,9 +129,9 @@ describe('exact-prompt capture flags', () => {
   });
 
   it('collapsedByInstruct stays false when instruct is enabled but the template id is unknown', async () => {
-    // KILLS: `collapsedByInstruct: instruct.enabled` — instruct.enabled is
-    // true here, but `getInstructTemplate` finds nothing so the array passes
-    // through unchanged.
+    // `instruct.enabled` is true here, but `getInstructTemplate` finds
+    // nothing for this id, so the array passes through unchanged — the
+    // flag has to come from what actually happened, not from this setting.
     arrange();
     useGenerationStore.setState({ instruct: { ...DEFAULT_INSTRUCT_CONFIG, enabled: true, templateId: 'does-not-exist' } });
     vi.spyOn(api, 'generateMessage').mockResolvedValue(sseOnce('reply'));
@@ -144,8 +143,6 @@ describe('exact-prompt capture flags', () => {
   });
 
   it('replacedByInterceptor is true only when an interceptor actually returns a replacement array', async () => {
-    // KILLS: hardcoding `replacedByInterceptor` to false, or setting it
-    // whenever an interceptor is installed regardless of what it returns.
     arrange();
     useServerExtensionStore.setState({
       installed: [{ type: 'local', name: 'third-party/echo-swap' }],

@@ -89,10 +89,10 @@ describe('PromptCaptureView', () => {
   });
 
   it('does not render attribution labels when replacedByInterceptor is true, even if a non-null attribution is passed', () => {
-    // KILLS: rendering attribution whenever the prop is non-null, without
-    // also checking the capture's own flags — `computeCaptureAttribution`
-    // already refuses to produce one for this path, but this pins the view
-    // as a second line of defense against a caller that got that wrong.
+    // The view checks the capture's own flags itself rather than trusting
+    // the prop alone — a second line of defense alongside
+    // `computeCaptureAttribution` already refusing to produce one for this
+    // path.
     const capture = mkCapture({ replacedByInterceptor: true });
     const staleAttribution: CaptureAttribution = [{ index: 0, labels: ['main_prompt'] }];
     render(<PromptCaptureView capture={capture} attribution={staleAttribution} />);

@@ -1,10 +1,10 @@
 /**
- * The exact-prompt capture (E2-S3) at every generation dispatch seam.
+ * The exact-prompt capture (E2-S3), pinned per generation dispatch seam.
  *
  * WHAT THIS FILE EXISTS FOR. `dispatchWithCapture` (chatStore.ts) is the one
- * place the six seams run their transforms and dispatch — this file proves
- * each seam actually routes through it, by comparing the published capture
- * against what `api.generateMessage` was really called with. Reuses the
+ * place a generation seam runs its transforms and dispatch — this file
+ * proves each seam actually routes through it, by comparing the published
+ * capture against what `api.generateMessage` was really called with. Reuses the
  * prelude and fixtures from `chatStore.breakdownTag.callSites.test.ts` /
  * `promptGoldens.fixtures.ts` rather than inventing a new arrangement.
  *
@@ -266,8 +266,6 @@ describe('showExactPrompt off: no capture is published', () => {
   });
 
   it('sendMessage dispatches normally but publishes nothing', async () => {
-    // KILLS: a `dispatchWithCapture` that captures unconditionally, ignoring
-    // `showExactPrompt`.
     arrangeSolo();
     const edges = stubEdges();
 

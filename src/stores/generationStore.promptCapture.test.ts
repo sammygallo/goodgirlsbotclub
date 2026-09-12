@@ -93,10 +93,6 @@ describe('tagLastPromptCaptureMessage', () => {
   });
 
   it('still succeeds after notePromptCaptureFallback has replaced the record — the reason for an id guard rather than object identity', () => {
-    // KILLS: guarding by object identity (`get().lastPromptCapture !== capture`)
-    // instead of by id — notePromptCaptureFallback intentionally replaces the
-    // object in the slot, so an identity guard would reject the very tag call
-    // this test makes.
     const c = mkCapture();
     useGenerationStore.getState().setLastPromptCapture(c);
     useGenerationStore.getState().notePromptCaptureFallback(c.id, 'anthropic', 'claude-x');
@@ -159,8 +155,6 @@ describe('resetUser', () => {
 
 describe('showExactPrompt persistence', () => {
   it('the persisted shape has exactly the expected key set, and never carries the capture fields', () => {
-    // KILLS: adding `lastPromptCapture`/`lastPromptCaptureTag` to
-    // `PersistedShape` — the payload must never ride the synced-prefs blob.
     useGenerationStore.getState().setShowExactPrompt(true);
 
     expect(patchServerKey).toHaveBeenCalled();
