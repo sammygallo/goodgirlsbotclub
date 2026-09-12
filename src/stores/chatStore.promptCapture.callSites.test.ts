@@ -458,6 +458,17 @@ describe('showExactPrompt off: no capture is published', () => {
     expect(edges.generate).toHaveBeenCalledTimes(1);
     expect(capture()).toBeNull();
   });
+
+  it('sendMessage takes no snapshot of the payload at all while the toggle is off', async () => {
+    arrangeSolo();
+    stubEdges();
+    const clone = vi.spyOn(globalThis, 'structuredClone');
+
+    await useChatStore.getState().sendMessage('Anyone there?', IVY);
+
+    expect(clone).not.toHaveBeenCalled();
+    expect(capture()).toBeNull();
+  });
 });
 
 describe('AC1 under a transform, at every solo seam (C5)', () => {

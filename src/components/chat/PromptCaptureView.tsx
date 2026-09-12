@@ -5,10 +5,11 @@
  * resolve their own capture (and, when it applies, their own attribution)
  * from `useGenerationStore` and hand both down.
  *
- * The body renders role-labelled blocks only when every element looks like
- * `{ role, content }` — an interceptor can replace the array with anything
- * JSON-serializable, and falling back to `JSON.stringify` is the one
- * rendering that stays honest for an unknown shape.
+ * The body renders role-labelled blocks only when the array is non-empty and
+ * every element is exactly `{ role, content }` with string values — an
+ * interceptor can replace the array with anything JSON-serializable, and
+ * falling back to `JSON.stringify` is the one rendering that stays honest
+ * for any other shape, including an element carrying extra keys.
  */
 import type { PromptCapture, CaptureAttribution } from '../../utils/promptCapture';
 
@@ -22,13 +23,16 @@ interface PromptCaptureViewProps {
 function isRoleContentArray(
   messages: readonly unknown[]
 ): messages is { role: string; content: string }[] {
-  return messages.every(
-    (m) =>
-      typeof m === 'object' &&
-      m !== null &&
+  if (messages.length === 0) return false;
+  return messages.every((m) => {
+    if (typeof m !== 'object' || m === null || Array.isArray(m)) return false;
+    const keys = Object.keys(m as Record<string, unknown>);
+    return (
+      keys.length === 2 &&
       typeof (m as Record<string, unknown>).role === 'string' &&
       typeof (m as Record<string, unknown>).content === 'string'
-  );
+    );
+  });
 }
 
 export function PromptCaptureView({ capture, attribution }: PromptCaptureViewProps) {

@@ -51,12 +51,20 @@ describe('PromptCaptureView', () => {
 
   it('shows the collapse notice when collapsedByInstruct is true', () => {
     render(<PromptCaptureView capture={mkCapture({ collapsedByInstruct: true })} attribution={null} />);
-    expect(screen.getByText(/collapsed this prompt into a single user turn/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /collapsed this prompt into a single user turn before it was sent\. Section attribution is unavailable — collapsed by instruct mode\./
+      )
+    ).toBeTruthy();
   });
 
   it('shows the interceptor-replacement notice when replacedByInterceptor is true', () => {
     render(<PromptCaptureView capture={mkCapture({ replacedByInterceptor: true })} attribution={null} />);
-    expect(screen.getByText(/generate-interceptor replaced this payload/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /generate-interceptor replaced this payload before it was sent\. Section attribution is unavailable — payload was replaced\./
+      )
+    ).toBeTruthy();
   });
 
   it('shows both notices when both flags are true, and neither is hidden by the other', () => {
@@ -66,8 +74,16 @@ describe('PromptCaptureView', () => {
         attribution={null}
       />
     );
-    expect(screen.getByText(/collapsed this prompt into a single user turn/)).toBeTruthy();
-    expect(screen.getByText(/generate-interceptor replaced this payload/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /collapsed this prompt into a single user turn before it was sent\. Section attribution is unavailable — collapsed by instruct mode\./
+      )
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        /generate-interceptor replaced this payload before it was sent\. Section attribution is unavailable — payload was replaced\./
+      )
+    ).toBeTruthy();
   });
 
   it('renders no image-attachments line when imagesFolded is 0', () => {
@@ -151,6 +167,23 @@ describe('PromptCaptureView', () => {
     expect(screen.getByText(/"foo"/)).toBeTruthy();
   });
 
+  it('renders an entry that carries a key beyond role and content as JSON, so the extra key is visible', () => {
+    const capture = mkCapture({
+      messages: [{ role: 'user', content: 'hi', name: 'moderator' }],
+      replacedByInterceptor: true,
+    });
+    const { container } = render(<PromptCaptureView capture={capture} attribution={null} />);
+    const text = container.textContent ?? '';
+    expect(text).toContain('"name"');
+    expect(text).toContain('moderator');
+  });
+
+  it('renders an empty array as JSON', () => {
+    const capture = mkCapture({ messages: [], replacedByInterceptor: true });
+    const { container } = render(<PromptCaptureView capture={capture} attribution={null} />);
+    expect(container.textContent ?? '').toContain('[]');
+  });
+
   it('marks the header "(fallback)" when usedFallback is true (R5-C5)', () => {
     const capture = { ...mkCapture(), usedFallback: true };
     render(<PromptCaptureView capture={capture} attribution={null} />);
@@ -179,22 +212,19 @@ describe('PromptCaptureView', () => {
     expect(text).toContain(`Captured ${capturedAtStr}`);
   });
 
-  it('renders a different capturedAt time string for a capture taken at a different time', () => {
-    const earlier = { ...mkCapture(), capturedAt: mkCapture().capturedAt - 60 * 60 * 1000 };
-    const { container } = render(<PromptCaptureView capture={earlier} attribution={null} />);
-    const text = container.textContent ?? '';
-    const earlierStr = new Date(earlier.capturedAt).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-    const nowStr = new Date(mkCapture().capturedAt).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-    expect(text).toContain(`Captured ${earlierStr}`);
-    expect(earlierStr).not.toBe(nowStr);
+  it('renders the time string of the capture it was given, not of some other capture', () => {
+    const fmt = (ms: number) =>
+      new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const base = Date.UTC(2026, 0, 2, 15, 4, 5);
+    const a = { ...mkCapture(), capturedAt: base };
+    const b = { ...mkCapture(), capturedAt: base - 5000 };
+    expect(fmt(a.capturedAt)).not.toBe(fmt(b.capturedAt));
+    const ra = render(<PromptCaptureView capture={a} attribution={null} />);
+    expect(ra.container.textContent ?? '').toContain(`Captured ${fmt(a.capturedAt)}`);
+    cleanup();
+    const rb = render(<PromptCaptureView capture={b} attribution={null} />);
+    expect(rb.container.textContent ?? '').toContain(`Captured ${fmt(b.capturedAt)}`);
+    expect(rb.container.textContent ?? '').not.toContain(`Captured ${fmt(a.capturedAt)}`);
   });
 });
 
