@@ -132,10 +132,13 @@ describe('exact-prompt capture never rides the save/export/prefs-sync paths', ()
     expect(JSON.stringify(capture!.messages)).toContain(PROMPT_ONLY_SENTINEL);
 
     // The chat save (buildChatPayload's output, forwarded to api.saveChat)
-    // must not carry it.
-    expect(save).toHaveBeenCalled();
-    const chatData = save.mock.calls[0][2];
-    expect(JSON.stringify(chatData)).not.toContain(SENTINEL);
+    // must not carry it, on EVERY save this turn made — sendMessage saves
+    // once before generation (before any capture exists) and again after,
+    // so a single-call check would only ever see the pre-capture save.
+    expect(save.mock.calls.length).toBeGreaterThan(1);
+    for (const call of save.mock.calls) {
+      expect(JSON.stringify(call[2])).not.toContain(SENTINEL);
+    }
 
     // Nothing this turn wrote to the server-synced prefs blob carries it
     // either — generationStore's own persisted shape has no field the
