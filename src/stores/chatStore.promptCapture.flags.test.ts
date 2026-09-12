@@ -1,8 +1,8 @@
 /**
  * `collapsedByInstruct` / `replacedByInterceptor` (E2-S3, AC2) — both flags
  * come from the transforms' own return values (`maybeApplyInstructMode`,
- * `runGenerateInterceptors`), never from comparing the before/after arrays
- * or from `instruct.enabled` directly. Exercised through the `sendMessage`
+ * `runGenerateInterceptors`), never from `instruct.enabled` directly.
+ * Exercised through the `sendMessage`
  * seam: the flag logic lives inside the shared `dispatchWithCapture` helper
  * rather than at each call site, so one seam is enough to pin it —
  * `chatStore.promptCapture.callSites.test.ts` covers the call sites
