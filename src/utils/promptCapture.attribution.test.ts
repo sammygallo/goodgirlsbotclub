@@ -226,6 +226,47 @@ describe('computeCaptureAttribution', () => {
     expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
   });
 
+  it('(o) every describeSectionKind label branch, at distinct lengths so rule 6 cannot fire (R5-C4)', () => {
+    const breakdown = createPromptBreakdown('solo');
+    addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 6);
+    addSlice(breakdown, { stage: 'B', cls: 'authors_note' }, 4, 8);
+    addSlice(breakdown, { stage: 'B', cls: 'wi_at_depth' }, 4, 10);
+    addSlice(breakdown, { stage: 'B', cls: 'persona_at_depth' }, 4, 12);
+    addSlice(breakdown, { stage: 'B', cls: 'characters_note' }, 4, 14);
+    addSlice(breakdown, { stage: 'B', cls: 'ext_at_depth', extensionId: 'ext1' }, 4, 16);
+    addSlice(breakdown, { stage: 'B', cls: 'ext_at_depth' }, 4, 18);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'u2' }, 4, 20);
+    addSlice(breakdown, { stage: 'C', id: 'char_phi' }, 4, 22);
+    const capture = mkCapture([
+      entry('system', 40),
+      entry('user', 6),
+      entry('system', 8),
+      entry('system', 10),
+      entry('system', 12),
+      entry('system', 14),
+      entry('system', 16),
+      entry('system', 18),
+      entry('assistant', 20),
+      entry('user', 22),
+    ]);
+
+    const attribution = computeCaptureAttribution(capture, breakdown);
+
+    expect(attribution).toEqual([
+      { index: 0, labels: ['main_prompt'] },
+      { index: 1, labels: ['history (user)'] },
+      { index: 2, labels: ['authors_note'] },
+      { index: 3, labels: ['wi_at_depth'] },
+      { index: 4, labels: ['persona_at_depth'] },
+      { index: 5, labels: ['characters_note'] },
+      { index: 6, labels: ['ext_at_depth (ext1)'] },
+      { index: 7, labels: ['ext_at_depth'] },
+      { index: 8, labels: ['history'] },
+      { index: 9, labels: ['char_phi'] },
+    ]);
+  });
+
   it('(n) two Stage-A slices join into one entry, each carrying its own id in order', () => {
     const breakdown = createPromptBreakdown('solo');
     addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
