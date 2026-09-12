@@ -264,15 +264,15 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>8 Sep 2026</b><br>
-      main <b>0dea5281</b><br>
-      active <b>none — E2-S4 closed at PR1</b>
+      <b>11 Sep 2026</b><br>
+      main <b>55709b09</b><br>
+      active <b>E2-S4 · PR2 — merge gate</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
@@ -315,12 +315,18 @@
     <section class="col">
       <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-      </div>
+        </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E2">
+          <div class="id">E2-S4 · PR2</div>
+          <div class="t">Insights data API — the store-level consumer surface</div>
+          <div class="m">At the <b>merge gate</b> 11 Sep. Leg 2 of 2, the one that makes PR1&rsquo;s data layer non-inert. <b>QA: 4/4 AC PASS</b> with mutation evidence. <b>17 review rounds</b> — production logic has been correct since round 12; rounds 13&ndash;17 confirmed zero behaviour defects. Mid-run the review found a user-reachable defect: <code>wiFiredByFile</code> is ONE map keyed by bare chat file name across every character while name uniqueness is only per-character, so a firing count could merge two characters&rsquo; chats and still report <code>complete: true</code>. Sammy chose <b>option B</b> — never claim completeness, never claim a direction, return the number marked <code>verified: false</code> with reasons. Two store bugs filed (<a href="https://github.com/sammygallo/goodgirlsbotclub/issues/530">#530</a>, <a href="https://github.com/sammygallo/goodgirlsbotclub/issues/531">#531</a>). Three merge triggers fire; Sammy merges.</div>
+          <div class="gates"><span class="gate free">PR1 ✓ on main</span><span class="gate">unblocks E5-S1</span><span class="gate hot">scope gap: 2 of 4</span></div>
+        </article>
       </div>
     </section>
 
@@ -436,33 +442,33 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S4 · PR1 — closed 8 Sep; PR2 never built</h2>
-    <p class="sub">The data layer E5's Optimization Agent reads. E5-S1 has to be able to say "entry X fired 0 times in the last 25 chats and costs ~450 tokens a turn when it is active" <em>and be honest about which half of that it cannot actually see</em> — so the API's job is as much to refuse a question as to answer one. Split <b>N=2 by assembly surface</b>: PR1 captures per-entry World Info cost inside both prompt builders; PR2 derives the consumer API from it and never imports a builder.</p>
+    <h2>E2-S4 &middot; PR2 &mdash; at the merge gate, 11 Sep</h2>
+    <p class="sub">The data layer E5&rsquo;s Optimization Agent reads, and the leg that makes PR1 non-inert. The API&rsquo;s job is as much to refuse a question as to answer one &mdash; all four ACs are anti-lie invariants. PR1 captured per-entry World Info cost inside both prompt builders; PR2 derives the consumer API and imports no builder, proved by an AST-parsing boundary guard.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Intake</div><div class="sv">premise intact · card&rsquo;s method dead</div></div>
-      <div class="step done"><div class="sn">Plan</div><div class="sv">N=2 by assembly surface</div></div>
-      <div class="step done"><div class="sn">Build</div><div class="sv">PR1 + 4 fix rounds</div></div>
-      <div class="step done"><div class="sn">Review</div><div class="sv">9 rounds &rarr; converged at 0</div></div>
-      <div class="step done"><div class="sn">QA</div><div class="sv">D1&ndash;D7 pass · 4 AC partial</div></div>
-      <div class="step done"><div class="sn">Merge</div><div class="sv">d4c90056 &mdash; Sammy&rsquo;s go</div></div>
+      <div class="step done"><div class="sn">Intake</div><div class="sv">6 dead carriers corrected</div></div>
+      <div class="step done"><div class="sn">Plan</div><div class="sv">crux: no header endpoint exists</div></div>
+      <div class="step done"><div class="sn">Build</div><div class="sv">6 new files, 0 existing edited</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">17 rounds &middot; 2 design passes</div></div>
+      <div class="step done"><div class="sn">QA</div><div class="sv">4/4 AC PASS</div></div>
+      <div class="step now"><div class="sn">Merge</div><div class="sv">3 triggers &mdash; Sammy&rsquo;s call</div></div>
       <div class="step"><div class="sn">Deploy</div><div class="sv">not requested</div></div>
-      <div class="step done"><div class="sn">Close</div><div class="sv">CURATE &middot; exit #5</div></div>
+      <div class="step"><div class="sn">Close</div><div class="sv">pending</div></div>
     </div>
 
     <div class="note crit" style="margin-bottom:18px">
-      <h3>What PLAN caught</h3>
-      The card told the implementer to derive server-turn eviction as <code>activatedEntryIds &minus; entries</code>. <b>E4-S0 inverted that on 25 Aug</b> — <code>activated_entry_ids</code> is now the post-trim intersection, so the difference is <b>always empty</b>. Following the card would have hard-coded &ldquo;nothing was evicted&rdquo; on every server turn: the exact lie this story&rsquo;s own AC4 forbids, manufactured one layer <em>below</em> the API and looking observed while doing it. The backend has returned <code>evictedEntryIds</code> explicitly since E2-S2a (28 Aug, deployed); the client simply never read it. Three carriers corrected in <code>bb9efe46</code> — one of them, E5-S1&rsquo;s task row, contradicted itself.
+      <h3>What the review caught &mdash; and what Sammy decided</h3>
+      A chat file name is <b>not</b> a chat identity. <code>wiFiredByFile</code> is ONE module-level map keyed by bare file name across every character, while name uniqueness is enforced only <em>per character</em> and the rename box takes arbitrary text. So <code>getEntryFiringAggregate</code> returned <code>complete: true, exact: 3</code> over <em>another character&rsquo;s</em> numbers, for a chat never opened. The PM&rsquo;s first fix addressed only the caller-supplied scope and shipped a false justification for it; the review falsified that premise and the PM stopped. Sammy chose <b>option B</b>: never claim completeness, never claim a direction (a collision <em>inflates</em>, so &ldquo;at least&rdquo; is false too), return the number marked <code>verified: false</code> with a reasons tuple whose collision caveat is pinned last <em>by the type</em>.
     </div>
 
     <div class="tscroll">
       <table>
-        <thead><tr><th>Stage</th><th>Actual</th><th>Projected band</th><th>Note</th></tr></thead>
+        <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">~1.4M</td><td>M / leg</td><td>Initial build + 4 fix rounds; production logic unchanged since fix round 1</td></tr>
-          <tr><td>Verification</td><td class="num">~14.1M &middot; 9 rounds</td><td>~6.2&ndash;18.5M / loop</td><td><b>Inside on tokens, over on rounds</b> (class expects 4&ndash;6). 168 agents, 0 errors. Zero production-behavior defects ever confirmed; 42 confirmed findings were false checkable claims, 9 written by the fix rounds themselves</td></tr>
-          <tr><td>Plan absorption</td><td class="num">&mdash;</td><td>&mdash;</td><td>Not a knowledge story; three carrier corrections rode the branch as intake work</td></tr>
-          <tr><td>Postmortem</td><td class="num">~4.0M</td><td>CURATE</td><td>1,189 entities swept, 2 dead claims found. Filed <a href="https://github.com/sammygallo/goodgirlsbotclub/issues/526">#526</a> &mdash; a real bug in the review harness. Governance proposals are <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/527">#527</a>, awaiting Sammy; 3 memory trims queued in <code>.pending/</code></td></tr>
+          <tr><td>Build</td><td class="num">~4.7M</td><td>M</td><td>Initial build + 14 fix rounds</td></tr>
+          <tr><td>Verification</td><td class="num">~19.6M &middot; 17 rounds</td><td>~1.7&ndash;3.5M</td><td><b>Far over</b> (contained seam expects 1 full + 1 confirmation). Zero production-behaviour defects in rounds 13&ndash;17; findings ran 5 &rarr; 2 &rarr; 6 &rarr; 10 as each fix generated the next, until the PM deleted the generator &mdash; 465 comment lines &mdash; rather than another instance</td></tr>
+          <tr><td>Design passes</td><td class="num">~3.9M</td><td>&mdash;</td><td>Two adversarial design red-teams before implementing. The first found 4 defects in the fix design; the second found 9, including two repeats of the half-fix pattern</td></tr>
+          <tr><td>QA</td><td class="num">~0.23M</td><td>&mdash;</td><td>4/4 AC PASS. Caught its own false green (a mutation that silently failed to apply) and re-ran everything</td></tr>
         </tbody>
       </table>
     </div>
