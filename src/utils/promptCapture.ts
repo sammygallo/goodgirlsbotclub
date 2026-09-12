@@ -200,13 +200,13 @@ function describeSectionKind(kind: SectionKind): string {
  * WHY a slice can still be rejected after its position and length agree with
  * an entry: the group at-depth overflow splice records an insertion's slice
  * (an author's-note or WI entry) AFTER slices for entries that come BEFORE
- * it in `context`, so slice order and entry order can disagree for exactly
- * that one insertion. When a non-history candidate's `chars` also matches
- * some OTHER post-Stage-A entry, positions alone cannot tell that insertion
- * apart from an ordinary message of equal length, so the match is refused.
- * History entries are exempt from that refusal: two equal-length messages
- * are ordinary and are never recorded out of order. The function returns
- * `null` for anything it cannot verify, never a best guess.
+ * it in `context`, so slice order and entry order can disagree. When a
+ * non-history candidate's `chars` also matches some OTHER post-Stage-A
+ * entry, positions alone cannot tell that insertion apart from an ordinary
+ * message of equal length, so the match is refused. History entries are
+ * exempt from that refusal: two equal-length messages are ordinary. The
+ * function returns `null` for anything it cannot verify, never a best
+ * guess.
  */
 export function computeCaptureAttribution(
   capture: PromptCapture,
