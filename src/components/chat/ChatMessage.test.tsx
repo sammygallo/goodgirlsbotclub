@@ -235,7 +235,57 @@ describe('ChatMessage — the "prompt" button is gated on showExactPrompt', () =
       renderAiMessage(0, layoutMode);
       expect(screen.queryByLabelText('Exact prompt for this turn')).toBeNull();
     });
+
+    // R6-C5: the two rows above only ever check the button's own presence —
+    // mirroring the breakdown chip's layout describe above, this row also
+    // clicks the button and checks what it opens, in every layout.
+    it(`${layoutMode}: the button opens the sheet and renders owned content`, () => {
+      useGenerationStore.setState({
+        showExactPrompt: true,
+        lastPromptCapture: soloCapture(),
+        lastPromptCaptureTag: { messageId: 'm1', swipeIndex: 1 },
+      });
+      renderAiMessage(1, layoutMode);
+      openPromptSheet();
+      expect(screen.queryByText(/no longer available/)).toBeNull();
+      expect(screen.getByText(/Seam:/)).toBeTruthy();
+    });
   }
+
+  // R6-C9: the loop above only ever varies `showExactPrompt` — the other two
+  // conjuncts of the button's gate (`!isUser`, `usage`) had no row of their
+  // own.
+  it('does not render on the user\'s own bubble even when showExactPrompt is true', () => {
+    useGenerationStore.setState({ showExactPrompt: true });
+    render(
+      <ChatMessage
+        messageId="m1"
+        name="User"
+        content="Hi there."
+        isUser={true}
+        usage={USAGE}
+        swipes={['Hi there.']}
+        swipeId={0}
+      />
+    );
+    expect(screen.queryByLabelText('Exact prompt for this turn')).toBeNull();
+  });
+
+  it('does not render on an AI turn with no usage even when showExactPrompt is true', () => {
+    useGenerationStore.setState({ showExactPrompt: true });
+    render(
+      <ChatMessage
+        messageId="m1"
+        name="Ivy"
+        content="Hello again."
+        isUser={false}
+        usage={undefined}
+        swipes={['Hello again.']}
+        swipeId={0}
+      />
+    );
+    expect(screen.queryByLabelText('Exact prompt for this turn')).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
