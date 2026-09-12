@@ -56,6 +56,51 @@ describe('createPromptCapture — snapshot semantics', () => {
     expect(Object.isFrozen(capture.messages)).toBe(true);
   });
 
+  it('records capturedAt as the current time', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-02T15:04:05'));
+      const capture = createPromptCapture(mkParams([{ role: 'user', content: 'hi' }]));
+      expect(capture.capturedAt).toBe(Date.now());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the JSON round-trip fallback when structuredClone throws, still yielding a frozen copy', () => {
+    vi.stubGlobal('structuredClone', () => {
+      throw new Error('structuredClone unavailable');
+    });
+    try {
+      const live = [{ role: 'user', content: 'before' }];
+      const capture = createPromptCapture(mkParams(live));
+
+      expect(capture.messages).not.toBe(live);
+      expect(Object.isFrozen(capture.messages)).toBe(true);
+
+      live[0].content = 'after';
+      expect((capture.messages[0] as { content: string }).content).toBe('before');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('takes the JSON round-trip fallback when structuredClone is unavailable, still yielding a frozen copy', () => {
+    vi.stubGlobal('structuredClone', undefined);
+    try {
+      const live = [{ role: 'user', content: 'before' }];
+      const capture = createPromptCapture(mkParams(live));
+
+      expect(capture.messages).not.toBe(live);
+      expect(Object.isFrozen(capture.messages)).toBe(true);
+
+      live[0].content = 'after';
+      expect((capture.messages[0] as { content: string }).content).toBe('before');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('falls back to the original, unfrozen reference when both structuredClone and the JSON round-trip throw', () => {
     // A value structuredClone rejects (a function) together with one
     // JSON.stringify also rejects (a BigInt) in the same payload — the one
