@@ -5,8 +5,7 @@
  *
  * Proving test (plan §7): run a real `sendMessage` turn with the toggle on
  * and a sentinel string embedded in the character description, so it lands
- * in the prompt and therefore in the capture; then check every OTHER wire
- * this app actually writes to for the same sentinel.
+ * in the prompt and therefore in the capture.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -53,10 +52,17 @@ const { useChatStore } = await import('./chatStore');
 const { useChatHistoryRagStore } = await import('./chatHistoryRagStore');
 const { useCharacterStore } = await import('./characterStore');
 const { useGenerationStore } = await import('./generationStore');
+const { usePersonaStore } = await import('./personaStore');
 const { api } = await import('../api/client');
 const { mkChar, mkMsg, resetStores } = await import('./promptGoldens.fixtures');
+const { exportCharacterAsJSON } = await import('../utils/characterCard');
 
 const SENTINEL = 'ZZZ_E2S3_SENTINEL_NEVER_PERSISTED_ZZZ';
+// A SECOND sentinel that only reaches the assembled PROMPT (via the active
+// persona), never the character card itself — unlike SENTINEL above, whose
+// presence in an export would be legitimate (the character's own
+// description is supposed to round-trip through a character export).
+const PROMPT_ONLY_SENTINEL = 'ZZZ_E2S3_PERSONA_SENTINEL_PROMPT_ONLY_ZZZ';
 
 function sseOnce(text: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -82,6 +88,23 @@ beforeEach(() => {
   const messages = [mkMsg('u1', 'Hello?')];
   useCharacterStore.setState({ selectedCharacter: IVY });
   useChatHistoryRagStore.setState({ enabled: false });
+  // Active persona, so PROMPT_ONLY_SENTINEL reaches the assembled prompt
+  // without ever touching the character card.
+  usePersonaStore.setState({
+    personas: [
+      {
+        id: 'p1',
+        name: 'Wren',
+        description: PROMPT_ONLY_SENTINEL,
+        descriptionPosition: 'before_char',
+        descriptionDepth: 4,
+        descriptionRole: 'system',
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    ],
+    activePersonaId: 'p1',
+  });
   useChatStore.setState({
     messages,
     currentChatFile: 'prompt-capture-exclusion.jsonl',
@@ -106,6 +129,7 @@ describe('exact-prompt capture never rides the save/export/prefs-sync paths', ()
     const capture = useGenerationStore.getState().lastPromptCapture;
     expect(capture, 'a capture should have been published').not.toBeNull();
     expect(JSON.stringify(capture!.messages)).toContain(SENTINEL);
+    expect(JSON.stringify(capture!.messages)).toContain(PROMPT_ONLY_SENTINEL);
 
     // The chat save (buildChatPayload's output, forwarded to api.saveChat)
     // must not carry it.
@@ -121,5 +145,19 @@ describe('exact-prompt capture never rides the save/export/prefs-sync paths', ()
     for (const call of patchServerKey.mock.calls) {
       expect(JSON.stringify(call)).not.toContain(SENTINEL);
     }
+
+    // Nothing this turn wrote to localStorage carries it either.
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key === null) continue;
+      expect(localStorage.getItem(key)).not.toContain(SENTINEL);
+    }
+
+    // A character export legitimately carries SENTINEL (the character's own
+    // description round-trips through a card export) — but it must not
+    // carry PROMPT_ONLY_SENTINEL, which reaches the prompt only through the
+    // active persona, never through the character.
+    const exported = await exportCharacterAsJSON(IVY).text();
+    expect(exported).not.toContain(PROMPT_ONLY_SENTINEL);
   });
 });
