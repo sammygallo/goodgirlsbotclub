@@ -228,7 +228,7 @@ describe('showExactPrompt persistence', () => {
 
   it('defaults to false on a fresh install — no stored generation key at all (R5-C6)', async () => {
     // beforeEach already clears memoryStorage; nothing in this test writes
-    // to it before the re-init, so `stm_generation` is genuinely absent.
+    // to it before the re-init, so `sillytavern_generation_settings_v1` is genuinely absent.
     vi.resetModules();
     const fresh = await import('./generationStore');
     expect(fresh.useGenerationStore.getState().showExactPrompt).toBe(false);

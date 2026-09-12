@@ -184,6 +184,30 @@ describe('PromptCaptureView', () => {
     expect(container.textContent ?? '').toContain('[]');
   });
 
+  it('renders an entry whose content is not a string as JSON without throwing', () => {
+    const capture = mkCapture({
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      replacedByInterceptor: true,
+    });
+    let container: HTMLElement | undefined;
+    expect(() => {
+      container = render(<PromptCaptureView capture={capture} attribution={null} />).container;
+    }).not.toThrow();
+    expect(container?.textContent ?? '').toContain('"type"');
+  });
+
+  it('renders an entry whose role is not a string as JSON without throwing', () => {
+    const capture = mkCapture({
+      messages: [{ role: { n: 'user' }, content: 'hi' }],
+      replacedByInterceptor: true,
+    });
+    let container: HTMLElement | undefined;
+    expect(() => {
+      container = render(<PromptCaptureView capture={capture} attribution={null} />).container;
+    }).not.toThrow();
+    expect(container?.textContent ?? '').toContain('"n"');
+  });
+
   it('marks the header "(fallback)" when usedFallback is true (R5-C5)', () => {
     const capture = { ...mkCapture(), usedFallback: true };
     render(<PromptCaptureView capture={capture} attribution={null} />);

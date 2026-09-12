@@ -8,7 +8,7 @@
  * prelude and fixtures from `chatStore.breakdownTag.callSites.test.ts` /
  * `promptGoldens.fixtures.ts` rather than inventing a new arrangement.
  *
- * Byte-identity is checked two ways per row: `toEqual` against the spy's
+ * Byte-identity is checked two ways: `toEqual` against the spy's
  * captured argument (structural), and `JSON.stringify` equality (so a
  * capture that quietly dropped or reordered a field the deep-equal check
  * happens not to weight still reddens).
