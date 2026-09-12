@@ -25,13 +25,15 @@ const memoryStorage = (() => {
 vi.stubGlobal('localStorage', memoryStorage);
 
 const patchServerKey = vi.fn(async (..._args: unknown[]) => {});
+const getSettingsBlob = vi.fn(async () => ({}) as Record<string, unknown>);
+const shouldReuploadSection = vi.fn(() => false);
 vi.mock('../utils/serverSettings', () => ({
-  getSettingsBlob: vi.fn(async () => ({})),
+  getSettingsBlob,
   makeLocalTsKey: vi.fn((k: string) => `ts_${k}`),
   patchServerKey,
   markSectionDirty: vi.fn(),
   recordServerTs: vi.fn(),
-  shouldReuploadSection: vi.fn(() => false),
+  shouldReuploadSection,
   clearLocalTs: vi.fn(),
 }));
 
@@ -57,6 +59,7 @@ function mkCapture(over: Partial<Parameters<typeof createPromptCapture>[0]> = {}
     textCompletionMode: false,
     imagesFolded: 0,
     characterName: 'Ivy',
+    breakdown: null,
     ...over,
   });
 }
@@ -64,6 +67,8 @@ function mkCapture(over: Partial<Parameters<typeof createPromptCapture>[0]> = {}
 beforeEach(() => {
   memoryStorage.clear();
   patchServerKey.mockClear();
+  getSettingsBlob.mockReset().mockResolvedValue({});
+  shouldReuploadSection.mockReset().mockReturnValue(false);
   reset();
 });
 
@@ -138,6 +143,30 @@ describe('setLastPromptCapture', () => {
   });
 });
 
+describe('setShowExactPrompt', () => {
+  it('clears the capture and its tag when turned off', () => {
+    const c = mkCapture();
+    useGenerationStore.getState().setLastPromptCapture(c);
+    useGenerationStore.getState().tagLastPromptCaptureMessage(c.id, 'msg-1', 0);
+
+    useGenerationStore.getState().setShowExactPrompt(false);
+
+    expect(useGenerationStore.getState().lastPromptCapture).toBeNull();
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toBeNull();
+  });
+
+  it('leaves an existing capture alone when turned on', () => {
+    const c = mkCapture();
+    useGenerationStore.getState().setLastPromptCapture(c);
+    useGenerationStore.getState().tagLastPromptCaptureMessage(c.id, 'msg-1', 0);
+
+    useGenerationStore.getState().setShowExactPrompt(true);
+
+    expect(useGenerationStore.getState().lastPromptCapture).toBe(c);
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toEqual({ messageId: 'msg-1', swipeIndex: 0 });
+  });
+});
+
 describe('resetUser', () => {
   it('clears the capture, its tag, and the toggle', () => {
     const c = mkCapture();
@@ -186,5 +215,26 @@ describe('showExactPrompt persistence', () => {
     vi.resetModules();
     const fresh = await import('./generationStore');
     expect(fresh.useGenerationStore.getState().showExactPrompt).toBe(true);
+  });
+
+  it('fetchPrefs applies showExactPrompt from the server blob when local has nothing to re-upload', async () => {
+    shouldReuploadSection.mockReturnValue(false);
+    getSettingsBlob.mockResolvedValue({ stm_generation: { showExactPrompt: true, _ts: 1 } });
+
+    await useGenerationStore.getState().fetchPrefs();
+
+    expect(useGenerationStore.getState().showExactPrompt).toBe(true);
+  });
+
+  it('fetchPrefs re-uploads showExactPrompt from local state on the dirty-local branch', async () => {
+    useGenerationStore.setState({ showExactPrompt: true });
+    shouldReuploadSection.mockReturnValue(true);
+    patchServerKey.mockClear();
+
+    await useGenerationStore.getState().fetchPrefs();
+
+    expect(patchServerKey).toHaveBeenCalled();
+    const shape = patchServerKey.mock.calls[patchServerKey.mock.calls.length - 1][1] as Record<string, unknown>;
+    expect(shape.showExactPrompt).toBe(true);
   });
 });
