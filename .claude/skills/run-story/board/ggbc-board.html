@@ -264,22 +264,22 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>11 Sep 2026</b><br>
-      main <b>55709b09</b><br>
-      active <b>E2-S4 · PR2 — merge gate</b>
+      <b>12 Sep 2026</b><br>
+      main <b>141967b6</b><br>
+      active <b>none — E2-S4 closing</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-ok"><div class="n">2</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">16</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">10</div><div class="k">Deployed</div></div>
-    <div class="tile is-warn"><div class="n">13</div><div class="k">Open issues</div></div>
+    <div class="tile is-warn"><div class="n">15</div><div class="k">Open issues</div></div>
   </div>
 
   <div class="notices">
@@ -319,25 +319,25 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E2">
-          <div class="id">E2-S4 · PR2</div>
-          <div class="t">Insights data API — the store-level consumer surface</div>
-          <div class="m">At the <b>merge gate</b> 11 Sep. Leg 2 of 2, the one that makes PR1&rsquo;s data layer non-inert. <b>QA: 4/4 AC PASS</b> with mutation evidence. <b>17 review rounds</b> — production logic has been correct since round 12; rounds 13&ndash;17 confirmed zero behaviour defects. Mid-run the review found a user-reachable defect: <code>wiFiredByFile</code> is ONE map keyed by bare chat file name across every character while name uniqueness is only per-character, so a firing count could merge two characters&rsquo; chats and still report <code>complete: true</code>. Sammy chose <b>option B</b> — never claim completeness, never claim a direction, return the number marked <code>verified: false</code> with reasons. Two store bugs filed (<a href="https://github.com/sammygallo/goodgirlsbotclub/issues/530">#530</a>, <a href="https://github.com/sammygallo/goodgirlsbotclub/issues/531">#531</a>). Three merge triggers fire; Sammy merges.</div>
-          <div class="gates"><span class="gate free">PR1 ✓ on main</span><span class="gate">unblocks E5-S1</span><span class="gate hot">scope gap: 2 of 4</span></div>
-        </article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">2</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E2">
+          <div class="id">E2-S4 · PR2</div>
+          <div class="t">Insights data API — the store-level consumer surface</div>
+          <div class="m">12 Sep &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/533">#533</a> &rarr; <code>141967b6</code>, merged on Sammy&rsquo;s go after round 18 with three &sect;8 triggers fired. Six new files, no existing source edited. <b>QA 4/4 AC PASS.</b> 18 rounds + 2 design passes; production logic correct since round 12. The review found a chat file name is not a chat identity (<code>wiFiredByFile</code> is keyed by bare name across characters) &mdash; Sammy chose <b>option B</b>: never claim completeness or a direction, return <code>UnverifiedCount</code> with a type-pinned collision caveat. <b>2 of the card&rsquo;s 4 exposures delivered</b>; the rest routed to E5-S1&rsquo;s intake. Filed #530 (data loss on a failed chat switch), #531.</div>
+          <div class="gates"><span class="gate free">PR1 ✓ on main</span><span class="gate">unblocks E5-S1</span><span class="gate">2 of 4 exposures → E5-S1 intake</span></div>
+        </article>
         <article class="card s-ok" data-epic="E2">
           <div class="id">E2-S4 · PR1</div>
           <div class="t">Per-entry World Info capture + server eviction facts</div>
-          <div class="m">8 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/525">#525</a> &rarr; <code>d4c90056</code>, merged by Sammy at the did-not-converge gate. <b>Run closed 8 Sep without a deploy</b> — the unshipped window is 8 commits, only this one touching <code>src/</code>. Frontend-only, no migration, no backend change. <b>PR2 is not built</b>, so E2-S4 is incomplete and all four ACs stay PARTIAL &mdash; what is on <code>main</code> is an inert data layer with no consumer. <b>9 rounds, 168 agents, 0 errors, converged at zero.</b> Zero behavior defects were ever confirmed in the production logic; the recurring class was fix rounds writing false checkable claims (6, then 3 &rarr; 0 under a deletion-only prose rule). Intake killed three dead carriers: the card&rsquo;s own eviction derivation, E2-S2&rsquo;s rotted golden count, and E5-S1&rsquo;s non-historical token figure. 2063 tests; goldens 146/146 untouched.</div>
-          <div class="gates"><span class="gate">PR2 owed</span><span class="gate free">unblocks nothing yet</span></div>
+          <div class="m">8 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/525">#525</a> &rarr; <code>d4c90056</code>, merged by Sammy at the did-not-converge gate. <b>Run closed 8 Sep without a deploy</b> — the unshipped window is 8 commits, only this one touching <code>src/</code>. Frontend-only, no migration, no backend change. <b>9 rounds, 168 agents, 0 errors, converged at zero.</b> Zero behavior defects were ever confirmed in the production logic; the recurring class was fix rounds writing false checkable claims (6, then 3 &rarr; 0 under a deletion-only prose rule). Intake killed three dead carriers: the card&rsquo;s own eviction derivation, E2-S2&rsquo;s rotted golden count, and E5-S1&rsquo;s non-historical token figure. 2063 tests; goldens 146/146 untouched.</div>
+          <div class="gates"><span class="gate free">PR2 ✓ 12 Sep</span></div>
         </article>
       </div>
     </section>
@@ -442,7 +442,7 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S4 &middot; PR2 &mdash; at the merge gate, 11 Sep</h2>
+    <h2>E2-S4 &middot; PR2 &mdash; merged 12 Sep, closing</h2>
     <p class="sub">The data layer E5&rsquo;s Optimization Agent reads, and the leg that makes PR1 non-inert. The API&rsquo;s job is as much to refuse a question as to answer one &mdash; all four ACs are anti-lie invariants. PR1 captured per-entry World Info cost inside both prompt builders; PR2 derives the consumer API and imports no builder, proved by an AST-parsing boundary guard.</p>
 
     <div class="steps">
@@ -451,9 +451,9 @@
       <div class="step done"><div class="sn">Build</div><div class="sv">6 new files, 0 existing edited</div></div>
       <div class="step done"><div class="sn">Review</div><div class="sv">17 rounds &middot; 2 design passes</div></div>
       <div class="step done"><div class="sn">QA</div><div class="sv">4/4 AC PASS</div></div>
-      <div class="step now"><div class="sn">Merge</div><div class="sv">3 triggers &mdash; Sammy&rsquo;s call</div></div>
+      <div class="step done"><div class="sn">Merge</div><div class="sv">141967b6 &mdash; Sammy&rsquo;s go</div></div>
       <div class="step"><div class="sn">Deploy</div><div class="sv">not requested</div></div>
-      <div class="step"><div class="sn">Close</div><div class="sv">pending</div></div>
+      <div class="step now"><div class="sn">Close</div><div class="sv">postmortem running</div></div>
     </div>
 
     <div class="note crit" style="margin-bottom:18px">
@@ -465,9 +465,9 @@
       <table>
         <thead><tr><th>Stage</th><th>Actual</th><th>Band</th><th>Note</th></tr></thead>
         <tbody>
-          <tr><td>Build</td><td class="num">~4.7M</td><td>M</td><td>Initial build + 14 fix rounds</td></tr>
-          <tr><td>Verification</td><td class="num">~19.6M &middot; 17 rounds</td><td>~1.7&ndash;3.5M</td><td><b>Far over</b> (contained seam expects 1 full + 1 confirmation). Zero production-behaviour defects in rounds 13&ndash;17; findings ran 5 &rarr; 2 &rarr; 6 &rarr; 10 as each fix generated the next, until the PM deleted the generator &mdash; 465 comment lines &mdash; rather than another instance</td></tr>
-          <tr><td>Design passes</td><td class="num">~3.9M</td><td>&mdash;</td><td>Two adversarial design red-teams before implementing. The first found 4 defects in the fix design; the second found 9, including two repeats of the half-fix pattern</td></tr>
+          <tr><td>Build</td><td class="num">~4.6M</td><td>M</td><td>Initial build + 16 fix legs</td></tr>
+          <tr><td>Verification</td><td class="num">~20.6M &middot; 18 rounds</td><td>~1.7&ndash;3.5M</td><td><b>Far over</b> (contained seam expects 1 full + 1 confirmation). Zero production-behaviour defects in rounds 13&ndash;18; findings ran 5 &rarr; 2 &rarr; 6 &rarr; 10 as each fix generated the next, until the PM deleted the generator &mdash; 465 comment lines &mdash; rather than another instance</td></tr>
+          <tr><td>Design passes</td><td class="num">~2.4M</td><td>&mdash;</td><td>Two adversarial design red-teams before implementing. The first found 4 defects in the fix design; the second found 9, including two repeats of the half-fix pattern</td></tr>
           <tr><td>QA</td><td class="num">~0.23M</td><td>&mdash;</td><td>4/4 AC PASS. Caught its own false green (a mutation that silently failed to apply) and re-ran everything</td></tr>
         </tbody>
       </table>
@@ -488,12 +488,14 @@
       <div class="issue new"><span class="n">#513 · ggbc-backend #86 · #85</span> — Text-completion mode cannot produce a token on any provider: the client omits the provider in text mode and the backend forwards <code>messages</code> to <code>/completions</code>; the endpoint has no tests. Found by E9-S10's review.</div>
       <div class="issue new"><span class="n">#515</span> — The frontend catalog offers seven providers the backend cannot route (cohere among them). Found by E9-S10's QA.</div>
       <div class="issue new"><span class="n">#495</span> — E4-S0's sticky tie-break cites an id-sharing justification that died at the 2026-08-07 cutover. Three carriers, two sha256-guarded across both repos. Not a live defect.</div>
+      <div class="issue new"><span class="n">#530</span> — A failed <code>loadChat</code> leaves <code>messages</code> and <code>currentChatFile</code> describing different chats; the next save writes the wrong transcript unconditionally. Data loss. Found by E2-S4 PR2's review.</div>
+      <div class="issue new"><span class="n">#531</span> — <code>loadGroupChat</code>'s comment says group generations don't scan WI; false since 2 Aug. D-T5 rot above the hydrate it would mislead someone into deleting.</div>
       <div class="issue"><span class="n">#468 · #469 · #471</span> — Zero-turn prompt · image exemption vs fold · unguarded storage write.</div>
     </div>
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 6 Sep 2026 (E9-S10 closed).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 12 Sep 2026 (E2-S4 PR2 merged).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
