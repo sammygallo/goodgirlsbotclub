@@ -221,12 +221,21 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
+    // R5-C1: the ownership tag this seam publishes alongside the capture —
+    // read the created AI message off the store rather than hardcoding an id.
+    const aiMsg = useChatStore.getState().messages[useChatStore.getState().messages.length - 1];
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toEqual({ messageId: aiMsg.id, swipeIndex: 0 });
   });
 
   it('swipeRight captures the array api.generateMessage received', async () => {
-    const messages = arrangeSolo();
+    // R5-C1: two swipes already on the fixture, so the tagged swipeIndex
+    // (the swipe count BEFORE this call) differs from the 0 a copy-pasted
+    // call site would produce.
+    const messages = arrangeSolo({ swipes: ['Hi there.', 'Hello again.'], swipeId: 1 });
     const edges = stubEdges();
     const lastAi = messages[messages.length - 1];
+    const swipesBefore = lastAi.swipes.length;
+    expect(swipesBefore, 'sanity: the fixture already has more than one swipe').toBeGreaterThan(1);
 
     await useChatStore.getState().swipeRight(lastAi.id, IVY);
 
@@ -238,11 +247,23 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toEqual({
+      messageId: lastAi.id,
+      swipeIndex: swipesBefore,
+    });
   });
 
   it('continueMessage captures the array api.generateMessage received', async () => {
-    arrangeSolo();
+    // R5-C1: a nonzero swipeId, so the tagged swipeIndex can't be mistaken
+    // for a hardcoded 0 — see chatStore.breakdownTag.callSites.test.ts's
+    // sibling row for the same reasoning.
+    const messages = arrangeSolo({
+      content: 'Hello again.',
+      swipes: ['Hi there.', 'Hello again.'],
+      swipeId: 1,
+    });
     const edges = stubEdges();
+    const lastAi = messages[messages.length - 1];
 
     await useChatStore.getState().continueMessage(IVY);
 
@@ -254,6 +275,10 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toEqual({
+      messageId: lastAi.id,
+      swipeIndex: lastAi.swipeId,
+    });
   });
 
   it('impersonate captures the array api.generateMessage received', async () => {
@@ -270,6 +295,9 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
+    // R5-C1: impersonate creates no message to tag — see chatStore.ts's own
+    // comment at that seam.
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toBeNull();
   });
 
   it('editMessageAndRegenerate captures the array api.generateMessage received', async () => {
@@ -287,6 +315,8 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
+    const aiMsg = useChatStore.getState().messages[useChatStore.getState().messages.length - 1];
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toEqual({ messageId: aiMsg.id, swipeIndex: 0 });
   });
 
   it('sendMessage records the fallback provider/model when the primary call rejects', async () => {
@@ -338,6 +368,9 @@ describe('exact-prompt capture is wired at the group generation call site', () =
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
+    const groupMsgs = useChatStore.getState().messages;
+    const aiMsg = groupMsgs[groupMsgs.length - 1];
+    expect(useGenerationStore.getState().lastPromptCaptureTag).toEqual({ messageId: aiMsg.id, swipeIndex: 0 });
   });
 });
 
