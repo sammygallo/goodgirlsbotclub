@@ -3,6 +3,10 @@ import { getDefaultContextSize } from '../utils/tokenizer';
 // Type-only — promptBreakdown.ts imports PromptSectionId back out of this
 // module, and a value import either way would make that a runtime cycle.
 import type { PromptBreakdown } from '../utils/promptBreakdown';
+// Type-only for the same reason as PromptBreakdown above — promptCapture.ts
+// has no value import back into this module, but keeping the import
+// type-only matches its sibling and costs nothing.
+import type { PromptCapture } from '../utils/promptCapture';
 import { getSettingsBlob, makeLocalTsKey, patchServerKey, markSectionDirty, recordServerTs, shouldReuploadSection, clearLocalTs } from '../utils/serverSettings';
 
 // Sampler parameters supported across providers. Not every provider uses
@@ -271,6 +275,36 @@ interface GenerationState {
    */
   lastPromptBreakdownTag: { messageId: string; swipeIndex: number } | null;
 
+  /**
+   * E2-S3: the exact post-transform array `api.generateMessage` received at
+   * the last dispatch — sibling slot to `lastPromptBreakdown` above, and
+   * volatile for the same reason: it describes one dispatch, and a value
+   * restored from localStorage would describe a previous session's prompt.
+   * Cleared (not merely left stale) whenever `showExactPrompt` is off — see
+   * that field's own doc comment.
+   */
+  lastPromptCapture: PromptCapture | null;
+  /**
+   * Which message (and swipe) `lastPromptCapture` describes. A PARALLEL
+   * tagger to `lastPromptBreakdownTag`, not an extension of it: at the swipe
+   * and continue call sites the breakdown tag call runs before dispatch,
+   * while the capture does not exist until after the transforms have run, so
+   * the two tags are stamped at different points in the same call. Guarded
+   * by the capture's `id` rather than by object identity — see
+   * `tagLastPromptCaptureMessage`'s own doc comment for why identity would
+   * reject a legitimate tag here.
+   */
+  lastPromptCaptureTag: { messageId: string; swipeIndex: number } | null;
+  /**
+   * E2-S3: whether the exact-prompt capture runs at all. Gates CAPTURE, not
+   * just display — off means `dispatchWithCapture` never snapshots or
+   * publishes anything, not "collects it but hides the viewer". Persisted
+   * (localStorage + server sync) as a generation-panel preference, same
+   * shape as `instruct`; the payload itself never rides this or any other
+   * persisted field.
+   */
+  showExactPrompt: boolean;
+
   // Actions
   setSampler: (sampler: Partial<SamplerParams>) => void;
   resetSampler: () => void;
@@ -323,6 +357,28 @@ interface GenerationState {
    */
   tagLastBreakdownMessage: (breakdown: PromptBreakdown, messageId: string, swipeIndex: number) => void;
 
+  setLastPromptCapture: (c: PromptCapture | null) => void;
+  /**
+   * Stamp `{ messageId, swipeIndex }` onto `lastPromptCapture`, guarded by
+   * `captureId` matching `lastPromptCapture.id` — an id guard, not an
+   * object-identity one. `notePromptCaptureFallback` replaces the record in
+   * the slot (to amend `usedFallback`/provider/model) after dispatch but
+   * before this is called at the send seam, so an identity guard would
+   * reject the very tag call it is meant to allow. The id survives that
+   * replacement, so the guard's actual job — reject a tag meant for a
+   * capture a concurrent turn has since replaced — still holds.
+   */
+  tagLastPromptCaptureMessage: (captureId: string, messageId: string, swipeIndex: number) => void;
+  /**
+   * Amend the send seam's capture once `generateWithFallback` resolves and
+   * `usedFallback` is known — which provider/model the record should claim
+   * is not decided until then. Guarded by `captureId` for the same reason as
+   * `tagLastPromptCaptureMessage`: a concurrent turn may have already
+   * replaced the slot with its own capture by the time this runs.
+   */
+  notePromptCaptureFallback: (captureId: string, provider: string, model: string) => void;
+  setShowExactPrompt: (v: boolean) => void;
+
   /** Fetch from server after login and apply. No-op if no server data yet. */
   fetchPrefs: () => Promise<void>;
   /** Wipe this store's state + localStorage keys for the current user (logout/switch). */
@@ -349,6 +405,7 @@ interface PersistedShape {
   context: ContextConfig;
   instruct: InstructConfig;
   promptOrder?: PromptSectionEntry[];
+  showExactPrompt?: boolean;
 }
 
 function loadFromStorage(): Partial<PersistedShape> {
@@ -382,6 +439,7 @@ function persist(state: GenerationState) {
     context: state.context,
     instruct: state.instruct,
     promptOrder: state.promptOrder,
+    showExactPrompt: state.showExactPrompt,
   };
   saveToStorage(shape);
   markLocalDirty();
@@ -438,6 +496,9 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   lastTokenEstimate: 0,
   lastPromptBreakdown: null,
   lastPromptBreakdownTag: null,
+  lastPromptCapture: null,
+  lastPromptCaptureTag: null,
+  showExactPrompt: initial.showExactPrompt ?? false,
 
   setSampler: (patch) => {
     set((state) => {
@@ -793,6 +854,29 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     set({ lastPromptBreakdownTag: { messageId, swipeIndex } });
   },
 
+  setLastPromptCapture: (c) => {
+    set({ lastPromptCapture: c, lastPromptCaptureTag: null });
+  },
+
+  tagLastPromptCaptureMessage: (captureId, messageId, swipeIndex) => {
+    if (get().lastPromptCapture?.id !== captureId) return;
+    set({ lastPromptCaptureTag: { messageId, swipeIndex } });
+  },
+
+  notePromptCaptureFallback: (captureId, provider, model) => {
+    const prev = get().lastPromptCapture;
+    if (!prev || prev.id !== captureId) return;
+    set({ lastPromptCapture: { ...prev, usedFallback: true, provider, model } });
+  },
+
+  setShowExactPrompt: (v) => {
+    set((state) => {
+      const next = { ...state, showExactPrompt: v };
+      persist(next);
+      return { showExactPrompt: v };
+    });
+  },
+
   resetUser: () => {
     set({
       sampler: { ...DEFAULT_SAMPLER },
@@ -809,6 +893,9 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       lastTokenEstimate: 0,
       lastPromptBreakdown: null,
       lastPromptBreakdownTag: null,
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: false,
     });
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     clearLocalTs(LOCAL_TS_KEY);
@@ -835,6 +922,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           context: s.context,
           instruct: s.instruct,
           promptOrder: s.promptOrder,
+          showExactPrompt: s.showExactPrompt,
         }, LOCAL_TS_KEY).catch(() => {});
         return;
       }
@@ -854,6 +942,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         context: { ...DEFAULT_CONTEXT_CONFIG, ...(stored.context ?? {}) },
         instruct: { ...DEFAULT_INSTRUCT_CONFIG, ...(stored.instruct ?? {}) },
         promptOrder: mergePromptOrder(stored.promptOrder),
+        showExactPrompt: stored.showExactPrompt ?? false,
       };
       saveToStorage(merged);
       try { recordServerTs(LOCAL_TS_KEY, serverTs); } catch { /* ignore */ }
@@ -869,6 +958,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         context: merged.context,
         instruct: merged.instruct,
         promptOrder: merged.promptOrder,
+        showExactPrompt: merged.showExactPrompt,
       });
     } catch { /* non-fatal — localStorage values remain active */ }
   },
