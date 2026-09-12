@@ -61,6 +61,7 @@ const { useServerExtensionStore } = await import('./serverExtensionStore');
 const { api } = await import('../api/client');
 const { GROUP_FIXTURES, mkChar, mkMsg, resetStores } = await import('./promptGoldens.fixtures');
 const { computeCaptureAttribution } = await import('../utils/promptCapture');
+const { estimateConversationTokens, profileForProvider } = await import('../utils/tokenizer');
 
 import type { CharacterInfo } from '../api/client';
 import type { ChatMessage, GroupChatInfo } from './chatStore';
@@ -371,6 +372,37 @@ describe('exact-prompt capture is wired at the group generation call site', () =
     const groupMsgs = useChatStore.getState().messages;
     const aiMsg = groupMsgs[groupMsgs.length - 1];
     expect(useGenerationStore.getState().lastPromptCaptureTag).toEqual({ messageId: aiMsg.id, swipeIndex: 0 });
+  });
+
+  it('generateGroupTurn (forceGroupMemberTalk) under a transform: usage.inputTokens is estimated from the dispatched (post-collapse) array (R6-C4)', async () => {
+    resetStores();
+    const fx = GROUP_FIXTURES.find((f) => f.name === 'swap')!;
+    const input = fx.setup();
+    useChatHistoryRagStore.setState({ enabled: false });
+    useChatStore.setState({
+      messages: input.messages,
+      currentChatFile: 'prompt-capture-group.jsonl',
+      groupChats: [mkGroupChat(input.characters)],
+      isSending: false,
+      isStreaming: false,
+      error: null,
+      abortController: null,
+    });
+    useGenerationStore.setState({
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG, enabled: true, templateId: 'chatml' },
+    });
+    const edges = stubEdges();
+
+    await useChatStore.getState().forceGroupMemberTalk(input.characters[0], input.characters);
+
+    const sent = edges.generate.mock.calls[0][0];
+    expect(sent).toHaveLength(1);
+    const { useSettingsStore } = await import('./settingsStore');
+    const groupMsgs = useChatStore.getState().messages;
+    const aiMsg = groupMsgs[groupMsgs.length - 1];
+    expect(aiMsg.usage!.inputTokens).toBe(
+      estimateConversationTokens(sent, profileForProvider(useSettingsStore.getState().activeProvider)),
+    );
   });
 });
 
