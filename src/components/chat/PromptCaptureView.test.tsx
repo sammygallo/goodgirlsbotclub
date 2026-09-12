@@ -64,21 +64,33 @@ describe('PromptCaptureView', () => {
     expect(screen.getByText(/generate-interceptor replaced this payload/)).toBeTruthy();
   });
 
-  it('shows the image-attachment notice with the actual count', () => {
+  it('renders the exact image-attachments line for a non-zero count', () => {
     render(<PromptCaptureView capture={mkCapture({ imagesFolded: 2 })} attribution={null} />);
-    expect(screen.getByText(/2 image attachment/)).toBeTruthy();
+    expect(
+      screen.getByText('Image attachments: 2 — not part of the captured array, not shown below.')
+    ).toBeTruthy();
   });
 
-  it('the image-attachment notice makes no carried/fold claim in text completion mode', () => {
+  it('renders the same exact image-attachments line in text completion mode', () => {
     render(
       <PromptCaptureView
         capture={mkCapture({ imagesFolded: 2, textCompletionMode: true })}
         attribution={null}
       />
     );
-    const notice = screen.getByText(/2 image attachment/).textContent;
-    expect(notice).not.toMatch(/carried/i);
-    expect(notice).not.toMatch(/fold/i);
+    expect(
+      screen.getByText('Image attachments: 2 — not part of the captured array, not shown below.')
+    ).toBeTruthy();
+  });
+
+  it('the image-attachments line makes no carried/fold/attribution claim', () => {
+    const { container } = render(
+      <PromptCaptureView capture={mkCapture({ imagesFolded: 2 })} attribution={null} />
+    );
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/carried/i);
+    expect(text).not.toMatch(/fold/i);
+    expect(text).not.toMatch(/attached to this message/i);
   });
 
   it('shows the text-completion notice when textCompletionMode is true', () => {

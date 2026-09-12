@@ -61,6 +61,12 @@ export function PromptCaptureView({ capture, attribution }: PromptCaptureViewPro
           </span>{' '}
           · Captured {capturedAtStr}
         </p>
+        {capture.imagesFolded > 0 && (
+          <p>
+            Image attachments: {capture.imagesFolded} — not part of the captured array, not shown
+            below.
+          </p>
+        )}
       </div>
 
       <div className="space-y-1.5 text-xs">
@@ -74,12 +80,6 @@ export function PromptCaptureView({ capture, attribution }: PromptCaptureViewPro
           <p className="text-[var(--color-text-secondary)]">
             An extension&apos;s generate-interceptor replaced this payload before it was sent.
             Section attribution is unavailable — payload was replaced.
-          </p>
-        )}
-        {capture.imagesFolded > 0 && (
-          <p className="text-[var(--color-text-secondary)]">
-            {capture.imagesFolded} image attachment(s) were attached to this message. They are
-            not part of the captured array and are not shown below.
           </p>
         )}
         {capture.textCompletionMode && (
