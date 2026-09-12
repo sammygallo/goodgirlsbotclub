@@ -103,7 +103,7 @@ describe('computeCaptureAttribution', () => {
     ]);
   });
 
-  it('(g) splice rotation, note role differs from the displaced history slice → null', () => {
+  it('(g) splice rotation with distinct lengths and differing roles → null', () => {
     // Mirrors buildGroupConversationContext's overflow splice: the history
     // loop records its slice FIRST, then the author's-note overflow branch
     // splices its entry into `context` at index 1 (before the history

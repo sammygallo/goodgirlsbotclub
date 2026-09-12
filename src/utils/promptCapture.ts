@@ -199,7 +199,7 @@ function describeSectionKind(kind: SectionKind): string {
  *
  * WHY a slice can still be rejected after its position and length agree with
  * an entry: the group at-depth overflow splice records an insertion's slice
- * (an author's-note or WI entry) AFTER slices for entries that come BEFORE
+ * (an author's-note or WI entry) AFTER slices for entries that come AFTER
  * it in `context`, so slice order and entry order can disagree. When a
  * non-history candidate's `chars` also matches some OTHER post-Stage-A
  * entry, positions alone cannot tell that insertion apart from an ordinary

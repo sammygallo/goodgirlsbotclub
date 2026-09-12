@@ -39,7 +39,7 @@ describe('PromptCaptureView', () => {
     render(<PromptCaptureView capture={mkCapture()} attribution={null} />);
     expect(screen.queryByText(/collapsed this prompt/)).toBeNull();
     expect(screen.queryByText(/replaced this payload/)).toBeNull();
-    expect(screen.queryByText(/image attachment/)).toBeNull();
+    expect(screen.queryByText(/Image attachments:/)).toBeNull();
     expect(screen.queryByText(/Text completion mode/)).toBeNull();
   });
 
@@ -62,6 +62,11 @@ describe('PromptCaptureView', () => {
     );
     expect(screen.getByText(/collapsed this prompt into a single user turn/)).toBeTruthy();
     expect(screen.getByText(/generate-interceptor replaced this payload/)).toBeTruthy();
+  });
+
+  it('renders no image-attachments line when imagesFolded is 0', () => {
+    render(<PromptCaptureView capture={mkCapture({ imagesFolded: 0 })} attribution={null} />);
+    expect(screen.queryByText(/Image attachments:/)).toBeNull();
   });
 
   it('renders the exact image-attachments line for a non-zero count', () => {
