@@ -217,6 +217,14 @@ describe('showExactPrompt persistence', () => {
     expect(fresh.useGenerationStore.getState().showExactPrompt).toBe(true);
   });
 
+  it('defaults to false on a fresh install — no stored generation key at all (R5-C6)', async () => {
+    // beforeEach already clears memoryStorage; nothing in this test writes
+    // to it before the re-init, so `stm_generation` is genuinely absent.
+    vi.resetModules();
+    const fresh = await import('./generationStore');
+    expect(fresh.useGenerationStore.getState().showExactPrompt).toBe(false);
+  });
+
   it('fetchPrefs applies showExactPrompt from the server blob when local has nothing to re-upload', async () => {
     shouldReuploadSection.mockReturnValue(false);
     getSettingsBlob.mockResolvedValue({ stm_generation: { showExactPrompt: true, _ts: 1 } });
