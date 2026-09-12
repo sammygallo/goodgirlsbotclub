@@ -2,12 +2,7 @@
  * @vitest-environment jsdom
  *
  * `PromptCaptureView` (E2-S3, AC2/AC3) and `PromptCaptureSheet`'s ownership
- * states. A second DOM suite alongside `StoryTab.test.tsx` — same tradeoff
- * that file's own doc comment describes: everything else in this repo is
- * pure logic and runs in plain node, and a component test earns its DOM
- * startup cost only where the render itself is the thing under test (here:
- * that the right notice copy shows for the right flag, and that an
- * arbitrary interceptor payload renders without throwing).
+ * states.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -33,6 +28,7 @@ function mkCapture(over: Partial<Parameters<typeof createPromptCapture>[0]> = {}
     textCompletionMode: false,
     imagesFolded: 0,
     characterName: 'Ivy',
+    breakdown: null,
     ...over,
   });
 }
@@ -70,6 +66,16 @@ describe('PromptCaptureView', () => {
   it('shows the image-fold notice with the actual count', () => {
     render(<PromptCaptureView capture={mkCapture({ imagesFolded: 2 })} attribution={null} />);
     expect(screen.getByText(/carried 2 image attachment/)).toBeTruthy();
+  });
+
+  it('the image-attachment notice does not claim a fold in text completion mode', () => {
+    render(
+      <PromptCaptureView
+        capture={mkCapture({ imagesFolded: 2, textCompletionMode: true })}
+        attribution={null}
+      />
+    );
+    expect(screen.getByText(/carried 2 image attachment/).textContent).not.toMatch(/fold/i);
   });
 
   it('shows the text-completion notice when textCompletionMode is true', () => {

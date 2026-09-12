@@ -42,7 +42,13 @@ if (!window.matchMedia) {
 
 afterEach(() => {
   cleanup();
-  useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
+  useGenerationStore.setState({
+    lastPromptBreakdown: null,
+    lastPromptBreakdownTag: null,
+    lastPromptCapture: null,
+    lastPromptCaptureTag: null,
+    showExactPrompt: false,
+  });
 });
 
 function soloBreakdown(): PromptBreakdown {
@@ -184,4 +190,22 @@ describe('ChatMessage — the cost chip and its sheet render in every user-selec
       expect(screen.getByText('Within budget')).toBeTruthy();
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// The "prompt" button (E2-S3) — gated on showExactPrompt
+// ---------------------------------------------------------------------------
+
+describe('ChatMessage — the "prompt" button is gated on showExactPrompt', () => {
+  it('renders when showExactPrompt is true', () => {
+    useGenerationStore.setState({ showExactPrompt: true });
+    renderAiMessage(0);
+    expect(screen.getByLabelText('Exact prompt for this turn')).toBeTruthy();
+  });
+
+  it('does not render when showExactPrompt is false', () => {
+    useGenerationStore.setState({ showExactPrompt: false });
+    renderAiMessage(0);
+    expect(screen.queryByLabelText('Exact prompt for this turn')).toBeNull();
+  });
 });
