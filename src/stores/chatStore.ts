@@ -5215,7 +5215,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ),
       );
       // E2-S3: capture has no message to tag until AFTER the dispatch above —
-      // unlike the breakdown tag two lines up, which tags the swipe this
+      // unlike the breakdown tag, which tags the swipe this
       // build is ABOUT to create. Same coordinates as that call
       // (`messageId, msg.swipes.length`), captured before this swipe
       // ever appended anything.
