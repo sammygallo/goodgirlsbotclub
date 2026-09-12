@@ -931,6 +931,26 @@ describe('getTurnWiInsight — live-slot identity (I7)', () => {
     });
   });
 
+  it('an EMPTY-STRING forChatFile still refuses — the gate is `!== undefined`, not truthiness', async () => {
+    const CHAT_FILE = 'i7-empty.jsonl';
+    arrangeEligibleChat(CHAT_FILE);
+    makeChatIneligible();
+    stubCommonEdges();
+    vi.spyOn(api, 'getRetrievalContext').mockResolvedValue({
+      entries: [ENTRY_DTO],
+      turnNo: 0,
+      activatedEntryIds: ['ins-entry-1'],
+      evictedEntryIds: [],
+    });
+
+    await useChatStore.getState().sendMessage('Hello.', CHAR);
+
+    expect(getTurnWiInsight({ forChatFile: '' })).toEqual({
+      observed: false,
+      why: 'chat-file-names-not-verified-distinct',
+    });
+  });
+
   it('a group round with two speakers: the slot holds only the LAST-published speaker, never a merge of both', async () => {
     resetStores();
     const CHAT_FILE = 'i7-group.jsonl';
