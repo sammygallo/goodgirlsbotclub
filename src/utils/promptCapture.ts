@@ -82,9 +82,9 @@ function deepFreeze<T>(value: T): T {
  * path, whatever the server returned) — this module does not own it, so
  * freezing it in place would turn a later, unrelated mutation into a thrown
  * generation. `structuredClone` is tried first; a JSON round-trip covers
- * environments or payloads where it is unavailable; if both fail (e.g. a
- * circular structure), the original reference is returned unfrozen rather
- * than throwing out of a capture that was meant to be best-effort.
+ * environments or payloads where it is unavailable; if both fail, the
+ * original reference is returned unfrozen rather than throwing out of a
+ * capture that was meant to be best-effort.
  */
 function snapshotMessages(messages: unknown): readonly unknown[] {
   const arr: unknown[] = Array.isArray(messages) ? messages : [];
@@ -189,21 +189,24 @@ function describeSectionKind(kind: SectionKind): string {
 }
 
 /**
- * Map `capture.messages` against the breakdown's slices: the joined Stage-A
- * section content is expected in entry 0; every entry after it is matched
- * against the Stage-B, Stage-C and call-site slices by content length,
- * independent of position — the group at-depth overflow splice (an
- * author's-note or WI entry inserted after the history entries were already
- * recorded) means slice order and `context` order do not always agree. This
- * only means anything when the displayed array IS the builder's output —
- * gated on both transform flags before the breakdown is consulted at all.
+ * Map `capture.messages` against the breakdown's slices POSITIONALLY: the
+ * joined Stage-A section content is expected in entry 0, and every entry
+ * after it is checked against the candidate slices (Stage B, Stage C,
+ * call-site — attachments and Stage A excluded) at the SAME index, in the
+ * breakdown's own recorded order. This only means anything when the
+ * displayed array IS the builder's output — gated on both transform flags
+ * before the breakdown is consulted at all.
  *
- * The match is accepted only when it is unambiguous: every post-Stage-A
- * entry's content length must equal exactly one un-claimed slice's recorded
- * `chars`, and every one of those slices must be claimed by exactly one
- * entry. A content length shared by two entries, or by two slices, cannot be
- * told apart — the function returns `null` for anything it cannot verify,
- * never a best guess.
+ * WHY a slice can still be rejected after its position and length agree with
+ * an entry: the group at-depth overflow splice records an insertion's slice
+ * (an author's-note or WI entry) AFTER slices for entries that come BEFORE
+ * it in `context`, so slice order and entry order can disagree for exactly
+ * that one insertion. When a non-history candidate's `chars` also matches
+ * some OTHER post-Stage-A entry, positions alone cannot tell that insertion
+ * apart from an ordinary message of equal length, so the match is refused.
+ * History entries are exempt from that refusal: two equal-length messages
+ * are ordinary and are never recorded out of order. The function returns
+ * `null` for anything it cannot verify, never a best guess.
  */
 export function computeCaptureAttribution(
   capture: PromptCapture,
@@ -216,10 +219,9 @@ export function computeCaptureAttribution(
   if (!Array.isArray(entries) || entries.length === 0) return null;
 
   const stageASlices = breakdown.slices.filter((s) => s.kind.stage === 'A');
-  const stageBSlices = breakdown.slices.filter((s) => s.kind.stage === 'B');
-  const stageCSlices = breakdown.slices.filter((s) => s.kind.stage === 'C');
-  const callSiteSlice = breakdown.slices.find((s) => s.kind.stage === 'callSite');
-  const remainingSlices = [...stageBSlices, ...stageCSlices, ...(callSiteSlice ? [callSiteSlice] : [])];
+  const candidateSlices = breakdown.slices.filter(
+    (s) => s.kind.stage === 'B' || s.kind.stage === 'C' || s.kind.stage === 'callSite'
+  );
 
   const result: CaptureAttribution = [];
   let idx = 0;
@@ -231,39 +233,63 @@ export function computeCaptureAttribution(
     idx += 1;
   }
 
-  const remainingEntries = entries.slice(idx);
-  if (remainingEntries.length !== remainingSlices.length) return null;
-  for (const entry of remainingEntries) {
-    if (!isRoleContentEntry(entry)) return null;
-  }
-
-  // Ambiguity check: a content length claimed by more than one slice, or
-  // shared by more than one entry, cannot be resolved into a single
-  // injective match — return null rather than guess.
-  const sliceCountByChars = new Map<number, number>();
-  for (const slice of remainingSlices) {
-    sliceCountByChars.set(slice.chars, (sliceCountByChars.get(slice.chars) ?? 0) + 1);
-  }
-  for (const count of sliceCountByChars.values()) {
-    if (count > 1) return null;
-  }
-  const entryLengths = (remainingEntries as { role: unknown; content: string }[]).map((e) => e.content.length);
-  const entryCountByLength = new Map<number, number>();
-  for (const len of entryLengths) {
-    entryCountByLength.set(len, (entryCountByLength.get(len) ?? 0) + 1);
-  }
-  for (const count of entryCountByLength.values()) {
-    if (count > 1) return null;
-  }
-
-  const sliceByChars = new Map<number, (typeof remainingSlices)[number]>();
-  for (const slice of remainingSlices) sliceByChars.set(slice.chars, slice);
+  const remainingEntries = entries.slice(idx) as { role: unknown; content: string }[];
+  if (remainingEntries.length !== candidateSlices.length) return null;
 
   for (let i = 0; i < remainingEntries.length; i += 1) {
-    const slice = sliceByChars.get(entryLengths[i]);
-    if (!slice) return null;
-    result.push({ index: idx + i, labels: [describeSectionKind(slice.kind)] });
+    const entry = remainingEntries[i];
+    if (!isRoleContentEntry(entry)) return null;
+    const slice = candidateSlices[i];
+    if (entry.content.length !== slice.chars) return null;
+    if (slice.kind.stage === 'B' && slice.kind.cls === 'history' && slice.kind.role) {
+      if (entry.role !== slice.kind.role) return null;
+    }
+  }
+
+  // Splice-ambiguity rejection — see the WHY paragraph above.
+  for (const slice of candidateSlices) {
+    if (slice.kind.stage === 'B' && slice.kind.cls === 'history') continue;
+    let matches = 0;
+    for (const entry of remainingEntries) {
+      if (entry.content.length === slice.chars) matches += 1;
+    }
+    if (matches > 1) return null;
+  }
+
+  for (let i = 0; i < remainingEntries.length; i += 1) {
+    result.push({ index: idx + i, labels: [describeSectionKind(candidateSlices[i].kind)] });
   }
 
   return result;
+}
+
+/**
+ * Deep structural equality: arrays compared in order, objects by key SET
+ * and values (key order irrelevant), primitives by `===`. A key present
+ * with value `undefined` is NOT the same as the key being absent — both
+ * change the key set `Object.keys` reports, which is exactly what should
+ * make them differ. Used by `runGenerateInterceptors` (E2-S3, R2-C6) to ask
+ * "did the dispatched array actually change" without being fooled by an
+ * interceptor that re-serializes the same content with keys in a different
+ * order.
+ */
+export function structurallyEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    return a.every((v, i) => structurallyEqual(v, b[i]));
+  }
+  if (typeof a === 'object' && a !== null && typeof b === 'object' && b !== null) {
+    const aKeys = Object.keys(a as Record<string, unknown>);
+    const bKeys = Object.keys(b as Record<string, unknown>);
+    if (aKeys.length !== bKeys.length) return false;
+    const bKeySet = new Set(bKeys);
+    for (const key of aKeys) {
+      if (!bKeySet.has(key)) return false;
+      if (!structurallyEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) return false;
+    }
+    return true;
+  }
+  return false;
 }
