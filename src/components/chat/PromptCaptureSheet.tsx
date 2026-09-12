@@ -29,8 +29,6 @@ interface PromptCaptureSheetProps {
 export function PromptCaptureSheet({ isOpen, onClose, messageId, swipeIndex }: PromptCaptureSheetProps) {
   const capture = useGenerationStore((s) => s.lastPromptCapture);
   const tag = useGenerationStore((s) => s.lastPromptCaptureTag);
-  const breakdown = useGenerationStore((s) => s.lastPromptBreakdown);
-  const breakdownTag = useGenerationStore((s) => s.lastPromptBreakdownTag);
   const showExactPrompt = useGenerationStore((s) => s.showExactPrompt);
 
   const owned =
@@ -39,16 +37,10 @@ export function PromptCaptureSheet({ isOpen, onClose, messageId, swipeIndex }: P
     tag.messageId === messageId &&
     tag.swipeIndex === swipeIndex;
 
-  // Attribution needs the BREAKDOWN that describes this same turn, not just
-  // any breakdown sitting in its own slot — the two slots are tagged
-  // independently (see `lastPromptCaptureTag`'s doc comment), so this only
-  // pairs them when both agree on the same message/swipe.
-  const breakdownOwned =
-    breakdown !== null &&
-    breakdownTag !== null &&
-    breakdownTag.messageId === messageId &&
-    breakdownTag.swipeIndex === swipeIndex;
-  const attribution = owned && breakdownOwned ? computeCaptureAttribution(capture!, breakdown) : null;
+  // Attribution uses the capture's OWN breakdown (recorded on it at dispatch
+  // time), never `lastPromptBreakdown` — that slot is tagged independently
+  // and can belong to a different turn by the time this renders.
+  const attribution = owned ? computeCaptureAttribution(capture!, capture!.breakdown) : null;
 
   return (
     <BottomSheet isOpen={isOpen} onClose={onClose} title="Exact prompt">

@@ -873,7 +873,13 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     set((state) => {
       const next = { ...state, showExactPrompt: v };
       persist(next);
-      return { showExactPrompt: v };
+      // Turning the toggle off clears the slot rather than leaving it stale
+      // — see `lastPromptCapture`'s own doc comment. Turning it on leaves
+      // whatever is there alone; nothing is captured until the next
+      // dispatch, which is what the empty-state copy says.
+      return v
+        ? { showExactPrompt: v }
+        : { showExactPrompt: v, lastPromptCapture: null, lastPromptCaptureTag: null };
     });
   },
 

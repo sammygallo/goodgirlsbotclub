@@ -3385,6 +3385,7 @@ async function generateGroupTurn(
       model,
       images,
       textCompletionMode: isTextCompletionMode(),
+      breakdown,
     },
     (messages) =>
       api.generateMessage(
@@ -3550,10 +3551,11 @@ function isTextCompletionMode(): boolean {
  * Extensions that declare `generate_interceptor: true` in manifest.json are called
  * at POST /api/plugins/<name>/generate-interceptors. Fails silently per-extension.
  *
- * E2-S3: `replaced` reports whether any interceptor's response actually took
- * (the branch that assigns `result`), not whether an interceptor ran — an
- * installed interceptor that errors or returns nothing usable leaves the
- * payload untouched, and that is not a replacement the viewer should claim.
+ * E2-S3: `replaced` reports whether an interceptor's response actually
+ * CHANGED the array, not merely whether one returned a well-formed array —
+ * a read-only extension (logger, moderation observer) has every reason to
+ * echo back exactly what it was given, and that is not a replacement the
+ * viewer should claim.
  */
 async function runGenerateInterceptors(
   context: ContextMessage[],
@@ -3573,8 +3575,8 @@ async function runGenerateInterceptors(
           { method: 'POST', body: JSON.stringify({ messages: result, character: characterName }) },
         );
         if (resp?.messages && Array.isArray(resp.messages)) {
+          if (JSON.stringify(resp.messages) !== JSON.stringify(result)) replaced = true;
           result = resp.messages;
-          replaced = true;
         }
       } catch {
         // Extension doesn't implement this endpoint — skip silently
@@ -3590,9 +3592,10 @@ async function runGenerateInterceptors(
  * E2-S3: wraps the transform pipeline + exact-prompt capture + dispatch for
  * one generation seam, so "captured after both transforms" is the only
  * ordering there is rather than a rule each call site has to follow on its
- * own. `finalContext` (the local this function computes) is reachable only through
- * `send`'s parameter — a seam cannot pass `context` itself to its dispatch
- * call by mistake, because it never has a name for anything else.
+ * own. `finalContext` (the local this function computes) reaches the seam's
+ * `send` callback only through that callback's own parameter — correctness
+ * rests on each seam's call-site test asserting the dispatched array against
+ * the published capture, not on `context` being unreachable.
  *
  * The capture publishes BEFORE `send` runs: it describes what is ABOUT to be
  * handed to the client, so a dispatch that throws still leaves something in
@@ -3616,6 +3619,7 @@ async function dispatchWithCapture<T>(
     model: string;
     images: GenerationImage[] | undefined;
     textCompletionMode: boolean;
+    breakdown: PromptBreakdown;
   },
   send: (messages: ContextMessage[]) => Promise<T>,
 ): Promise<{ result: T; capture: PromptCapture | null; finalContext: ContextMessage[] }> {
@@ -3635,6 +3639,7 @@ async function dispatchWithCapture<T>(
       textCompletionMode: meta.textCompletionMode,
       imagesFolded: meta.images?.length ?? 0,
       characterName,
+      breakdown: meta.breakdown,
     });
     useGenerationStore.getState().setLastPromptCapture(capture);
   }
@@ -5191,6 +5196,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           model,
           images: swipeImages,
           textCompletionMode: isTextCompletionMode(),
+          breakdown,
         },
         (messages) =>
           api.generateMessage(
@@ -5382,6 +5388,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           model,
           images: continueImages,
           textCompletionMode: isTextCompletionMode(),
+          breakdown,
         },
         (messages) =>
           api.generateMessage(
@@ -5546,6 +5553,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           model,
           images: undefined,
           textCompletionMode: isTextCompletionMode(),
+          breakdown,
         },
         (messages) =>
           api.generateMessage(messages, character.name, provider, model, abortController.signal, generationOptions, undefined, isTextCompletionMode()),
@@ -5797,6 +5805,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           model,
           images: sendImages,
           textCompletionMode: isTextCompletionMode(),
+          breakdown,
         },
         (messages) =>
           generateWithFallback(
@@ -6240,6 +6249,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           model,
           images: regenImages,
           textCompletionMode: isTextCompletionMode(),
+          breakdown,
         },
         (messages) =>
           api.generateMessage(

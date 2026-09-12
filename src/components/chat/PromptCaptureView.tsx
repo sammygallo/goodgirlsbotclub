@@ -78,9 +78,8 @@ export function PromptCaptureView({ capture, attribution }: PromptCaptureViewPro
         )}
         {capture.imagesFolded > 0 && (
           <p className="text-[var(--color-text-secondary)]">
-            This request also carried {capture.imagesFolded} image attachment(s). The provider
-            client folds them into the last user turn after this capture, so they are not shown
-            below.
+            This request also carried {capture.imagesFolded} image attachment(s). They are not
+            part of the captured array and are not shown below.
           </p>
         )}
         {capture.textCompletionMode && (

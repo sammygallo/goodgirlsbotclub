@@ -224,22 +224,27 @@ export function UsagePage() {
         {/* Last exact prompt (E2-S3) — same "no owning message" reasoning as
             the breakdown section above: this page reads `lastPromptCapture`
             directly, with no tag check, because there is nothing here for a
-            tag to compare against. */}
+            tag to compare against. Gated on `showExactPrompt` itself, not
+            just on the slot being non-null: the toggle clears the slot when
+            turned off, but this section must not render a capture even in
+            the moment before that clear has been observed. Attribution uses
+            the capture's OWN breakdown, never `lastPromptBreakdown` — that
+            slot can belong to a different turn. */}
         <section className="bg-[var(--color-bg-secondary)] rounded-lg p-4 cyberpunk-card">
           <div className="flex items-center gap-2 mb-3">
             <ReceiptText size={18} className="text-[var(--color-primary)]" />
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Last exact prompt</h2>
           </div>
-          {lastPromptCapture ? (
+          {showExactPrompt && lastPromptCapture ? (
             <PromptCaptureView
               capture={lastPromptCapture}
-              attribution={computeCaptureAttribution(lastPromptCapture, lastPromptBreakdown)}
+              attribution={computeCaptureAttribution(lastPromptCapture, lastPromptCapture.breakdown)}
             />
           ) : (
             <p className="text-xs text-[var(--color-text-secondary)]">
               {showExactPrompt
                 ? 'No prompt captured yet this session — send a message to see it.'
-                : 'Exact prompt capture is off. Turn it on under Settings → Generation → Prompts.'}
+                : 'Exact prompt capture is off. Turn it on under Settings → Generation → Prompts to capture the next prompt.'}
             </p>
           )}
         </section>

@@ -46,6 +46,14 @@ export interface PromptCapture {
   capturedAt: number;
   seam: PromptCaptureSeam;
   characterName: string;
+  /**
+   * The breakdown produced by THIS SAME dispatch's builder call, not
+   * whatever happens to be sitting in `generationStore.lastPromptBreakdown`
+   * — that slot is written and tagged independently, so pairing a capture
+   * with it can attribute one turn's payload against another turn's
+   * breakdown. Attribution consumers read this field, never the store slot.
+   */
+  breakdown: PromptBreakdown | null;
 }
 
 let captureCounter = 0;
@@ -106,6 +114,7 @@ export interface CreatePromptCaptureParams {
   textCompletionMode: boolean;
   imagesFolded: number;
   characterName: string;
+  breakdown: PromptBreakdown | null;
 }
 
 export function createPromptCapture(params: CreatePromptCaptureParams): PromptCapture {
@@ -122,6 +131,7 @@ export function createPromptCapture(params: CreatePromptCaptureParams): PromptCa
     capturedAt: Date.now(),
     seam: params.seam,
     characterName: params.characterName,
+    breakdown: params.breakdown,
   };
 }
 
@@ -179,19 +189,21 @@ function describeSectionKind(kind: SectionKind): string {
 }
 
 /**
- * Map `capture.messages` positionally against the breakdown's slices: the
- * joined Stage-A section content lands in entry 0, each Stage-B slice in the
- * next entry, each Stage-C slice in the next, and the call-site instruction
- * turn (continue/impersonate) in the last entry. This only means anything
- * when the displayed array IS the builder's output — gated on both transform
- * flags before the breakdown is consulted at all.
+ * Map `capture.messages` against the breakdown's slices: the joined Stage-A
+ * section content is expected in entry 0; every entry after it is matched
+ * against the Stage-B, Stage-C and call-site slices by content length,
+ * independent of position — the group at-depth overflow splice (an
+ * author's-note or WI entry inserted after the history entries were already
+ * recorded) means slice order and `context` order do not always agree. This
+ * only means anything when the displayed array IS the builder's output —
+ * gated on both transform flags before the breakdown is consulted at all.
  *
- * Every non-Stage-A mapping is checked against the entry it claims: the
- * entry must be `{ role, content }` and its content length must match the
- * slice's recorded `chars`. A breakdown paired with the wrong capture, or a
- * builder change that reorders slices relative to `context`, fails this
- * check rather than mislabelling — the function returns `null` for anything
- * it cannot verify, never a best guess.
+ * The match is accepted only when it is unambiguous: every post-Stage-A
+ * entry's content length must equal exactly one un-claimed slice's recorded
+ * `chars`, and every one of those slices must be claimed by exactly one
+ * entry. A content length shared by two entries, or by two slices, cannot be
+ * told apart — the function returns `null` for anything it cannot verify,
+ * never a best guess.
  */
 export function computeCaptureAttribution(
   capture: PromptCapture,
@@ -207,13 +219,7 @@ export function computeCaptureAttribution(
   const stageBSlices = breakdown.slices.filter((s) => s.kind.stage === 'B');
   const stageCSlices = breakdown.slices.filter((s) => s.kind.stage === 'C');
   const callSiteSlice = breakdown.slices.find((s) => s.kind.stage === 'callSite');
-
-  const expectedCount =
-    (stageASlices.length > 0 ? 1 : 0) +
-    stageBSlices.length +
-    stageCSlices.length +
-    (callSiteSlice ? 1 : 0);
-  if (entries.length !== expectedCount) return null;
+  const remainingSlices = [...stageBSlices, ...stageCSlices, ...(callSiteSlice ? [callSiteSlice] : [])];
 
   const result: CaptureAttribution = [];
   let idx = 0;
@@ -225,25 +231,38 @@ export function computeCaptureAttribution(
     idx += 1;
   }
 
-  for (const slice of stageBSlices) {
-    const entry = entries[idx];
-    if (!isRoleContentEntry(entry) || entry.content.length !== slice.chars) return null;
-    result.push({ index: idx, labels: [describeSectionKind(slice.kind)] });
-    idx += 1;
+  const remainingEntries = entries.slice(idx);
+  if (remainingEntries.length !== remainingSlices.length) return null;
+  for (const entry of remainingEntries) {
+    if (!isRoleContentEntry(entry)) return null;
   }
 
-  for (const slice of stageCSlices) {
-    const entry = entries[idx];
-    if (!isRoleContentEntry(entry) || entry.content.length !== slice.chars) return null;
-    result.push({ index: idx, labels: [describeSectionKind(slice.kind)] });
-    idx += 1;
+  // Ambiguity check: a content length claimed by more than one slice, or
+  // shared by more than one entry, cannot be resolved into a single
+  // injective match — return null rather than guess.
+  const sliceCountByChars = new Map<number, number>();
+  for (const slice of remainingSlices) {
+    sliceCountByChars.set(slice.chars, (sliceCountByChars.get(slice.chars) ?? 0) + 1);
+  }
+  for (const count of sliceCountByChars.values()) {
+    if (count > 1) return null;
+  }
+  const entryLengths = (remainingEntries as { role: unknown; content: string }[]).map((e) => e.content.length);
+  const entryCountByLength = new Map<number, number>();
+  for (const len of entryLengths) {
+    entryCountByLength.set(len, (entryCountByLength.get(len) ?? 0) + 1);
+  }
+  for (const count of entryCountByLength.values()) {
+    if (count > 1) return null;
   }
 
-  if (callSiteSlice) {
-    const entry = entries[idx];
-    if (!isRoleContentEntry(entry) || entry.content.length !== callSiteSlice.chars) return null;
-    result.push({ index: idx, labels: [describeSectionKind(callSiteSlice.kind)] });
-    idx += 1;
+  const sliceByChars = new Map<number, (typeof remainingSlices)[number]>();
+  for (const slice of remainingSlices) sliceByChars.set(slice.chars, slice);
+
+  for (let i = 0; i < remainingEntries.length; i += 1) {
+    const slice = sliceByChars.get(entryLengths[i]);
+    if (!slice) return null;
+    result.push({ index: idx + i, labels: [describeSectionKind(slice.kind)] });
   }
 
   return result;
