@@ -135,12 +135,13 @@ describe('PromptCaptureView', () => {
   it('renders attribution labels beside each entry on the clean path', () => {
     const capture = mkCapture();
     const attribution: CaptureAttribution = [
-      { index: 0, labels: ['main_prompt'] },
+      { index: 0, labels: ['main_prompt', 'persona_before_char'] },
       { index: 1, labels: ['history (user)'] },
     ];
-    render(<PromptCaptureView capture={capture} attribution={attribution} />);
-    expect(screen.getByText(/main_prompt/)).toBeTruthy();
+    const { container } = render(<PromptCaptureView capture={capture} attribution={attribution} />);
+    expect(screen.getByText(/main_prompt, persona_before_char/)).toBeTruthy();
     expect(screen.getByText(/history \(user\)/)).toBeTruthy();
+    expect(container.textContent ?? '').toContain('main_prompt, persona_before_char');
   });
 
   it('does not render attribution labels when replacedByInterceptor is true, even if a non-null attribution is passed', () => {
@@ -194,6 +195,15 @@ describe('PromptCaptureView', () => {
       container = render(<PromptCaptureView capture={capture} attribution={null} />).container;
     }).not.toThrow();
     expect(container?.textContent ?? '').toContain('"type"');
+  });
+
+  it('renders a null element as JSON without throwing', () => {
+    const capture = mkCapture({ messages: [null], replacedByInterceptor: true });
+    let container: HTMLElement | undefined;
+    expect(() => {
+      container = render(<PromptCaptureView capture={capture} attribution={null} />).container;
+    }).not.toThrow();
+    expect(container?.textContent ?? '').toContain('null');
   });
 
   it('renders an entry whose role is not a string as JSON without throwing', () => {
