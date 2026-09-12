@@ -55,6 +55,7 @@ const { useGenerationStore, DEFAULT_INSTRUCT_CONFIG } = await import('./generati
 const { useServerExtensionStore } = await import('./serverExtensionStore');
 const { api } = await import('../api/client');
 const { mkChar, mkMsg, resetStores } = await import('./promptGoldens.fixtures');
+const { computeCaptureAttribution } = await import('../utils/promptCapture');
 
 function sseOnce(text: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -171,6 +172,41 @@ describe('exact-prompt capture flags', () => {
     expect(capture()!.replacedByInterceptor).toBe(true);
     expect(capture()!.collapsedByInstruct).toBe(false);
     expect(capture()!.messages).toEqual(replacement);
+  });
+
+  it('replacedByInterceptor stays false when an interceptor echoes the posted array back unchanged, and attribution still resolves', async () => {
+    arrange();
+    useServerExtensionStore.setState({
+      installed: [{ type: 'local', name: 'third-party/echo-swap' }],
+      manifests: { 'third-party/echo-swap': { generate_interceptor: true } },
+    });
+    // Echoes back whatever `messages` it was posted with — the shape a
+    // read-only extension (logger, moderation observer) has every reason to
+    // return, and no reason to change.
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/csrf-token') {
+        return { ok: true, json: async () => ({ token: 'csrf-test' }), text: async () => '{}' } as Response;
+      }
+      if (url.includes('/generate-interceptors')) {
+        const body = JSON.parse(String(init?.body)) as { messages: unknown };
+        return {
+          ok: true,
+          json: async () => ({ messages: body.messages }),
+          text: async () => JSON.stringify({ messages: body.messages }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(api, 'generateMessage').mockResolvedValue(sseOnce('reply'));
+    vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    await useChatStore.getState().sendMessage('hi', IVY);
+
+    const c = capture()!;
+    expect(c.replacedByInterceptor).toBe(false);
+    expect(c.collapsedByInstruct).toBe(false);
+    expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
   });
 
   it('both flags are true when instruct collapses AND an interceptor then replaces the collapsed array', async () => {
