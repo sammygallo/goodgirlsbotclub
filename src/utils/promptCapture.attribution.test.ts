@@ -226,7 +226,7 @@ describe('computeCaptureAttribution', () => {
     expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
   });
 
-  it('(o) every describeSectionKind label branch, at distinct lengths so rule 6 cannot fire (R5-C4)', () => {
+  it('(o) describeSectionKind label branch, at distinct lengths so rule 6 cannot fire (R5-C4)', () => {
     const breakdown = createPromptBreakdown('solo');
     addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
     addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 6);
