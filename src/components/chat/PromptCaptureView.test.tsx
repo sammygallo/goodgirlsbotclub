@@ -130,6 +130,17 @@ describe('PromptCaptureView', () => {
     expect(() => render(<PromptCaptureView capture={capture} attribution={null} />)).not.toThrow();
     expect(screen.getByText(/"foo"/)).toBeTruthy();
   });
+
+  it('marks the header "(fallback)" when usedFallback is true (R5-C5)', () => {
+    const capture = { ...mkCapture(), usedFallback: true };
+    render(<PromptCaptureView capture={capture} attribution={null} />);
+    expect(screen.getByText(/\(fallback\)/)).toBeTruthy();
+  });
+
+  it('does not mark the header "(fallback)" on the plain, non-fallback capture (R5-C5)', () => {
+    render(<PromptCaptureView capture={mkCapture()} attribution={null} />);
+    expect(screen.queryByText(/\(fallback\)/)).toBeNull();
+  });
 });
 
 describe('PromptCaptureSheet ownership states', () => {

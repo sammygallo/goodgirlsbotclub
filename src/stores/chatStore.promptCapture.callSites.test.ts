@@ -500,6 +500,9 @@ describe('capture metadata matches the dispatch on the non-fallback path (C7)', 
     // R2-C12: proves this ran the plain path, not a leftover interceptor
     // replacement from a describe that ran earlier.
     expect(c.replacedByInterceptor).toBe(false);
+    // R5-C5: this describe's own title names the non-fallback path — the
+    // field distinguishing it from the fallback case (below) was unchecked.
+    expect(c.usedFallback).toBe(false);
     expect(JSON.stringify(c.messages)).toContain(IVY.description);
   });
 
