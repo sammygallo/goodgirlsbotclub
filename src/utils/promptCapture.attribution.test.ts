@@ -103,18 +103,49 @@ describe('computeCaptureAttribution', () => {
     ]);
   });
 
-  it('(g) splice rotation, distinct lengths: positional lengths disagree → null', () => {
+  it('(g) splice rotation, note role differs from the displaced history slice → null', () => {
     // Mirrors buildGroupConversationContext's overflow splice: the history
     // loop records its slice FIRST, then the author's-note overflow branch
     // splices its entry into `context` at index 1 (before the history
     // entry) and records its own slice AFTER — so slice order (history,
-    // authors_note) and context order (authors_note, history) disagree, and
-    // the position-i-to-slice-i check catches the length mismatch directly.
+    // authors_note) and context order (authors_note, history) disagree.
     const breakdown = createPromptBreakdown('group');
     addSlice(breakdown, { stage: 'A', id: 'group_system_chrome' }, 10, 30);
     addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 20);
     addSlice(breakdown, { stage: 'B', cls: 'authors_note' }, 5, 14);
     const capture = mkCapture([entry('system', 30), entry('system', 14), entry('user', 20)]);
+
+    expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
+  });
+
+  it('(m) splice rotation, all-history roles equal: only the per-entry length check disagrees → null', () => {
+    // Same splice shape as (g), but every displaced slice shares the
+    // history role 'assistant' with its neighbours, so the role check
+    // cannot fire on any position — only the per-entry content-length
+    // check can reject this fixture.
+    const breakdown = createPromptBreakdown('group');
+    addSlice(breakdown, { stage: 'A', id: 'group_system_chrome' }, 10, 30);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'a1', role: 'assistant' }, 4, 10);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'a2', role: 'assistant' }, 4, 10);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'a3', role: 'assistant' }, 4, 10);
+    addSlice(breakdown, { stage: 'B', cls: 'authors_note' }, 5, 7);
+    const capture = mkCapture([
+      entry('system', 30),
+      entry('assistant', 7),
+      entry('assistant', 10),
+      entry('assistant', 10),
+      entry('assistant', 10),
+    ]);
+
+    expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
+  });
+
+  it('(m2) splice rotation, single history slice, role matches: only the per-entry length check disagrees → null', () => {
+    const breakdown = createPromptBreakdown('group');
+    addSlice(breakdown, { stage: 'A', id: 'group_system_chrome' }, 10, 30);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 20);
+    addSlice(breakdown, { stage: 'B', cls: 'authors_note' }, 5, 14);
+    const capture = mkCapture([entry('system', 30), entry('user', 14), entry('user', 20)]);
 
     expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
   });
@@ -193,5 +224,20 @@ describe('computeCaptureAttribution', () => {
     const capture = mkCapture([entry('user', 14)]);
 
     expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
+  });
+
+  it('(n) two Stage-A slices join into one entry, each carrying its own id in order', () => {
+    const breakdown = createPromptBreakdown('solo');
+    addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
+    addSlice(breakdown, { stage: 'A', id: 'persona_before_char' }, 3, 12);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 14);
+    const capture = mkCapture([entry('system', 52), entry('user', 14)]);
+
+    const attribution = computeCaptureAttribution(capture, breakdown);
+
+    expect(attribution).toEqual([
+      { index: 0, labels: ['main_prompt', 'persona_before_char'] },
+      { index: 1, labels: ['history (user)'] },
+    ]);
   });
 });
