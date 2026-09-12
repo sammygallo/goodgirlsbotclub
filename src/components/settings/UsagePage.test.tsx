@@ -106,6 +106,15 @@ describe('UsagePage — Last exact prompt section (E2-S3, gated on showExactProm
     ).toBeTruthy();
   });
 
+  it('shows "nothing captured yet" (not the off-state copy) when showExactPrompt is true and nothing has generated', () => {
+    useGenerationStore.setState({ lastPromptCapture: null, showExactPrompt: true });
+    render(<UsagePage />);
+    expect(
+      screen.getByText('No prompt captured yet this session — send a message to see it.')
+    ).toBeTruthy();
+    expect(screen.queryByText(/capture is off/)).toBeNull();
+  });
+
   it('renders the captured payload when showExactPrompt is true', () => {
     const capture = createPromptCapture({
       seam: 'send',
