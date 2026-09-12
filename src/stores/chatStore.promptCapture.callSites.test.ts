@@ -56,7 +56,8 @@ globalThis.localStorage = new MemoryStorage() as unknown as Storage;
 const { useChatStore } = await import('./chatStore');
 const { useChatHistoryRagStore } = await import('./chatHistoryRagStore');
 const { useCharacterStore } = await import('./characterStore');
-const { useGenerationStore } = await import('./generationStore');
+const { useGenerationStore, DEFAULT_INSTRUCT_CONFIG } = await import('./generationStore');
+const { useServerExtensionStore } = await import('./serverExtensionStore');
 const { api } = await import('../api/client');
 const { GROUP_FIXTURES, mkChar, mkMsg, resetStores } = await import('./promptGoldens.fixtures');
 
@@ -131,6 +132,65 @@ function mkGroupChat(characters: CharacterInfo[]): GroupChatInfo {
     talkativenessOverrides: {},
     cardMode: 'swap',
   };
+}
+
+/** Installs an interceptor extension whose `/generate-interceptors` response
+ *  is a REPLACEMENT array distinct from whatever it was posted, so the
+ *  seam's dispatched array differs from `context`. */
+function stubInterceptorReplacement(replacement: { role: string; content: string }[]) {
+  useServerExtensionStore.setState({
+    installed: [{ type: 'local', name: 'third-party/echo-swap' }],
+    manifests: { 'third-party/echo-swap': { generate_interceptor: true } },
+  });
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url === '/csrf-token') {
+      return { ok: true, json: async () => ({ token: 'csrf-test' }), text: async () => '{}' } as Response;
+    }
+    if (url.includes('/generate-interceptors')) {
+      return {
+        ok: true,
+        json: async () => ({ messages: replacement }),
+        text: async () => JSON.stringify({ messages: replacement }),
+      } as Response;
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+}
+
+/** One entry per solo dispatch seam, so AC1 can be proven under a transform
+ *  at each of them individually rather than only through `sendMessage` (the
+ *  one seam `chatStore.promptCapture.flags.test.ts` exercises). */
+function soloSeams(): { name: string; run: () => Promise<unknown> }[] {
+  return [
+    {
+      name: 'sendMessage',
+      run: () => useChatStore.getState().sendMessage('Anyone there?', IVY),
+    },
+    {
+      name: 'swipeRight',
+      run: () => {
+        const messages = useChatStore.getState().messages;
+        const lastAi = messages[messages.length - 1];
+        return useChatStore.getState().swipeRight(lastAi.id, IVY);
+      },
+    },
+    {
+      name: 'continueMessage',
+      run: () => useChatStore.getState().continueMessage(IVY),
+    },
+    {
+      name: 'impersonate',
+      run: () => useChatStore.getState().impersonate(IVY),
+    },
+    {
+      name: 'editMessageAndRegenerate',
+      run: () => {
+        const userMsg = useChatStore.getState().messages[0];
+        return useChatStore.getState().editMessageAndRegenerate(userMsg.id, 'Anyone home?', IVY);
+      },
+    },
+  ];
 }
 
 describe('exact-prompt capture is wired at every solo generation call site', () => {
@@ -273,5 +333,107 @@ describe('showExactPrompt off: no capture is published', () => {
 
     expect(edges.generate).toHaveBeenCalledTimes(1);
     expect(capture()).toBeNull();
+  });
+});
+
+describe('AC1 under a transform, at every solo seam (C5)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    useGenerationStore.setState({
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: true,
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+    });
+    useServerExtensionStore.setState({ installed: [], manifests: {} });
+  });
+
+  for (const seam of soloSeams()) {
+    it(`${seam.name}: capture equals the COLLAPSED array api.generateMessage received`, async () => {
+      arrangeSolo();
+      useGenerationStore.setState({
+        instruct: { ...DEFAULT_INSTRUCT_CONFIG, enabled: true, templateId: 'chatml' },
+      });
+      const edges = stubEdges();
+
+      await seam.run();
+
+      const sent = edges.generate.mock.calls[0][0];
+      const c = capture()!;
+      expect(c, 'a capture should have been published').not.toBeNull();
+      expect(sent).toHaveLength(1);
+      expect(c.messages).toEqual(sent);
+      expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
+      expect(c.collapsedByInstruct).toBe(true);
+    });
+
+    it(`${seam.name}: capture equals the REPLACED array api.generateMessage received`, async () => {
+      arrangeSolo();
+      const replacement = [{ role: 'user', content: `REPLACED FOR ${seam.name}` }];
+      stubInterceptorReplacement(replacement);
+      const edges = stubEdges();
+
+      await seam.run();
+
+      const sent = edges.generate.mock.calls[0][0];
+      const c = capture()!;
+      expect(c, 'a capture should have been published').not.toBeNull();
+      expect(sent).toEqual(replacement);
+      expect(c.messages).toEqual(sent);
+      expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
+      expect(c.replacedByInterceptor).toBe(true);
+    });
+  }
+});
+
+describe('capture metadata matches the dispatch on the non-fallback path (C7)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+  });
+
+  it('sendMessage: imagesFolded and the header fields match what api.generateMessage received', async () => {
+    arrangeSolo();
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4o' });
+    const edges = stubEdges();
+    const dataUrls = [
+      'data:image/png;base64,aaa',
+      'data:image/png;base64,bbb',
+    ];
+
+    await useChatStore.getState().sendMessage('Look at these', IVY, undefined, dataUrls);
+
+    const call = edges.generate.mock.calls[0];
+    const c = capture()!;
+    expect(c.imagesFolded).toBe(2);
+    expect((call[6] as unknown[] | undefined)?.length).toBe(2);
+    expect(c.provider).toBe(call[2]);
+    expect(c.model).toBe(call[3]);
+    expect(c.characterName).toBe(call[1]);
+    expect(c.textCompletionMode).toBe(call[7]);
+  });
+});
+
+describe('publishes before send, even when the dispatch rejects (C9)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+  });
+
+  it('sendMessage: a rejecting dispatch with no fallback still leaves a capture in the slot', async () => {
+    arrangeSolo();
+    const edges = stubEdges();
+    edges.generate.mockRejectedValue(new Error('down'));
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ fallbackProvider: '', fallbackModel: '' });
+
+    await useChatStore.getState().sendMessage('Anyone there?', IVY);
+
+    const c = capture()!;
+    expect(c, 'a capture should have been published even though the dispatch rejected').not.toBeNull();
+    expect(c.seam).toBe('send');
+    expect(c.messages).toEqual(edges.generate.mock.calls[0][0]);
   });
 });
