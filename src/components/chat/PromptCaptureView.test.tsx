@@ -43,6 +43,12 @@ describe('PromptCaptureView', () => {
     expect(screen.queryByText(/Text completion mode/)).toBeNull();
   });
 
+  it('renders each entry\'s role as its block header', () => {
+    render(<PromptCaptureView capture={mkCapture()} attribution={null} />);
+    expect(screen.getByText('system')).toBeTruthy();
+    expect(screen.getByText('user')).toBeTruthy();
+  });
+
   it('shows the collapse notice when collapsedByInstruct is true', () => {
     render(<PromptCaptureView capture={mkCapture({ collapsedByInstruct: true })} attribution={null} />);
     expect(screen.getByText(/collapsed this prompt into a single user turn/)).toBeTruthy();
@@ -73,6 +79,13 @@ describe('PromptCaptureView', () => {
     render(<PromptCaptureView capture={mkCapture({ imagesFolded: 2 })} attribution={null} />);
     expect(
       screen.getByText('Image attachments: 2 — not part of the captured array, not shown below.')
+    ).toBeTruthy();
+  });
+
+  it('renders the image-attachments line for a single attachment', () => {
+    render(<PromptCaptureView capture={mkCapture({ imagesFolded: 1 })} attribution={null} />);
+    expect(
+      screen.getByText('Image attachments: 1 — not part of the captured array, not shown below.')
     ).toBeTruthy();
   });
 
@@ -125,6 +138,13 @@ describe('PromptCaptureView', () => {
     expect(screen.queryByText(/main_prompt/)).toBeNull();
   });
 
+  it('does not render attribution labels when collapsedByInstruct is true, even if a non-null attribution is passed', () => {
+    const capture = mkCapture({ collapsedByInstruct: true });
+    const staleAttribution: CaptureAttribution = [{ index: 0, labels: ['main_prompt'] }];
+    render(<PromptCaptureView capture={capture} attribution={staleAttribution} />);
+    expect(screen.queryByText(/main_prompt/)).toBeNull();
+  });
+
   it('renders an unrecognized array shape as JSON without throwing', () => {
     const capture = mkCapture({ messages: [{ foo: 'bar' }, 'a bare string', 42] });
     expect(() => render(<PromptCaptureView capture={capture} attribution={null} />)).not.toThrow();
@@ -151,6 +171,30 @@ describe('PromptCaptureView', () => {
     const text = container.textContent ?? '';
     expect(text).toContain('Seam: swipe');
     expect(text).toContain('anthropic/claude-x (fallback)');
+    const capturedAtStr = new Date(capture.capturedAt).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    expect(text).toContain(`Captured ${capturedAtStr}`);
+  });
+
+  it('renders a different capturedAt time string for a capture taken at a different time', () => {
+    const earlier = { ...mkCapture(), capturedAt: mkCapture().capturedAt - 60 * 60 * 1000 };
+    const { container } = render(<PromptCaptureView capture={earlier} attribution={null} />);
+    const text = container.textContent ?? '';
+    const earlierStr = new Date(earlier.capturedAt).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    const nowStr = new Date(mkCapture().capturedAt).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    expect(text).toContain(`Captured ${earlierStr}`);
+    expect(earlierStr).not.toBe(nowStr);
   });
 });
 
