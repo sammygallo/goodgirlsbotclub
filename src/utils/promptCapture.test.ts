@@ -91,6 +91,11 @@ describe('structurallyEqual', () => {
     expect(structurallyEqual({ a: 1, b: undefined }, { a: 1 })).toBe(false);
   });
 
+  it('rejects when the second object has a key the first does not, even if every shared key matches', () => {
+    expect(structurallyEqual({ a: 1 }, { a: 1, b: 2 })).toBe(false);
+    expect(structurallyEqual({ role: 'user' }, { role: 'user', content: 'hi' })).toBe(false);
+  });
+
   it('compares non-object primitives by strict equality', () => {
     expect(structurallyEqual(5, 5)).toBe(true);
     expect(structurallyEqual(5, '5')).toBe(false);
