@@ -24,11 +24,11 @@ const memoryStorage = (() => {
 })();
 vi.stubGlobal('localStorage', memoryStorage);
 
-const patchServerKey = vi.fn(async () => {});
+const patchServerKey = vi.fn(async (..._args: unknown[]) => {});
 vi.mock('../utils/serverSettings', () => ({
   getSettingsBlob: vi.fn(async () => ({})),
   makeLocalTsKey: vi.fn((k: string) => `ts_${k}`),
-  patchServerKey: (...args: unknown[]) => patchServerKey(...args),
+  patchServerKey,
   markSectionDirty: vi.fn(),
   recordServerTs: vi.fn(),
   shouldReuploadSection: vi.fn(() => false),
