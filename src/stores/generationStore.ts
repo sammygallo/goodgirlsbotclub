@@ -482,10 +482,6 @@ export function mergePromptOrder(
 /**
  * The state patch for writing `showExactPrompt` (E2-S3, R2-C7): turning it
  * off clears `lastPromptCapture`/`lastPromptCaptureTag` along with the flag.
- * Both writers of the field — `setShowExactPrompt` and the `fetchPrefs`
- * apply branch — go through this, so `lastPromptCapture`'s own doc comment
- * ("cleared whenever showExactPrompt is off") holds regardless of which one
- * flips it, rather than being true for only one of the two call sites.
  */
 function showExactPromptPatch(
   v: boolean
