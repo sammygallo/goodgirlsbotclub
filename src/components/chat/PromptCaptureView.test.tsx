@@ -48,6 +48,10 @@ describe('PromptCaptureView', () => {
     const capture = mkCapture({ messages: [{ role: 'system', content: exact }] });
     const { container } = render(<PromptCaptureView capture={capture} attribution={null} />);
     expect(container.textContent ?? '').toContain(exact);
+    const block = Array.from(container.querySelectorAll('div')).find((el) =>
+      (el.textContent ?? '').includes(exact) && el.className.includes('font-mono')
+    );
+    expect(block?.className ?? '').toContain('whitespace-pre-wrap');
   });
 
   it('renders each entry\'s role as its block header', () => {
