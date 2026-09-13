@@ -233,7 +233,12 @@ function soloSeams(): { name: string; run: () => Promise<unknown> }[] {
 describe('exact-prompt capture is wired at every solo generation call site', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+    useGenerationStore.setState({
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: true,
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+    });
   });
 
   it('sendMessage captures the array api.generateMessage received', async () => {
@@ -423,7 +428,12 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
 describe('exact-prompt capture is wired at the group generation call site', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+    useGenerationStore.setState({
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: true,
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+    });
   });
 
   it('generateGroupTurn (forceGroupMemberTalk) captures the array api.generateMessage received', async () => {
@@ -504,7 +514,12 @@ describe('exact-prompt capture is wired at the group generation call site', () =
 describe('showExactPrompt off: no capture is published', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: false });
+    useGenerationStore.setState({
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: false,
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+    });
   });
 
   it('sendMessage dispatches normally but publishes nothing', async () => {
@@ -596,7 +611,12 @@ describe('the capture carries its OWN breakdown, not whatever is in lastPromptBr
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+    useGenerationStore.setState({
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: true,
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+    });
   });
 
   afterEach(() => {
@@ -700,7 +720,12 @@ describe('capture metadata under non-default inputs at every non-send seam (R12-
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+    useGenerationStore.setState({
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: true,
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+    });
   });
 
   async function arrangeSoloWithImagesAndTextMode(aiMessageOverride: Partial<ChatMessage> = {}) {
@@ -798,7 +823,12 @@ describe('capture metadata under non-default inputs at every non-send seam (R12-
 describe('publishes before send, even when the dispatch rejects (C9)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+    useGenerationStore.setState({
+      lastPromptCapture: null,
+      lastPromptCaptureTag: null,
+      showExactPrompt: true,
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG },
+    });
     // R2-C12: guard against a leftover fetch stub / installed interceptor
     // from a describe that ran earlier — see the C5 afterEach.
     useServerExtensionStore.setState({ installed: [], manifests: {} });
@@ -822,5 +852,8 @@ describe('publishes before send, even when the dispatch rejects (C9)', () => {
     // replacement from a describe that ran earlier.
     expect(c.replacedByInterceptor).toBe(false);
     expect(JSON.stringify(c.messages)).toContain(IVY.description);
+    expect(c.collapsedByInstruct).toBe(false);
+    expect(c.textCompletionMode).toBe(false);
+    expect(edges.generate.mock.calls[0][0].length).toBeGreaterThan(1);
   });
 });
