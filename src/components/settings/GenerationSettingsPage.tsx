@@ -35,6 +35,7 @@ export function GenerationSettingsPage(_props?: { params?: Record<string, string
     context,
     instruct,
     lastTokenEstimate,
+    showExactPrompt,
     setSampler,
     resetSampler,
     savePreset,
@@ -45,6 +46,7 @@ export function GenerationSettingsPage(_props?: { params?: Record<string, string
     setContext,
     applyProviderDefaults,
     setInstruct,
+    setShowExactPrompt,
   } = useGenerationStore();
   const { activeProvider } = useSettingsStore();
 
@@ -439,6 +441,24 @@ export function GenerationSettingsPage(_props?: { params?: Record<string, string
                 <code>{'{{weekday}}'}</code>, <code>{'{{random:a,b,c}}'}</code>,{' '}
                 <code>{'{{pick:a,b,c}}'}</code>, <code>{'{{roll:d6}}'}</code>,{' '}
                 <code>{'{{lastMessage}}'}</code>, <code>{'{{model}}'}</code>
+              </p>
+            </div>
+
+            <div className="pt-2 border-t border-[var(--color-border)] space-y-2">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Exact prompt</h3>
+              <label className="flex items-center gap-2 text-sm text-[var(--color-text-primary)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showExactPrompt}
+                  onChange={(e) => setShowExactPrompt(e.target.checked)}
+                  className="accent-[var(--color-primary)]"
+                />
+                Show exact prompt
+              </label>
+              <p className="text-xs text-[var(--color-text-secondary)]">
+                The captured prompt can include your whole chat, your persona, and lorebook text.
+                It is kept in memory on this device only — it is never saved into the chat and
+                never appears in exports.
               </p>
             </div>
           </section>

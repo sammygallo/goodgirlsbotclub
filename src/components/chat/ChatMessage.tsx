@@ -3,6 +3,8 @@ import { MoreHorizontal, Check, X, Volume2, Square, Globe, EyeOff } from 'lucide
 import { Avatar } from '../ui';
 import { BottomSheet } from '../ui/BottomSheet';
 import { PromptBreakdownSheet } from './PromptBreakdownSheet';
+import { PromptCaptureSheet } from './PromptCaptureSheet';
+import { useGenerationStore } from '../../stores/generationStore';
 import { MessageActionMenu } from './MessageActionMenu';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { haptic } from '../../utils/haptics';
@@ -130,6 +132,8 @@ export function ChatMessage({
   const [showMenu, setShowMenu] = useState(false);
   const [showEditOptions, setShowEditOptions] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const [showPromptCapture, setShowPromptCapture] = useState(false);
+  const showExactPrompt = useGenerationStore((s) => s.showExactPrompt);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Phase 8.2: apply display-only regex scripts for rendering.
@@ -331,6 +335,30 @@ export function ChatMessage({
       swipeIndex={swipeId ?? 0}
     />
   ) : null;
+
+  // E2-S3: button only exists while the toggle is on — off means no capture
+  // is ever taken, so a button that opened the sheet anyway would just show
+  // the "capture is off" state for every message, every time.
+  const promptCaptureButton =
+    !isUser && usage && showExactPrompt ? (
+      <button
+        type="button"
+        onClick={() => setShowPromptCapture(true)}
+        className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] whitespace-nowrap hover:bg-[var(--color-bg-primary)] transition-colors"
+        aria-label="Exact prompt for this turn"
+      >
+        prompt
+      </button>
+    ) : null;
+  const promptCaptureSheetEl =
+    !isUser && usage && showExactPrompt ? (
+      <PromptCaptureSheet
+        isOpen={showPromptCapture}
+        onClose={() => setShowPromptCapture(false)}
+        messageId={messageId}
+        swipeIndex={swipeId ?? 0}
+      />
+    ) : null;
 
   // #414: badge shown on a hidden message. Lives in the header row (outside the
   // dimmed content) so it stays fully legible while the message body is faded.
@@ -607,6 +635,8 @@ export function ChatMessage({
             {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
             {usageChip}
             {breakdownSheetEl}
+            {promptCaptureButton}
+            {promptCaptureSheetEl}
             {hiddenBadge}
           </div>
 
@@ -667,6 +697,8 @@ export function ChatMessage({
           {timeStr && <span className="text-xs text-zinc-500">{timeStr}</span>}
           {usageChip}
           {breakdownSheetEl}
+          {promptCaptureButton}
+          {promptCaptureSheetEl}
           {hiddenBadge}
           <div className="ml-auto">{actionButtons}</div>
         </div>
@@ -707,6 +739,8 @@ export function ChatMessage({
           {timeStr && <span className="text-xs text-zinc-500 ml-2">{timeStr}</span>}
           {usageChip}
           {breakdownSheetEl}
+          {promptCaptureButton}
+          {promptCaptureSheetEl}
           {hidden && <span className="ml-2 inline-flex">{hiddenBadge}</span>}
 
           {imageGrid && <div className={`mt-1 ${hidden ? 'opacity-50' : ''}`}>{imageGrid}</div>}

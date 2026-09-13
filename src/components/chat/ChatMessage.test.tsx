@@ -20,6 +20,7 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 import { ChatMessage } from './ChatMessage';
 import { useGenerationStore } from '../../stores/generationStore';
 import { addSlice, createPromptBreakdown, type PromptBreakdown } from '../../utils/promptBreakdown';
+import { createPromptCapture, type PromptCapture } from '../../utils/promptCapture';
 import type { TokenUsage } from '../../stores/chatStore';
 import type { ChatLayoutMode } from '../../hooks/displayPreferences';
 
@@ -42,7 +43,13 @@ if (!window.matchMedia) {
 
 afterEach(() => {
   cleanup();
-  useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
+  useGenerationStore.setState({
+    lastPromptBreakdown: null,
+    lastPromptBreakdownTag: null,
+    lastPromptCapture: null,
+    lastPromptCaptureTag: null,
+    showExactPrompt: false,
+  });
 });
 
 function soloBreakdown(): PromptBreakdown {
@@ -88,6 +95,25 @@ function renderAiMessage(swipeId: number, layoutMode?: ChatLayoutMode) {
 
 function openChip() {
   fireEvent.click(screen.getByLabelText('Token breakdown for this turn'));
+}
+
+function soloCapture(): PromptCapture {
+  return createPromptCapture({
+    seam: 'send',
+    messages: [{ role: 'user', content: 'hello there' }],
+    collapsedByInstruct: false,
+    replacedByInterceptor: false,
+    provider: 'openai',
+    model: 'gpt-4o',
+    textCompletionMode: false,
+    imagesFolded: 0,
+    characterName: 'Ivy',
+    breakdown: null,
+  });
+}
+
+function openPromptSheet() {
+  fireEvent.click(screen.getByLabelText('Exact prompt for this turn'));
 }
 
 describe('ChatMessage — the read half of the swipe-ownership wire (review round 2)', () => {
@@ -184,4 +210,115 @@ describe('ChatMessage — the cost chip and its sheet render in every user-selec
       expect(screen.getByText('Within budget')).toBeTruthy();
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// The "prompt" button (E2-S3) — gated on showExactPrompt
+// ---------------------------------------------------------------------------
+
+describe('ChatMessage — the "prompt" button is gated on showExactPrompt', () => {
+  // R5-C3: parameterized over the same three layouts as the breakdown chip's
+  // own describe above — before this loop, both rows only ever rendered the
+  // default 'bubbles' layout, so the button going missing from the flat or
+  // document branch had no row that could catch it.
+  const layouts: ChatLayoutMode[] = ['bubbles', 'flat', 'document'];
+
+  for (const layoutMode of layouts) {
+    it(`${layoutMode}: renders when showExactPrompt is true`, () => {
+      useGenerationStore.setState({ showExactPrompt: true });
+      renderAiMessage(0, layoutMode);
+      expect(screen.getByLabelText('Exact prompt for this turn')).toBeTruthy();
+    });
+
+    it(`${layoutMode}: does not render when showExactPrompt is false`, () => {
+      useGenerationStore.setState({ showExactPrompt: false });
+      renderAiMessage(0, layoutMode);
+      expect(screen.queryByLabelText('Exact prompt for this turn')).toBeNull();
+    });
+
+    // R6-C5: the two rows above only ever check the button's own presence —
+    // mirroring the breakdown chip's layout describe above, this row also
+    // clicks the button and checks what it opens, in every layout.
+    it(`${layoutMode}: the button opens the sheet and renders owned content`, () => {
+      useGenerationStore.setState({
+        showExactPrompt: true,
+        lastPromptCapture: soloCapture(),
+        lastPromptCaptureTag: { messageId: 'm1', swipeIndex: 1 },
+      });
+      renderAiMessage(1, layoutMode);
+      openPromptSheet();
+      expect(screen.queryByText(/no longer available/)).toBeNull();
+      expect(screen.getByText(/Seam:/)).toBeTruthy();
+    });
+  }
+
+  // R6-C9: the loop above only ever varies `showExactPrompt` — the other two
+  // conjuncts of the button's gate (`!isUser`, `usage`) had no row of their
+  // own.
+  it('does not render on the user\'s own bubble even when showExactPrompt is true', () => {
+    useGenerationStore.setState({ showExactPrompt: true });
+    render(
+      <ChatMessage
+        messageId="m1"
+        name="User"
+        content="Hi there."
+        isUser={true}
+        usage={USAGE}
+        swipes={['Hi there.']}
+        swipeId={0}
+      />
+    );
+    expect(screen.queryByLabelText('Exact prompt for this turn')).toBeNull();
+  });
+
+  it('does not render on an AI turn with no usage even when showExactPrompt is true', () => {
+    useGenerationStore.setState({ showExactPrompt: true });
+    render(
+      <ChatMessage
+        messageId="m1"
+        name="Ivy"
+        content="Hello again."
+        isUser={false}
+        usage={undefined}
+        swipes={['Hello again.']}
+        swipeId={0}
+      />
+    );
+    expect(screen.queryByLabelText('Exact prompt for this turn')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The "prompt" button's read half of the ownership wire (R5-C1)
+// ---------------------------------------------------------------------------
+
+describe('ChatMessage — the read half of the prompt-capture ownership wire (R5-C1)', () => {
+  // The producer half
+  // is pinned in chatStore.promptCapture.callSites.test.ts. This describe
+  // supplies the comparison's other half — `swipeIndex={swipeId
+  // ?? 0}`, read off the message's CURRENTLY RENDERED swipe — the same gap
+  // the breakdown chip's own read-half describe above exists to close.
+  it('renders the captured payload when the message is displayed at the swipe the tag names', () => {
+    useGenerationStore.setState({
+      showExactPrompt: true,
+      lastPromptCapture: soloCapture(),
+      lastPromptCaptureTag: { messageId: 'm1', swipeIndex: 1 },
+    });
+    renderAiMessage(1);
+    openPromptSheet();
+    expect(screen.queryByText(/no longer available/)).toBeNull();
+    expect(screen.getByText(/Seam:/)).toBeTruthy();
+  });
+
+  it('renders the "no longer available" copy when the message is displayed at a DIFFERENT swipe than the tag names', () => {
+    useGenerationStore.setState({
+      showExactPrompt: true,
+      lastPromptCapture: soloCapture(),
+      lastPromptCaptureTag: { messageId: 'm1', swipeIndex: 1 },
+    });
+    renderAiMessage(0);
+    openPromptSheet();
+    expect(screen.getByText(/no longer available/)).toBeTruthy();
+    expect(screen.queryByText(/Seam:/)).toBeNull();
+  });
 });
