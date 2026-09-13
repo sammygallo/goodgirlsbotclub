@@ -264,22 +264,22 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>12 Sep 2026</b><br>
-      main <b>8e69f383</b><br>
-      active <b>E2-S3 — in review, PR #538</b>
+      <b>13 Sep 2026</b><br>
+      main <b>a847e532</b><br>
+      active <b>none — E2-S3 closing</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">2</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-ok"><div class="n">3</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">15</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">10</div><div class="k">Deployed</div></div>
-    <div class="tile is-warn"><div class="n">15</div><div class="k">Open issues</div></div>
+    <div class="tile is-warn"><div class="n">19</div><div class="k">Open issues</div></div>
   </div>
 
   <div class="notices">
@@ -319,20 +319,20 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E2">
-          <div class="id">E2-S3</div>
-          <div class="t">Show-prompt toggle &mdash; post-transform exact-prompt viewer</div>
-          <div class="m">Draft PR <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/538">#538</a> from <code>claude/e2-s3-show-prompt</code> @ <code>410cfaf5</code>. One helper wraps transform + capture + dispatch at all six seams; the payload lives in a volatile slot only. <b>15 verified trigger-tier rounds + a 16th held at the &sect;5 cost gate</b>; production logic unchanged since round 8; rounds 9&ndash;15 found only test pins and false prose. Sammy stopped the loop at the hold (option 2): checklist item 3 is not met and the merge is his call. 116 files / 2415 tests; goldens untouched. Filed #534 #535 #536 #537.</div>
-          <div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate hot">&sect;8: did not converge</span><span class="gate">QA running</span></div>
-        </article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">2</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">3</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E2">
+          <div class="id">E2-S3</div>
+          <div class="t">Show-prompt toggle &mdash; post-transform exact-prompt viewer</div>
+          <div class="m">13 Sep &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/538">#538</a> &rarr; <code>a847e532</code>, merged by Sammy at the &sect;8 gate (did-not-converge, waived checklist item 3, arguable vision divergence). Frontend-only, no migration, no backend change. <b>QA 6/6 AC pass, 12 skeptic votes, 0 refutations.</b> 15 verified trigger-tier rounds + a 16th held at the &sect;5 cost gate; production logic unchanged since round 8. 116 files / 2415 tests; goldens untouched. AC2&rsquo;s interceptor arm cannot fire in production until the backend serves the route (#537); the collapse arm is live. Filed #534 #535 #536 #537.</div>
+          <div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate hot">#537 dead client hook</span></div>
+        </article>
         <article class="card s-ok" data-epic="E2">
           <div class="id">E2-S4 · PR2</div>
           <div class="t">Insights data API — the store-level consumer surface</div>
@@ -447,7 +447,7 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S3 &mdash; Show-prompt toggle, in review (PR #538)</h2>
+    <h2>E2-S3 &mdash; Show-prompt toggle, merged 13 Sep, closing</h2>
     <p class="sub">The exact post-transform payload, shown to the user who sent it. E2-S2 measured the prompt at assembly time; this story captures what the provider client is actually handed after the instruct collapse and any extension interceptor, names the transform when one changed the structure, and keeps the payload out of every save, sync and export path by construction.</p>
 
     <div class="steps">
@@ -455,10 +455,10 @@
       <div class="step done"><div class="sn">Plan</div><div class="sv">wrap the dispatch; N = 1</div></div>
       <div class="step done"><div class="sn">Build</div><div class="sv">story-dev, Sonnet + 15 fix rounds</div></div>
       <div class="step done"><div class="sn">Review</div><div class="sv">15 verified rounds, 1 held; stopped by Sammy</div></div>
-      <div class="step now"><div class="sn">QA</div><div class="sv">qa-verifier + skeptics</div></div>
-      <div class="step"><div class="sn">Merge</div><div class="sv">&mdash;</div></div>
-      <div class="step"><div class="sn">Deploy</div><div class="sv">Sammy&rsquo;s go only</div></div>
-      <div class="step"><div class="sn">Close</div><div class="sv">&mdash;</div></div>
+      <div class="step done"><div class="sn">QA</div><div class="sv">6/6, 12 skeptic votes</div></div>
+      <div class="step done"><div class="sn">Merge</div><div class="sv">a847e532 &mdash; Sammy&rsquo;s go</div></div>
+      <div class="step"><div class="sn">Deploy</div><div class="sv">not requested</div></div>
+      <div class="step now"><div class="sn">Close</div><div class="sv">postmortem running</div></div>
     </div>
 
     <div class="note" style="margin-bottom:18px">
@@ -469,7 +469,7 @@
 
   <section class="section">
     <h2>Filed, no story card</h2>
-    <p class="sub">Thirteen open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; six came out of E2-S2, E2-S5 and E9-S10; one is a tracking issue spanning nine independent gaps.</p>
+    <p class="sub">Nineteen open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; six came out of E2-S2, E2-S5 and E9-S10; four came out of E2-S3; one is a tracking issue spanning nine independent gaps.</p>
     <div class="issues">
       <div class="issue new"><span class="n">#476</span> — Persona set to "In system prompt" is silently dropped from solo prompts. Found by E2-S2's own fixtures.</div>
       <div class="issue new"><span class="n">#477</span> — Character's note rendering to whitespace ships a blank system message at every depth except 0.</div>
@@ -484,11 +484,15 @@
       <div class="issue new"><span class="n">#530</span> — A failed <code>loadChat</code> leaves <code>messages</code> and <code>currentChatFile</code> describing different chats; the next save writes the wrong transcript unconditionally. Data loss. Found by E2-S4 PR2's review.</div>
       <div class="issue new"><span class="n">#531</span> — <code>loadGroupChat</code>'s comment says group generations don't scan WI; false since 2 Aug. D-T5 rot above the hydrate it would mislead someone into deleting.</div>
       <div class="issue"><span class="n">#468 · #469 · #471</span> — Zero-turn prompt · image exemption vs fold · unguarded storage write.</div>
+      <div class="issue new"><span class="n">#537</span> — <code>runGenerateInterceptors</code> POSTs a route ggbc-backend does not serve, so server-extension generate-interceptors are silently no-ops and E2-S3&rsquo;s interceptor notice cannot fire in production. Found by E2-S3&rsquo;s review.</div>
+      <div class="issue new"><span class="n">#535</span> — Text-completion mode drops image attachments in the provider client with no notice. Found by E2-S3&rsquo;s review.</div>
+      <div class="issue new"><span class="n">#536</span> — The generation prefs sync PUTs the whole section, so an older bundle silently drops keys newer bundles added. Found by E2-S3&rsquo;s review.</div>
+      <div class="issue new"><span class="n">#534</span> — <code>vitest.config.ts</code> and <code>StoryTab.test.tsx</code> still claim one DOM suite; there are thirteen. Found by E2-S3&rsquo;s review.</div>
     </div>
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 12 Sep 2026 (E2-S3 started).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Sep 2026 (E2-S3 merged).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
