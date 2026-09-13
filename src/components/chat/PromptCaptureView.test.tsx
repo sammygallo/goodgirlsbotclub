@@ -292,6 +292,13 @@ describe('PromptCaptureSheet ownership states', () => {
     expect(screen.getByText(/Seam:/)).toBeTruthy();
   });
 
+  it('shows "no longer available" when a capture exists but nothing tagged it', () => {
+    useGenerationStore.getState().setLastPromptCapture(mkCapture({ seam: 'impersonate' }));
+    render(<PromptCaptureSheet isOpen={true} onClose={() => {}} messageId="m1" swipeIndex={0} />);
+    expect(screen.getByText(/no longer available for this turn/)).toBeTruthy();
+    expect(screen.queryByText(/Seam:/)).toBeNull();
+  });
+
   it('shows "no longer available" when the tag names a different message/swipe', () => {
     const c = mkCapture();
     useGenerationStore.getState().setLastPromptCapture(c);

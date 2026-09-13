@@ -178,6 +178,24 @@ describe('computeCaptureAttribution', () => {
     expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
   });
 
+  it('(h2) a post-Stage-A entry with no content key → null', () => {
+    const breakdown = createPromptBreakdown('solo');
+    addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 14);
+    const capture = mkCapture([entry('system', 40), { role: 'user' }]);
+
+    expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
+  });
+
+  it('(h3) a post-Stage-A entry whose content is an array of matching length → null', () => {
+    const breakdown = createPromptBreakdown('solo');
+    addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 3);
+    const capture = mkCapture([entry('system', 40), { role: 'user', content: ['a', 'b', 'c'] }]);
+
+    expect(computeCaptureAttribution(capture, breakdown)).toBeNull();
+  });
+
   it('(i) a call-site slice is present: the last entry is labelled', () => {
     const breakdown = createPromptBreakdown('solo');
     addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
