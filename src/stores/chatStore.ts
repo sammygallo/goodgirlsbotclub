@@ -5404,8 +5404,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             isTextCompletionMode()
           ),
       );
-      // E2-S3: same coordinates as the breakdown tag above — see swipeRight
-      // for why this tag call has to come after the dispatch.
+      // E2-S3: same coordinates as the breakdown tag above.
       if (capture) useGenerationStore.getState().tagLastPromptCaptureMessage(capture.id, lastAiMsg.id, lastAiMsg.swipeId);
       if (!stream) return;
       // Post-dispatch capture — see swipeRight for the rationale.
