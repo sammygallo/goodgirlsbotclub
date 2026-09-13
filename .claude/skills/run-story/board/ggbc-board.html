@@ -266,13 +266,13 @@
     <div class="stamp">
       <b>12 Sep 2026</b><br>
       main <b>8e69f383</b><br>
-      active <b>E2-S3 — building</b>
+      active <b>E2-S3 — in review, PR #538</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">2</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
@@ -313,20 +313,20 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E2">
-          <div class="id">E2-S3</div>
-          <div class="t">Show-prompt toggle &mdash; post-transform exact-prompt viewer</div>
-          <div class="m">Started 12 Sep on <code>claude/e2-s3-show-prompt</code> from <code>8e69f383</code>. Displays the array <code>api.generateMessage</code> receives after the instruct collapse and any interceptor replacement, captured by one helper that wraps all six dispatch seams. Volatile slot only &mdash; never persisted, never exported. N&nbsp;=&nbsp;1 task-PR; trigger-tier review at the &sect;5 prompt-assembly row (4&ndash;6 full + confirmation, ~6.2&ndash;18.5M).</div>
-          <div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate">review: trigger tier</span></div>
-        </article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E2">
+          <div class="id">E2-S3</div>
+          <div class="t">Show-prompt toggle &mdash; post-transform exact-prompt viewer</div>
+          <div class="m">Draft PR <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/538">#538</a> from <code>claude/e2-s3-show-prompt</code> @ <code>410cfaf5</code>. One helper wraps transform + capture + dispatch at all six seams; the payload lives in a volatile slot only. <b>15 verified trigger-tier rounds + a 16th held at the &sect;5 cost gate</b>; production logic unchanged since round 8; rounds 9&ndash;15 found only test pins and false prose. Sammy stopped the loop at the hold (option 2): checklist item 3 is not met and the merge is his call. 116 files / 2415 tests; goldens untouched. Filed #534 #535 #536 #537.</div>
+          <div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate hot">&sect;8: did not converge</span><span class="gate">QA running</span></div>
+        </article>
       </div>
     </section>
 
@@ -447,15 +447,15 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S3 &mdash; Show-prompt toggle, in build</h2>
+    <h2>E2-S3 &mdash; Show-prompt toggle, in review (PR #538)</h2>
     <p class="sub">The exact post-transform payload, shown to the user who sent it. E2-S2 measured the prompt at assembly time; this story captures what the provider client is actually handed after the instruct collapse and any extension interceptor, names the transform when one changed the structure, and keeps the payload out of every save, sync and export path by construction.</p>
 
     <div class="steps">
       <div class="step done"><div class="sn">Intake</div><div class="sv">premise holds; six seams re-grounded</div></div>
       <div class="step done"><div class="sn">Plan</div><div class="sv">wrap the dispatch; N = 1</div></div>
-      <div class="step now"><div class="sn">Build</div><div class="sv">story-dev, Sonnet</div></div>
-      <div class="step"><div class="sn">Review</div><div class="sv">trigger tier</div></div>
-      <div class="step"><div class="sn">QA</div><div class="sv">&mdash;</div></div>
+      <div class="step done"><div class="sn">Build</div><div class="sv">story-dev, Sonnet + 15 fix rounds</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">15 verified rounds, 1 held; stopped by Sammy</div></div>
+      <div class="step now"><div class="sn">QA</div><div class="sv">qa-verifier + skeptics</div></div>
       <div class="step"><div class="sn">Merge</div><div class="sv">&mdash;</div></div>
       <div class="step"><div class="sn">Deploy</div><div class="sv">Sammy&rsquo;s go only</div></div>
       <div class="step"><div class="sn">Close</div><div class="sv">&mdash;</div></div>
