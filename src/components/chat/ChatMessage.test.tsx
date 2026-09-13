@@ -293,7 +293,7 @@ describe('ChatMessage — the "prompt" button is gated on showExactPrompt', () =
 // ---------------------------------------------------------------------------
 
 describe('ChatMessage — the read half of the prompt-capture ownership wire (R5-C1)', () => {
-  // The producer half (each generation seam WRITES `lastPromptCaptureTag`)
+  // The producer half
   // is pinned in chatStore.promptCapture.callSites.test.ts. This is the only
   // place that supplies the comparison's other half — `swipeIndex={swipeId
   // ?? 0}`, read off the message's CURRENTLY RENDERED swipe — the same gap

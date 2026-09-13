@@ -67,8 +67,8 @@ export function PromptCaptureView({ capture, attribution }: PromptCaptureViewPro
         </p>
         {capture.imagesFolded > 0 && (
           <p>
-            Image attachments: {capture.imagesFolded} — not part of the captured array, not shown
-            below.
+            Image attachments handed to the provider client: {capture.imagesFolded} — not part of
+            the captured array, not shown below.
           </p>
         )}
       </div>

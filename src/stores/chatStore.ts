@@ -5214,9 +5214,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             isTextCompletionMode()
           ),
       );
-      // E2-S3: capture has no message to tag until AFTER the dispatch above —
-      // unlike the breakdown tag, which tags the swipe this
-      // build is ABOUT to create. Same coordinates as that call
+      // E2-S3: same coordinates as the breakdown tag above
       // (`messageId, msg.swipes.length`), captured before this swipe
       // ever appended anything.
       if (capture) useGenerationStore.getState().tagLastPromptCaptureMessage(capture.id, messageId, msg.swipes.length);

@@ -270,6 +270,8 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     // (the swipe count BEFORE this call) differs from the 0 a copy-pasted
     // call site would produce.
     const messages = arrangeSolo({ swipes: ['Hi there.', 'Hello again.'], swipeId: 1 });
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
     const edges = stubEdges();
     const lastAi = messages[messages.length - 1];
     const swipesBefore = lastAi.swipes.length;
@@ -282,6 +284,16 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('swipe');
+    {
+      const call = edges.generate.mock.calls[0];
+      expect(c.provider).toBe(call[2]);
+      expect(c.model).toBe(call[3]);
+      expect(c.provider).toBe('claude');
+      expect(c.model).toBe('claude-3-test');
+      expect(c.characterName).toBe(call[1]);
+      expect(c.textCompletionMode).toBe(call[7]);
+      expect(c.imagesFolded).toBe((call[6] as unknown[] | undefined)?.length ?? 0);
+    }
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
@@ -300,6 +312,8 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
       swipes: ['Hi there.', 'Hello again.'],
       swipeId: 1,
     });
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
     const edges = stubEdges();
     const lastAi = messages[messages.length - 1];
 
@@ -310,6 +324,16 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('continue');
+    {
+      const call = edges.generate.mock.calls[0];
+      expect(c.provider).toBe(call[2]);
+      expect(c.model).toBe(call[3]);
+      expect(c.provider).toBe('claude');
+      expect(c.model).toBe('claude-3-test');
+      expect(c.characterName).toBe(call[1]);
+      expect(c.textCompletionMode).toBe(call[7]);
+      expect(c.imagesFolded).toBe((call[6] as unknown[] | undefined)?.length ?? 0);
+    }
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
@@ -321,6 +345,8 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
 
   it('impersonate captures the array api.generateMessage received', async () => {
     arrangeSolo();
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
     const edges = stubEdges();
 
     await useChatStore.getState().impersonate(IVY);
@@ -330,6 +356,16 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('impersonate');
+    {
+      const call = edges.generate.mock.calls[0];
+      expect(c.provider).toBe(call[2]);
+      expect(c.model).toBe(call[3]);
+      expect(c.provider).toBe('claude');
+      expect(c.model).toBe('claude-3-test');
+      expect(c.characterName).toBe(call[1]);
+      expect(c.textCompletionMode).toBe(call[7]);
+      expect(c.imagesFolded).toBe((call[6] as unknown[] | undefined)?.length ?? 0);
+    }
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
@@ -340,6 +376,8 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
 
   it('editMessageAndRegenerate captures the array api.generateMessage received', async () => {
     const messages = arrangeSolo();
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
     const edges = stubEdges();
     const userMsg = messages[0];
 
@@ -350,6 +388,16 @@ describe('exact-prompt capture is wired at every solo generation call site', () 
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('regenerate');
+    {
+      const call = edges.generate.mock.calls[0];
+      expect(c.provider).toBe(call[2]);
+      expect(c.model).toBe(call[3]);
+      expect(c.provider).toBe('claude');
+      expect(c.model).toBe('claude-3-test');
+      expect(c.characterName).toBe(call[1]);
+      expect(c.textCompletionMode).toBe(call[7]);
+      expect(c.imagesFolded).toBe((call[6] as unknown[] | undefined)?.length ?? 0);
+    }
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();
@@ -394,6 +442,8 @@ describe('exact-prompt capture is wired at the group generation call site', () =
       error: null,
       abortController: null,
     });
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
     const edges = stubEdges();
 
     await useChatStore.getState().forceGroupMemberTalk(input.characters[0], input.characters);
@@ -403,6 +453,16 @@ describe('exact-prompt capture is wired at the group generation call site', () =
     expect(c.messages).toEqual(sent);
     expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
     expect(c.seam).toBe('group');
+    {
+      const call = edges.generate.mock.calls[0];
+      expect(c.provider).toBe(call[2]);
+      expect(c.model).toBe(call[3]);
+      expect(c.provider).toBe('claude');
+      expect(c.model).toBe('claude-3-test');
+      expect(c.characterName).toBe(call[1]);
+      expect(c.textCompletionMode).toBe(call[7]);
+      expect(c.imagesFolded).toBe((call[6] as unknown[] | undefined)?.length ?? 0);
+    }
     expect(c.breakdown).not.toBeNull();
     expect(c.breakdown!.slices.length).toBeGreaterThan(0);
     expect(computeCaptureAttribution(c, c.breakdown)).not.toBeNull();

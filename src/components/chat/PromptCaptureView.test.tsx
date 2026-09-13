@@ -39,7 +39,7 @@ describe('PromptCaptureView', () => {
     render(<PromptCaptureView capture={mkCapture()} attribution={null} />);
     expect(screen.queryByText(/collapsed this prompt/)).toBeNull();
     expect(screen.queryByText(/replaced this payload/)).toBeNull();
-    expect(screen.queryByText(/Image attachments:/)).toBeNull();
+    expect(screen.queryByText(/Image attachments/)).toBeNull();
     expect(screen.queryByText(/Text completion mode/)).toBeNull();
   });
 
@@ -88,20 +88,20 @@ describe('PromptCaptureView', () => {
 
   it('renders no image-attachments line when imagesFolded is 0', () => {
     render(<PromptCaptureView capture={mkCapture({ imagesFolded: 0 })} attribution={null} />);
-    expect(screen.queryByText(/Image attachments:/)).toBeNull();
+    expect(screen.queryByText(/Image attachments/)).toBeNull();
   });
 
   it('renders the exact image-attachments line for a non-zero count', () => {
     render(<PromptCaptureView capture={mkCapture({ imagesFolded: 2 })} attribution={null} />);
     expect(
-      screen.getByText('Image attachments: 2 — not part of the captured array, not shown below.')
+      screen.getByText('Image attachments handed to the provider client: 2 — not part of the captured array, not shown below.')
     ).toBeTruthy();
   });
 
   it('renders the image-attachments line for a single attachment', () => {
     render(<PromptCaptureView capture={mkCapture({ imagesFolded: 1 })} attribution={null} />);
     expect(
-      screen.getByText('Image attachments: 1 — not part of the captured array, not shown below.')
+      screen.getByText('Image attachments handed to the provider client: 1 — not part of the captured array, not shown below.')
     ).toBeTruthy();
   });
 
@@ -113,7 +113,7 @@ describe('PromptCaptureView', () => {
       />
     );
     expect(
-      screen.getByText('Image attachments: 2 — not part of the captured array, not shown below.')
+      screen.getByText('Image attachments handed to the provider client: 2 — not part of the captured array, not shown below.')
     ).toBeTruthy();
   });
 
