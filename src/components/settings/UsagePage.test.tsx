@@ -24,10 +24,17 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { UsagePage } from './UsagePage';
 import { useGenerationStore } from '../../stores/generationStore';
 import { addSlice, createPromptBreakdown, type PromptBreakdown } from '../../utils/promptBreakdown';
+import { createPromptCapture } from '../../utils/promptCapture';
 
 afterEach(() => {
   cleanup();
-  useGenerationStore.setState({ lastPromptBreakdown: null, lastPromptBreakdownTag: null });
+  useGenerationStore.setState({
+    lastPromptBreakdown: null,
+    lastPromptBreakdownTag: null,
+    lastPromptCapture: null,
+    lastPromptCaptureTag: null,
+    showExactPrompt: false,
+  });
 });
 
 function soloWithStageC(): PromptBreakdown {
@@ -74,5 +81,94 @@ describe('UsagePage — Last prompt breakdown section (review round 4, R4-F/F8)'
     // from an unrelated section), so this isn't just the bare component.
     expect(screen.getByText('Usage')).toBeTruthy();
     expect(screen.getByText('Last prompt breakdown')).toBeTruthy();
+  });
+});
+
+describe('UsagePage — Last exact prompt section (E2-S3, gated on showExactPrompt)', () => {
+  it('does not render a captured payload when showExactPrompt is false, even with a non-null slot', () => {
+    const capture = createPromptCapture({
+      seam: 'send',
+      messages: [{ role: 'user', content: 'SENTINEL_SHOULD_NOT_RENDER' }],
+      collapsedByInstruct: false,
+      replacedByInterceptor: false,
+      provider: 'openai',
+      model: 'gpt-4o',
+      textCompletionMode: false,
+      imagesFolded: 0,
+      characterName: 'Ivy',
+      breakdown: null,
+    });
+    useGenerationStore.setState({ lastPromptCapture: capture, showExactPrompt: false });
+    render(<UsagePage />);
+    expect(screen.queryByText(/SENTINEL_SHOULD_NOT_RENDER/)).toBeNull();
+    expect(
+      screen.getByText('Exact prompt capture is off. Turn it on under Settings → Generation → Prompts to capture the next prompt.')
+    ).toBeTruthy();
+  });
+
+  it('shows "nothing captured yet" (not the off-state copy) when showExactPrompt is true and nothing has generated', () => {
+    useGenerationStore.setState({ lastPromptCapture: null, showExactPrompt: true });
+    render(<UsagePage />);
+    expect(
+      screen.getByText('No prompt captured yet this session — send a message to see it.')
+    ).toBeTruthy();
+    expect(screen.queryByText(/capture is off/)).toBeNull();
+  });
+
+  it('renders the captured payload when showExactPrompt is true', () => {
+    const capture = createPromptCapture({
+      seam: 'send',
+      messages: [{ role: 'user', content: 'SENTINEL_SHOULD_RENDER' }],
+      collapsedByInstruct: false,
+      replacedByInterceptor: false,
+      provider: 'openai',
+      model: 'gpt-4o',
+      textCompletionMode: false,
+      imagesFolded: 0,
+      characterName: 'Ivy',
+      breakdown: null,
+    });
+    useGenerationStore.setState({ lastPromptCapture: capture, showExactPrompt: true });
+    render(<UsagePage />);
+    expect(screen.getByText(/SENTINEL_SHOULD_RENDER/)).toBeTruthy();
+  });
+
+  it('attributes using the capture\'s OWN breakdown, not the independently-tagged lastPromptBreakdown slot (R2-C11)', () => {
+    const captureBreakdown = createPromptBreakdown('solo');
+    addSlice(captureBreakdown, { stage: 'A', id: 'main_prompt' }, 10, 12);
+    addSlice(captureBreakdown, { stage: 'B', cls: 'history', messageId: 'u1', role: 'user' }, 4, 5);
+    const capture = createPromptCapture({
+      seam: 'send',
+      messages: [
+        { role: 'system', content: 'x'.repeat(12) },
+        { role: 'user', content: 'x'.repeat(5) },
+      ],
+      collapsedByInstruct: false,
+      replacedByInterceptor: false,
+      provider: 'openai',
+      model: 'gpt-4o',
+      textCompletionMode: false,
+      imagesFolded: 0,
+      characterName: 'Ivy',
+      breakdown: captureBreakdown,
+    });
+    // A DIFFERENT breakdown, same slice lengths so a slot-paired lookup
+    // would still "succeed" but with the wrong labels — proving the page
+    // reads the capture's own breakdown, not this slot.
+    const foreignBreakdown = createPromptBreakdown('solo');
+    addSlice(foreignBreakdown, { stage: 'A', id: 'persona_before_char' }, 10, 12);
+    addSlice(foreignBreakdown, { stage: 'B', cls: 'authors_note' }, 4, 5);
+
+    useGenerationStore.setState({
+      lastPromptCapture: capture,
+      lastPromptBreakdown: foreignBreakdown,
+      showExactPrompt: true,
+    });
+    render(<UsagePage />);
+
+    expect(screen.getByText(/main_prompt/)).toBeTruthy();
+    expect(screen.getByText(/history \(user\)/)).toBeTruthy();
+    expect(screen.queryByText(/persona/)).toBeNull();
+    expect(screen.queryByText(/authors_note/)).toBeNull();
   });
 });

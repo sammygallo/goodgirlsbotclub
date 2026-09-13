@@ -79,6 +79,7 @@ import {
   type WiEntryRecord,
   type WiWrapperKind,
 } from '../utils/promptBreakdown';
+import { createPromptCapture, structurallyEqual, type PromptCapture, type PromptCaptureSeam } from '../utils/promptCapture';
 import { useUsageStore } from './usageStore';
 import { usePromptTemplateStore } from './promptTemplateStore';
 import { getInstructTemplate, formatInstructPrompt } from '../utils/instructTemplates';
@@ -3375,19 +3376,28 @@ async function generateGroupTurn(
   recordAttachments(breakdown, images);
   useGenerationStore.getState().setLastPromptBreakdown(breakdown);
 
-  const finalContext = await runGenerateInterceptors(
-    maybeApplyInstructMode(context),
+  const { result: stream, capture, finalContext } = await dispatchWithCapture(
+    context,
     character.name,
-  );
-  const stream = await api.generateMessage(
-    finalContext,
-    character.name,
-    provider,
-    model,
-    abortController.signal,
-    getGenerationOptions(),
-    images,
-    isTextCompletionMode()
+    {
+      seam: 'group',
+      provider,
+      model,
+      images,
+      textCompletionMode: isTextCompletionMode(),
+      breakdown,
+    },
+    (messages) =>
+      api.generateMessage(
+        messages,
+        character.name,
+        provider,
+        model,
+        abortController.signal,
+        getGenerationOptions(),
+        images,
+        isTextCompletionMode()
+      ),
   );
 
   if (!stream) return false;
@@ -3417,6 +3427,10 @@ async function generateGroupTurn(
   // round may already have replaced the slot by the time this line runs.
   // Freshly created message, so swipe 0 (review round 1, M3/F6).
   useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId, 0);
+  // E2-S3: parallel tagger for the exact-prompt capture — see
+  // `lastPromptCaptureTag`'s own doc comment for why this is a separate call
+  // rather than an extension of the one above. No-op when capture is off.
+  if (capture) useGenerationStore.getState().tagLastPromptCaptureMessage(capture.id, aiMessageId, 0);
 
   let responseText = '';
   for await (const token of parseSSEStream(stream)) {
@@ -3489,32 +3503,42 @@ async function generateWithFallback(
   generationOptions: GenerationOptions,
   images: GenerationImage[] | undefined,
   textCompletionMode: boolean,
-): Promise<{ stream: ReadableStream<Uint8Array> | null; usedFallback: boolean }> {
+): Promise<{ stream: ReadableStream<Uint8Array> | null; usedFallback: boolean; provider: string; model: string }> {
   try {
     const stream = await api.generateMessage(messages, characterName, provider, model, signal, generationOptions, images, textCompletionMode);
-    return { stream, usedFallback: false };
+    return { stream, usedFallback: false, provider, model };
   } catch (err) {
     if ((err as Error).name === 'AbortError') throw err;
     const fallback = getFallbackProviderAndModel();
     if (!fallback) throw err;
     const stream = await api.generateMessage(messages, characterName, fallback.provider, fallback.model, signal, generationOptions, images, textCompletionMode);
-    return { stream, usedFallback: true };
+    return { stream, usedFallback: true, provider: fallback.provider, model: fallback.model };
   }
 }
 
+type ContextMessage = { role: 'user' | 'assistant' | 'system'; content: string };
+
 // Helper: optionally convert message array into a single instruct-mode message
 // when instruct mode is enabled (or text completion mode requires it).
+//
+// E2-S3: returns whether it collapsed the array, rather than leaving the
+// caller to infer that from reference identity. Identity would be an
+// implementation detail read as intent — a future defensive `return
+// [...messages]` on an early-return branch, or a future version of this
+// function that rebuilds the array without actually collapsing it, would
+// silently flip that inference. The two early-return branches below report
+// `false` explicitly for the same reason.
 function maybeApplyInstructMode(
-  messages: { role: 'user' | 'assistant' | 'system'; content: string }[]
-): { role: 'user' | 'assistant' | 'system'; content: string }[] {
+  messages: ContextMessage[]
+): { messages: ContextMessage[]; collapsed: boolean } {
   const { instruct } = useGenerationStore.getState();
   // Text completion mode implicitly requires instruct formatting
-  if (!instruct.enabled && instruct.completionMode !== 'text') return messages;
+  if (!instruct.enabled && instruct.completionMode !== 'text') return { messages, collapsed: false };
   const tpl = getInstructTemplate(instruct.templateId);
-  if (!tpl) return messages;
+  if (!tpl) return { messages, collapsed: false };
 
   const prompt = formatInstructPrompt(messages, tpl);
-  return [{ role: 'user', content: prompt }];
+  return { messages: [{ role: 'user', content: prompt }], collapsed: true };
 }
 
 /** Phase 10.3: returns true when the user has selected text completion mode. */
@@ -3522,17 +3546,21 @@ function isTextCompletionMode(): boolean {
   return useGenerationStore.getState().instruct.completionMode === 'text';
 }
 
-type ContextMessage = { role: 'user' | 'assistant' | 'system'; content: string };
-
 /**
  * Run installed server extensions' generate-interceptors before AI generation.
  * Extensions that declare `generate_interceptor: true` in manifest.json are called
  * at POST /api/plugins/<name>/generate-interceptors. Fails silently per-extension.
+ *
+ * E2-S3: `replaced` reports whether an interceptor's response actually
+ * CHANGED the array, not merely whether one returned a well-formed array —
+ * a read-only extension (logger, moderation observer) has every reason to
+ * echo back exactly what it was given, and that is not a replacement the
+ * viewer should claim.
  */
 async function runGenerateInterceptors(
   context: ContextMessage[],
   characterName: string,
-): Promise<ContextMessage[]> {
+): Promise<{ messages: ContextMessage[]; replaced: boolean }> {
   let result = context;
   try {
     const { useServerExtensionStore } = await import('./serverExtensionStore');
@@ -3555,7 +3583,73 @@ async function runGenerateInterceptors(
   } catch {
     // Store not available — skip
   }
-  return result;
+  // Structural, not `JSON.stringify`, comparison: an interceptor that
+  // re-serializes the same content with keys in a different order (a
+  // non-JS runtime, a typed struct) must not read as a replacement, and
+  // comparing the FINAL result against the ORIGINAL context (rather than
+  // accumulating a flag hop-by-hop) means a later hop restoring an earlier
+  // hop's rewrite is correctly reported as unchanged.
+  return { messages: result, replaced: !structurallyEqual(result, context) };
+}
+
+/**
+ * E2-S3: wraps the transform pipeline + exact-prompt capture + dispatch for
+ * one generation seam, so "captured after both transforms" is the only
+ * ordering there is rather than a rule each call site has to follow on its
+ * own. `finalContext` (the local this function computes) reaches the seam's
+ * `send` callback only through that callback's own parameter — correctness
+ * rests on each seam's call-site test asserting the dispatched array against
+ * the published capture, not on `context` being unreachable.
+ *
+ * The capture publishes BEFORE `send` runs: it describes what is ABOUT to be
+ * handed to the client, so a dispatch that throws still leaves something in
+ * the slot for the user to inspect. Skipped entirely when
+ * `generationStore.showExactPrompt` is off — the toggle gates the capture,
+ * not just the viewer, so a user who hasn't asked for this doesn't pay for a
+ * copy of their whole prompt sitting in memory.
+ *
+ * `finalContext` is also returned alongside `result`/`capture`: one call site
+ * (`generateGroupTurn`) derives its own token-usage estimate from the
+ * post-transform array, a pre-existing need unrelated to this story, and
+ * returning it here is cheaper than re-running the transforms (which would
+ * re-dispatch to any interceptor a second time).
+ */
+async function dispatchWithCapture<T>(
+  context: ContextMessage[],
+  characterName: string,
+  meta: {
+    seam: PromptCaptureSeam;
+    provider: string;
+    model: string;
+    images: GenerationImage[] | undefined;
+    textCompletionMode: boolean;
+    breakdown: PromptBreakdown;
+  },
+  send: (messages: ContextMessage[]) => Promise<T>,
+): Promise<{ result: T; capture: PromptCapture | null; finalContext: ContextMessage[] }> {
+  const instructResult = maybeApplyInstructMode(context);
+  const interceptorResult = await runGenerateInterceptors(instructResult.messages, characterName);
+  const finalContext = interceptorResult.messages;
+
+  let capture: PromptCapture | null = null;
+  if (useGenerationStore.getState().showExactPrompt) {
+    capture = createPromptCapture({
+      seam: meta.seam,
+      messages: finalContext,
+      collapsedByInstruct: instructResult.collapsed,
+      replacedByInterceptor: interceptorResult.replaced,
+      provider: meta.provider,
+      model: meta.model,
+      textCompletionMode: meta.textCompletionMode,
+      imagesFolded: meta.images?.length ?? 0,
+      characterName,
+      breakdown: meta.breakdown,
+    });
+    useGenerationStore.getState().setLastPromptCapture(capture);
+  }
+
+  const result = await send(finalContext);
+  return { result, capture, finalContext };
 }
 
 // Helper: save chat to backend
@@ -5097,20 +5191,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
       useGenerationStore.getState().tagLastBreakdownMessage(breakdown, messageId, msg.swipes.length);
       const generationOptions = getGenerationOptions();
 
-      const finalContext = await runGenerateInterceptors(
-        maybeApplyInstructMode(context),
+      const { result: stream, capture } = await dispatchWithCapture(
+        context,
         character.name,
+        {
+          seam: 'swipe',
+          provider,
+          model,
+          images: swipeImages,
+          textCompletionMode: isTextCompletionMode(),
+          breakdown,
+        },
+        (messages) =>
+          api.generateMessage(
+            messages,
+            character.name,
+            provider,
+            model,
+            abortController.signal,
+            generationOptions,
+            swipeImages,
+            isTextCompletionMode()
+          ),
       );
-      const stream = await api.generateMessage(
-        finalContext,
-        character.name,
-        provider,
-        model,
-        abortController.signal,
-        generationOptions,
-        swipeImages,
-        isTextCompletionMode()
-      );
+      // E2-S3: same coordinates as the breakdown tag above
+      // (`messageId, msg.swipes.length`), captured before this swipe
+      // ever appended anything.
+      if (capture) useGenerationStore.getState().tagLastPromptCaptureMessage(capture.id, messageId, msg.swipes.length);
       if (!stream) return;
       // Record fired WI only once the request actually dispatched — a thrown
       // send or null stream is not a generation (mirrors saveWiTimers gating).
@@ -5273,21 +5380,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // is `lastAiMsg.swipeId` as captured here, unchanged by this call
       // (review round 1, M3/F6).
       useGenerationStore.getState().tagLastBreakdownMessage(breakdown, lastAiMsg.id, lastAiMsg.swipeId);
-      const finalContext = await runGenerateInterceptors(
-        maybeApplyInstructMode(context),
-        character.name,
-      );
       const generationOptions = getGenerationOptions();
-      const stream = await api.generateMessage(
-        finalContext,
+      const { result: stream, capture } = await dispatchWithCapture(
+        context,
         character.name,
-        provider,
-        model,
-        abortController.signal,
-        generationOptions,
-        continueImages,
-        isTextCompletionMode()
+        {
+          seam: 'continue',
+          provider,
+          model,
+          images: continueImages,
+          textCompletionMode: isTextCompletionMode(),
+          breakdown,
+        },
+        (messages) =>
+          api.generateMessage(
+            messages,
+            character.name,
+            provider,
+            model,
+            abortController.signal,
+            generationOptions,
+            continueImages,
+            isTextCompletionMode()
+          ),
       );
+      // E2-S3: same coordinates as the breakdown tag above.
+      if (capture) useGenerationStore.getState().tagLastPromptCaptureMessage(capture.id, lastAiMsg.id, lastAiMsg.swipeId);
       if (!stream) return;
       // Post-dispatch capture — see swipeRight for the rationale.
       captureWiFired(currentChatFile, wiOut, currentTurn);
@@ -5422,12 +5540,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
 
       const { provider, model } = getProviderAndModel();
-      const finalContext = await runGenerateInterceptors(
-        maybeApplyInstructMode(context),
-        character.name,
-      );
       const generationOptions = getGenerationOptions();
-      const stream = await api.generateMessage(finalContext, character.name, provider, model, abortController.signal, generationOptions, undefined, isTextCompletionMode());
+      // E2-S3: no capture tagger here — impersonate creates no chat message,
+      // so its capture (when the toggle is on) has nothing to be tagged with
+      // and stays untagged, same as `lastPromptBreakdownTag` already does for
+      // this seam.
+      const { result: stream } = await dispatchWithCapture(
+        context,
+        character.name,
+        {
+          seam: 'impersonate',
+          provider,
+          model,
+          images: undefined,
+          textCompletionMode: isTextCompletionMode(),
+          breakdown,
+        },
+        (messages) =>
+          api.generateMessage(messages, character.name, provider, model, abortController.signal, generationOptions, undefined, isTextCompletionMode()),
+      );
       if (!stream) return '';
       // Post-dispatch capture — see swipeRight for the rationale.
       captureWiFired(currentChatFile, wiOut, currentTurn);
@@ -5666,21 +5797,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
       const generationOptions = getGenerationOptions();
 
-      const finalContext = await runGenerateInterceptors(
-        maybeApplyInstructMode(context),
+      const { result: fallbackResult, capture } = await dispatchWithCapture(
+        context,
         character.name,
+        {
+          seam: 'send',
+          provider,
+          model,
+          images: sendImages,
+          textCompletionMode: isTextCompletionMode(),
+          breakdown,
+        },
+        (messages) =>
+          generateWithFallback(
+            messages,
+            character.name,
+            provider,
+            model,
+            abortController.signal,
+            generationOptions,
+            sendImages,
+            isTextCompletionMode()
+          ),
       );
-      const { stream, usedFallback } = await generateWithFallback(
-        finalContext,
-        character.name,
-        provider,
-        model,
-        abortController.signal,
-        generationOptions,
-        sendImages,
-        isTextCompletionMode()
-      );
+      const { stream, usedFallback } = fallbackResult;
       if (usedFallback) showToastGlobal('Primary provider failed — using fallback', 'warning');
+      // E2-S3: which provider/model actually served the turn isn't known
+      // until generateWithFallback above resolves, so the capture (if any)
+      // is amended here rather than being recorded correctly up front —
+      // `fallbackResult.provider`/`.model` are whichever one actually ran,
+      // not the primary pair this seam started with.
+      if (capture && usedFallback) {
+        useGenerationStore.getState().notePromptCaptureFallback(capture.id, fallbackResult.provider, fallbackResult.model);
+      }
 
       if (stream) {
         // Post-dispatch capture — see swipeRight for the rationale.
@@ -5704,6 +5853,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // E2-S2 task 4 — see generateGroupTurn for the identity-guard rationale.
         // Freshly created message, so swipe 0 (review round 1, M3/F6).
         useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId, 0);
+        if (capture) useGenerationStore.getState().tagLastPromptCaptureMessage(capture.id, aiMessageId, 0);
 
         let responseText = '';
         const sseMeta: SSEStreamMeta = { finishReason: null };
@@ -6091,19 +6241,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
       useGenerationStore.getState().setLastPromptBreakdown(breakdown);
       const generationOptions = getGenerationOptions();
 
-      const finalContext = await runGenerateInterceptors(
-        maybeApplyInstructMode(context),
+      const { result: stream, capture } = await dispatchWithCapture(
+        context,
         character.name,
-      );
-      const stream = await api.generateMessage(
-        finalContext,
-        character.name,
-        provider,
-        model,
-        abortController.signal,
-        generationOptions,
-        regenImages,
-        isTextCompletionMode()
+        {
+          seam: 'regenerate',
+          provider,
+          model,
+          images: regenImages,
+          textCompletionMode: isTextCompletionMode(),
+          breakdown,
+        },
+        (messages) =>
+          api.generateMessage(
+            messages,
+            character.name,
+            provider,
+            model,
+            abortController.signal,
+            generationOptions,
+            regenImages,
+            isTextCompletionMode()
+          ),
       );
 
       if (stream) {
@@ -6128,6 +6287,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // E2-S2 task 4 — see generateGroupTurn for the identity-guard rationale.
         // Freshly created message, so swipe 0 (review round 1, M3/F6).
         useGenerationStore.getState().tagLastBreakdownMessage(breakdown, aiMessageId, 0);
+        if (capture) useGenerationStore.getState().tagLastPromptCaptureMessage(capture.id, aiMessageId, 0);
 
         let responseText = '';
         const sseMeta: SSEStreamMeta = { finishReason: null };
