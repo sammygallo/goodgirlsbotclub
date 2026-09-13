@@ -43,6 +43,13 @@ describe('PromptCaptureView', () => {
     expect(screen.queryByText(/Text completion mode/)).toBeNull();
   });
 
+  it('renders entry content byte-for-byte, including leading, trailing and repeated whitespace', () => {
+    const exact = '\n  SYSTEM\n\n\n  tail  \n';
+    const capture = mkCapture({ messages: [{ role: 'system', content: exact }] });
+    const { container } = render(<PromptCaptureView capture={capture} attribution={null} />);
+    expect(container.textContent ?? '').toContain(exact);
+  });
+
   it('renders each entry\'s role as its block header', () => {
     render(<PromptCaptureView capture={mkCapture()} attribution={null} />);
     expect(screen.getByText('system')).toBeTruthy();

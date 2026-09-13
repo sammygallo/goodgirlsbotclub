@@ -129,6 +129,21 @@ describe('exact-prompt capture flags', () => {
     expect(capture()!.messages).toHaveLength(1);
   });
 
+  it('collapsedByInstruct is true under text completion mode even with instruct disabled', async () => {
+    arrange();
+    useGenerationStore.setState({
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG, enabled: false, completionMode: 'text', templateId: 'chatml' },
+    });
+    const gen = vi.spyOn(api, 'generateMessage').mockResolvedValue(sseOnce('reply'));
+    vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+
+    await useChatStore.getState().sendMessage('hi', IVY);
+
+    expect(capture()!.collapsedByInstruct).toBe(true);
+    expect(capture()!.messages).toHaveLength(1);
+    expect(gen.mock.calls[0][0]).toHaveLength(1);
+  });
+
   it('collapsedByInstruct stays false when instruct is enabled but the template id is unknown', async () => {
     // `instruct.enabled` is true here, but `getInstructTemplate` finds
     // nothing for this id, so the array passes through unchanged — the
