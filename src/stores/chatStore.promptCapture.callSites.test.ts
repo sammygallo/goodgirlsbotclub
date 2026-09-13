@@ -9,9 +9,7 @@
  * `promptGoldens.fixtures.ts` rather than inventing a new arrangement.
  *
  * Byte-identity is checked two ways: `toEqual` against the spy's
- * captured argument (structural), and `JSON.stringify` equality (so a
- * capture that quietly dropped or reordered a field the deep-equal check
- * happens not to weight still reddens).
+ * captured argument (structural), and `JSON.stringify` equality.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -694,6 +692,106 @@ describe('capture metadata matches the dispatch on the non-fallback path (C7)', 
     const c = capture()!;
     expect(c.textCompletionMode).toBe(true);
     expect(call[7]).toBe(true);
+  });
+});
+
+describe('capture metadata under non-default inputs at every non-send seam (R12-C1)', () => {
+  const DATA_URLS = ['data:image/png;base64,aaa', 'data:image/png;base64,bbb'];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useGenerationStore.setState({ lastPromptCapture: null, lastPromptCaptureTag: null, showExactPrompt: true });
+  });
+
+  async function arrangeSoloWithImagesAndTextMode(aiMessageOverride: Partial<ChatMessage> = {}) {
+    const messages = arrangeSolo(aiMessageOverride);
+    const withImages = messages.map((m) => (m.isUser ? { ...m, images: DATA_URLS } : m));
+    useChatStore.setState({ messages: withImages });
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
+    useGenerationStore.setState({ instruct: { ...DEFAULT_INSTRUCT_CONFIG, completionMode: 'text' } });
+    return withImages;
+  }
+
+  function expectMeta(c: NonNullable<ReturnType<typeof capture>>, call: unknown[], images: number) {
+    expect(c.imagesFolded).toBe(images);
+    expect((call[6] as unknown[] | undefined)?.length ?? 0).toBe(images);
+    expect(c.textCompletionMode).toBe(true);
+    expect(call[7]).toBe(true);
+  }
+
+  it('swipeRight: imagesFolded and textCompletionMode reflect the dispatch', async () => {
+    const messages = await arrangeSoloWithImagesAndTextMode({ swipes: ['Hi there.', 'Hello again.'], swipeId: 1 });
+    const edges = stubEdges();
+    const lastAi = messages[messages.length - 1];
+
+    await useChatStore.getState().swipeRight(lastAi.id, IVY);
+
+    expectMeta(capture()!, edges.generate.mock.calls[0], 2);
+  });
+
+  it('continueMessage: imagesFolded and textCompletionMode reflect the dispatch', async () => {
+    await arrangeSoloWithImagesAndTextMode({
+      content: 'Hello again.',
+      swipes: ['Hi there.', 'Hello again.'],
+      swipeId: 1,
+    });
+    const edges = stubEdges();
+
+    await useChatStore.getState().continueMessage(IVY);
+
+    expectMeta(capture()!, edges.generate.mock.calls[0], 2);
+  });
+
+  it('editMessageAndRegenerate: imagesFolded and textCompletionMode reflect the dispatch', async () => {
+    const messages = await arrangeSoloWithImagesAndTextMode();
+    const edges = stubEdges();
+    const userMsg = messages[0];
+
+    await useChatStore.getState().editMessageAndRegenerate(userMsg.id, 'Anyone home?', IVY);
+
+    expectMeta(capture()!, edges.generate.mock.calls[0], 2);
+  });
+
+  it('impersonate: no images are handed to the client, and textCompletionMode reflects the dispatch', async () => {
+    await arrangeSoloWithImagesAndTextMode();
+    const edges = stubEdges();
+
+    await useChatStore.getState().impersonate(IVY);
+
+    const call = edges.generate.mock.calls[0];
+    expect(call[6]).toBeUndefined();
+    expectMeta(capture()!, call, 0);
+  });
+
+  it('generateGroupTurn (forceGroupMemberTalk): imagesFolded and textCompletionMode reflect the dispatch', async () => {
+    resetStores();
+    const fx = GROUP_FIXTURES.find((f) => f.name === 'swap')!;
+    const input = fx.setup();
+    let lastUserIdx = -1;
+    for (let i = input.messages.length - 1; i >= 0; i--) {
+      if (input.messages[i].isUser) { lastUserIdx = i; break; }
+    }
+    expect(lastUserIdx, 'sanity: the group fixture has a user turn').toBeGreaterThanOrEqual(0);
+    const messages = input.messages.map((m, i) => (i === lastUserIdx ? { ...m, images: DATA_URLS } : m));
+    useChatHistoryRagStore.setState({ enabled: false });
+    useChatStore.setState({
+      messages,
+      currentChatFile: 'prompt-capture-group.jsonl',
+      groupChats: [mkGroupChat(input.characters)],
+      isSending: false,
+      isStreaming: false,
+      error: null,
+      abortController: null,
+    });
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ activeProvider: 'claude', activeModel: 'claude-3-test' });
+    useGenerationStore.setState({ instruct: { ...DEFAULT_INSTRUCT_CONFIG, completionMode: 'text' } });
+    const edges = stubEdges();
+
+    await useChatStore.getState().forceGroupMemberTalk(input.characters[0], input.characters);
+
+    expectMeta(capture()!, edges.generate.mock.calls[0], 2);
   });
 });
 
