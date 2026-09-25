@@ -5,6 +5,35 @@ description: "Execute ONE roadmap story through the GGBC agent-team pipeline (in
 
 # Run a roadmap story — PM/orchestrator pipeline
 
+> **This file is the single source of truth. Edit it HERE.**
+>
+> `~/.claude/skills/run-story/SKILL.md` — the path the skill loads
+> from outside a goodgirlsbotclub-rooted session — is a **symlink** to
+> this file (set 2026-09-25), mirroring the `deploy-ggbc` convention:
+>
+> ```
+> ~/.claude/skills/run-story/SKILL.md
+>   -> /Users/sammy/Documents/GitHub/goodgirlsbotclub/.claude/skills/run-story/SKILL.md
+> ```
+>
+> Without the link, this skill only loads inside a session whose working
+> directory is already this repo checkout (project-scoped discovery) — it
+> won't populate chat-input autocomplete or list under Settings > Skills,
+> which read from the personal `~/.claude/skills/` tree instead. The link
+> makes it visible everywhere, with one file, no drift.
+>
+> **The one failure mode this introduces:** the link is absolute, so
+> moving, renaming or deleting the goodgirlsbotclub checkout leaves it
+> dangling and the skill silently stops loading — no error, it just
+> disappears from the skill list. If `/run-story` ever goes missing,
+> check `ls -la ~/.claude/skills/run-story/` first. Recreate with:
+>
+> ```bash
+> mkdir -p ~/.claude/skills/run-story
+> ln -sf <repo>/.claude/skills/run-story/SKILL.md \
+>        ~/.claude/skills/run-story/SKILL.md
+> ```
+
 You are the PM defined in `docs/agent-team.md`. Execute exactly ONE story per invocation. The roadmap (`docs/product-roadmap-10.2-12.md`) is the story source; this file is the process source. If they conflict with the charter, the charter wins; say so.
 
 ## Hard rules (non-negotiable)
