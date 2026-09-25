@@ -264,9 +264,9 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>13 Sep 2026</b><br>
-      main <b>a847e532</b><br>
-      active <b>none — E2-S3 closing</b>
+      <b>25 Sep 2026</b><br>
+      main <b>1e6a555f</b><br>
+      active <b>E3-S1 — design draft</b>
     </div>
   </header>
 
@@ -367,10 +367,10 @@
           <div class="t">UI workshop — hero, sidebar, chat</div>
           <div class="m">Approved mockups gate all of E6-S2/S3/S4.</div>
         </article>
-        <article class="card" data-epic="E3">
+        <article class="card s-live" data-epic="E3">
           <div class="id">E3-S1</div>
           <div class="t">Cascade semantics design</div>
-          <div class="m">Gates E3-S2/S3, and E7-S2 builds on its override rails.</div>
+          <div class="m"><b>Running 25 Sep</b> &middot; branch <code>claude/e3-s1-cascade-semantics</code>, no PR yet. Design-story variant: L minimum, claim-set red-team via <code>story-review</code> design mode, exit = Sammy&rsquo;s design sign-off. Picked by Sammy at intake with Ready-for-dev empty; premise verified &mdash; no <code>resolveEffectiveSettings()</code> seam and no cascade spec exist on <code>main</code>. Gates E3-S2/S3, and E7-S2 builds on its override rails.</div>
         </article>
         <article class="card" data-epic="E1">
           <div class="id">E1-S2</div>
@@ -447,23 +447,23 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S3 &mdash; Show-prompt toggle, merged 13 Sep, closing</h2>
-    <p class="sub">The exact post-transform payload, shown to the user who sent it. E2-S2 measured the prompt at assembly time; this story captures what the provider client is actually handed after the instruct collapse and any extension interceptor, names the transform when one changed the structure, and keeps the payload out of every save, sync and export path by construction.</p>
+    <h2>E3-S1 &mdash; Cascade semantics design, started 25 Sep</h2>
+    <p class="sub">One documented precedence rule &mdash; global &rarr; character &rarr; chat &mdash; enforced by one resolution function, over an enumerated setting inventory. The spec has to name the fourth level the audit found (on eligible solo chats the server activation engine replaces the client scan and the user&rsquo;s scan depth is never sent), decide whether worlds are settings containers in v1, and say whether lore-book composition stays a separate resolution path. E3-S2/S3/S4 implement it; E7-S2 builds its wizard pages on the rails it specifies.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Intake</div><div class="sv">premise holds; six seams re-grounded</div></div>
-      <div class="step done"><div class="sn">Plan</div><div class="sv">wrap the dispatch; N = 1</div></div>
-      <div class="step done"><div class="sn">Build</div><div class="sv">story-dev, Sonnet + 15 fix rounds</div></div>
-      <div class="step done"><div class="sn">Review</div><div class="sv">15 verified rounds, 1 held; stopped by Sammy</div></div>
-      <div class="step done"><div class="sn">QA</div><div class="sv">6/6, 12 skeptic votes</div></div>
-      <div class="step done"><div class="sn">Merge</div><div class="sv">a847e532 &mdash; Sammy&rsquo;s go</div></div>
-      <div class="step"><div class="sn">Deploy</div><div class="sv">not requested</div></div>
-      <div class="step now"><div class="sn">Close</div><div class="sv">postmortem running</div></div>
+      <div class="step done"><div class="sn">Intake</div><div class="sv">no story ID; Ready for dev empty; Sammy picked E3-S1; premise holds</div></div>
+      <div class="step done"><div class="sn">Brief</div><div class="sv">AC verbatim + E7-S2/E4-S2 reading of AC3; N = 1</div></div>
+      <div class="step now"><div class="sn">Research</div><div class="sv">3 Opus lenses: inventory &middot; server-ignored sweep &middot; UI/persistence</div></div>
+      <div class="step"><div class="sn">Draft</div><div class="sv">Fable; Plan agent for the store-refactor plan</div></div>
+      <div class="step"><div class="sn">Red-team</div><div class="sv">story-review design mode, gate armed</div></div>
+      <div class="step"><div class="sn">QA</div><div class="sv">qa-verifier walks AC1&ndash;3</div></div>
+      <div class="step"><div class="sn">PR</div><div class="sv">docs-only; &sect;8 read-off</div></div>
+      <div class="step"><div class="sn">Sign-off</div><div class="sv">Sammy&rsquo;s design gate; deploy n/a</div></div>
     </div>
 
     <div class="note" style="margin-bottom:18px">
-      <h3>The design decision the plan settled</h3>
-      One helper <em>wraps</em> transform + capture + dispatch and hands each seam the final array through a callback parameter, so a seam cannot capture a different object than it sends. Both transforms report what they did through their return values rather than the helper inferring it from reference identity. The toggle gates capture itself, not just display: off means nothing is held in memory.
+      <h3>What the spec must not do</h3>
+      Invent a second override mechanism. The card&rsquo;s own success criterion says &ldquo;no parallel override mechanisms&rdquo; is already false on the day the spec is written &mdash; <code>resolveEffectiveBooks()</code> plus five call-site unions already resolve lore scope &mdash; so the rule is bounded to the inventory the spec enumerates, and the spec states in terms whether v1 absorbs lore composition or leaves it alone.
     </div>
   </section>
 
@@ -492,7 +492,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Sep 2026 (E2-S3 merged).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 25 Sep 2026 (E3-S1 started).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
