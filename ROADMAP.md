@@ -73,7 +73,7 @@ Features are grouped into **phases** ordered by user impact and dependency. Each
 ### 2.2 User Personas
 - **Gap:** No persona system. User is just "You" with a default avatar.
 - **ST Feature:** Named personas with avatar, description, and description position. Persona locking to characters/chats. Default persona.
-- **Work:** Create persona store. Persona CRUD UI. Persona selector in sidebar/header. Description injection into prompt at configurable position. Persona-character locking.
+- **Work:** Create persona store. Persona CRUD UI. Persona selector in sidebar/header. Description injection into prompt at configurable position.
 
 ### 2.3 Character Tags & Organization
 - **Gap:** Tags exist on characters but no filtering/organization UI.
@@ -125,7 +125,7 @@ Features are grouped into **phases** ordered by user impact and dependency. Each
 - `src/stores/worldInfoStore.ts`: lorebook store with full CRUD for books and entries. Per-entry fields: keys, content, comment, enabled, constant, caseSensitive, position, depth, order. Configurable scan depth. Multiple books can be active at once.
 - Keyword scanner (`scanMessagesForEntries`): joins the last N non-system messages into a haystack and matches entry keys (case-(in)sensitive). Constant entries bypass matching.
 - `buildConversationContext` in `chatStore.ts` groups matched entries by position and injects into the prompt: `before_char`, `after_char`, `before_an`, `after_an`, and `at_depth` (interleaved with history). Macros (`{{char}}` etc.) run on entry content.
-- UI at `/settings/worldinfo`: lorebook list with active toggle, rename, duplicate, delete, create, import, export; dedicated book editor with per-entry create/edit/enable/disable/delete.
+- UI at the `worldinfo` page (`SettingsPanel` `PAGE_COMPONENTS`): lorebook list with active toggle, rename, duplicate, delete, create, import, export; dedicated book editor with per-entry create/edit/enable/disable/delete.
 - JSON import/export uses the community lorebook format (`{ entries: { uid: { key, content, position, order, ... } } }`) with position codes 0-4 mapped round-trip.
 
 ### 4.2 Advanced World Info ✅

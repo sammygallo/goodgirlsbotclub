@@ -172,7 +172,7 @@ Got a 200-word "world history" in Description? That's paid every message even wh
 
 ### Trick 3: Don't Crank Scan Depth Globally
 
-If you set the global scan depth to 20, *every* card now searches 20 messages. Instead, leave the global at 4 and only raise it on the few cards that need long memory.
+Leave the global at 4 and only raise it on the few cards that need long memory.
 
 ### Trick 4: Use Order, Not Position, to Pick Favorites
 
