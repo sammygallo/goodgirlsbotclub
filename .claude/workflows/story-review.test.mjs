@@ -61,7 +61,8 @@
 //                                 asserted, because deleting them left the
 //                                 suite green when they were the deliverable
 //
-// Cases 14-21 cover clustering, skeptic batching, slicing and stance parity;
+// Cases 14-23 cover clustering, skeptic batching, slicing, stance parity, the
+// #528 red-team regressions and the PR #546 m6 finding fields;
 // they carry their own list at the point they are defined rather than extending
 // this one, because this list is about the COST GATE and they are not.
 //
@@ -148,11 +149,16 @@ function loadScript() {
 // many votes" are now different numbers, so the harness counts both — the vote
 // count is the invariant that must not move when the batch size does.
 function makeHarness({ findingsPerLens, args, deadLenses, cluster, skeptic }) {
-  const calls = { lens: 0, skeptic: 0, votes: 0, cluster: 0, batches: [], slices: [], logs: [] }
+  const calls = { lens: 0, skeptic: 0, votes: 0, cluster: 0, batches: [], slices: [], logs: [],
+                  lensSchema: null, lensPrompts: [], skepticPrompts: [] }
   const agent = async (prompt, opts = {}) => {
     const label = opts.label || ''
     if (label.startsWith('lens:')) {
       calls.lens++
+      // Captured so case 23 can read FINDINGS_SCHEMA as the script actually
+      // hands it to a lens, rather than re-parsing it out of the source text.
+      calls.lensSchema = opts.schema
+      calls.lensPrompts.push(prompt)
       const key = label.slice('lens:'.length)
       // A dead lens is `null` — exactly what agent() returns on a terminal error
       // or a user skip. #526's defect only exists in this state.
@@ -169,6 +175,7 @@ function makeHarness({ findingsPerLens, args, deadLenses, cluster, skeptic }) {
     }
     if (label.startsWith('skeptic')) {
       calls.skeptic++
+      calls.skepticPrompts.push(prompt)
       const n = Number(label.slice('skeptic'.length, label.indexOf(':')))
       const indices = [...prompt.matchAll(/^--- index (\d+) ---$/gm)].map((m) => Number(m[1]))
       calls.batches.push({ n, indices })
@@ -221,6 +228,9 @@ const finding = (title) => ({
   // actually see them dropped. Without them the check passed against a payload
   // that still discarded both.
   line: 7, suggested_kill_test: 'k',
+  // m6's optional fields, for the same reason: the alternate check in case 14
+  // derives its field list from FINDINGS_SCHEMA, so the fixture carries them all.
+  born: 'n/a', scope_flag: false,
 })
 
 // Mirrors the script's batch-count rule, including the floor of 2 that keeps the
@@ -562,10 +572,16 @@ console.log('story-review cost gate')
         JSON.stringify(merged.map((f) => [f.title, f.lenses, f.merged_from.length])))
   // C2: the alternate must arrive WHOLE. Dropping failure_scenario narrows the
   // cluster to one scenario on the exact field the skeptic prompt tests against.
-  // Every field FINDINGS_SCHEMA defines, named individually: a summary payload
-  // that keeps three of them must fail this, which is what it did before.
-  const ALT_FIELDS = ['title', 'claim', 'severity', 'failure_scenario', 'file', 'repo',
-                      'line', 'suggested_kill_test', 'lens']
+  // Every field FINDINGS_SCHEMA defines: a summary payload that keeps three of
+  // them must fail this, which is what it did before. Read off the schema the
+  // script hands its lenses (plus `lens`, which the script adds), so a field
+  // added to the schema later — as m6's born/scope_flag were — is covered
+  // without anyone remembering to extend a hand-written list.
+  const ALT_FIELDS = [...Object.keys(h.calls.lensSchema.properties.findings.items.properties), 'lens']
+  check('the alternate field list is the schema\'s, not a stale copy',
+        ['title', 'claim', 'severity', 'failure_scenario', 'file', 'repo', 'line',
+         'suggested_kill_test', 'born', 'scope_flag', 'lens'].every((k) => ALT_FIELDS.includes(k)),
+        `fields=${ALT_FIELDS.join(',')}`)
   check('a merged alternate carries its full finding, not a summary',
         merged.every((f) => f.merged_from.every((m) => ALT_FIELDS.every((k) => m[k] !== undefined))),
         JSON.stringify(merged[0] && merged[0].merged_from))
@@ -983,6 +999,128 @@ console.log('story-review cost gate')
           !threw && r && r.dedupedFindings === 6 && judged.length === 6 && /REJECTED/.test(r.clusterOutcome),
           `threw=${threw} deduped=${r && r.dedupedFindings} judged=${judged.length}`)
   }
+}
+
+// --- 23: PR #546 red-team m6 — born / scope_flag are fields, not prose -----
+// The stance tells a lens to say where a defect was born (`pre-existing` vs
+// `story-created`) and to flag a fix that adds a mechanism the AC never asked
+// for. The PM's FILED closure (run-story §5 / §8 item 2) turns on the first
+// label, and before m6 FINDINGS_SCHEMA had no field for either, so it arrived
+// as free text inside `claim` — unparseable and unverifiable.
+//
+//  m6a  both fields survive exact dedup, the cluster merge (representative AND
+//       alternates each keep their own), and the skeptic wave, onto the final
+//       confirmed / plausible objects
+//  m6b  a finding WITHOUT them still validates — they are optional, because
+//       journaled runs replay through this schema on resume
+//  m6c  neither is in any `required` array, and the item `required` list is
+//       exactly what it was before m6
+//  m6d  the lens prompt names the fields (design mode: `born` is `n/a`), and
+//       the skeptic prompt says they are not the skeptic's to judge
+
+// A validator for exactly the JSON-schema subset FINDINGS_SCHEMA uses: object +
+// required + properties, array + items, enum, and the primitive types. Small on
+// purpose — it is here to prove optionality, and m6b also asserts it REJECTS a
+// bad `born`, so a validator that accepts everything cannot pass the case.
+const validate = (schema, v) => {
+  if (schema.enum) return schema.enum.includes(v)
+  if (schema.type === 'object') {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+    if ((schema.required || []).some((k) => !(k in v))) return false
+    return Object.entries(schema.properties || {}).every(([k, s]) => !(k in v) || validate(s, v[k]))
+  }
+  if (schema.type === 'array') return Array.isArray(v) && v.every((x) => validate(schema.items, x))
+  if (schema.type === 'number') return typeof v === 'number'
+  if (schema.type === 'string') return typeof v === 'string'
+  if (schema.type === 'boolean') return typeof v === 'boolean'
+  return true
+}
+
+// m6a — the labels survive the whole pipeline, each finding keeping its own
+{
+  const tagged = (t, severity, born, scope_flag) => ({ ...finding(t), severity, born, scope_flag })
+  const h = makeHarness({
+    findingsPerLens: {
+      a: [tagged('rep', 'critical', 'pre-existing', true), tagged('split', 'major', 'story-created', false),
+          tagged('s2', 'minor', 'story-created', false)],
+      b: [tagged('alt', 'minor', 'story-created', false), tagged('s4', 'minor', 'pre-existing', false),
+          tagged('s5', 'minor', 'pre-existing', true)],
+    },
+    // 0 (critical, pre-existing, scoped) and 3 (minor, story-created, unscoped)
+    // describe one defect; the rest are singletons. Different labels on the two
+    // members on purpose: a merge that copied the representative's labels onto
+    // the alternate, or vice versa, must fail.
+    cluster: () => ({ groups: [{ members: [0, 3] }, { members: [1] }, { members: [2] },
+                               { members: [4] }, { members: [5] }] }),
+    // Deduped index 1 is `split`: partition 1 refutes it, partition 2 does not,
+    // so it lands in `plausible` and the labels are checked on that path too.
+    skeptic: ({ n, indices }) => indices.map((i) => ({ index: i, refuted: n === 1 && i === 1, reason: 'r' })),
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 6 }),
+  })
+  const r = await h.run()
+  const rep = r.confirmed.find((f) => f.title === 'rep')
+  check('m6a: a confirmed representative keeps born=pre-existing and scope_flag=true',
+        !!rep && rep.born === 'pre-existing' && rep.scope_flag === true,
+        JSON.stringify(rep && { born: rep.born, scope_flag: rep.scope_flag, status: rep.status }))
+  const alt = rep && rep.merged_from.find((m) => m.title === 'alt')
+  check('m6a: its merged alternate carries its OWN labels, not the representative\'s',
+        !!alt && alt.born === 'story-created' && alt.scope_flag === false,
+        JSON.stringify(alt && { born: alt.born, scope_flag: alt.scope_flag }))
+  const split = r.plausible.find((f) => f.title === 'split')
+  check('m6a: a plausible finding keeps born=story-created and scope_flag=false',
+        !!split && split.born === 'story-created' && split.scope_flag === false,
+        `plausible=${JSON.stringify(r.plausible.map((f) => [f.title, f.born, f.scope_flag]))}`)
+  const s5 = r.confirmed.find((f) => f.title === 's5')
+  check('m6a: an unclustered finding keeps both labels through the skeptic wave',
+        !!s5 && s5.born === 'pre-existing' && s5.scope_flag === true,
+        JSON.stringify(s5 && { born: s5.born, scope_flag: s5.scope_flag }))
+}
+
+// m6b, m6c — optional fields, required list unchanged
+{
+  const h = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES }) })
+  await h.run()
+  const schema = h.calls.lensSchema
+  const items = schema.properties.findings.items
+  const bare = { title: 't', claim: 'c', severity: 'major', failure_scenario: 'f' }
+  check('m6b: a finding WITHOUT born/scope_flag still validates', validate(schema, { findings: [bare] }))
+  check('m6b: a finding WITH both fields validates',
+        validate(schema, { findings: [{ ...bare, born: 'pre-existing', scope_flag: true }] }))
+  check('m6b: born=n/a (design mode) validates', validate(schema, { findings: [{ ...bare, born: 'n/a' }] }))
+  // Proves the validator is not vacuous: without these, a validator that
+  // ignored `born` entirely would pass every line above.
+  check('m6b: an unknown born value is rejected', !validate(schema, { findings: [{ ...bare, born: 'maybe' }] }))
+  check('m6b: a non-boolean scope_flag is rejected', !validate(schema, { findings: [{ ...bare, scope_flag: 'yes' }] }))
+  check('m6b: born is exactly the three-value enum',
+        JSON.stringify(items.properties.born && items.properties.born.enum) ===
+          JSON.stringify(['pre-existing', 'story-created', 'n/a']))
+  check('m6c: neither field is in FINDINGS_SCHEMA.required',
+        !['born', 'scope_flag'].some((k) => (schema.required || []).includes(k)),
+        `required=${JSON.stringify(schema.required)}`)
+  check('m6c: neither field is in the finding item\'s required list, which is unchanged',
+        JSON.stringify(items.required) === JSON.stringify(['title', 'claim', 'severity', 'failure_scenario']),
+        `required=${JSON.stringify(items.required)}`)
+}
+
+// m6d — the prompts say where the labels go, and whose they are
+{
+  const hd = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES }) })
+  await hd.run()
+  check('m6d: design-mode lens prompt sets born to n/a',
+        hd.calls.lensPrompts.length === 2 &&
+          hd.calls.lensPrompts.every((p) => p.includes('`born` field to `n/a`') && p.includes('`scope_flag: true`')))
+  const hf = makeHarness({
+    findingsPerLens: SIX,
+    args: { story: 'T', mode: 'diff', context: 't', lenses: LENSES, skepticBatchSize: 1, clusterMinFindings: 999,
+            targets: [{ repo: 'r', path: '/tmp/r', base: 'origin/main', branch: 'b' }] },
+  })
+  await hf.run()
+  check('m6d: diff-mode lens prompt names both born values and scope_flag, not n/a',
+        hf.calls.lensPrompts.length === 2 && hf.calls.lensPrompts.every((p) =>
+          p.includes('`pre-existing` or `story-created`') && p.includes('`scope_flag: true`') && !p.includes('`n/a`')))
+  check('m6d: the skeptic prompt says born/scope_flag are not the skeptic\'s to judge',
+        hd.calls.skepticPrompts.length > 0 &&
+          hd.calls.skepticPrompts.every((p) => p.includes('triage labels for the PM') && p.includes('do not vote on them')))
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)

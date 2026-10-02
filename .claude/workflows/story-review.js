@@ -51,6 +51,14 @@ const FINDINGS_SCHEMA = {
       title: { type: 'string' }, claim: { type: 'string' },
       severity: { enum: ['critical', 'major', 'minor'] },
       failure_scenario: { type: 'string' }, suggested_kill_test: { type: 'string' },
+      // PR #546 red-team m6. The stance tells a lens where a defect was born and
+      // to flag a fix that adds a mechanism the AC never asked for, and the PM's
+      // FILED closure (run-story §5 / §8 item 2) turns on the first label — so it
+      // is a field, not free text buried in `claim`. OPTIONAL on purpose: journaled
+      // runs replay through this schema on resume, and a newly required field
+      // would fail every older lens result. `n/a` is design mode, which has no base.
+      born: { enum: ['pre-existing', 'story-created', 'n/a'] },
+      scope_flag: { type: 'boolean' },
     } } } },
 }
 const VERDICT_SCHEMA = {
@@ -125,10 +133,17 @@ const classBudgetTokens = num(args.classBudgetTokens, 'classBudgetTokens')
 const spentTokens = num(args.spentTokens, 'spentTokens') || 0
 const gateArmed = classBudgetTokens !== undefined
 
+// m6: one sentence so the born label and the scope question land in their
+// schema fields rather than in `claim`. Design mode has no base to reproduce
+// on, so `born` there is always `n/a`.
+const fieldNote = mode === 'design'
+  ? `Set each finding's \`born\` field to \`n/a\` (a design doc has no base to reproduce on), and set \`scope_flag: true\` when its fix would add a mechanism the acceptance criteria never asked for — these are schema fields, so put the labels there, not in \`claim\`.`
+  : `Put each finding's born label in its \`born\` field (\`pre-existing\` or \`story-created\`), and set \`scope_flag: true\` when its fix would add a mechanism the acceptance criteria never asked for — these are schema fields, so put the labels there, not in \`claim\`.`
+
 phase('Lens review')
 const lensResults = await parallel(lenses.map(l => () =>
   agent(
-    `${stance}\n\nYour lens: ${l.key} — ${l.focus}\n\nStory: ${args.story}\nPM context: ${args.context}\n\n${subject}\n\nReturn your findings.`,
+    `${stance}\n\nYour lens: ${l.key} — ${l.focus}\n\nStory: ${args.story}\nPM context: ${args.context}\n\n${subject}\n\n${fieldNote}\n\nReturn your findings.`,
     { label: `lens:${l.key}`, phase: 'Lens review', schema: FINDINGS_SCHEMA, model: 'opus', effort: 'high' } // lenses: broad hunting, opus+high
   )))
 // Barrier is deliberate: dedup needs every lens's findings at once.
@@ -407,6 +422,10 @@ for (let b = 0; b < batchCount; b++) {
       `they are related — a batch commonly contains a mix of real and refuted, and the verdict on one tells ` +
       `you nothing about the next.\n\n` +
       `Return one verdict per finding, keyed by the index shown. Do not omit any.\n\n` +
+      // m6: the finding JSON below now carries the lens's \`born\` / \`scope_flag\` labels. They are the
+      // PM's triage inputs, which the skeptic rules above already put outside a skeptic's verdict.
+      `Each finding's \`born\` and \`scope_flag\` fields are the lens's triage labels for the PM, not part of ` +
+      `the claim under test — do not vote on them.\n\n` +
       batch.map(i => `--- index ${i} ---\n${JSON.stringify(deduped[i])}`).join('\n\n') +
       `\n\n${subject}\n\nVerify each against the source, then give one verdict per index.`,
       // skeptics pin no model: they inherit the SESSION's model (lenses above are pinned to opus), so a limit
