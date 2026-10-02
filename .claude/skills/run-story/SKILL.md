@@ -69,7 +69,7 @@ TRIGGER-LIST FLAGS: <which apply, or "none"> → review tier: <standard|trigger>
 ```
 
 ### 3 · PLAN (M-size and larger builds only; S skips)
-Spawn the built-in `Plan` agent with the brief. Sanity-check the plan against the AC yourself before build. **The plan declares the story's task-PR split (the loop count N); restate the verify budget as N × the §5 class budget at PLAN exit. S stories, which skip this step, fix N=1 at the BRIEF.**
+Spawn the built-in `Plan` agent with the brief, passing `model` from your delegation map (*Tier defaults*, PLAN line). Sanity-check the plan against the AC yourself before build. **The plan declares the story's task-PR split (the loop count N); restate the verify budget as N × the §5 class budget at PLAN exit. S stories, which skip this step, fix N=1 at the BRIEF.**
 
 **Board artifact — publish/refresh here.** As soon as Definition of Ready is met — right after this step for M+ stories, right after step 2 BRIEF for S stories (which skip PLAN) — refresh the visual Kanban mirror and publish it, so Sammy sees the story move the moment its shape is locked rather than only at close:
 - **Read the LIVE artifact before every publish — to RECONCILE, not to republish.** `Artifact action:"read"` returns a platform-wrapped copy (injected runtime preamble, appended `</body></html>`) that is **not** byte-identical to the source; publishing that file back corrupts the board, measured 2026-08-29. Read it, compare against your committed source, port any *other* session's card forward into the source, and publish **the source**. Publishing a working copy blind silently deletes whatever another in-flight story put on the board (near-miss 2026-08-29, #489 — the platform's read-before-write guard caught that one, which is luck, not a control).
@@ -80,7 +80,7 @@ Spawn the built-in `Plan` agent with the brief. Sanity-check the plan against th
 - Refresh again at MERGE — committed in step 7 after the draft PR is open and BEFORE it is marked ready, so its §5 read-off precedes ready like every other review — and at CLOSE (step 10), so it tracks the story through merge and deploy, not just at kickoff.
 
 ### 4 · BUILD
-Spawn `story-dev` (model per the roadmap's tier column — Sonnet default, Opus for L/XL or named-risky seams; print your one-line reasoning). Verify its self-gate results are pasted counts, not claims.
+Spawn `story-dev` (model per *Tier defaults* and the card's tier column; the PM overrides per story with stated reasoning — print your one-line reasoning). Verify its self-gate results are pasted counts, not claims.
 
 ### 5 · REVIEW — two tiers
 - **Standard (S/M, no trigger-list hit):** invoke the built-in `/code-review` skill on the branch — S → medium effort, M → high — and **read BOTH the level and the target the loaded skill echoes back before any finder launches.** The skill's description says that with no level recognised it *reuses the level you typed last*; on E9-S7 (2026-09-01, PR #504) the PM passed `origin/main medium`, the echo read target `origin/main medium` and level **xhigh** — the level had been swallowed into the target — and the PM kept it, turning roadmap §5's ≤0.3M standard pass into a ~1M-per-round instrument before 19 rounds multiplied it. No argument order has been shown to parse a level and a target together, so do not prescribe one: if the echoed level is not the tier's, or the echoed target is empty or is not the story branch's diff against `main` (with no target the skill reviews your checkout's current diff, which is not the story branch when the story runs in a worktree), stop and re-invoke with different arguments until the echo is right — a zero-findings result over an empty or wrong subject is not a zero-findings round for §8 item 3. Record the echoed level and target in the PR's evidence bundle next to the tier map, so a mismatch shows up there instead of in the token report.
@@ -192,3 +192,12 @@ If a proposal would change **how the team works** (a charter rule, a pipeline st
 
 ## Tier defaults (barbell — override per story with stated reasoning)
 Mechanical/loud-failure (plumbing, ports, test scaffolds, copy): Haiku. Standard implementation: Sonnet. Risky seams, L/XL builds, heuristic design: Opus. Design synthesis, review orchestration, final verification judgment: strongest available. **Never economize on verifiers** — the review lenses (pinned opus/high at the lens spawn in `story-review.js`), the skeptics (no pin: they inherit the session's model, so run the trigger tier from the strongest session), and `qa-verifier` (the `model:` pin in its agent file) — charter §4.8a.
+- **PLAN (§3):** the built-in `Plan` agent has no agent file in this repo, so nothing here pins it — unless the spawn passes `model`, it runs on the harness default (the PM session's model unless a default subagent model is configured). Choose its tier by the barbell line above, print it in the delegation map, and pass it at the spawn.
+- **Where a tier change lands** (charter §4.8d) — every launch line the change applies to:
+  - §3's PLAN spawn — the `model` it passes (PLAN line above).
+  - §4's BUILD spawn — `story-dev`'s `model:` pin in `.claude/agents/story-dev.md`, and the delegation map.
+  - §5's *Standard* effort map — raised, never lowered.
+  - The lens spawn in `story-review.js` — trigger-tier lenses; raised, never lowered. Skeptics have no pin and inherit the session.
+  - `qa-verifier.md`'s `model:` pin — a verifier; raised, never lowered.
+  - The card's tier column (roadmap §5), for a per-story call.
+  - Updated to match, as reasoning rather than launch: roadmap §5/§6.3 and charter §4.8.
