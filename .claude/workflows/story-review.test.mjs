@@ -794,13 +794,19 @@ console.log('story-review cost gate')
 //     (the render only ever builds a batch of one);
 //   - fields `applyClusters` adds to a merged representative, which reach a
 //     skeptic through `JSON.stringify` (the render runs no clusterer);
-//   - text gated on a REAL lens key or on the lens count (the custom-lens render
-//     uses `<KEY>`; the default-roster render checks lens prompts only);
+//   - text gated on a lens key OUTSIDE the shipped rosters, on the lens count,
+//     or on the lens key inside a SKEPTIC prompt (the default-roster render
+//     covers the shipped keys in lens prompts only — r5 c5: the shipped-key
+//     example on #548 item 2 now goes red here);
+//   - text gated on an argument the render never sets: `classBudgetTokens`,
+//     `spentTokens`, `confirmOverBudget`, `skepticBatchSize` (r5 c4 — a
+//     sentence conditioned on one of them is never emitted by this render);
 //   - the lockstep route: an edit to a template AND its allow-set in one commit
 //     passes every equality here. The two regex checks on the allow-sets (case
 //     21's vote-rule check, m6d's label-prose check) are TRIPWIRES for the
-//     obvious wordings, not gates. The gate for that route is the design
-//     red-team every governance PR gets.
+//     obvious wordings, not gates. The gate for that route is the design-mode
+//     red-team run-story §10c requires before a rule change is applied — a
+//     governance PR that skipped one (#540 did) has no gate here (r5 c6).
 const SENTINEL_TARGETS = [
   { repo: '<REPO1>', path: '<PATH1>', base: '<BASE1>', branch: '<BRANCH1>' },
   { repo: '<REPO2>', path: '<PATH2>', base: '<BASE2>', branch: '<BRANCH2>' },
