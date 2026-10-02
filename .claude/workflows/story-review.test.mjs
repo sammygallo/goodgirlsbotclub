@@ -62,8 +62,8 @@
 //                                 suite green when they were the deliverable
 //
 // Cases 14-23 cover clustering, skeptic batching, slicing, stance parity, the
-// #528 red-team regressions and the PR #546 m6 finding fields;
-// they carry their own list at the point they are defined rather than extending
+// #528 red-team regressions, the PR #546 m6 finding fields and its round-2
+// design-mode `tests` lens; they carry their own list at the point they are defined rather than extending
 // this one, because this list is about the COST GATE and they are not.
 //
 // Keep this list in step with the cases below. It went stale once already, in
@@ -215,7 +215,7 @@ const baseArgs = (extra = {}) => ({
   ...extra,
 })
 
-// The script's own defaults are 3 lenses in design mode and 4 in diff mode, both
+// The script's own defaults are 4 lenses in each mode, both
 // overridable via args.lenses. Pin an explicit two-lens set here so the
 // arithmetic in every assertion below is fixed and not a moving target.
 const LENSES = [
@@ -817,9 +817,40 @@ console.log('story-review cost gate')
   // the hard-coded skeptic prompt came after the stance and won on position,
   // neutralizing the "do not refute because the trace is hard" rule (PR #546
   // red-team, M1). The mirror test cannot see prose outside `stance`, so this
-  // probe is the only gate on it.
-  check('the skeptic prompt sets no evidence bar of its own',
-        !/refuted=true unless|Default to refuted/.test(SRC))
+  // probe is the only gate on it — and it is an ALLOW-set, not a blacklist: the
+  // first version matched two phrases, and `When a scenario is not shown to
+  // hold, vote refuted=true.` slipped past it (PR #546 red-team r2, c2). The
+  // skeptic prompt's whole first argument is cut out of SRC (from its opening
+  // `${stance}` to the options object, JS comments stripped), evaluated with
+  // sentinels for every interpolation, and compared to the exact text below, so
+  // ANY added, removed or reworded sentence — head or tail — fails here. If you
+  // change the prompt's batch mechanics on purpose, update SKEPTIC_PROMPT_ALLOWED
+  // in the same commit; never add evidence-bar prose to it.
+  const SKEPTIC_PROMPT_ALLOWED =
+    '<STANCE>\n\nYou are a SKEPTIC. Try to REFUTE each of the 1 finding(s) below from story <STORY>. ' +
+    'Apply the "When you are a skeptic:" rules above to each finding — they set the evidence bar; ' +
+    'this prompt only sets the batch mechanics.\n\n' +
+    'Judge each finding INDEPENDENTLY and on its own merits. They were grouped for efficiency, not because ' +
+    'they are related — a batch commonly contains a mix of real and refuted, and the verdict on one tells ' +
+    'you nothing about the next.\n\n' +
+    'Return one verdict per finding, keyed by the index shown. Do not omit any.\n\n' +
+    '--- index 7 ---\n"<FINDING>"\n\n<SUBJECT>\n\nVerify each against the source, then give one verdict per index.'
+  const renderSkepticPrompt = () => {
+    const start = SRC.indexOf('`${stance}\\n\\nYou are a SKEPTIC')
+    const opts = SRC.indexOf('{ label: `skeptic', start)
+    if (start < 0 || opts < 0) return null
+    const expr = SRC.slice(start, opts)
+      .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n')
+      .trim().replace(/,$/, '')
+    try {
+      return new Function('stance', 'batch', 'args', 'deduped', 'subject', `return (${expr})`)(
+        '<STANCE>', [7], { story: '<STORY>' }, { 7: '<FINDING>' }, '<SUBJECT>')
+    } catch (e) { return `<<eval failed: ${e.message}>>` }
+  }
+  const rendered = renderSkepticPrompt()
+  check('the skeptic prompt\'s non-stance text is exactly the allow-set (no evidence bar of its own)',
+        rendered === SKEPTIC_PROMPT_ALLOWED,
+        `rendered=${JSON.stringify(rendered)}`)
   check('the skeptic prompt defers to the stance rules',
         SRC.includes('Apply the "When you are a skeptic:" rules above'))
 }
@@ -1011,12 +1042,14 @@ console.log('story-review cost gate')
 //  m6a  both fields survive exact dedup, the cluster merge (representative AND
 //       alternates each keep their own), and the skeptic wave, onto the final
 //       confirmed / plausible objects
-//  m6b  a finding WITHOUT them still validates — they are optional, because
-//       journaled runs replay through this schema on resume
+//  m6b  a finding WITHOUT them still validates — they are optional
 //  m6c  neither is in any `required` array, and the item `required` list is
 //       exactly what it was before m6
-//  m6d  the lens prompt names the fields (design mode: `born` is `n/a`), and
-//       the skeptic prompt says they are not the skeptic's to judge
+//  m6d  design mode's lens prompt sets `born` to `n/a`; diff mode's carries
+//       the born and scope_flag rules exactly ONCE — inside the stance, the
+//       only carrier the parity test compares (PR #546 red-team r2, c10: a
+//       duplicate in `fieldNote` was what the old diff-mode check passed on);
+//       the skeptic prompt adds no born/scope_flag sentence of its own
 
 // A validator for exactly the JSON-schema subset FINDINGS_SCHEMA uses: object +
 // required + properties, array + items, enum, and the primitive types. Small on
@@ -1115,12 +1148,36 @@ const validate = (schema, v) => {
             targets: [{ repo: 'r', path: '/tmp/r', base: 'origin/main', branch: 'b' }] },
   })
   await hf.run()
-  check('m6d: diff-mode lens prompt names both born values and scope_flag, not n/a',
+  // Each rule's anchor phrase occurs once in the stance; a second occurrence
+  // anywhere in the prompt is a duplicate carrier the parity test cannot see.
+  const once = (p, probe) => p.split(probe).length === 2 && p.indexOf(probe) < expectedStance.length
+  check('m6d: diff-mode lens prompt carries the born and scope_flag rules exactly once, inside the stance',
         hf.calls.lensPrompts.length === 2 && hf.calls.lensPrompts.every((p) =>
-          p.includes('`pre-existing` or `story-created`') && p.includes('`scope_flag: true`') && !p.includes('`n/a`')))
-  check('m6d: the skeptic prompt says born/scope_flag are not the skeptic\'s to judge',
-        hd.calls.skepticPrompts.length > 0 &&
-          hd.calls.skepticPrompts.every((p) => p.includes('triage labels for the PM') && p.includes('do not vote on them')))
+          p.startsWith(expectedStance) && once(p, '`born`') && once(p, '`pre-existing`') &&
+          once(p, '`story-created`') && once(p, '`scope_flag: true`') && !p.includes('`n/a`')),
+        JSON.stringify(hf.calls.lensPrompts.map((p) => p.slice(expectedStance.length))))
+  check('m6d: diff-mode lens prompt has no empty fieldNote gap',
+        hf.calls.lensPrompts.every((p) => !p.includes('\n\n\n') && p.endsWith('branch=b\n\nReturn your findings.')))
+  check('m6d: the skeptic prompt carries no born/scope_flag sentence of its own',
+        hd.calls.skepticPrompts.length > 0 && hd.calls.skepticPrompts.every((p) => {
+          const own = p.slice(expectedStance.length).replace(/^--- index \d+ ---\n.*$/gm, '')
+          return !own.includes('`born`') && !own.includes('`scope_flag`')
+        }))
+}
+
+// c1 (PR #546 red-team r2) — the stance scopes the cheapest-wrong-implementation
+// duty to the `tests` lens, so design mode needs one or no lens owns it on a
+// governance PR that ships probes. Read off the prompts a default-lens design
+// run actually sends, not off the constant's source text.
+{
+  const h = makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: 'design', docPath: '/tmp/d.md', context: 't' } })
+  await h.run()
+  const keys = h.calls.lensPrompts.map((p) => (p.slice(expectedStance.length).match(/^\n\nYour lens: (\S+) — /) || [])[1])
+  check('DEFAULT_DESIGN_LENSES includes a `tests` lens',
+        keys.includes('tests'), `keys=${JSON.stringify(keys)}`)
+  const tests = h.calls.lensPrompts.find((p) => p.includes('Your lens: tests — '))
+  check('the design-mode tests lens names the cheapest wrong implementation and stops on no tests',
+        !!tests && tests.includes('cheapest wrong implementation') && tests.includes('carries no tests, say so and stop'))
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)
