@@ -1,6 +1,6 @@
 # Agent-team run ledger
 
-One line per **pipeline exit** — deployed, parked, *or blocked*. Appended by the PM at `run-story` step 10c, before the run ends — plus one `RELEASE` row per governance release, appended by the PM that cut it when Sammy merges it (`run-story` §10c). Committed, so it survives the session that wrote it.
+One line per **pipeline exit** — deployed, parked, *or blocked*. Appended by the PM at `run-story` step 10c, before the run ends — plus one `RELEASE` row per governance release, appended by the PM that cut it when Sammy merges it, or backfilled at the next exit's reconciliation if that session is gone (`run-story` §10c). Committed, so it survives the session that wrote it.
 
 It exists because three things the pipeline depends on were not computable from any durable artifact:
 
