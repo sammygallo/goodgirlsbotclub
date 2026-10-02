@@ -786,6 +786,26 @@ console.log('story-review cost gate')
   // lead-in would turn every prohibition into an instruction.
   check('the Never section keeps a negating lead-in',
         /Never do any of the following:\s*Patch the code/.test(expectedStance))
+  // The lens and skeptic sections are role-bound the same way: without their
+  // lead-ins, "Judge whether the failure scenario holds, nothing else" reads
+  // as an order to a LENS, and the born-label rule as one to a skeptic.
+  check('the lens section keeps its role lead-in',
+        /When you are a lens:\s*Say where the defect was born/.test(expectedStance))
+  check('the skeptic section keeps its role lead-in',
+        /When you are a skeptic:\s*A refutation names what falsifies/.test(expectedStance))
+  check('the cheapest-wrong-implementation rule is scoped to the tests lens',
+        /If your lens is test adequacy \(`tests`\), then for every behaviour/.test(expectedStance))
+  check('an unsettled trace votes refuted=false, not refuted',
+        expectedStance.includes('settled neither way, vote `refuted=false`'))
+  // The burden of proof lives in the stance ONLY. A default-refute sentence in
+  // the hard-coded skeptic prompt came after the stance and won on position,
+  // neutralizing the "do not refute because the trace is hard" rule (PR #546
+  // red-team, M1). The mirror test cannot see prose outside `stance`, so this
+  // probe is the only gate on it.
+  check('the skeptic prompt sets no evidence bar of its own',
+        !/refuted=true unless|Default to refuted/.test(SRC))
+  check('the skeptic prompt defers to the stance rules',
+        SRC.includes('Apply the "When you are a skeptic:" rules above'))
 }
 
 
