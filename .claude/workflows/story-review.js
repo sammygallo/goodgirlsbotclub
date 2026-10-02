@@ -92,8 +92,17 @@ const CLUSTER_SCHEMA = {
 
 const mode = args.mode || 'diff'
 const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAULT_DIFF_LENSES)
+// `subject` reaches EVERY lens and EVERY skeptic verbatim, so it is
+// script-authored prose with the same reach as the stance. The test suite
+// renders both templates (sentinels only for the `args.*` values) and compares
+// each whole prompt to an allow-set, so a sentence added here — an evidence bar
+// above all — fails the gate (PR #546 red-team r3, c2). The design template's
+// second sentence exists because a governance release's probes live in its
+// diff, not in the one doc `docPath` names, and the `tests` lens would
+// otherwise stop on "no tests" (r3, c3).
 const subject = mode === 'design'
-  ? `Design doc under review: ${args.docPath}. Read it fully, plus any code it references.`
+  ? `Design doc under review: ${args.docPath}. Read it fully, plus any code it references. ` +
+    `If the PM context names a diff range or branch, read that diff too, including any test files it touches.`
   : `Diff targets (read each with: git -C <path> diff <base>...<branch>, plus surrounding files for context):\n` +
     args.targets.map(t => `- ${t.repo}: path=${t.path} base=${t.base} branch=${t.branch}`).join('\n')
 
@@ -137,13 +146,13 @@ const classBudgetTokens = num(args.classBudgetTokens, 'classBudgetTokens')
 const spentTokens = num(args.spentTokens, 'spentTokens') || 0
 const gateArmed = classBudgetTokens !== undefined
 
-// m6: design mode only. The stance's lens rules already name both fields and
-// both born values; the one thing they cannot say is the design-mode override
-// (a design doc has no base to reproduce on, so `born` is `n/a`). Diff mode
-// adds nothing here: a second copy of a stance rule would live in a carrier
-// the stance-parity test never compares.
+// m6: design mode only, and ONLY the design-mode override the stance cannot
+// say: a design doc has no base to reproduce on, so `born` is `n/a`. Every
+// other born/scope_flag rule is the stance's alone — a restatement here, in any
+// wording, is a second carrier the stance-parity test never compares (PR #546
+// red-team r2 c10, r3 c5). The suite's lens-prompt allow-set fails on one.
 const fieldNote = mode === 'design'
-  ? `Set each finding's \`born\` field to \`n/a\` (a design doc has no base to reproduce on), and set \`scope_flag: true\` when its fix would add a mechanism the acceptance criteria never asked for — these are schema fields, so put the labels there, not in \`claim\`.`
+  ? `Set each finding's \`born\` field to \`n/a\` — a design doc has no base to reproduce on.`
   : ''
 
 phase('Lens review')
