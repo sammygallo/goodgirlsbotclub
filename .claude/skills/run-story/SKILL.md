@@ -107,7 +107,7 @@ Spawn `qa-verifier` with the brief on the final branch state. Ambiguous-AC escal
 
 ### 7 · PR
 Open a DRAFT PR per repo, commit the MERGE board refresh (§3) on the branch, then mark ready once the evidence bundle is complete in the body:
-AC checklist (from QA) · review findings + resolutions · gate results (counts) · deploy order + rollback notes · token actuals so far · the postmortem's `Tier Adjustment:` line if present (postmortem.md §A6). House rules: "Closes #N" when issue-linked; footer `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+AC checklist (from QA) · review findings + resolutions · gate results (counts) · deploy order + rollback notes · token actuals so far. House rules: "Closes #N" when issue-linked; footer `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 
 ### 8 · MERGE — self-serve, with escalation triggers
 
@@ -175,7 +175,7 @@ Invoke `/deploy-ggbc`. Honor the story's deploy-order constraints. Complete any 
 - `doc-edit` (charter, this skill, agent files — anything on §8's governance surface) → **always its own PR, which fires the governance trigger and therefore stops for Sammy. It NEVER rides the story's close/bookkeeping commit**, which goes direct to `main` with no PR at all. A rule change that reaches `main` inside a records commit has bypassed the merge gate entirely — that is the one path by which a pipeline with merge authority could quietly widen it.
 - **When Sammy declines a proposal, append it to `DECLINED.md` in the memory dir with the reason.** The agent reads that file before proposing and must not re-raise a declined item without new evidence. Without this, every run re-proposes the same gated deletes against the same unchanged files until declining costs more than consenting.
 
-**Append the ledger row before the run ends — every exit, no exceptions.** One line in `docs/agent-team-log.md`: date, story, exit type, mode, the `verdict` verbatim, the four token numbers, the path of any pre-image snapshot you took, and the path of anything left in `<memory-dir>/.pending/` awaiting Sammy. This is the only proof the stage ran, and it is the *only* proof available on a blocked exit, which produces no close report at all. A row with a blank verdict or blank postmortem tokens is a skip, not a clean run. Where a close report does exist, paste the same verdict + token number there too.
+**Append the ledger row before the run ends — every exit, no exceptions.** One line in `docs/agent-team-log.md`: date, story, exit type, mode, the `verdict` verbatim, the four token numbers, the postmortem's `tier_adjustment` line under a **`Tier Adjustment:`** label (`postmortem.md` §A6 — every exit, including `proposal: none`), the path of any pre-image snapshot you took, and the path of anything left in `<memory-dir>/.pending/` awaiting Sammy. This is the only proof the stage ran, and it is the *only* proof available on a blocked exit, which produces no close report at all. A row with a blank verdict or blank postmortem tokens is a skip, not a clean run. Where a close report does exist, paste the same verdict + token number there too.
 
 `no durable lesson` is a legitimate and common verdict — a clean run is not a failed postmortem, and do not coax proposals out of one. It still gets its ledger row.
 
