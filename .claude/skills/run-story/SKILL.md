@@ -198,6 +198,6 @@ Mechanical/loud-failure (plumbing, ports, test scaffolds, copy): Haiku. Standard
   - §3's PLAN spawn — the `model` it passes.
   - §4's BUILD spawn — `story-dev`'s `model:` pin in `.claude/agents/story-dev.md`, and the delegation map.
   - The card's tier column (roadmap §5), for a per-story call.
-  - For a verification **miss** only: roadmap §6.1's mandatory-trigger list, and §5's *Trigger-tier* bullet below, which restates it — a shape added there runs at the trigger tier.
+  - For a verification **miss** only: roadmap §6.1's mandatory-trigger list, and §5's *Trigger tier* bullet above, which restates it — a shape added there runs at the trigger tier.
   - Updated to match, as reasoning rather than launch: roadmap §5/§6.3 and charter §4.8.
   - **Not calibration targets** (charter §4.8a, never lowered, never economized): §5's *Standard* effort map, the lens spawn and the skeptic spawn in `story-review.js`, and `qa-verifier.md`'s `model:` pin.
