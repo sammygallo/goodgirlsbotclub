@@ -774,20 +774,33 @@ console.log('story-review cost gate')
         h5.calls.cluster === 0 && r5.clusterOutcome === 'skipped', `outcome=${r5.clusterOutcome}`)
 }
 
-// --- Prompt allow-sets (PR #546 red-team r2 c2; r3 c2, c8) ---------------
-// Every script-authored word that reaches an agent is compared, whole, to an
-// allow-set. The prompts are RENDERED by running the script through the harness
-// with sentinel `args.*` values — never sliced out of SRC and never with a
-// sentinel standing in for a script-authored value. That second rule is the r3
-// lesson: the r2 skeptic probe replaced `subject` with `<SUBJECT>`, so an
-// evidence bar appended to the design `subject` template reached every skeptic
-// and every lens and passed all 144 checks. Only the stance is replaced, and
-// only after asserting the prompt STARTS with the generated stance (whose bytes
-// case 21 already pins). So ANY sentence added, removed or reworded in
-// `subject`, `fieldNote`, or either prompt's scaffolding fails here, in either
-// mode. Change them on purpose and the allow-sets below move in the same
-// commit; never add evidence-bar or born/scope_flag prose to them (the
-// allow-set guards below check that, too).
+// --- Prompt allow-sets (PR #546 red-team r2 c2; r3 c2, c8; r4 c0, c5-c7) --
+// The lens and skeptic prompts are RENDERED by running the script through the
+// harness with sentinel `args.*` values — never sliced out of SRC — and each
+// whole rendered prompt is compared to an allow-set. Only the stance is swapped
+// out, and only after asserting the prompt STARTS with the generated stance
+// (whose bytes case 21 pins). r3 lesson: the r2 skeptic probe sentinelled
+// `subject` away, so an evidence bar appended to the design `subject` template
+// passed every check.
+//
+// COVERED, in both modes, against an edit to the script alone: the lens and
+// skeptic prompt scaffolding, `subject`, `fieldNote`, and both default
+// rosters' key + focus text (r4 c0: rendered with `args.lenses` omitted and
+// compared to the frozen copies below). The skeptic render is a single-finding
+// batch with no clusterer.
+//
+// NOT COVERED (r4 c5-c7; known limits, filed rather than probed):
+//   - the multi-finding batch separator and any text gated on `batch.length`
+//     (the render only ever builds a batch of one);
+//   - fields `applyClusters` adds to a merged representative, which reach a
+//     skeptic through `JSON.stringify` (the render runs no clusterer);
+//   - text gated on a REAL lens key or on the lens count (the custom-lens render
+//     uses `<KEY>`; the default-roster render checks lens prompts only);
+//   - the lockstep route: an edit to a template AND its allow-set in one commit
+//     passes every equality here. The two regex checks on the allow-sets (case
+//     21's vote-rule check, m6d's label-prose check) are TRIPWIRES for the
+//     obvious wordings, not gates. The gate for that route is the design
+//     red-team every governance PR gets.
 const SENTINEL_TARGETS = [
   { repo: '<REPO1>', path: '<PATH1>', base: '<BASE1>', branch: '<BRANCH1>' },
   { repo: '<REPO2>', path: '<PATH2>', base: '<BASE2>', branch: '<BRANCH2>' },
@@ -795,7 +808,7 @@ const SENTINEL_TARGETS = [
 const SENTINEL_FINDING = { title: '<TITLE>', claim: '<CLAIM>', severity: 'major', failure_scenario: '<SCENARIO>' }
 const SUBJECT_ALLOWED = {
   design: 'Design doc under review: <DOCPATH>. Read it fully, plus any code it references. ' +
-    'If the PM context names a diff range or branch, read that diff too, including any test files it touches.',
+    'If a diff range or branch is named in your prompt, read that diff too, including any test files it touches.',
   diff: 'Diff targets (read each with: git -C <path> diff <base>...<branch>, plus surrounding files for context):\n' +
     '- <REPO1>: path=<PATH1> base=<BASE1> branch=<BRANCH1>\n' +
     '- <REPO2>: path=<PATH2> base=<BASE2> branch=<BRANCH2>',
@@ -834,6 +847,43 @@ const renderPrompts = async (m) => {
   return { lens: h.calls.lensPrompts.map(strip), skeptic: h.calls.skepticPrompts.map(strip) }
 }
 const RENDERED = { design: await renderPrompts('design'), diff: await renderPrompts('diff') }
+// r4 c0 — the default rosters' focus strings are script-authored and reach
+// every default-lens run verbatim, but `renderPrompts` passes `args.lenses` and
+// so sentinels them. Frozen here; change a roster on purpose and this moves in
+// the same commit.
+const DEFAULT_LENSES_ALLOWED = {
+  diff: [
+    ['correctness', 'regressions and logic defects: concrete inputs/state that produce wrong output, crashes, or broken existing behavior'],
+    ['bypass', 'security and gate bypasses: what a raw API client (not the honest UI) can do; whether gates bind to content vs mutable references; fail-closed on every path'],
+    ['contract', 'cross-repo/contract coherence: frontend expectations vs backend behavior, error-shape parsing, deploy-order windows where old FE meets new BE (and vice versa)'],
+    ['tests', 'test adequacy: which claimed behaviors have no test that would go red if the behavior broke; kill tests that do not actually kill'],
+  ],
+  design: [
+    ['bypass', 'how an adversary defeats this design as specified — unstated assumptions, scope holes, reference-vs-content confusions'],
+    ['simpler', 'a materially simpler design meeting the same requirements, or proof none exists'],
+    ['ops', 'operational failure: rollout, rollback, partial-deploy windows, cost blowups, provider failure modes'],
+    ['tests', 'test adequacy of any test files the subject carries (governance releases ship probes): for each probe, name the cheapest wrong implementation that still passes; if the subject carries no tests, say so and stop'],
+  ],
+}
+const renderDefaultLensPrompts = async (m) => {
+  const h = makeHarness({
+    findingsPerLens: {},
+    args: { story: '<STORY>', mode: m, context: '<CONTEXT>',
+            ...(m === 'design' ? { docPath: '<DOCPATH>' } : { targets: SENTINEL_TARGETS }) },
+  })
+  await h.run()
+  return h.calls.lensPrompts.map((p) => p.startsWith(expectedStance)
+    ? '<STANCE>' + p.slice(expectedStance.length)
+    : `<<prompt does not start with the generated stance>>${p}`)
+}
+for (const m of ['design', 'diff']) {
+  const got = await renderDefaultLensPrompts(m)
+  const want = DEFAULT_LENSES_ALLOWED[m].map(([k, f]) =>
+    LENS_PROMPT_ALLOWED(m).replace('<KEY> — <FOCUS>', () => `${k} — ${f}`))
+  check(`c0: ${m}-mode default-roster lens prompts, focus text included, are exactly the allow-set`,
+        got.length === want.length && got.every((p, i) => p === want[i]),
+        `rendered=${JSON.stringify(got)}`)
+}
 
 // 21 — stance parity. The constant is GENERATED from adversarial-reviewer.md;
 //      this is what makes "change one, change both" enforceable instead of
@@ -878,19 +928,21 @@ const RENDERED = { design: await renderPrompts('design'), diff: await renderProm
   // the hard-coded skeptic prompt came after the stance and won on position,
   // neutralizing the "do not refute because the trace is hard" rule (PR #546
   // red-team, M1). The mirror test cannot see prose outside `stance`, so the
-  // allow-set below is the only gate on it. History: a two-phrase blacklist let
-  // `When a scenario is not shown to hold, vote refuted=true.` through (r2 c2);
-  // its replacement allow-set sentinelled `subject` away, so the same sentence
-  // appended to the design `subject` template got through instead (r3 c2). The
-  // prompt is now rendered whole, `subject` included — see "Prompt allow-sets".
+  // allow-set below is this suite's only check on it. History: a two-phrase
+  // blacklist let `When a scenario is not shown to hold, vote refuted=true.`
+  // through (r2 c2); its replacement allow-set sentinelled `subject` away, so
+  // the same sentence appended to the design `subject` template got through
+  // instead (r3 c2). A single-finding prompt is now rendered whole, `subject`
+  // included; what that still misses is listed under "Prompt allow-sets".
   for (const m of ['design', 'diff']) {
     const sk = RENDERED[m].skeptic
     check(`the ${m}-mode skeptic prompt, subject included, is exactly the allow-set (no evidence bar of its own)`,
           sk.length === 2 && sk.every((p) => p === SKEPTIC_PROMPT_ALLOWED(m)),
           `rendered=${JSON.stringify(sk)}`)
   }
-  // Guards the lockstep-edit route: an evidence bar added to an allow-set AND
-  // the script together would pass the equality checks above.
+  // A TRIPWIRE, not a gate, for the lockstep-edit route (an evidence bar added
+  // to the script and its allow-set together passes the equality checks above):
+  // it catches the obvious vote-rule wordings only. See "Prompt allow-sets".
   check('no prompt allow-set carries a vote rule of its own',
         ['design', 'diff'].every((m) => ![SKEPTIC_PROMPT_ALLOWED(m), LENS_PROMPT_ALLOWED(m)]
           .some((t) => /refuted\s*=|vote refuted|refuted: ?true/i.test(t))))
@@ -1089,13 +1141,16 @@ const RENDERED = { design: await renderPrompts('design'), diff: await renderProm
 //  m6c  neither is in any `required` array, and the item `required` list is
 //       exactly what it was before m6
 //  m6d  design mode's lens prompt sets `born` to `n/a` and says nothing else
-//       about either field (r3 c5); in both modes the lens prompt is exactly
-//       its allow-set, so the born and scope_flag rules live only inside the
-//       stance, the one carrier the parity test compares (r2 c10: a duplicate
-//       in `fieldNote` was what the old diff-mode check passed on; r3 c8: an
-//       un-backticked duplicate placed before `subject` passed its successor,
-//       which counted backticked tokens); the skeptic prompt adds no
-//       born/scope_flag sentence of its own
+//       about either field (r3 c5); in both modes the rendered lens prompt
+//       (custom-lens render) is exactly its allow-set, so a born/scope_flag
+//       rule added to the script's lens scaffolding, `subject` or `fieldNote`
+//       ALONE fails (r2 c10: a duplicate in `fieldNote` was what the old
+//       diff-mode check passed on; r3 c8: an un-backticked duplicate placed
+//       before `subject` passed its successor, which counted backticked
+//       tokens); the skeptic prompt adds no backticked `born`/`scope_flag`
+//       sentence of its own. Limits are in "Prompt allow-sets": a rule added
+//       to a template and its allow-set together passes the equality, and the
+//       label-prose regex below is a tripwire for that route, not a gate
 
 // A validator for exactly the JSON-schema subset FINDINGS_SCHEMA uses: object +
 // required + properties, array + items, enum, and the primitive types. Small on
@@ -1188,13 +1243,14 @@ const validate = (schema, v) => {
         designOwn.length === 1 && designOwn.every((p) => p.includes('`born` field to `n/a`') && !/scope_flag/.test(p)),
         JSON.stringify(designOwn))
   for (const m of ['design', 'diff']) {
-    check(`m6d: ${m}-mode lens prompt is exactly its allow-set (born/scope_flag rules only inside the stance)`,
+    check(`m6d: ${m}-mode lens prompt is exactly its allow-set (no born/scope_flag rule added outside the stance)`,
           RENDERED[m].lens.length === 1 && RENDERED[m].lens.every((p) => p === LENS_PROMPT_ALLOWED(m)),
           `rendered=${JSON.stringify(RENDERED[m].lens)}`)
   }
-  // The equality above is only as good as the allow-set; this stops a duplicate
-  // rule being added to the script and the allow-set in the same commit. The
-  // design fieldNote's `n/a` override is the one permitted mention.
+  // The equality above is only as good as the allow-set. A TRIPWIRE, not a
+  // gate, for a duplicate rule added to the script and the allow-set in the
+  // same commit: it catches wordings that name the labels, nothing paraphrased.
+  // The design fieldNote's `n/a` override is the one permitted mention.
   const labelProse = /born|scope_flag|pre-existing|story-created/i
   check('m6d: no allow-set restates a born/scope_flag rule outside the design n/a override',
         !labelProse.test(LENS_PROMPT_ALLOWED('diff')) &&

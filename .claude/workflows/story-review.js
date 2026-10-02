@@ -95,14 +95,18 @@ const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAU
 // `subject` reaches EVERY lens and EVERY skeptic verbatim, so it is
 // script-authored prose with the same reach as the stance. The test suite
 // renders both templates (sentinels only for the `args.*` values) and compares
-// each whole prompt to an allow-set, so a sentence added here — an evidence bar
-// above all — fails the gate (PR #546 red-team r3, c2). The design template's
+// each whole prompt to an allow-set, so a sentence added here ALONE — an
+// evidence bar above all — fails the gate (PR #546 red-team r3, c2); one added
+// here and to the allow-set together does not (see the suite's "Prompt
+// allow-sets" header for what it does not cover). The design template's
 // second sentence exists because a governance release's probes live in its
 // diff, not in the one doc `docPath` names, and the `tests` lens would
-// otherwise stop on "no tests" (r3, c3).
+// otherwise stop on "no tests" (r3, c3). It says "named in your prompt", not
+// "the PM context", because skeptics receive `subject` but not `args.context`
+// (r4, c2): the old wording pointed a skeptic at a field it never sees.
 const subject = mode === 'design'
   ? `Design doc under review: ${args.docPath}. Read it fully, plus any code it references. ` +
-    `If the PM context names a diff range or branch, read that diff too, including any test files it touches.`
+    `If a diff range or branch is named in your prompt, read that diff too, including any test files it touches.`
   : `Diff targets (read each with: git -C <path> diff <base>...<branch>, plus surrounding files for context):\n` +
     args.targets.map(t => `- ${t.repo}: path=${t.path} base=${t.base} branch=${t.branch}`).join('\n')
 
