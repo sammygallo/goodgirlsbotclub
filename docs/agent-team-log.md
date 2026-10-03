@@ -1,10 +1,10 @@
 # Agent-team run ledger
 
-One line per **pipeline exit** — deployed, parked, *or blocked*. Appended by the PM at `run-story` step 10c, before the run ends. Committed, so it survives the session that wrote it.
+One line per **pipeline exit** — deployed, parked, *or blocked*. Appended by the PM at `run-story` step 10c, before the run ends — plus one `RELEASE` row per governance release, appended by whichever PM strikes that release's items from `.pending/` after Sammy merges it (`run-story` §10c terminus). Committed, so it survives the session that wrote it.
 
 It exists because three things the pipeline depends on were not computable from any durable artifact:
 
-1. **The CURATE trigger.** `run-story` fires the postmortem's staleness sweep when **exits since the last CURATE ≥ 5**. A fresh PM session has no other way to know the count — the Kanban records deployed *cards*, and blocked runs never reach it at all.
+1. **The CURATE trigger.** `run-story` fires the postmortem's staleness sweep when **exits since the last CURATE ≥ 3** (≥ 5 until PR #546 merged; charter §2). A fresh PM session has no other way to know the count — the Kanban records deployed *cards*, and blocked runs never reach it at all. The governance-release trigger (`run-story` §10c) counts exits the same way, from the last `RELEASE` row — while none exists, from the #528 row — and only while the queue is non-empty.
 2. **Proof the postmortem ran.** A skipped stage and a clean one are otherwise byte-identical. The `verdict` + token columns are the evidence; a row with them blank is a skip, not a clean run. This holds for blocked exits too, which produce no close report and therefore no other proof.
 3. **Postmortem cost.** Roadmap §5 bands cover build / verification / plan absorption. Postmortem is pipeline overhead with no band; this ledger is where its actuals accumulate until there are enough to set one.
 
@@ -12,7 +12,7 @@ It exists because three things the pipeline depends on were not computable from 
 
 ## Columns
 
-`date` · `story` · `exit` (deployed / parked / blocked) · `mode` (CAPTURE / CURATE) · `verdict` (the postmortem's verbatim one-liner) · `tokens` (build / verification / absorption / postmortem) · `notes` (pre-image snapshot paths, escalations, links)
+`date` · `story` · `exit` (deployed / parked / blocked) · `mode` (CAPTURE / CURATE / RELEASE — the row a governance release writes at merge, the anchor for `run-story` §10c's release trigger) · `verdict` (the postmortem's verbatim one-liner) · `tokens` (build / verification / absorption / postmortem) · `notes` (pre-image snapshot paths, escalations, links, `Tier Adjustment:` postmortem findings on tier calibration per `postmortem.md` §A6; rows written before PR #546 merged carry none)
 
 | Date | Story | Exit | Mode | Postmortem verdict | Tokens (b/v/a/p) | Notes |
 |---|---|---|---|---|---|---|

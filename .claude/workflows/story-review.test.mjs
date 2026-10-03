@@ -61,8 +61,9 @@
 //                                 asserted, because deleting them left the
 //                                 suite green when they were the deliverable
 //
-// Cases 14-21 cover clustering, skeptic batching, slicing and stance parity;
-// they carry their own list at the point they are defined rather than extending
+// Cases 14-23 cover clustering, skeptic batching, slicing, stance parity, the
+// #528 red-team regressions, the PR #546 m6 finding fields, its round-2
+// design-mode `tests` lens and its round-3 whole-prompt allow-sets; they carry their own list at the point they are defined rather than extending
 // this one, because this list is about the COST GATE and they are not.
 //
 // Keep this list in step with the cases below. It went stale once already, in
@@ -148,11 +149,16 @@ function loadScript() {
 // many votes" are now different numbers, so the harness counts both — the vote
 // count is the invariant that must not move when the batch size does.
 function makeHarness({ findingsPerLens, args, deadLenses, cluster, skeptic }) {
-  const calls = { lens: 0, skeptic: 0, votes: 0, cluster: 0, batches: [], slices: [], logs: [] }
+  const calls = { lens: 0, skeptic: 0, votes: 0, cluster: 0, batches: [], slices: [], logs: [],
+                  lensSchema: null, lensPrompts: [], skepticPrompts: [] }
   const agent = async (prompt, opts = {}) => {
     const label = opts.label || ''
     if (label.startsWith('lens:')) {
       calls.lens++
+      // Captured so case 23 can read FINDINGS_SCHEMA as the script actually
+      // hands it to a lens, rather than re-parsing it out of the source text.
+      calls.lensSchema = opts.schema
+      calls.lensPrompts.push(prompt)
       const key = label.slice('lens:'.length)
       // A dead lens is `null` — exactly what agent() returns on a terminal error
       // or a user skip. #526's defect only exists in this state.
@@ -169,6 +175,7 @@ function makeHarness({ findingsPerLens, args, deadLenses, cluster, skeptic }) {
     }
     if (label.startsWith('skeptic')) {
       calls.skeptic++
+      calls.skepticPrompts.push(prompt)
       const n = Number(label.slice('skeptic'.length, label.indexOf(':')))
       const indices = [...prompt.matchAll(/^--- index (\d+) ---$/gm)].map((m) => Number(m[1]))
       calls.batches.push({ n, indices })
@@ -208,7 +215,7 @@ const baseArgs = (extra = {}) => ({
   ...extra,
 })
 
-// The script's own defaults are 3 lenses in design mode and 4 in diff mode, both
+// The script's own defaults are 4 lenses in each mode, both
 // overridable via args.lenses. Pin an explicit two-lens set here so the
 // arithmetic in every assertion below is fixed and not a moving target.
 const LENSES = [
@@ -221,6 +228,9 @@ const finding = (title) => ({
   // actually see them dropped. Without them the check passed against a payload
   // that still discarded both.
   line: 7, suggested_kill_test: 'k',
+  // m6's optional fields, for the same reason: the alternate check in case 14
+  // derives its field list from FINDINGS_SCHEMA, so the fixture carries them all.
+  born: 'n/a', scope_flag: false,
 })
 
 // Mirrors the script's batch-count rule, including the floor of 2 that keeps the
@@ -562,10 +572,16 @@ console.log('story-review cost gate')
         JSON.stringify(merged.map((f) => [f.title, f.lenses, f.merged_from.length])))
   // C2: the alternate must arrive WHOLE. Dropping failure_scenario narrows the
   // cluster to one scenario on the exact field the skeptic prompt tests against.
-  // Every field FINDINGS_SCHEMA defines, named individually: a summary payload
-  // that keeps three of them must fail this, which is what it did before.
-  const ALT_FIELDS = ['title', 'claim', 'severity', 'failure_scenario', 'file', 'repo',
-                      'line', 'suggested_kill_test', 'lens']
+  // Every field FINDINGS_SCHEMA defines: a summary payload that keeps three of
+  // them must fail this, which is what it did before. Read off the schema the
+  // script hands its lenses (plus `lens`, which the script adds), so a field
+  // added to the schema later — as m6's born/scope_flag were — is covered
+  // without anyone remembering to extend a hand-written list.
+  const ALT_FIELDS = [...Object.keys(h.calls.lensSchema.properties.findings.items.properties), 'lens']
+  check('the alternate field list is the schema\'s, not a stale copy',
+        ['title', 'claim', 'severity', 'failure_scenario', 'file', 'repo', 'line',
+         'suggested_kill_test', 'born', 'scope_flag', 'lens'].every((k) => ALT_FIELDS.includes(k)),
+        `fields=${ALT_FIELDS.join(',')}`)
   check('a merged alternate carries its full finding, not a summary',
         merged.every((f) => f.merged_from.every((m) => ALT_FIELDS.every((k) => m[k] !== undefined))),
         JSON.stringify(merged[0] && merged[0].merged_from))
@@ -758,6 +774,123 @@ console.log('story-review cost gate')
         h5.calls.cluster === 0 && r5.clusterOutcome === 'skipped', `outcome=${r5.clusterOutcome}`)
 }
 
+// --- Prompt allow-sets (PR #546 red-team r2 c2; r3 c2, c8; r4 c0, c5-c7) --
+// The lens and skeptic prompts are RENDERED by running the script through the
+// harness with sentinel `args.*` values — never sliced out of SRC — and each
+// whole rendered prompt is compared to an allow-set. Only the stance is swapped
+// out, and only after asserting the prompt STARTS with the generated stance
+// (whose bytes case 21 pins). r3 lesson: the r2 skeptic probe sentinelled
+// `subject` away, so an evidence bar appended to the design `subject` template
+// passed every check.
+//
+// COVERED, in both modes, against an edit to the script alone: the lens and
+// skeptic prompt scaffolding, `subject`, `fieldNote`, and both default
+// rosters' key + focus text (r4 c0: rendered with `args.lenses` omitted and
+// compared to the frozen copies below). The skeptic render is a single-finding
+// batch with no clusterer.
+//
+// NOT COVERED (r4 c5-c7; known limits, filed rather than probed):
+//   - the multi-finding batch separator and any text gated on `batch.length`
+//     (the render only ever builds a batch of one);
+//   - fields `applyClusters` adds to a merged representative, which reach a
+//     skeptic through `JSON.stringify` (the render runs no clusterer);
+//   - text gated on a lens key OUTSIDE the shipped rosters, on the lens count,
+//     or on the lens key inside a SKEPTIC prompt (the default-roster render
+//     covers the shipped keys in lens prompts only — r5 c5: the shipped-key
+//     example on #548 item 2 now goes red here);
+//   - text gated on an argument the render never sets: `classBudgetTokens`,
+//     `spentTokens`, `confirmOverBudget`, `skepticBatchSize` (r5 c4 — a
+//     sentence conditioned on one of them is never emitted by this render);
+//   - the lockstep route: an edit to a template AND its allow-set in one commit
+//     passes every equality here. The two regex checks on the allow-sets (case
+//     21's vote-rule check, m6d's label-prose check) are TRIPWIRES for the
+//     obvious wordings, not gates. The gate for that route is the design-mode
+//     red-team run-story §10c requires before a rule change is applied — a
+//     governance PR that skipped one (#540 did) has no gate here (r5 c6).
+const SENTINEL_TARGETS = [
+  { repo: '<REPO1>', path: '<PATH1>', base: '<BASE1>', branch: '<BRANCH1>' },
+  { repo: '<REPO2>', path: '<PATH2>', base: '<BASE2>', branch: '<BRANCH2>' },
+]
+const SENTINEL_FINDING = { title: '<TITLE>', claim: '<CLAIM>', severity: 'major', failure_scenario: '<SCENARIO>' }
+const SUBJECT_ALLOWED = {
+  design: 'Design doc under review: <DOCPATH>. Read it fully, plus any code it references. ' +
+    'If a diff range or branch is named in your prompt, read that diff too, including any test files it touches.',
+  diff: 'Diff targets (read each with: git -C <path> diff <base>...<branch>, plus surrounding files for context):\n' +
+    '- <REPO1>: path=<PATH1> base=<BASE1> branch=<BRANCH1>\n' +
+    '- <REPO2>: path=<PATH2> base=<BASE2> branch=<BRANCH2>',
+}
+// Design mode's one override the stance cannot say, and nothing else (r3 c5).
+const FIELDNOTE_ALLOWED = {
+  design: 'Set each finding\'s `born` field to `n/a` — a design doc has no base to reproduce on.',
+  diff: '',
+}
+const LENS_PROMPT_ALLOWED = (m) =>
+  '<STANCE>\n\nYour lens: <KEY> — <FOCUS>\n\nStory: <STORY>\nPM context: <CONTEXT>\n\n' +
+  SUBJECT_ALLOWED[m] + '\n\n' + (FIELDNOTE_ALLOWED[m] ? FIELDNOTE_ALLOWED[m] + '\n\n' : '') +
+  'Return your findings.'
+const SKEPTIC_PROMPT_ALLOWED = (m) =>
+  '<STANCE>\n\nYou are a SKEPTIC. Try to REFUTE each of the 1 finding(s) below from story <STORY>. ' +
+  'Apply the "When you are a skeptic:" rules above to each finding — they set the evidence bar; ' +
+  'this prompt only sets the batch mechanics.\n\n' +
+  'Judge each finding INDEPENDENTLY and on its own merits. They were grouped for efficiency, not because ' +
+  'they are related — a batch commonly contains a mix of real and refuted, and the verdict on one tells ' +
+  'you nothing about the next.\n\n' +
+  'Return one verdict per finding, keyed by the index shown. Do not omit any.\n\n' +
+  `--- index 0 ---\n${JSON.stringify({ ...SENTINEL_FINDING, lens: '<KEY>' })}\n\n` +
+  SUBJECT_ALLOWED[m] + '\n\nVerify each against the source, then give one verdict per index.'
+// One lens, one finding: no clusterer, one batch, so both partitions send one
+// skeptic prompt each — two renders of the same template per mode.
+const renderPrompts = async (m) => {
+  const h = makeHarness({
+    findingsPerLens: { '<KEY>': [SENTINEL_FINDING] },
+    args: { story: '<STORY>', mode: m, context: '<CONTEXT>', lenses: [{ key: '<KEY>', focus: '<FOCUS>' }],
+            ...(m === 'design' ? { docPath: '<DOCPATH>' } : { targets: SENTINEL_TARGETS }) },
+  })
+  await h.run()
+  const strip = (p) => p.startsWith(expectedStance)
+    ? '<STANCE>' + p.slice(expectedStance.length)
+    : `<<prompt does not start with the generated stance>>${p}`
+  return { lens: h.calls.lensPrompts.map(strip), skeptic: h.calls.skepticPrompts.map(strip) }
+}
+const RENDERED = { design: await renderPrompts('design'), diff: await renderPrompts('diff') }
+// r4 c0 — the default rosters' focus strings are script-authored and reach
+// every default-lens run verbatim, but `renderPrompts` passes `args.lenses` and
+// so sentinels them. Frozen here; change a roster on purpose and this moves in
+// the same commit.
+const DEFAULT_LENSES_ALLOWED = {
+  diff: [
+    ['correctness', 'regressions and logic defects: concrete inputs/state that produce wrong output, crashes, or broken existing behavior'],
+    ['bypass', 'security and gate bypasses: what a raw API client (not the honest UI) can do; whether gates bind to content vs mutable references; fail-closed on every path'],
+    ['contract', 'cross-repo/contract coherence: frontend expectations vs backend behavior, error-shape parsing, deploy-order windows where old FE meets new BE (and vice versa)'],
+    ['tests', 'test adequacy: which claimed behaviors have no test that would go red if the behavior broke; kill tests that do not actually kill'],
+  ],
+  design: [
+    ['bypass', 'how an adversary defeats this design as specified — unstated assumptions, scope holes, reference-vs-content confusions'],
+    ['simpler', 'a materially simpler design meeting the same requirements, or proof none exists'],
+    ['ops', 'operational failure: rollout, rollback, partial-deploy windows, cost blowups, provider failure modes'],
+    ['tests', 'test adequacy of any test files the subject carries (governance releases ship probes): for each probe, name the cheapest wrong implementation that still passes; if the subject carries no tests, say so and stop'],
+  ],
+}
+const renderDefaultLensPrompts = async (m) => {
+  const h = makeHarness({
+    findingsPerLens: {},
+    args: { story: '<STORY>', mode: m, context: '<CONTEXT>',
+            ...(m === 'design' ? { docPath: '<DOCPATH>' } : { targets: SENTINEL_TARGETS }) },
+  })
+  await h.run()
+  return h.calls.lensPrompts.map((p) => p.startsWith(expectedStance)
+    ? '<STANCE>' + p.slice(expectedStance.length)
+    : `<<prompt does not start with the generated stance>>${p}`)
+}
+for (const m of ['design', 'diff']) {
+  const got = await renderDefaultLensPrompts(m)
+  const want = DEFAULT_LENSES_ALLOWED[m].map(([k, f]) =>
+    LENS_PROMPT_ALLOWED(m).replace('<KEY> — <FOCUS>', () => `${k} — ${f}`))
+  check(`c0: ${m}-mode default-roster lens prompts, focus text included, are exactly the allow-set`,
+        got.length === want.length && got.every((p, i) => p === want[i]),
+        `rendered=${JSON.stringify(got)}`)
+}
+
 // 21 — stance parity. The constant is GENERATED from adversarial-reviewer.md;
 //      this is what makes "change one, change both" enforceable instead of
 //      aspirational. Regenerate with `--fix`, never by hand.
@@ -786,6 +919,41 @@ console.log('story-review cost gate')
   // lead-in would turn every prohibition into an instruction.
   check('the Never section keeps a negating lead-in',
         /Never do any of the following:\s*Patch the code/.test(expectedStance))
+  // The lens and skeptic sections are role-bound the same way: without their
+  // lead-ins, "Judge whether the failure scenario holds, nothing else" reads
+  // as an order to a LENS, and the born-label rule as one to a skeptic.
+  check('the lens section keeps its role lead-in',
+        /When you are a lens:\s*Say where the defect was born/.test(expectedStance))
+  check('the skeptic section keeps its role lead-in',
+        /When you are a skeptic:\s*A refutation names what falsifies/.test(expectedStance))
+  check('the cheapest-wrong-implementation rule is scoped to the tests lens',
+        /If your lens is test adequacy \(`tests`\), then for every behaviour/.test(expectedStance))
+  check('an unsettled trace votes refuted=false, not refuted',
+        expectedStance.includes('settled neither way, vote `refuted=false`'))
+  // The burden of proof lives in the stance ONLY. A default-refute sentence in
+  // the hard-coded skeptic prompt came after the stance and won on position,
+  // neutralizing the "do not refute because the trace is hard" rule (PR #546
+  // red-team, M1). The mirror test cannot see prose outside `stance`, so the
+  // allow-set below is this suite's only check on it. History: a two-phrase
+  // blacklist let `When a scenario is not shown to hold, vote refuted=true.`
+  // through (r2 c2); its replacement allow-set sentinelled `subject` away, so
+  // the same sentence appended to the design `subject` template got through
+  // instead (r3 c2). A single-finding prompt is now rendered whole, `subject`
+  // included; what that still misses is listed under "Prompt allow-sets".
+  for (const m of ['design', 'diff']) {
+    const sk = RENDERED[m].skeptic
+    check(`the ${m}-mode skeptic prompt, subject included, is exactly the allow-set (no evidence bar of its own)`,
+          sk.length === 2 && sk.every((p) => p === SKEPTIC_PROMPT_ALLOWED(m)),
+          `rendered=${JSON.stringify(sk)}`)
+  }
+  // A TRIPWIRE, not a gate, for the lockstep-edit route (an evidence bar added
+  // to the script and its allow-set together passes the equality checks above):
+  // it catches the obvious vote-rule wordings only. See "Prompt allow-sets".
+  check('no prompt allow-set carries a vote rule of its own',
+        ['design', 'diff'].every((m) => ![SKEPTIC_PROMPT_ALLOWED(m), LENS_PROMPT_ALLOWED(m)]
+          .some((t) => /refuted\s*=|vote refuted|refuted: ?true/i.test(t))))
+  check('the skeptic prompt defers to the stance rules',
+        SRC.includes('Apply the "When you are a skeptic:" rules above'))
 }
 
 
@@ -963,6 +1131,157 @@ console.log('story-review cost gate')
           !threw && r && r.dedupedFindings === 6 && judged.length === 6 && /REJECTED/.test(r.clusterOutcome),
           `threw=${threw} deduped=${r && r.dedupedFindings} judged=${judged.length}`)
   }
+}
+
+// --- 23: PR #546 red-team m6 — born / scope_flag are fields, not prose -----
+// The stance tells a lens to say where a defect was born (`pre-existing` vs
+// `story-created`) and to flag a fix that adds a mechanism the AC never asked
+// for. The PM's FILED closure (run-story §5 / §8 item 2) turns on the first
+// label, and before m6 FINDINGS_SCHEMA had no field for either, so it arrived
+// as free text inside `claim` — unparseable and unverifiable.
+//
+//  m6a  both fields survive exact dedup, the cluster merge (representative AND
+//       alternates each keep their own), and the skeptic wave, onto the final
+//       confirmed / plausible objects
+//  m6b  a finding WITHOUT them still validates — they are optional
+//  m6c  neither is in any `required` array, and the item `required` list is
+//       exactly what it was before m6
+//  m6d  design mode's lens prompt sets `born` to `n/a` and says nothing else
+//       about either field (r3 c5); in both modes the rendered lens prompt
+//       (custom-lens render) is exactly its allow-set, so a born/scope_flag
+//       rule added to the script's lens scaffolding, `subject` or `fieldNote`
+//       ALONE fails (r2 c10: a duplicate in `fieldNote` was what the old
+//       diff-mode check passed on; r3 c8: an un-backticked duplicate placed
+//       before `subject` passed its successor, which counted backticked
+//       tokens); the skeptic prompt adds no backticked `born`/`scope_flag`
+//       sentence of its own. Limits are in "Prompt allow-sets": a rule added
+//       to a template and its allow-set together passes the equality, and the
+//       label-prose regex below is a tripwire for that route, not a gate
+
+// A validator for exactly the JSON-schema subset FINDINGS_SCHEMA uses: object +
+// required + properties, array + items, enum, and the primitive types. Small on
+// purpose — it is here to prove optionality, and m6b also asserts it REJECTS a
+// bad `born`, so a validator that accepts everything cannot pass the case.
+const validate = (schema, v) => {
+  if (schema.enum) return schema.enum.includes(v)
+  if (schema.type === 'object') {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+    if ((schema.required || []).some((k) => !(k in v))) return false
+    return Object.entries(schema.properties || {}).every(([k, s]) => !(k in v) || validate(s, v[k]))
+  }
+  if (schema.type === 'array') return Array.isArray(v) && v.every((x) => validate(schema.items, x))
+  if (schema.type === 'number') return typeof v === 'number'
+  if (schema.type === 'string') return typeof v === 'string'
+  if (schema.type === 'boolean') return typeof v === 'boolean'
+  return true
+}
+
+// m6a — the labels survive the whole pipeline, each finding keeping its own
+{
+  const tagged = (t, severity, born, scope_flag) => ({ ...finding(t), severity, born, scope_flag })
+  const h = makeHarness({
+    findingsPerLens: {
+      a: [tagged('rep', 'critical', 'pre-existing', true), tagged('split', 'major', 'story-created', false),
+          tagged('s2', 'minor', 'story-created', false)],
+      b: [tagged('alt', 'minor', 'story-created', false), tagged('s4', 'minor', 'pre-existing', false),
+          tagged('s5', 'minor', 'pre-existing', true)],
+    },
+    // 0 (critical, pre-existing, scoped) and 3 (minor, story-created, unscoped)
+    // describe one defect; the rest are singletons. Different labels on the two
+    // members on purpose: a merge that copied the representative's labels onto
+    // the alternate, or vice versa, must fail.
+    cluster: () => ({ groups: [{ members: [0, 3] }, { members: [1] }, { members: [2] },
+                               { members: [4] }, { members: [5] }] }),
+    // Deduped index 1 is `split`: partition 1 refutes it, partition 2 does not,
+    // so it lands in `plausible` and the labels are checked on that path too.
+    skeptic: ({ n, indices }) => indices.map((i) => ({ index: i, refuted: n === 1 && i === 1, reason: 'r' })),
+    args: baseArgs({ lenses: LENSES, skepticBatchSize: 4, clusterMinFindings: 6 }),
+  })
+  const r = await h.run()
+  const rep = r.confirmed.find((f) => f.title === 'rep')
+  check('m6a: a confirmed representative keeps born=pre-existing and scope_flag=true',
+        !!rep && rep.born === 'pre-existing' && rep.scope_flag === true,
+        JSON.stringify(rep && { born: rep.born, scope_flag: rep.scope_flag, status: rep.status }))
+  const alt = rep && rep.merged_from.find((m) => m.title === 'alt')
+  check('m6a: its merged alternate carries its OWN labels, not the representative\'s',
+        !!alt && alt.born === 'story-created' && alt.scope_flag === false,
+        JSON.stringify(alt && { born: alt.born, scope_flag: alt.scope_flag }))
+  const split = r.plausible.find((f) => f.title === 'split')
+  check('m6a: a plausible finding keeps born=story-created and scope_flag=false',
+        !!split && split.born === 'story-created' && split.scope_flag === false,
+        `plausible=${JSON.stringify(r.plausible.map((f) => [f.title, f.born, f.scope_flag]))}`)
+  const s5 = r.confirmed.find((f) => f.title === 's5')
+  check('m6a: an unclustered finding keeps both labels through the skeptic wave',
+        !!s5 && s5.born === 'pre-existing' && s5.scope_flag === true,
+        JSON.stringify(s5 && { born: s5.born, scope_flag: s5.scope_flag }))
+}
+
+// m6b, m6c — optional fields, required list unchanged
+{
+  const h = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES }) })
+  await h.run()
+  const schema = h.calls.lensSchema
+  const items = schema.properties.findings.items
+  const bare = { title: 't', claim: 'c', severity: 'major', failure_scenario: 'f' }
+  check('m6b: a finding WITHOUT born/scope_flag still validates', validate(schema, { findings: [bare] }))
+  check('m6b: a finding WITH both fields validates',
+        validate(schema, { findings: [{ ...bare, born: 'pre-existing', scope_flag: true }] }))
+  check('m6b: born=n/a (design mode) validates', validate(schema, { findings: [{ ...bare, born: 'n/a' }] }))
+  // Proves the validator is not vacuous: without these, a validator that
+  // ignored `born` entirely would pass every line above.
+  check('m6b: an unknown born value is rejected', !validate(schema, { findings: [{ ...bare, born: 'maybe' }] }))
+  check('m6b: a non-boolean scope_flag is rejected', !validate(schema, { findings: [{ ...bare, scope_flag: 'yes' }] }))
+  check('m6b: born is exactly the three-value enum',
+        JSON.stringify(items.properties.born && items.properties.born.enum) ===
+          JSON.stringify(['pre-existing', 'story-created', 'n/a']))
+  check('m6c: neither field is in FINDINGS_SCHEMA.required',
+        !['born', 'scope_flag'].some((k) => (schema.required || []).includes(k)),
+        `required=${JSON.stringify(schema.required)}`)
+  check('m6c: neither field is in the finding item\'s required list, which is unchanged',
+        JSON.stringify(items.required) === JSON.stringify(['title', 'claim', 'severity', 'failure_scenario']),
+        `required=${JSON.stringify(items.required)}`)
+}
+
+// m6d — the prompts say where the labels go, and whose they are
+{
+  const designOwn = RENDERED.design.lens.map((p) => p.replace(/^<STANCE>/, ''))
+  check('m6d: design-mode lens prompt sets born to n/a and restates no scope_flag rule',
+        designOwn.length === 1 && designOwn.every((p) => p.includes('`born` field to `n/a`') && !/scope_flag/.test(p)),
+        JSON.stringify(designOwn))
+  for (const m of ['design', 'diff']) {
+    check(`m6d: ${m}-mode lens prompt is exactly its allow-set (no born/scope_flag rule added outside the stance)`,
+          RENDERED[m].lens.length === 1 && RENDERED[m].lens.every((p) => p === LENS_PROMPT_ALLOWED(m)),
+          `rendered=${JSON.stringify(RENDERED[m].lens)}`)
+  }
+  // The equality above is only as good as the allow-set. A TRIPWIRE, not a
+  // gate, for a duplicate rule added to the script and the allow-set in the
+  // same commit: it catches wordings that name the labels, nothing paraphrased.
+  // The design fieldNote's `n/a` override is the one permitted mention.
+  const labelProse = /born|scope_flag|pre-existing|story-created/i
+  check('m6d: no allow-set restates a born/scope_flag rule outside the design n/a override',
+        !labelProse.test(LENS_PROMPT_ALLOWED('diff')) &&
+          !labelProse.test(LENS_PROMPT_ALLOWED('design').replace(FIELDNOTE_ALLOWED.design, '')) &&
+          !['design', 'diff'].some((m) => labelProse.test(SKEPTIC_PROMPT_ALLOWED(m))))
+  check('m6d: the skeptic prompt carries no born/scope_flag sentence of its own',
+        ['design', 'diff'].every((m) => RENDERED[m].skeptic.length > 0 && RENDERED[m].skeptic.every((p) => {
+          const own = p.replace(/^<STANCE>/, '').replace(/^--- index \d+ ---\n.*$/gm, '')
+          return !own.includes('`born`') && !own.includes('`scope_flag`')
+        })))
+}
+
+// c1 (PR #546 red-team r2) — the stance scopes the cheapest-wrong-implementation
+// duty to the `tests` lens, so design mode needs one or no lens owns it on a
+// governance PR that ships probes. Read off the prompts a default-lens design
+// run actually sends, not off the constant's source text.
+{
+  const h = makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: 'design', docPath: '/tmp/d.md', context: 't' } })
+  await h.run()
+  const keys = h.calls.lensPrompts.map((p) => (p.slice(expectedStance.length).match(/^\n\nYour lens: (\S+) — /) || [])[1])
+  check('DEFAULT_DESIGN_LENSES includes a `tests` lens',
+        keys.includes('tests'), `keys=${JSON.stringify(keys)}`)
+  const tests = h.calls.lensPrompts.find((p) => p.includes('Your lens: tests — '))
+  check('the design-mode tests lens names the cheapest wrong implementation and stops on no tests',
+        !!tests && tests.includes('cheapest wrong implementation') && tests.includes('carries no tests, say so and stop'))
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)
