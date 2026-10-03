@@ -19,11 +19,11 @@ Generation Settings to restore the shipped versions.
 **Where:** Settings → Generation Settings.
 
 You can save a full prompt setup as a named template under **Settings → Prompt
-Templates** and switch between them per character or scene.
+Templates** and switch between them.
 
 **Note:** character cards can carry their own `system_prompt` and post-history
-instructions. By default the app honors those over the user's prompts. Toggle
-**Respect character override** / **Respect character PHI** in Generation
+instructions. By default the app honors those. Toggle
+**Honor character's System Prompt override** / **Honor character's Post-History Instructions** in Generation
 Settings to change this.
 
 ---
@@ -243,8 +243,8 @@ Most common causes, in order:
 2. **Model name wrong.** Some providers return errors like "model not found"
    — check the active model is one your account has access to.
 
-3. **Character card has a broken `system_prompt`.** Try toggling **Respect
-   character override** off in Generation Settings.
+3. **Character card has a broken `system_prompt`.** Try toggling **Honor character's System Prompt
+   override** off in Generation Settings.
 
 4. **Context too large.** The prompt may have exceeded the model's window.
    Check the token budget in Generation Settings.
