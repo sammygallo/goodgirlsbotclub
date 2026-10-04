@@ -264,22 +264,22 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>13 Sep 2026</b><br>
-      main <b>a847e532</b><br>
-      active <b>none — E2-S3 closing</b>
+      <b>25 Sep 2026</b><br>
+      main <b>1e6a555f</b><br>
+      active <b>E3-S1 — in review, awaiting design sign-off</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">3</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
-    <div class="tile"><div class="n">4</div><div class="k">In design</div></div>
+    <div class="tile"><div class="n">3</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">15</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">10</div><div class="k">Deployed</div></div>
-    <div class="tile is-warn"><div class="n">19</div><div class="k">Open issues</div></div>
+    <div class="tile is-warn"><div class="n">24</div><div class="k">Open issues</div></div>
   </div>
 
   <div class="notices">
@@ -319,8 +319,14 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E3">
+          <div class="id">E3-S1</div>
+          <div class="t">Cascade semantics design</div>
+          <div class="m"><b>In review</b> &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/545">#545</a> open on <code>claude/e3-s1-cascade-semantics</code> @ <code>5c5a4968</code>; awaiting Sammy&rsquo;s design sign-off (task 4). Docs-only: the spec + the task-2 refactor plan. <b>QA 3/3 AC pass.</b> Seven design-mode rounds, 0 errors: round 1 13 confirmed, fixed; round 2 15 + 2 in the persistence seam &mdash; Q2 fired, <b>Sammy chose DESCOPE</b>: &sect;6.4 persistence + migration is an OPEN design (13 constraints) for E3-S3 task 1&rsquo;s PLAN; rounds 3&ndash;7 fixed prose universals, counts and cites. Plan absorption: 50 verified corrections across the roadmap, audit, guides and ROADMAP.md; filed #541&ndash;#544 + backend#89. Verification &asymp; 9.06M vs the claim-set row&rsquo;s 3.4&ndash;9.8M at 1&ndash;2 passes.</div>
+          <div class="gates"><span class="gate">unblocks E3-S2/S3 · E7-S2 rails</span><span class="gate hot">&sect;6.4 open → E3-S3 PLAN</span></div>
+        </article>
       </div>
     </section>
 
@@ -355,7 +361,7 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Design</h2><span class="ct">4</span></div>
+      <div class="colhead"><h2>Design</h2><span class="ct">3</span></div>
       <div class="stack">
         <article class="card s-warn" data-epic="E8">
           <div class="id">E8-S1</div>
@@ -366,11 +372,6 @@
           <div class="id">E6-S1</div>
           <div class="t">UI workshop — hero, sidebar, chat</div>
           <div class="m">Approved mockups gate all of E6-S2/S3/S4.</div>
-        </article>
-        <article class="card" data-epic="E3">
-          <div class="id">E3-S1</div>
-          <div class="t">Cascade semantics design</div>
-          <div class="m">Gates E3-S2/S3, and E7-S2 builds on its override rails.</div>
         </article>
         <article class="card" data-epic="E1">
           <div class="id">E1-S2</div>
@@ -447,30 +448,35 @@
   </div>
 
   <section class="focus">
-    <h2>E2-S3 &mdash; Show-prompt toggle, merged 13 Sep, closing</h2>
-    <p class="sub">The exact post-transform payload, shown to the user who sent it. E2-S2 measured the prompt at assembly time; this story captures what the provider client is actually handed after the instruct collapse and any extension interceptor, names the transform when one changed the structure, and keeps the payload out of every save, sync and export path by construction.</p>
+    <h2>E3-S1 &mdash; Cascade semantics design, in review 25 Sep</h2>
+    <p class="sub">One documented precedence rule &mdash; global &rarr; character &rarr; chat &mdash; enforced by one resolution function, over an enumerated setting inventory. The spec has to name the fourth level the audit found (on eligible solo chats the server activation engine replaces the client scan and the user&rsquo;s scan depth is never sent), decide whether worlds are settings containers in v1, and say whether lore-book composition stays a separate resolution path. E3-S2/S3/S4 implement it; E7-S2 builds its wizard pages on the rails it specifies.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Intake</div><div class="sv">premise holds; six seams re-grounded</div></div>
-      <div class="step done"><div class="sn">Plan</div><div class="sv">wrap the dispatch; N = 1</div></div>
-      <div class="step done"><div class="sn">Build</div><div class="sv">story-dev, Sonnet + 15 fix rounds</div></div>
-      <div class="step done"><div class="sn">Review</div><div class="sv">15 verified rounds, 1 held; stopped by Sammy</div></div>
-      <div class="step done"><div class="sn">QA</div><div class="sv">6/6, 12 skeptic votes</div></div>
-      <div class="step done"><div class="sn">Merge</div><div class="sv">a847e532 &mdash; Sammy&rsquo;s go</div></div>
-      <div class="step"><div class="sn">Deploy</div><div class="sv">not requested</div></div>
-      <div class="step now"><div class="sn">Close</div><div class="sv">postmortem running</div></div>
+      <div class="step done"><div class="sn">Intake</div><div class="sv">no story ID; Ready for dev empty; Sammy picked E3-S1; premise holds</div></div>
+      <div class="step done"><div class="sn">Brief</div><div class="sv">AC verbatim + E7-S2/E4-S2 reading of AC3; N = 1</div></div>
+      <div class="step done"><div class="sn">Research</div><div class="sv">3 Opus lenses, 1.27M</div></div>
+      <div class="step done"><div class="sn">Draft</div><div class="sv">Fable + Plan agent (15 disagreements folded)</div></div>
+      <div class="step done"><div class="sn">Red-team</div><div class="sv">7 rounds; descoped at round 2 by Sammy</div></div>
+      <div class="step done"><div class="sn">QA</div><div class="sv">3/3 AC pass; 2415 tests</div></div>
+      <div class="step done"><div class="sn">PR</div><div class="sv">#545; absorption + 5 issues filed</div></div>
+      <div class="step now"><div class="sn">Sign-off</div><div class="sv">Sammy&rsquo;s design gate; deploy n/a</div></div>
     </div>
 
     <div class="note" style="margin-bottom:18px">
-      <h3>The design decision the plan settled</h3>
-      One helper <em>wraps</em> transform + capture + dispatch and hands each seam the final array through a callback parameter, so a seam cannot capture a different object than it sends. Both transforms report what they did through their return values rather than the helper inferring it from reference identity. The toggle gates capture itself, not just display: off means nothing is held in memory.
+      <h3>What the spec must not do</h3>
+      Invent a second override mechanism. The card&rsquo;s own success criterion says &ldquo;no parallel override mechanisms&rdquo; is already false on the day the spec is written &mdash; <code>resolveEffectiveBooks()</code> plus five call-site unions already resolve lore scope &mdash; so the rule is bounded to the inventory the spec enumerates, and the spec states in terms whether v1 absorbs lore composition or leaves it alone.
     </div>
   </section>
 
   <section class="section">
     <h2>Filed, no story card</h2>
-    <p class="sub">Nineteen open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; six came out of E2-S2, E2-S5 and E9-S10; four came out of E2-S3; one is a tracking issue spanning nine independent gaps.</p>
+    <p class="sub">Twenty-four open issues sit outside the board. Six came out of E9-S6's review and were deliberately not widened into that diff; six came out of E2-S2, E2-S5 and E9-S10; four came out of E2-S3; five came out of E3-S1's research; one is a tracking issue spanning nine independent gaps.</p>
     <div class="issues">
+      <div class="issue new"><span class="n">#541</span> — Per-chat client state is keyed by bare chat file name, unique only per character; rename re-keys only <code>wi_fired</code>. Found by E3-S1's research.</div>
+      <div class="issue new"><span class="n">#542</span> — Opening a chat with a linked prompt template uploads the template as the user's global main prompt. Found by E3-S1's research.</div>
+      <div class="issue new"><span class="n">#543</span> — Applying a connection profile while a linked-preset chat is open rewrites that preset. Found by E3-S1's research.</div>
+      <div class="issue new"><span class="n">#544</span> — Summary compaction still drops old turns after the Summarization extension is disabled. Found by E3-S1's research.</div>
+      <div class="issue new"><span class="n">ggbc-backend #89</span> — A World Info budget of 0 ("unlimited") is read as 1024 by the pinned-budget warning. Found by E3-S1's research.</div>
       <div class="issue new"><span class="n">#476</span> — Persona set to "In system prompt" is silently dropped from solo prompts. Found by E2-S2's own fixtures.</div>
       <div class="issue new"><span class="n">#477</span> — Character's note rendering to whitespace ships a blank system message at every depth except 0.</div>
       <div class="issue new"><span class="n">#478</span> — WI entries in disabled sections still execute their macros, including persisted setvar writes.</div>
@@ -492,7 +498,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Sep 2026 (E2-S3 merged).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 25 Sep 2026 (E3-S1 in review, #545).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
