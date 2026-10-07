@@ -99,12 +99,13 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
 ### 2.2 Content and data
 
-- **D-H3 Recent characters source.** S2 adds a backend route on the **existing** chats router, next to `/chats/list`: `POST /chats/recent`, body `{ "limit": int (1–500, default 5) }`, response `[{ "character_avatar": str, "last_chat_at": datetime }]`. It returns the caller's own chats, one row per character, `max(updated_at)` per character, ordered descending. Because it lives on an existing router prefix, no nginx/vite registration is needed (the registration rule applies to new bare-prefix routers only). Requirements:
+- **D-H3 Featured characters source.** S2 adds a backend route on the **existing** chats router, next to `/chats/list`: `POST /chats/recency`, body `{ "limit": int (1–500, default 5) }`, response `[{ "character_avatar": str, "last_chat_at": datetime }]`. It returns the caller's own chats, one row per character, `max(updated_at)` per character, ordered descending (to honor "most recently used" per Q6). Because it lives on an existing router prefix, no nginx/vite registration is needed (the registration rule applies to new bare-prefix routers only). Requirements:
   - **Solo chats only.** Group chat rows are keyed by roster slot 0's avatar (positional identity; #458 / ggbc-backend#84) and must **not** count toward slot 0's recency. If the backend cannot tell a group row from a solo row, S2 **stops and raises it** instead of guessing.
   - The client joins the rows against `characterStore.characters` by avatar and **drops** any avatar the user can no longer see (deleted or unshared).
   - Backend tests cover: ordering, de-duplication per character, owner scoping (another user's chats never appear), group exclusion, and the limit bounds.
-- **D-H4 Slide count and order.** `R` = recent characters (at most 5), `F` = enabled feature slides the user is permitted to see (at most 2). Order: `R1, F1, R2, R3, F2, R4, R5`, with absent entries skipped. Maximum 7 slides.
-- **D-H5 Character slide content.**
+  - **Note:** The endpoint populates "most recently chatted" for display in the **sidebar** (D-S7, "Recent chat" sort). The hero carousel uses a **different content source**, not this one (Q5): featured characters from admin config or a backend-determined curated list.
+- **D-H4 Slide count and order.** `F` = enabled featured character slides the user is permitted to see (at most 5), plus `A` = enabled announcement slides (at most 2). Order is left to S2 implementation; the spec does not prescribe a fixed interleave. Maximum 7 slides total.
+- **D-H5 Character slide content (featured carousel).**
   - Image: `/blobs/character/<avatar>` (the existing blob URL).
   - Name: `h3`, text-xl or 2xl, 1 line, truncated.
   - Creator: "by {creator}" when `creator` or `data.creator` is non-empty.
@@ -143,7 +144,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   - **< 640px:** no foreground card. The background avatar is **unblurred**, `object-fit: cover`, `object-position: 50% 0%` (faces are usually at the top). A bottom scrim carries the text, which is overlaid at the bottom with 16px padding.
   - Feature slides use the same frames with `image` in place of the avatar.
 - **D-H8 Image loading.** The first two slides load eagerly; the rest use `loading="lazy"`. On image error the slide stays and shows a placeholder: a `--color-bg-tertiary` fill with the character's initial in `--color-text-primary`, 64px.
-- **D-H9 New user / zero recent characters.** No carousel and no controls. The region renders one static welcome panel: heading "Start a new conversation", body "Pick a character to chat with, or create your own.", and a **Browse characters** button (D-H11). No feature slides (Q5).
+- **D-H9 New user / empty featured carousel.** When the featured-character list is empty or the user has no permission to see any, no carousel and no controls. The region renders one static welcome panel: heading "Start a new conversation", body "Pick a character to chat with, or create your own.", and a **Browse characters** button (D-H11). No feature slides.
 - **D-H10 One slide total** (e.g. one recent character and no features): render it statically, with no rotation, no prev/next and no indicator.
 - **D-H11 Start row and "Browse".** Below the hero, one row reads "Pick up where you left off, or browse all characters." with a **Browse characters** button. The button behaves by width:
   - < 1024: opens the drawer and focuses `#character-search`.
@@ -377,7 +378,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
 ### 5.1 Anatomy
 
-- **D-C1 Order:** `sidebar (288 | 72) │ chat (2fr) │ avatar panel (1fr)` (Q2). The avatar panel is **full-bleed**: no padding, no border radius, and a 1px `--color-border` left border separating it from the chat. Its height is the full `<main>` height (100dvh minus the 56px header).
+- **D-C1 Order:** `sidebar (288 | 72) │ avatar panel (1fr) │ chat (2fr)` (Q2). The avatar panel is **full-bleed**: no padding, no border radius, and a 1px `--color-border` right border separating it from the chat. Its height is the full `<main>` height (100dvh minus the 56px header).
 - **D-C2 When the panel renders.** All of the following must be true: viewport ≥ 1024, a chat is open (solo or group), `vnMode === false` (D-C9), the panel is expanded (`stm:chat-avatar-panel-expanded`), and the container rule holds (D-C3). Otherwise the chat takes the full main width.
 - **D-C3 Container rule.** `<main>` is a size container (`@container/main`). The split applies only when the main column is ≥ **600px** (equivalently, chat ≥ 400px). With the widths in §5.2 this always holds at ≥ 1024. It is a **guard** against page zoom and future sidebar widths, not an expected path. Implement it with Tailwind v4 container variants (`@min-[600px]/main:`).
 - Below 1024, the chat is **unchanged**: the existing mobile portrait panel (`lg:hidden`, resize handle, collapse, drag framing) stays, and mobile landscape still hides it (`isMobileLandscape`). Tablets in landscape at ≥ 1024 (e.g. 1180×820) get the split with the rail.
@@ -611,7 +612,7 @@ Locked by Sammy on 2026-10-06, as interpreted by this spec:
 | Decision | Locked text | Implemented as |
 |---|---|---|
 | 1 | Hero replaces the ChatView empty state on `/` | D-H1 (the no-selection branch, wherever it renders) |
-| 2 | Recent characters sorted by `date_last_chat` (most recently used); new user → empty carousel | Intent kept; data source corrected (K1 → D-H3); D-H9 |
+| 2 | **Featured characters + announcements**, curated list (admin or backend-determined); recency endpoint for sidebar "Recent chat" sort | D-H3/H4; D-H9 (empty featured list); sidebar recency at D-S7 |
 | 3 | Feature-slide CTA opens a modal with subject info (character info modal with avatar, tags, creator's notes) | D-H6: `character` kind → `CharacterPreviewModal`; `feature` kind → `FeatureInfoModal` |
 | 4 | Personal sidebar: Profile, Logout, Settings, user's Character. Header keeps Guides, Help | D-S9 order (Profile, Persona, Settings, Install?, Logout); D-S10 |
 | 5 | Avatar panel: Auto → LP → Expressions → static; group chat focuses the current or most recent speaker with small thumbnails; no VN mode | D-C5 (restated, K3); D-C7; VN exists → D-C9 (Q1) |
