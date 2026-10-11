@@ -408,7 +408,7 @@ The user's chat-width preference (`getChatMaxWidth()`, 60–100%) keeps applying
 
 - **D-C4 Image fit.** The image uses `object-fit: cover` with `object-position` taken from the **desktop** framing values (D-C8). It never stretches; aspect is preserved by `cover`. Live Portrait uses `fill`, so it gets the same cover behavior. On a speaker change, the image cross-fades over 200 ms (0 ms under reduced motion).
 - **Panel toolbar** (top-right, always visible rather than hover-revealed, so touch and keyboard users can find it): `rgb(0 0 0 / .5)` fill, `#fff` icons, 32×32 buttons. In order:
-  1. **Motion mode** (the `MotionModePicker` in a popover; it moves here from the sidebar card).
+  1. **Motion mode** (the `MotionModePicker` in a popover). The same control also stays in the drawer's compact card (D-S5) and in the mobile portrait panel below 1024 (`ChatView.tsx`), so no width loses it.
   2. **Adjust framing**.
   3. **Pause/Play animation** (only while Live Portrait plays; D-C6).
   4. **Hide portrait**.
@@ -602,7 +602,7 @@ Each story copies its block into its brief and PR body and ticks items with evid
 
 ### E6-S3 — Sidebar
 
-- [ ] Anatomy per D-S1. Every capability in the D-S7 inventory still works (walk the list: search, favorites, tags, sort, clear, pull-to-refresh, About, Favorite, group-select + start, group chats load/delete, drafts resume/discard, Import, New → interview → simple-form escape, Works open/new, motion picker, creator-notes "Show more").
+- [ ] Anatomy per D-S1. Every capability in the D-S7 inventory still works (walk the list: search, favorites, tags, sort, clear, pull-to-refresh, About, Favorite, group-select + start, group chats load/delete, drafts resume/discard, Import, New → interview → simple-form escape, Works open/new, motion picker in the drawer card and in the panel, creator notes in full via About → `CharacterPreviewModal`, which already shows them).
 - [ ] "Recent chat" sort uses D-H3 data; characters without chats sort after, by name.
 - [ ] Drawer at every width per D-S2 and the §3.4 table (A1). `stm:sidebar-expanded` is removed; a unit test asserts the drawer is closed on load regardless of stored state.
 - [ ] No layout shift: first-render test per D-S3 at 1100 and 1400 (drawer closed, full-width content).
@@ -629,7 +629,7 @@ Each story copies its block into its brief and PR body and ticks items with evid
 - [ ] Source resolution per D-C5, including explicit-mode-without-assets → static.
 - [ ] Reduced motion + Live Portrait per D-C6. The `paused` prop on `LivePortraitVideo` is added. A Pause/Play button exists whenever Live Portrait plays.
 - [ ] Image fit per D-C4: no distortion at any table width, with portrait, square and landscape test avatars.
-- [ ] Toolbar order and labels per §5.3; the MotionModePicker has moved into the panel.
+- [ ] Toolbar order and labels per §5.3; the MotionModePicker appears in the panel as well as the drawer card (§5.3 item 1).
 - [ ] Collapse/expand persisted (`stm:chat-avatar-panel-expanded`); "Show portrait" in the chat header with `aria-expanded`.
 - [ ] Group focus per D-C7: streaming message avatar (if carried) → last speaker → slot 0; never by name; manual pin until the next AI message; stable roster order.
 - [ ] Framing per D-C8: separate desktop positions, store migration v1→v2 keeps mobile values (unit test), keyboard arrows (5% / 1%), Reset, Enter/Escape exit.
@@ -653,7 +653,7 @@ Locked by Sammy on 2026-10-06, as interpreted by this spec:
 | 3 | Feature-slide CTA opens a modal with subject info (character info modal with avatar, tags, creator's notes) | D-H6: `character` kind → `CharacterPreviewModal`; `feature` kind → `FeatureInfoModal` |
 | 4 | Personal sidebar: Profile, Logout, Settings, user's Character. Header keeps Guides, Help | D-S9 order (Profile, Persona, Settings, Install?, Logout); D-S10 |
 | 5 | Avatar panel: Auto → LP → Expressions → static; group chat focuses the current or most recent speaker with small thumbnails; no VN mode | D-C5 (restated, K3); D-C7; VN exists → D-C9 (Q1) |
-| — | Mockup frame count ≈ 22 (hero ≈ 8, sidebar ≈ 7, chat ≈ 7) | §7, exactly 22 (v1; superseded by A1) |
+| — | Mockup frame count ≈ 22 (hero ≈ 8, sidebar ≈ 7, chat ≈ 7) | §7: v2 set of 22 approved 2026-10-11 (v1 set superseded by A1) |
 | A1 (2026-10-10) | Sidebar is a hidden drawer at every width (z-index 1000, the top app layer). Hero is followed by category rows | §0.3; D-G2, D-G7, D-S1–S5, D-S10–S12, D-S14, D-S15, D-S17, D-S11 (removed), §3.4, D-C1, D-C10, §5.2, D-H2, D-H4, D-H7 (≥640), D-H11, D-H21 (new), §7, §8. Toast and Onboarding raised to 1100 and 1200 (confirmed 2026-10-11) |
 
 Deviations from the brief's non-locked details, each with its reason in place: D-G5 (no focus-trap dependency), D-G7 (`stm:` key names, one JSON key for sections), D-H13 (no zoom), D-H14/H17 (APG stop-on-focus and action labels), D-S5 (stable member order; no dropdown mode), D-S1 (A1: the rail is removed; the drawer is 320px), D-S8 (Works default expanded, now persisted), D-S15 (`aria-label="Main"`), D-C7 (thumbnails include all members in stable order).
