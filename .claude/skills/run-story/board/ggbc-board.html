@@ -331,8 +331,14 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">3</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">4</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E6">
+          <div class="id">E6-S1</div>
+          <div class="t">UI workshop — hero, sidebar, chat</div>
+          <div class="m">11 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/549">#549</a> → <code>4dde86bb</code>, merged, docs only (no deploy). Spec A1: hidden drawer at every width; hero followed by category rows; chat has no sidebar column. 22 v2 frames approved by Sammy 2026-10-11. Unblocks E6-S2/S3/S4.</div>
+          <div class="gates"><span class="gate free">deploy n/a</span><span class="gate free">unblocks E6-S2/S3/S4</span></div>
+        </article>
         <article class="card s-ok" data-epic="E2">
           <div class="id">E2-S3</div>
           <div class="t">Show-prompt toggle &mdash; post-transform exact-prompt viewer</div>
@@ -361,17 +367,12 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Design</h2><span class="ct">3</span></div>
+      <div class="colhead"><h2>Design</h2><span class="ct">2</span></div>
       <div class="stack">
         <article class="card s-warn" data-epic="E8">
           <div class="id">E8-S1</div>
           <div class="t">Arch v2 — research + methodology pick</div>
           <div class="m">Critical path. Everything in E8 waits on this. <b>Parked 3 Sep</b> by Sammy after review round 2, to resume when E8-S2 is scheduled. Branch <code>claude/e8-s1-arch-v2-methodology</code> @ <code>fbb30fdf</code> pushed, no PR: the brief plus four research reports, twice red-teamed. Methodology, arms, probe design, lore control and token surface converged; the statistical gate layer did not.</div>
-        </article>
-        <article class="card" data-epic="E6">
-          <div class="id">E6-S1</div>
-          <div class="t">UI workshop — hero, sidebar, chat</div>
-          <div class="m">Approved mockups gate all of E6-S2/S3/S4.</div>
         </article>
         <article class="card" data-epic="E1">
           <div class="id">E1-S2</div>
@@ -391,7 +392,7 @@
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S2</div><div class="t">Lore scope + explainer</div><div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate">← E4-S1</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S1</div><div class="t">Optimization diagnostics</div><div class="gates"><span class="gate">← E2-S4</span><span class="gate free">E2-S5 ✓</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S2</div><div class="t">Suggestions + batch apply</div><div class="gates"><span class="gate">← E5-S1</span></div></article>
-        <article class="card s-warn" data-epic="E6"><div class="id">E6-S2 · S3 · S4</div><div class="t">Hero · sidebar · chat layout</div><div class="gates"><span class="gate">← E6-S1</span></div></article>
+        <article class="card s-warn" data-epic="E6"><div class="id">E6-S2 · S3 · S4</div><div class="t">Hero · sidebar · chat layout</div><div class="gates"><span class="gate free">E6-S1 ✓</span></div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S1</div><div class="t">Wizard P1 — Creator Notes editor</div><div class="m">Scheduled 11.1, independent of Arch v2.</div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S2</div><div class="t">Wizard P2 — advanced settings</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate hot">← E8 gate</span></div></article>
         <article class="card s-warn" data-epic="E8"><div class="id">E8-S2</div><div class="t">Probe battery + blind scoring</div><div class="gates"><span class="gate">← E8-S1</span></div></article>
