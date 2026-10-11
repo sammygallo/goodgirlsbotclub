@@ -54,9 +54,10 @@ Sammy's direction, from reference screenshots of a streaming home page (a hero f
 - **The sidebar is a hidden drawer at every width.** It has no expanded or rail state. Superseded: the D-G2 sidebar column, D-G7 `stm:sidebar-expanded`, D-S1 widths, D-S2, D-S3 and D-S4 (rewritten), the D-S5 sequencing rule, D-S10's breakpoint, D-S11 (removed), D-S12's reset rule, the D-S14 rail rule, D-S15, D-S17, and §3.4.
 - **The hero is followed by category rows** (D-H21). Superseded: D-H4's slide mix, D-H11's Start row, D-H2's order, and D-H7's ≥640px portrait card (now full-bleed art with left-aligned text).
 - **The chat has no sidebar column.** The avatar panel takes the left third of the full viewport and the chat takes the right two thirds. Superseded: D-C1's order, D-C10, and the §5.2 widths.
-- **Judgment for Sammy:** "max z-index" for the drawer is set to 1000, the top app layer (Modal stays at 100, panels at 50). Toast and Onboarding move to 1100 and 1200 so they stay above the drawer. Confirm or change.
+- **Confirmed by Sammy (2026-10-11):** the drawer z-index is 1000, the top app layer (Modal stays at 100, panels at 50). Toast and Onboarding are raised to 1100 and 1200 so they stay above the drawer.
 - **Reference imagery:** only the layout pattern is in scope. Third-party branding, copy and imagery are not.
-- **Open items:** §7's v2 frame set is partial. "New this week" (D-H21) needs a character creation timestamp; S2 confirms one exists and stops to raise it if not.
+- **Data source confirmed (2026-10-11):** "New this week" (D-H21) uses `create_date`, a non-null server-default timestamp on the character row. It is set once at creation and does not change on edits (the backend's `last_modified` does change, so it is not used). The frontend already reads it (`src/api/client.ts:251`).
+- **Open items:** §7's v2 approval set is being reissued against A1.
 
 ---
 
@@ -163,13 +164,12 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 - **D-H21 Category rows (A1).** Below the hero, rows of cards. Each row has an `<h3>` heading and a "See all ›" button that opens the drawer with My Characters focused. Rows render in this fixed order. A row with no visible items is **omitted**, never shown empty:
   1. **Pick up where you left off:** solo chats by D-H3 recency, up to 20, 2:3 cards.
   2. **Featured characters:** the featured list (Q5), 2:3 cards.
-  3. **New this week:** visible characters created in the last 7 days, 2:3 cards. S2 confirms a creation timestamp exists; if none does, S2 stops and raises it and this row is dropped.
+  3. **New this week:** visible characters whose `create_date` is within the last 7 days, 2:3 cards. Uses `create_date`, not `last_modified` (confirmed 2026-10-11).
   4. **Works** (only with `project:view` and at least one work): 16:9 cards.
   - **Card:** image (`/blobs/character/<avatar>`), title on one line, and a small caps tag (CHARACTER / WORK / NEW). Activating a card opens `CharacterPreviewModal` (or the Works panel for a work); its "Start chat" selects.
   - **Scrolling:** native horizontal scroll with `scroll-snap-type: x mandatory`. Scroll buttons, "Scroll {row} left" and "Scroll {row} right", are real buttons, visible from 640px on hover or focus. Below 640px the row is swipe-only. Keyboard users Tab through the cards, and focusing an offscreen card scrolls it into view.
   - Rows do not rotate and do not pause. Images beyond the first 6 per row are `loading="lazy"`. Under reduced motion, scrolling is instant.
   - Each row is a `<section aria-labelledby>`. Cards are `<button>`s, never `div`s with handlers.
-
 ### 2.3 Behavior
 
 - **D-H12 Rotation timing.** 6000 ms per slide. The timer resets on any manual navigation. Rotation wraps from the last slide to the first.
@@ -625,6 +625,6 @@ Locked by Sammy on 2026-10-06, as interpreted by this spec:
 | 4 | Personal sidebar: Profile, Logout, Settings, user's Character. Header keeps Guides, Help | D-S9 order (Profile, Persona, Settings, Install?, Logout); D-S10 |
 | 5 | Avatar panel: Auto → LP → Expressions → static; group chat focuses the current or most recent speaker with small thumbnails; no VN mode | D-C5 (restated, K3); D-C7; VN exists → D-C9 (Q1) |
 | — | Mockup frame count ≈ 22 (hero ≈ 8, sidebar ≈ 7, chat ≈ 7) | §7, exactly 22 (v1; superseded by A1) |
-| A1 (2026-10-10) | Sidebar is a hidden drawer at every width (z-index 1000, the top app layer). Hero is followed by category rows | §0.3; D-S2–S4, D-S10–S12, D-S14, D-S15, D-S17, §3.4, D-C1, D-C10, §5.2, D-H2, D-H4, D-H7 (≥640), D-H11, D-H21 (new), §7, §8. Toast and Onboarding raised to 1100 and 1200 (confirm) |
+| A1 (2026-10-10) | Sidebar is a hidden drawer at every width (z-index 1000, the top app layer). Hero is followed by category rows | §0.3; D-S2–S4, D-S10–S12, D-S14, D-S15, D-S17, §3.4, D-C1, D-C10, §5.2, D-H2, D-H4, D-H7 (≥640), D-H11, D-H21 (new), §7, §8. Toast and Onboarding raised to 1100 and 1200 (confirmed 2026-10-11) |
 
 Deviations from the brief's non-locked details, each with its reason in place: D-G5 (no focus-trap dependency), D-G7 (`stm:` key names, one JSON key for sections), D-H13 (no zoom), D-H14/H17 (APG stop-on-focus and action labels), D-S5 (stable member order; no dropdown mode), D-S1 (A1: the rail is removed; the drawer is 320px), D-S8 (Works default expanded, now persisted), D-S15 (`aria-label="Main"`), D-C7 (thumbnails include all members in stable order).
