@@ -539,7 +539,9 @@ Sammy approves each frame. A frame is approved when it matches the decisions cit
 | C6 | V2-Chat-1920-light | 1920 | light · cyberpunk | §5.2 row 1920 |
 | C7 | V2-Mobile-reference | 375 / 812×375 | dark · cyberpunk | D-G2, §5.1 |
 
-Frames use placeholder art and copy, and placeholder token values approximate the presets. Approval is against this set.
+Frames use placeholder art and copy, and placeholder token values approximate the presets.
+
+**Approved by Sammy, 2026-10-11:** all 22 frames above, as the approval set for this spec. No decision overrides.
 
 | # | Frame | Width | Theme | Decisions shown |
 |---|---|---|---|---|
