@@ -512,7 +512,34 @@ The type scale is unchanged: system font stack and Tailwind sizes.
 
 Sammy approves each frame. A frame is approved when it matches the decisions cited, or when the approval note explicitly overrides one by ID.
 
-**A1 (2026-10-10):** the v1 table below shows the expanded/rail sidebar and is superseded. The v2 set on the canvas (V2-Home, V2-Home-mobile, V2-Drawer, V2-Drawer-mobile, V2-Chat) is partial. Approval is against the reissued set.
+**A1 v2 approval set (2026-10-11): 22 frames, on the Fable canvas** https://claude.ai/artifact/Jwd5kYiVQCanN9Gpn2FEY3. The v1 table below is superseded (expanded/rail sidebar).
+
+| # | Frame (canvas file) | Width | Theme | Decisions shown |
+|---|---|---|---|---|
+| H1 | V2-Home | 1440 | dark · cyberpunk | D-H1, D-H4, D-H21 |
+| H2 | V2-Hero-feature | 1440 | dark · cyberpunk | D-H4, D-H6, D-H7 |
+| H3 | V2-Home-light | 1280 | light · amber | D-H20, D-H21, token tints |
+| H4 | V2-Home-1024 | 1024 | dark · purple | D-H1, D-S3 (drawer closed) |
+| H5 | V2-Home-mobile | 375 | dark · cyberpunk | D-H7 (< 640), control placement |
+| H6 | V2-Home-mobile-light | 375 | light · cyberpunk | D-H7, D-H20 |
+| H7 | V2-Welcome | 1280 | dark · cyberpunk | D-H9, D-H11 |
+| H8 | V2-Keyboard | 1280 | dark · cyberpunk | D-H14, D-H17, D-H19, D-G5 |
+| S1 | V2-Drawer | 1440 | dark · cyberpunk | D-S1, D-S2, D-S12, D-S14 |
+| S2 | V2-Drawer-single | 1440 | dark · cyberpunk | D-S5 (compact card) |
+| S3 | V2-Drawer-group | 1440 | dark · purple | D-S5 group |
+| S4 | V2-Drawer-focus-1024 | 1024 | dark · cyberpunk | D-S12, D-S13 |
+| S5 | V2-Drawer-mobile | 375 | dark · cyberpunk | D-S12 scrim, compact card |
+| S6 | V2-Header | 320 / 1280 | dark · cyberpunk | D-S10 |
+| S7 | V2-Drawer-light | 1280 | light · amber | D-S13, D-S18, D-T4 |
+| C1 | V2-Chat | 1440 | dark · cyberpunk | D-C1, D-C4, D-C6 |
+| C2 | V2-Chat-1024 | 1024 | dark · purple | §5.2 row 1024 |
+| C3 | V2-Chat-group | 1440 | dark · cyberpunk | D-C7, D-C12 |
+| C4 | V2-Chat-hidden | 1280 | dark · cyberpunk | D-C2 collapse |
+| C5 | V2-Chat-framing | 1280 | dark · cyberpunk | D-C8 |
+| C6 | V2-Chat-1920-light | 1920 | light · cyberpunk | §5.2 row 1920 |
+| C7 | V2-Mobile-reference | 375 / 812×375 | dark · cyberpunk | D-G2, §5.1 |
+
+Frames use placeholder art and copy, and placeholder token values approximate the presets. Approval is against this set.
 
 | # | Frame | Width | Theme | Decisions shown |
 |---|---|---|---|---|
