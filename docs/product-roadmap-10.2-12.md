@@ -161,7 +161,7 @@ Phases are sequenced milestones, not calendar promises; each ends with deploy + 
 |---|---|---|
 | **E3-S2** Cascade P1 — defaults clarity | Settings | Defaults section + "what's active now" indicators |
 | **E3-S3** Cascade P2 — character overrides | Settings | Override rails in the character editor (the risky store refactor) |
-| **E6-S3** Sidebar | UI | Collapsible nav shell, mobile drawer |
+| **E6-S3** Sidebar | UI | Hidden drawer at every width (A1) |
 | **E2-S4** Insights data API | Transparency | Store API exposing the per-turn breakdown, the per-entry World Info record (emitted tokens, activation reason, eviction), which engine served the turn, and the telemetry-coverage figure — E5-S1's hard input, so it lands in the same phase |
 | **E5-S1** Optimization Agent P1 — diagnostics | Transparency | Severity-ranked findings report on real settings |
 | **E1-S3** Phase B impl — output gate + NSFW Scene | Compliance | Only if E1-S2's design was approved; otherwise stays blocked (acceptable outcome) |
@@ -507,7 +507,7 @@ One design language, three staggered ships, ascending blast radius. Hero doubles
 - All three surfaces match the approved workshop mockups (Sammy signs off per surface).
 - Keyboard + screen-reader accessible (carousel navigable, ARIA labels, focus states); axe clean on new surfaces.
 - Dark mode correct via the existing CSS-variable theme system.
-- Mobile: sidebar collapses to drawer; chat layout untouched on portrait; no horizontal scroll anywhere.
+- Mobile: sidebar is a hidden drawer (as at every width, A1); chat layout untouched on portrait; no horizontal scroll anywhere.
 
 #### E6-S1 · Design workshop — **Kanban: Design** · Size M
 All three surfaces in one Fable design-canvas session (hero slides incl. feature-highlight template, sidebar as a hidden drawer at every width, hero followed by category rows, chat 1/3-avatar layout with no sidebar column), annotated for responsive + dark mode + a11y. Fable — this is the design-first gate for the whole epic. Amended 2026-10-11 to spec A1 (`docs/ui-redesign-e6-design-spec.md` §0.3). **Acceptance:** Sammy approves mockups; implementation stories inherit specs, not vibes.
