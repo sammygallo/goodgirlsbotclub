@@ -267,14 +267,14 @@
     <div class="stamp">
       <b>6 Oct 2026</b><br>
       main <b>1e6a555f</b><br>
-      active <b>E6-S1 — UI workshop, approved spec locked in</b>
+      active <b>none — E6-S1 merged 11 Oct</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
+    <div class="tile"><div class="n">0</div><div class="k">In progress</div></div>
     <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">3</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile is-ok"><div class="n">4</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">15</div><div class="k">Gated</div></div>
@@ -314,14 +314,8 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E6">
-          <div class="id">E6-S1</div>
-          <div class="t">UI workshop — hero, sidebar, chat</div>
-          <div class="m"><b>DRAFT</b> spec locked on <code>claude/e6-s1-ui-design-workshop</code> @ <code>7798f27d</code>. Comprehensive design covering hero carousel (featured characters + announcements), collapsible sidebar (My Characters, Personal, Help), desktop chat layout (avatar panel left of chat). Six design decisions answered by Sammy; 16 premise corrections (K1-K16) applied; all three surfaces have acceptance criteria for implementation stories E6-S2/S3/S4. <b>QA gate next</b>: walk ACs (step 6).</div>
-          <div class="gates"><span class="gate">→ QA walkthrough</span><span class="gate">→ Draft PR #___</span><span class="gate">unblocks E6-S2/S3/S4</span></div>
-        </article>
       </div>
     </section>
 
@@ -338,8 +332,14 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">3</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">4</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E6">
+          <div class="id">E6-S1</div>
+          <div class="t">UI workshop — hero, sidebar, chat</div>
+          <div class="m">11 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/549">#549</a> → merged, docs only (no code, no deploy). Spec A1: sidebar is a hidden drawer at every width; hero followed by category rows (D-H21); chat has no sidebar column. 22 v2 frames approved by Sammy 2026-10-11. Unblocks E6-S2, S3, S4.</div>
+          <div class="gates"><span class="gate free">deploy n/a</span><span class="gate free">unblocks E6-S2/S3/S4</span></div>
+        </article>
         <article class="card s-ok" data-epic="E2">
           <div class="id">E2-S3</div>
           <div class="t">Show-prompt toggle — post-transform exact-prompt viewer</div>
@@ -450,7 +450,7 @@
   </div>
 
   <section class="focus">
-    <h2>E6-S1 — UI workshop, spec locked in, QA walkthrough next</h2>
+    <h2>E6-S1 — merged 11 Oct; E6-S2, S3, S4 unblocked</h2>
     <p class="sub">Three surfaces: hero carousel (featured characters + announcements), collapsible left sidebar (My Characters list + Personal section + Help), desktop chat layout with avatar panel to the left. Comprehensive spec with all decision details, responsive matrices, theme tokens, acceptance criteria handoff for E6-S2/S3/S4.</p>
 
     <div class="steps">
