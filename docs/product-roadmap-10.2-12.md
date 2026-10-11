@@ -523,7 +523,7 @@ All three surfaces in one Fable design-canvas session (hero slides incl. feature
 **Acceptance:** matches mockup · keyboard-navigable · catalog grid below unaffected · slide config editable without code changes.
 
 #### E6-S3 · Sidebar — **Kanban: Backlog** · Size M–L
-App-shell change: My Characters / Works / Personal sections, collapse-to-icons with localStorage persistence, mobile drawer, route coordination. Sonnet impl; **visual QA sweep across every route before merge** (app-shell = wide blast radius); Haiku for the persistence + tests. **Acceptance:** every existing route renders correctly with sidebar expanded/collapsed/drawer · state survives reload · no layout shift on load.
+App-shell change: My Characters / Works / Personal sections, a hidden drawer at every width (no collapse-to-icons, no rail), route coordination. Sonnet impl; **visual QA sweep across every route before merge** (app-shell = wide blast radius); Haiku for the tests. **Acceptance:** every existing route renders correctly with the drawer closed and open at every width · drawer starts closed on every load · no layout shift on load. Amended 2026-10-11 to spec A1 (`docs/ui-redesign-e6-design-spec.md` §0.3).
 
 #### E6-S4 · Desktop chat layout — **Kanban: Backlog** · Size M
 1/3 full-bleed avatar (viewport-height scaled) + 2/3 chat on desktop; existing single-column on mobile/portrait. Sonnet — CSS grid work with breakpoint tests. **Acceptance:** no regression in chat interactions (swipe, edit, branch UI) · avatar never distorts · clean behavior at tablet widths.
