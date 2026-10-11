@@ -516,11 +516,11 @@ All three surfaces in one Fable design-canvas session (hero slides incl. feature
 
 | # | Task | Tier — reasoning |
 |---|---|---|
-| 1 | Carousel component (4–5 recent characters + feature slides, auto-advance 5–7s, manual controls, pause-on-hover, `prefers-reduced-motion` respected) | Sonnet — contained component against a mockup |
+| 1 | Hero carousel (up to 5 featured characters and announcements, spec D-H4; auto-advance 6s, manual controls, pause-on-hover, `prefers-reduced-motion` respected) | Sonnet — contained component against a mockup |
 | 2 | Recent-characters data wiring + feature-slide config | Haiku — plumbing |
 | 3 | Keyboard/ARIA pass + tests | Haiku — mechanical against the a11y annotations |
 
-**Acceptance:** matches mockup · keyboard-navigable · catalog grid below unaffected · slide config editable without code changes.
+**Acceptance:** matches mockup · keyboard-navigable · category rows below the hero (D-H21) omit empty rows · slide config editable without code changes.
 
 #### E6-S3 · Sidebar — **Kanban: Backlog** · Size M–L
 App-shell change: My Characters / Works / Personal sections, a hidden drawer at every width (no collapse-to-icons, no rail), route coordination. Sonnet impl; **visual QA sweep across every route before merge** (app-shell = wide blast radius); Haiku for the tests. **Acceptance:** every existing route renders correctly with the drawer closed and open at every width · drawer starts closed on every load · no layout shift on load. Amended 2026-10-11 to spec A1 (`docs/ui-redesign-e6-design-spec.md` §0.3).

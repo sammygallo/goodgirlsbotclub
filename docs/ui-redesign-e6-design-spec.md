@@ -1,6 +1,6 @@
 # E6 UI Redesign — Design Specification (E6-S1)
 
-**Status:** Frames approved 2026-10-11; QA re-run pending · **Date:** 2026-10-06 · **Amended:** 2026-10-10 (A1, §0.3: sidebar is a hidden drawer at every width; hero is followed by category rows) · **Story:** E6-S1 (design-first gate for E6-S2, E6-S3, E6-S4)
+**Status:** Merged 2026-10-11 (#549, `4dde86bb`); frames approved 2026-10-11 · **Date:** 2026-10-06 · **Amended:** 2026-10-10 (A1, §0.3: sidebar is a hidden drawer at every width; hero is followed by category rows) · **Story:** E6-S1 (design-first gate for E6-S2, E6-S3, E6-S4)
 **Grounded against:** `goodgirlsbotclub` `main` @ `766d0ca8`, `ggbc-backend` `origin/main` @ `fb26a80`
 
 This document is the source of truth for the three E6 surfaces. Implementation stories copy their checklist from §8 and inherit every decision here. Where this spec and the Fable mockups disagree, **this spec wins** unless Sammy's mockup approval explicitly overrides a numbered decision (cite the decision ID, e.g. "overrides D-H7").
@@ -648,7 +648,7 @@ Locked by Sammy on 2026-10-06, as interpreted by this spec:
 
 | Decision | Locked text | Implemented as |
 |---|---|---|
-| 1 | Hero replaces the ChatView empty state on `/` | D-H1 (the no-selection branch, wherever it renders) |
+| 1 | Hero replaces the ChatView empty state on `/` | D-H1: the no-selection branch at `/` and `/chat/:characterId`, full viewport width (A1) |
 | 2 | **Featured characters + announcements**, curated list (admin or backend-determined); recency endpoint for sidebar "Recent chat" sort | D-H3/H4; D-H9 (empty featured list); sidebar recency at D-S7 |
 | 3 | Feature-slide CTA opens a modal with subject info (character info modal with avatar, tags, creator's notes) | D-H6: `character` kind → `CharacterPreviewModal`; `feature` kind → `FeatureInfoModal` |
 | 4 | Personal sidebar: Profile, Logout, Settings, user's Character. Header keeps Guides, Help | D-S9 order (Profile, Persona, Settings, Install?, Logout); D-S10 |
