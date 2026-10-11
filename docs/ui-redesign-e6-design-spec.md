@@ -1,6 +1,6 @@
 # E6 UI Redesign — Design Specification (E6-S1)
 
-**Status:** Draft for Sammy's sign-off · **Date:** 2026-10-06 · **Story:** E6-S1 (design-first gate for E6-S2, E6-S3, E6-S4)
+**Status:** Draft for Sammy's sign-off · **Date:** 2026-10-06 · **Amended:** 2026-10-10 (A1, §0.3: sidebar is a hidden drawer at every width; hero is followed by category rows) · **Story:** E6-S1 (design-first gate for E6-S2, E6-S3, E6-S4)
 **Grounded against:** `goodgirlsbotclub` `main` @ `766d0ca8`, `ggbc-backend` `origin/main` @ `fb26a80`
 
 This document is the source of truth for the three E6 surfaces. Implementation stories copy their checklist from §8 and inherit every decision here. Where this spec and the Fable mockups disagree, **this spec wins** unless Sammy's mockup approval explicitly overrides a numbered decision (cite the decision ID, e.g. "overrides D-H7").
@@ -47,17 +47,30 @@ The brief for this spec contained premises that the codebase contradicts. Each o
 
 ---
 
+### 0.3 Amendment A1 (2026-10-10): drawer sidebar and category rows
+
+Sammy's direction, from reference screenshots of a streaming home page (a hero followed by Netflix-style horizontal category rows) and a hidden menu drawer that slides over a dimmed page at the highest z-index.
+
+- **The sidebar is a hidden drawer at every width.** It has no expanded or rail state. Superseded: the D-G2 sidebar column, D-G7 `stm:sidebar-expanded`, D-S1 widths, D-S2, D-S3 and D-S4 (rewritten), the D-S5 sequencing rule, D-S10's breakpoint, D-S11 (removed), D-S12's reset rule, the D-S14 rail rule, D-S15, D-S17, and §3.4.
+- **The hero is followed by category rows** (D-H21). Superseded: D-H4's slide mix, D-H11's Start row, D-H2's order, and D-H7's ≥640px portrait card (now full-bleed art with left-aligned text).
+- **The chat has no sidebar column.** The avatar panel takes the left third of the full viewport and the chat takes the right two thirds. Superseded: D-C1's order, D-C10, and the §5.2 widths.
+- **Judgment for Sammy:** "max z-index" for the drawer is set to 1000, the top app layer (Modal stays at 100, panels at 50). Toast and Onboarding move to 1100 and 1200 so they stay above the drawer. Confirm or change.
+- **Reference imagery:** only the layout pattern is in scope. Third-party branding, copy and imagery are not.
+- **Open items:** §7's v2 frame set is partial. "New this week" (D-H21) needs a character creation timestamp; S2 confirms one exists and stops to raise it if not.
+
+---
+
 ## 1. Overview
 
 ### 1.1 Surfaces and story mapping
 
 | Surface | Story | Blast radius | Summary |
 |---|---|---|---|
-| Hero carousel | E6-S2 | Low: the ChatView no-selection branch only | Replaces the "Select a Character" empty state with recent characters and feature slides |
-| Sidebar | E6-S3 | **High**: the app shell, every route | Restructures the existing `Sidebar.tsx` into My Characters / Works / Personal, adds a rail mode and a real modal drawer, and moves account items out of the header |
-| Desktop chat layout | E6-S4 | Medium: ChatView at ≥1024px | Adds a 2/3 chat + 1/3 full-bleed avatar panel; mobile is unchanged |
+| Hero carousel | E6-S2 | Low: the ChatView no-selection branch only | Replaces the "Select a Character" empty state with a featured hero carousel, followed by category rows (D-H21) |
+| Sidebar | E6-S3 | **High**: the app shell, every route | Converts the existing `Sidebar.tsx` into a hidden drawer at every width (My Characters / Works / Personal), and moves account items out of the header |
+| Desktop chat layout | E6-S4 | Medium: ChatView at ≥1024px | Adds a 1/3 full-bleed avatar panel left of a 2/3 chat, with no sidebar column; mobile is unchanged |
 
-Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` releasable on its own; see the sequencing notes in D-S5 and D-C10.
+Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` releasable on its own; see the sequencing note in D-C10.
 
 ### 1.2 Global decisions
 
@@ -66,10 +79,10 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
   | Viewport width | Sidebar | Chat | Hero layout |
   |---|---|---|---|
-  | < 640 | Drawer (modal) | Single column + existing mobile portrait panel | Stacked: full-bleed image, text overlaid at the bottom |
-  | 640–1023 | Drawer (modal) | Single column + existing mobile portrait panel | Split: portrait card + text |
-  | 1024–1279 | **Rail** by default; the user can expand it (expansion pushes content) | 2/3 + 1/3 split | Split |
-  | ≥ 1280 | **Expanded** by default; the user can collapse it to the rail | 2/3 + 1/3 split | Split |
+  | < 640 | Drawer (overlay) | Single column + existing mobile portrait panel | Stacked: full-bleed image, text overlaid at the bottom |
+  | 640–1023 | Drawer (overlay) | Single column + existing mobile portrait panel | Full-bleed image, text left-aligned |
+  | 1024–1279 | Drawer (overlay), closed by default | 1/3 avatar + 2/3 chat | Full-bleed image, text left-aligned |
+  | ≥ 1280 | Drawer (overlay), closed by default | 1/3 avatar + 2/3 chat | Full-bleed image, text left-aligned |
 
 - **D-G3 No horizontal scroll** at any width ≥ 320 CSS px (WCAG 1.4.10 Reflow). This is verified at 320, 375, 768, 1024, 1279, 1280 and 1920.
 - **D-G4 WCAG 2.2 AA** is the bar for all new and restructured UI. The criteria with specific obligations here: 1.4.3 / 1.4.11 contrast, 1.4.10 reflow, 1.4.13 content on hover (tooltips), 2.1.1 keyboard, 2.2.2 pause/stop/hide (carousel **and** looping Live Portrait video), 2.4.3 focus order, 2.4.7 focus visible, **2.4.11 focus not obscured** (sticky header and overlays), **2.5.7 dragging movements** (portrait framing), **2.5.8 target size ≥ 24×24**, 3.2.6 consistent help (Help stays in the header), 4.1.2 name/role/value.
@@ -79,7 +92,6 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
   | Key | Type | Default | Owner |
   |---|---|---|---|
-  | `stm:sidebar-expanded` | `"true"` \| `"false"` \| absent | absent → breakpoint default (D-S2) | S3 |
   | `stm:sidebar-sections` | JSON `{characters, groups, works, personal}` booleans | `{true, false, true, true}` | S3 |
   | `stm:chat-avatar-panel-expanded` | `"true"` \| `"false"` | `"true"` | S4 |
 
@@ -93,8 +105,8 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
 ### 2.1 Placement
 
-- **D-H1** The hero renders **in place of** ChatView's no-selection branch: `if (!selectedCharacter && !isGroupChatMode)` at `ChatView.tsx:1211`. That branch is reachable at `/` (index) and at `/chat/:characterId` (ChatView ignores params; the route is only navigated to by STscript). The hero therefore appears wherever that branch renders, and nowhere else. It spans the full width of `<main>`: viewport width below 1024px, viewport minus sidebar or rail at 1024px and up.
-- **D-H2** Layout of the no-selection page, top to bottom: **hero** → **Start row** (D-H11). The page scrolls vertically inside `<main>` (`overflow-y-auto` on the hero page wrapper; `<main>` is `overflow-hidden` today).
+- **D-H1** The hero renders **in place of** ChatView's no-selection branch: `if (!selectedCharacter && !isGroupChatMode)` at `ChatView.tsx:1211`. That branch is reachable at `/` (index) and at `/chat/:characterId` (ChatView ignores params; the route is only navigated to by STscript). The hero therefore appears wherever that branch renders, and nowhere else. It spans the full viewport width (A1: there is no sidebar column at any width).
+- **D-H2** Layout of the no-selection page, top to bottom: **hero** → **category rows** (D-H21). The page scrolls vertically inside `<main>` (`overflow-y-auto` on the hero page wrapper; `<main>` is `overflow-hidden` today).
 - Height: `height: clamp(300px, 45dvh, 440px)` at ≥ 640px; `clamp(320px, 58dvh, 460px)` below 640px.
 
 ### 2.2 Content and data
@@ -103,8 +115,8 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   - **Solo chats only.** Group chat rows are keyed by roster slot 0's avatar (positional identity; #458 / ggbc-backend#84) and must **not** count toward slot 0's recency. If the backend cannot tell a group row from a solo row, S2 **stops and raises it** instead of guessing.
   - The client joins the rows against `characterStore.characters` by avatar and **drops** any avatar the user can no longer see (deleted or unshared).
   - Backend tests cover: ordering, de-duplication per character, owner scoping (another user's chats never appear), group exclusion, and the limit bounds.
-  - **Note:** The endpoint populates "most recently chatted" for display in the **sidebar** (D-S7, "Recent chat" sort). The hero carousel uses a **different content source**, not this one (Q5): featured characters from admin config or a backend-determined curated list.
-- **D-H4 Slide count and order.** `F` = enabled featured character slides the user is permitted to see (at most 5), plus `A` = enabled announcement slides (at most 2). Order is left to S2 implementation; the spec does not prescribe a fixed interleave. Maximum 7 slides total.
+  - **Note (A1):** The endpoint feeds the "Pick up where you left off" row (D-H21) and the sidebar's "Recent chat" sort (D-S7). It does not feed the hero, which uses the featured list (Q5).
+- **D-H4 Hero slides (A1).** The hero carries at most 5 slides, drawn from enabled featured-character entries and enabled feature or announcement entries (D-H6), in configured order. Rotation and controls per D-H12–D-H17 are unchanged. The hero no longer mixes in recent characters: recency feeds the "Pick up where you left off" row (D-H21).
 - **D-H5 Character slide content (featured carousel).**
   - Image: `/blobs/character/<avatar>` (the existing blob URL).
   - Name: `h3`, text-xl or 2xl, 1 line, truncated.
@@ -140,18 +152,23 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   - Validation: any entry missing `id`, `title`, `body`, `image` or `cta` is skipped with one `console.warn`. A failed fetch, invalid JSON, or an unknown `version` yields **zero feature slides** and never blocks or errors the hero.
   - `FeatureInfoModal` is built on `Modal` (size `lg`): heading, optional image, body rendered with the existing `MarkdownDoc`. The config is first-party static content, so it is not sanitized beyond what `MarkdownDoc` does. **Never** load slide config from user-writable storage.
 - **D-H7 Character slide visual layout.**
-  - **≥ 640px:** the background is the same avatar with `object-fit: cover`, `filter: blur(24px)` and `scale(1.1)`, decorative (`alt=""`, `aria-hidden`), under the strong scrim. The foreground is a 2:3 portrait card, height = hero height − 48px, inset 24px from the left, rounded-xl. The text block sits to its right, vertically centered, max-width 560px.
+  - **≥ 640px (A1):** full-bleed art (the same avatar with `object-fit: cover`, unblurred, decorative: `alt=""`, `aria-hidden`) under `--scrim-hero-side`. The text block is left-aligned, vertically centered, max-width 620px. The 2:3 portrait card is removed.
   - **< 640px:** no foreground card. The background avatar is **unblurred**, `object-fit: cover`, `object-position: 50% 0%` (faces are usually at the top). A bottom scrim carries the text, which is overlaid at the bottom with 16px padding.
   - Feature slides use the same frames with `image` in place of the avatar.
 - **D-H8 Image loading.** The first two slides load eagerly; the rest use `loading="lazy"`. On image error the slide stays and shows a placeholder: a `--color-bg-tertiary` fill with the character's initial in `--color-text-primary`, 64px.
 - **D-H9 New user / empty featured carousel.** When the featured-character list is empty or the user has no permission to see any, no carousel and no controls. The region renders one static welcome panel: heading "Start a new conversation", body "Pick a character to chat with, or create your own.", and a **Browse characters** button (D-H11). No feature slides.
 - **D-H10 One slide total** (e.g. one recent character and no features): render it statically, with no rotation, no prev/next and no indicator.
-- **D-H11 Start row and "Browse".** Below the hero, one row reads "Pick up where you left off, or browse all characters." with a **Browse characters** button. The button behaves by width:
-  - < 1024: opens the drawer and focuses `#character-search`.
-  - ≥ 1024 with the rail showing: expands the sidebar (this writes the D-S2 preference) and focuses `#character-search`.
-  - ≥ 1024 with the sidebar expanded: focuses `#character-search` and scrolls it into view.
+- **D-H11 Browse (A1).** The **Browse characters** button (the D-H9 welcome panel and the hero's secondary action) opens the drawer and focuses `#character-search` at every width. The Start row is removed; the category rows (D-H21) replace it. S2 ships it against today's sidebar; S3 makes the drawer the only sidebar.
 
-  The same handler serves the D-H9 button. S2 ships it against today's sidebar (open drawer / focus search); S3 extends it with the rail branch.
+- **D-H21 Category rows (A1).** Below the hero, rows of cards. Each row has an `<h3>` heading and a "See all ›" button that opens the drawer with My Characters focused. Rows render in this fixed order. A row with no visible items is **omitted**, never shown empty:
+  1. **Pick up where you left off:** solo chats by D-H3 recency, up to 20, 2:3 cards.
+  2. **Featured characters:** the featured list (Q5), 2:3 cards.
+  3. **New this week:** visible characters created in the last 7 days, 2:3 cards. S2 confirms a creation timestamp exists; if none does, S2 stops and raises it and this row is dropped.
+  4. **Works** (only with `project:view` and at least one work): 16:9 cards.
+  - **Card:** image (`/blobs/character/<avatar>`), title on one line, and a small caps tag (CHARACTER / WORK / NEW). Activating a card opens `CharacterPreviewModal` (or the Works panel for a work); its "Start chat" selects.
+  - **Scrolling:** native horizontal scroll with `scroll-snap-type: x mandatory`. Scroll buttons, "Scroll {row} left" and "Scroll {row} right", are real buttons, visible from 640px on hover or focus. Below 640px the row is swipe-only. Keyboard users Tab through the cards, and focusing an offscreen card scrolls it into view.
+  - Rows do not rotate and do not pause. Images beyond the first 6 per row are `loading="lazy"`. Under reduced motion, scrolling is instant.
+  - Each row is a `<section aria-labelledby>`. Cards are `<button>`s, never `div`s with handlers.
 
 ### 2.3 Behavior
 
@@ -215,7 +232,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   - The secondary CTA "About" is transparent with a 1px `rgb(255 255 255 / .8)` border and `#ffffff` text; hover is `rgb(255 255 255 / .12)` fill.
   - Control buttons are `rgb(0 0 0 / .5)` fill with a `#ffffff` icon; hover is `rgb(0 0 0 / .7)`.
   - Indicator dots: active `#ffffff`, inactive `rgb(255 255 255 / .6)`.
-  - The hero looks the same in light and dark mode. Theme tokens apply only to the Start row and the welcome panel: `--color-bg-secondary` card, `--color-text-primary` heading, `--color-text-secondary` body (≥ 14px), and a primary button.
+  - The hero looks the same in light and dark mode. Theme tokens apply only to the category rows and the welcome panel: `--color-bg-secondary` card, `--color-text-primary` heading, `--color-text-secondary` body (≥ 14px), and a primary button.
 
 ---
 
@@ -224,15 +241,15 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 ### 3.1 Structure
 
 - **D-S1 Anatomy** (top to bottom, all widths):
-  1. **Top bar** (h-14): Home button (logo; D-S6) · collapse/expand toggle (≥ 1024) or close button (drawer).
+  1. **Top bar** (h-14): Home button (logo; D-S6) · close button.
   2. **Current-chat card** (only when a chat is open; D-S5).
   3. **Sections scroller** (`flex-1 overflow-y-auto`): **My Characters** (search, filters, sort, drafts, list, and a nested **Group chats** subsection) → **Works** (only with `project:view`).
-  4. **Personal** section: pinned at the bottom at ≥ 1024 expanded; the last item in the scroll flow inside the drawer.
+  4. **Personal** section: pinned at the bottom of the drawer.
 
-  Widths: expanded **288px** (`w-72`, unchanged); rail **72px** (`w-18`).
-- **D-S2 Expanded / rail state (≥ 1024).** Stored as `stm:sidebar-expanded`. When the key is **absent**, the default is expanded at ≥ 1280 and rail at 1024–1279. Once the user toggles, the stored value applies at every width ≥ 1024. Expanding at 1024–1279 **pushes** content and does not overlay it; §5.2 shows the chat stays ≥ 491px. Below 1024 the value is ignored and the drawer is used.
-- **D-S3 No layout shift on load.** The initial expanded/rail/drawer state is computed **synchronously** in a `useState` initializer from `localStorage` and `window.matchMedia` (the `useIsMobile` pattern). First render must equal final render. A unit test asserts the first committed render's width class for each of the three stored states at 1100px and 1400px.
-- **D-S4 Width transition** is 200 ms `ease-in-out` on `width` (it matches today's `duration-200`) and is disabled under reduced motion. The drawer keeps its existing `translate-x` slide, also disabled under reduced motion.
+  Width: **320px** drawer (A1; replaces the 288px expanded column and the 72px rail).
+- **D-S2 Drawer at every width (A1).** The sidebar is a hidden drawer at every width and is closed on load. There is no expanded or rail state, and no sidebar open state persists. `stm:sidebar-expanded` is removed.
+- **D-S3 No layout shift on load.** The drawer is closed in the first render at every width, so the content column spans the full viewport from first paint. A unit test asserts that the first committed render has no open drawer and a full-width content column at 1100px and 1400px.
+- **D-S4 Drawer transition** is the existing 200 ms `ease-in-out` `translate-x` slide, with the scrim fading over the same duration. Both are disabled under reduced motion.
 
 ### 3.2 Current-chat card (header modes)
 
@@ -241,20 +258,16 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   | Mode | When | Content |
   |---|---|---|
   | `none` | No chat open (the hero is showing) | No card |
-  | `single` | `selectedCharacter && !isGroupChatMode` | See the sequencing rule below |
+  | `single` | `selectedCharacter && !isGroupChatMode` | Always compact (A1) |
   | `group` | `isGroupChatMode` | "Group chat" label + group title (or member names) · member thumbnails (28px, **stable roster order**, last speaker ringed with `--color-primary` and given `aria-current="true"`) · the text "Last to speak: {name}" |
 
-  **Sequencing rule for `single`:**
-  - **Until S4 ships, at ≥ 1024:** the card shows today's portrait: a 2:3 image, max-width 240px, max-height 45dvh, honoring Live Portrait / Expressions / static per D-C5, plus the `MotionModePicker`, the name, the emotion chip and the creator-notes teaser with "Show more". Everything is carried over from `Sidebar.tsx:343-421`.
-  - **Below 1024 (always), and at ≥ 1024 once S4 ships:** the card is **compact**: a 40px avatar, the name, the `MotionModePicker` in a 32px popover button, and an "About" button that opens `CharacterPreviewModal`. On mobile, ChatView already shows the portrait panel, so a second portrait in the drawer is redundant.
-  - S4 deletes the expanded-portrait path.
+  **`single` card (A1):** always **compact** at every width: a 40px avatar, the name, the `MotionModePicker` in a 32px popover button, and an "About" button that opens `CharacterPreviewModal`. The portrait lives in the chat panel (D-C), so the drawer never shows a second one. The expanded-portrait path is removed.
 
   Stable member order in `group` mode is a deliberate deviation from the brief's "most recent speakers at top". Reordering on every turn breaks muscle memory and focus position; recency is shown by the ring and the "Last to speak" text instead.
   The brief's "list mode with a character select dropdown" is **not built**: the always-visible My Characters list replaces it with more capability (search, filters).
 - **D-S6 Home control.** The logo in the top bar is a button labelled "Home". Activating it calls `exitGroupChat()` if `isGroupChatMode`, then `clearSelection()`, then `navigate('/')`. ChatView then renders the hero.
   - It is **disabled** (`aria-disabled="true"`, tooltip "Wait for the reply to finish") while a generation is streaming, so a reply cannot land in a chat the user has navigated away from.
   - **Required test:** Home → re-select the previous solo character → send a message, and confirm it saves to the original chat file. Do the same for a group chat. This guards the group-identity hazard in #458.
-  - In the rail, Home is the logo glyph (32px).
 
 ### 3.3 Section inventory
 
@@ -285,7 +298,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
   Items 1–4 that open a right-side panel or navigate also **close the drawer first** (D-S14).
 - **D-S10 Header after S3:**
-  - Left: the menu button (< 1024 only), then the character identity (avatar + name + edit pencil with `character:edit`), unchanged, or the logo when nothing is selected.
+  - Left: the menu button (all widths), then the character identity (avatar + name + edit pencil with `character:edit`), unchanged, or the logo when nothing is selected.
   - Right: **Guides** (unchanged gate: `character:edit`) and **Help**. Nothing else.
   - The `sm` kebab overflow menu is **removed**, because two icons fit at 320px.
   - Install, Persona, Settings / My API Keys, Profile and Logout **move to Personal** (D-S9).
@@ -293,30 +306,25 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
 ### 3.4 States
 
-| Element | Expanded (≥ 1024) | Rail (≥ 1024) | Drawer (< 1024) |
-|---|---|---|---|
-| Top bar | Home logo + "Collapse sidebar" toggle | Home glyph + "Expand sidebar" toggle (stacked) | Home logo + "Close menu" button |
-| Current-chat card | Per D-S5 | 40px avatar button (single) or a stack of up to 3 member avatars (group); activating it expands the sidebar | Compact (D-S5) |
-| My Characters | Full section | **Search** icon (expands the sidebar and focuses search) + up to **6** character avatar buttons (favorites first, then the D-H3 recency order); activating one selects that character | Full section, scrolls |
-| Group chats | Nested subsection | Not shown (reach it by expanding) | Nested subsection |
-| Works | Full section | **Works** icon button (expands the sidebar and opens the Works section) | Full section |
-| Personal | Pinned bottom | Icon buttons in D-S9 order: Profile, Persona, Settings/Keys, Install?, Logout | Last in scroll |
-| Scrim | — | — | `fixed inset-0 bg-black/50 z-40`; a click closes |
+| Element | Drawer (all widths, A1) |
+|---|---|
+| Top bar | Home logo + "Close menu" button |
+| Current-chat card | Compact (D-S5) |
+| My Characters | Full section, scrolls |
+| Group chats | Nested subsection |
+| Works | Full section |
+| Personal | Pinned bottom: persona row, Settings/Keys, Install?, Logout |
+| Scrim | `fixed inset-0 bg-black/50 z-[999]`; a click closes |
 
-- **D-S11 Rail tooltips** (WCAG 1.4.13):
-  - They appear on hover after 300 ms and **immediately on keyboard focus**, to the right of the rail (`z-30`), with `--color-bg-tertiary` background, `--color-text-primary` text and a 1px `--color-border` border.
-  - They stay visible while the pointer is over the trigger *or* the tooltip.
-  - **Escape** dismisses one without moving focus.
-  - The tooltip element is `aria-hidden="true"`. The accessible name comes from the button's own `aria-label`, which carries the same text, so the name is not announced twice.
+- **D-S11 Removed (A1).** The rail and its tooltips are gone. Drawer rows show their labels as text, so no tooltip (WCAG 1.4.13) applies.
 
 ### 3.5 Behavior
 
-- **D-S12 Drawer (< 1024).**
+- **D-S12 Drawer (all widths, A1).**
   - Opened by the header menu button (`aria-expanded`, `aria-controls="app-drawer"`) or the existing edge-swipe (`useSwipeSidebar`: 30px edge zone, 50px threshold; unchanged).
   - Closed by the close button, a scrim click, a left swipe, **Escape**, or selecting any item that navigates, selects a character or opens a panel.
   - When open, focus is contained with `useModalFocus` (D-G5); the `<main>` column and header are `inert`.
   - On close, focus returns to the menu button.
-  - If the viewport crosses to ≥ 1024 while the drawer is open, the open state resets to false and `inert` is removed.
 - **D-S13 Keyboard in My Characters.**
   - Every row's primary button, About and Favorite remain in Tab order (as today).
   - **ArrowUp / ArrowDown** additionally move focus between rows' primary buttons; **Home / End** go to the first and last rows. This is an accelerator only; Tab order is unchanged.
@@ -332,24 +340,24 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   | Layer | z-index | Source |
   |---|---|---|
   | Header (sticky) | 20 | `Header.tsx` |
-  | Rail tooltips | 30 | new |
   | Drawer scrim / right-panel scrims | 40 | unchanged |
-  | Drawer / Settings, Guides, Works panels / BottomSheet | 50 | unchanged |
+  | Settings, Guides, Works panels / BottomSheet | 50 | unchanged |
   | Modal | 100 | `Modal.tsx` |
-  | Onboarding | 110 | `OnboardingWalkthrough.tsx` |
-  | Toast | 200 | `Toast.tsx` |
+  | Drawer scrim | 999 | new (A1) |
+  | Drawer | 1000 | new (A1): the top app layer |
+  | Toast | 1100 | `Toast.tsx`, raised from 200 so toasts stay above the drawer (A1) |
+  | Onboarding | 1200 | `OnboardingWalkthrough.tsx`, raised from 110 (A1) |
 
-  **Rule:** the drawer and a right panel are never open together. Any drawer item that opens a right panel calls the drawer's close function first. `useSwipeSidebar`'s `onOpen` is a no-op while any right panel is open (it checks the three panel stores). With that rule, equal z-values cannot conflict. At ≥ 1024 the sidebar is in normal flow and has no z-index; right panels overlay it as they do today.
+  **Rule:** the drawer and a right panel are never open together. Any drawer item that opens a right panel calls the drawer's close function first. `useSwipeSidebar`'s `onOpen` is a no-op while any right panel is open (it checks the three panel stores). With that rule, equal z-values cannot conflict. The drawer is always an overlay (A1); there is no normal-flow sidebar.
 
 ### 3.6 A11y contract
 
 - **D-S15** Markup:
-  - ≥ 1024: `<nav id="app-sidebar" aria-label="Main">`.
-  - < 1024: `<div id="app-drawer" role="dialog" aria-modal="true" aria-label="Menu">` wrapping the same `<nav aria-label="Main">`. The dialog is only present in the DOM while open, or `hidden` while closed.
+  - `<div id="app-drawer" role="dialog" aria-modal="true" aria-label="Menu">` wrapping `<nav aria-label="Main">`, present at every width and `hidden` while closed (A1).
 - **D-S16** Section toggles: `<h2><button aria-expanded="true|false" aria-controls="sidebar-sec-<id>">My Characters</button></h2>`. The controlled region has `id="sidebar-sec-<id>"` and is **removed from the accessibility tree** when collapsed (`hidden`), not just height-0. The Group chats subsection uses the same pattern with `<h3>`.
-- **D-S17** Collapse toggle: `aria-label="Collapse sidebar" | "Expand sidebar"`, `aria-expanded`, `aria-controls="app-sidebar"`.
+- **D-S17** Close button: `aria-label="Close menu"`, `aria-expanded="true"`, `aria-controls="app-drawer"` (A1).
 - **D-S18** Active character row: `aria-current="true"` plus `font-semibold` **plus** the existing tinted background and left bar. Color is never the only cue (see the §6.3 measurements for `--color-primary` against backgrounds).
-- **D-S19** Targets: every interactive element ≥ 24×24 CSS px (rail buttons 48×48; list rows ≥ 44px tall).
+- **D-S19** Targets: every interactive element ≥ 24×24 CSS px (list rows ≥ 44px tall).
 - **D-S20** Focus not obscured (2.4.11): when an item scrolls into view through focus, the pinned Personal block and the sticky top bar must not cover it. Use `scroll-padding-bottom` on the scroller equal to the Personal block's height (`scroll-margin` on items as a fallback).
 
 ---
@@ -378,23 +386,21 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
 ### 5.1 Anatomy
 
-- **D-C1 Order:** `sidebar (288 | 72) │ avatar panel (1fr) │ chat (2fr)` (Q2). The avatar panel is **full-bleed**: no padding, no border radius, and a 1px `--color-border` right border separating it from the chat. Its height is the full `<main>` height (100dvh minus the 56px header).
+- **D-C1 Order (A1):** `avatar panel (1fr) │ chat (2fr)`, with no sidebar column (Q2). The avatar panel is **full-bleed**: no padding, no border radius, and a 1px `--color-border` right border separating it from the chat. Its height is the full `<main>` height (100dvh minus the 56px header).
 - **D-C2 When the panel renders.** All of the following must be true: viewport ≥ 1024, a chat is open (solo or group), `vnMode === false` (D-C9), the panel is expanded (`stm:chat-avatar-panel-expanded`), and the container rule holds (D-C3). Otherwise the chat takes the full main width.
 - **D-C3 Container rule.** `<main>` is a size container (`@container/main`). The split applies only when the main column is ≥ **600px** (equivalently, chat ≥ 400px). With the widths in §5.2 this always holds at ≥ 1024. It is a **guard** against page zoom and future sidebar widths, not an expected path. Implement it with Tailwind v4 container variants (`@min-[600px]/main:`).
-- Below 1024, the chat is **unchanged**: the existing mobile portrait panel (`lg:hidden`, resize handle, collapse, drag framing) stays, and mobile landscape still hides it (`isMobileLandscape`). Tablets in landscape at ≥ 1024 (e.g. 1180×820) get the split with the rail.
+- Below 1024, the chat is **unchanged**: the existing mobile portrait panel (`lg:hidden`, resize handle, collapse, drag framing) stays, and mobile landscape still hides it (`isMobileLandscape`). Tablets in landscape at ≥ 1024 (e.g. 1180×820) get the split.
 
 ### 5.2 Width table (authoritative)
 
-`main = viewport − sidebar`; `avatar = floor(main / 3)`; `chat = main − avatar`.
+`main = viewport` (A1: there is no sidebar column; the drawer overlays); `avatar = floor(main / 3)`; `chat = main − avatar`.
 
 | Viewport | Sidebar | Main | Avatar | Chat |
 |---|---|---|---|---|
-| 1024 | rail 72 | 952 | 317 | 635 |
-| 1024 | expanded 288 | 736 | 245 | 491 |
-| 1279 | rail 72 | 1207 | 402 | 805 |
-| 1280 | expanded 288 | 992 | 330 | 662 |
-| 1440 | expanded 288 | 1152 | 384 | 768 |
-| 1920 | expanded 288 | 1632 | 544 | 1088 |
+| 1024 | drawer (overlay) | 1024 | 341 | 683 |
+| 1279 | drawer (overlay) | 1279 | 426 | 853 |
+| 1440 | drawer (overlay) | 1440 | 480 | 960 |
+| 1920 | drawer (overlay) | 1920 | 640 | 1280 |
 
 The user's chat-width preference (`getChatMaxWidth()`, 60–100%) keeps applying **within** the chat column.
 
@@ -426,7 +432,7 @@ The user's chat-width preference (`getChatMaxWidth()`, 60–100%) keeps applying
 
     The buttons and keys satisfy WCAG 2.5.7, which requires an alternative to dragging. While the mode is active the panel shows "Drag or use arrow keys to reposition" in `--on-scrim-text`.
 - **D-C9 VN mode precedence (Q1).** When `vnMode` is true, the panel does not render, the chat is full width, and VN's background and sprite layers behave exactly as today.
-- **D-C10 Sequencing with S3.** When S4 merges, the sidebar card's expanded-portrait path (D-S5) is deleted in the same PR, so there is never a release with two portraits on desktop or with none.
+- **D-C10 Sequencing with S3 (A1).** The drawer card is compact at every width (D-S5), so S3 and S4 can merge in either order without a double portrait.
 
 ### 5.4 A11y contract
 
@@ -449,7 +455,7 @@ The user's chat-width preference (`getChatMaxWidth()`, 60–100%) keeps applying
 | Token | Use on E6 surfaces |
 |---|---|
 | `--color-bg-primary` | `<main>` / chat background, hero page background |
-| `--color-bg-secondary` | Sidebar, rail, header, Start row card, drawer |
+| `--color-bg-secondary` | Drawer, header, welcome panel card, category-row card background |
 | `--color-bg-tertiary` | Row hover, tooltip background, image placeholders, chips |
 | `--color-text-primary` | Names, headings, Personal labels, tooltip text |
 | `--color-text-secondary` | Teasers, counts, icons, section toggles at rest (see D-T4) |
@@ -480,7 +486,7 @@ Fixed (non-themed) values: `--scrim-hero`, `--scrim-hero-side`, `--on-scrim-text
 
 Bold = fails AA for normal text (or fails 3:1 for non-text).
 
-- **D-T3** On E6 surfaces, `--color-primary` is **never** used for text below 18.66px bold / 24px regular. Interactive states that use primary must also carry a non-color cue (weight, `aria-current`, an icon). White text on `--color-primary` cannot be guaranteed AA (it measures 2.15–5.70 across presets), so **E6 surfaces introduce no new primary-filled text buttons.** Where a primary action is needed on a themed surface (the Start row, the welcome panel), E6 reuses `<Button variant="primary">` unchanged. Its contrast failures in some presets are pre-existing: E6 does not make them worse and does not fix them, and they are excluded from the "axe 0 violations" checks only for that existing component, with each exclusion noted in the QA report.
+- **D-T3** On E6 surfaces, `--color-primary` is **never** used for text below 18.66px bold / 24px regular. Interactive states that use primary must also carry a non-color cue (weight, `aria-current`, an icon). White text on `--color-primary` cannot be guaranteed AA (it measures 2.15–5.70 across presets), so **E6 surfaces introduce no new primary-filled text buttons.** Where a primary action is needed on a themed surface (the category rows, the welcome panel), E6 reuses `<Button variant="primary">` unchanged. Its contrast failures in some presets are pre-existing: E6 does not make them worse and does not fix them, and they are excluded from the "axe 0 violations" checks only for that existing component, with each exclusion noted in the QA report.
 - **D-T4 (Q4)** S3 changes light-mode `textSecondary` (and `textQuote`) from `#71717a` to `#52525b` for purple, blue, green, red and amber. That lifts text-secondary/bg-secondary to ≥ 6.5 and text-secondary/bg-tertiary to ≥ 5.5. Cyberpunk light already passes and is unchanged. Without this change the "axe clean" epic criterion cannot be met on the sidebar.
 
 ### 6.4 Motion tokens
@@ -502,9 +508,11 @@ The type scale is unchanged: system font stack and Tailwind sizes.
 
 ---
 
-## 7. Mockup frame inventory (the E6-S1 approval set: 22 frames)
+## 7. Mockup frame inventory (v1 superseded by A1; v2 reissue pending)
 
 Sammy approves each frame. A frame is approved when it matches the decisions cited, or when the approval note explicitly overrides one by ID.
+
+**A1 (2026-10-10):** the v1 table below shows the expanded/rail sidebar and is superseded. The v2 set on the canvas (V2-Home, V2-Home-mobile, V2-Drawer, V2-Drawer-mobile, V2-Chat) is partial. Approval is against the reissued set.
 
 | # | Frame | Width | Theme | Decisions shown |
 |---|---|---|---|---|
@@ -531,7 +539,7 @@ Sammy approves each frame. A frame is approved when it matches the decisions cit
 | C6 | Wide desktop | 1920 | light · cyberpunk | §5.2 last row |
 | C7 | Mobile reference (unchanged): portrait + landscape | 375 / 812×375 | dark · cyberpunk | D-G2, §5.1 |
 
-Counts: hero 8, sidebar 7, chat 7 → **22**.
+Counts (v1): hero 8, sidebar 7, chat 7 → **22**. The v2 count is set at reissue.
 
 ---
 
@@ -541,15 +549,15 @@ Each story copies its block into its brief and PR body and ticks items with evid
 
 ### E6-S2 — Hero
 
-- [ ] Backend: `POST /chats/recent` per D-H3. Tests cover ordering, per-character dedup, owner scoping, group-row exclusion and limit bounds. If group rows are indistinguishable, the story stopped and raised it.
+- [ ] Backend: `POST /chats/recency` per D-H3. Tests cover ordering, per-character dedup, owner scoping, group-row exclusion and limit bounds. If group rows are indistinguishable, the story stopped and raised it.
 - [ ] Hero replaces the no-selection branch only (D-H1); a selected solo or group chat never shows it.
-- [ ] Slides: up to 5 recent (from D-H3, joined and filtered against `characterStore`) + up to 2 features, ordered per D-H4.
+- [ ] Hero slides per D-H4 (at most 5, featured and feature/announcement entries). Category rows per D-H21: "Pick up where you left off" from D-H3 joined and filtered against `characterStore`; rows with no visible items are omitted; cards open `CharacterPreviewModal`. "New this week" stops and raises if no creation timestamp exists.
 - [ ] Character slide shows the `creator_notes` first sentence, never `description` (D-H5). "Chat" selects; "About" opens `CharacterPreviewModal`.
 - [ ] `public/hero/feature-slides.json` is loaded per the D-H6 schema. Invalid entries are skipped with a warning; a failed fetch gives zero feature slides without an error; the `requires` permission is honored; a `character` slide for an invisible avatar is dropped.
 - [ ] `FeatureInfoModal` is built on `Modal` + `MarkdownDoc`.
 - [ ] Layout per D-H7 at 375, 640, 1024 and 1440; heights per D-H2; images per D-H8 (lazy loading, error placeholder).
-- [ ] Zero recent characters → static welcome panel, no features, no controls (D-H9). Exactly one slide → static (D-H10).
-- [ ] Start row + Browse behavior per D-H11 (against the pre-S3 sidebar).
+- [ ] Empty featured list and no recency → static welcome panel, no carousel, no controls (D-H9). Exactly one slide → static (D-H10).
+- [ ] Browse per D-H11 against the current sidebar, as S2 specified before A1. Category rows scroll and omit empty rows per D-H21.
 - [ ] Rotation 6000 ms, cross-fade 300 ms, wraps, timer resets on manual navigation (D-H12, H13).
 - [ ] Hover pauses and resumes; keyboard focus stops until play is pressed; pauses while hidden or while a modal or right panel is open; reduced motion starts stopped (D-H14). Each has a unit test with fake timers.
 - [ ] Control order and labels per D-H15 and D-H17; inactive slides are `inert`; `aria-live` is off while rotating and polite otherwise.
@@ -561,33 +569,33 @@ Each story copies its block into its brief and PR body and ticks items with evid
 - [ ] No new npm dependency.
 - [ ] Theme matrix per D-T1. axe reports 0 violations on the hero region in each matrix cell.
 - [ ] Reflow: no horizontal scroll at 320 / 375 / 1024 / 1280 (D-G3).
-- [ ] Frames H1–H8 match.
+- [ ] Frames match the approved v2 set (A1, §7).
 
 ### E6-S3 — Sidebar
 
 - [ ] Anatomy per D-S1. Every capability in the D-S7 inventory still works (walk the list: search, favorites, tags, sort, clear, pull-to-refresh, About, Favorite, group-select + start, group chats load/delete, drafts resume/discard, Import, New → interview → simple-form escape, Works open/new, motion picker, creator-notes "Show more").
 - [ ] "Recent chat" sort uses D-H3 data; characters without chats sort after, by name.
-- [ ] Expanded / rail / drawer per D-S2 and the §3.4 table. `stm:sidebar-expanded` semantics (absent → breakpoint default) are unit-tested.
-- [ ] No layout shift: first-render test per D-S3. Visual check that reload at 1100 and 1400 in each stored state shows no width jump.
+- [ ] Drawer at every width per D-S2 and the §3.4 table (A1). `stm:sidebar-expanded` is removed; a unit test asserts the drawer is closed on load regardless of stored state.
+- [ ] No layout shift: first-render test per D-S3 at 1100 and 1400 (drawer closed, full-width content).
 - [ ] Section toggles per D-S16, persisted in `stm:sidebar-sections` with the D-G7 defaults; collapsed regions are `hidden`.
-- [ ] Current-chat card modes per D-S5, including the pre-S4 expanded portrait at ≥ 1024 and compact below 1024.
+- [ ] Current-chat card modes per D-S5: compact at every width (A1).
 - [ ] Home per D-S6: disabled while streaming, plus the round-trip tests for solo **and** group chats (message saves to the original chat file).
 - [ ] Personal items and order per D-S9, with the Settings / My API Keys permission split copied exactly; Install is conditional.
 - [ ] Header reduced per D-S10; kebab removed; fits at 320 with no overflow.
-- [ ] Drawer per D-S12: `role="dialog"`, Escape, scrim click, swipe, focus contained via `useModalFocus`, focus returns to the menu button, resetting when crossing 1024.
+- [ ] Drawer per D-S12: `role="dialog"`, Escape, scrim click, swipe, focus contained via `useModalFocus`, focus returns to the menu button.
 - [ ] Keyboard per D-S13, including all four pre-existing defect fixes (focus-visible opacity, Favorite label/pressed, filter/sort labels, nested-button fix).
 - [ ] Layering and mutual exclusion per D-S14: opening Settings from the drawer closes the drawer; edge-swipe is ignored while a right panel is open.
 - [ ] Landmarks and labels per D-S15, D-S17, D-S18; targets per D-S19; focus not obscured per D-S20.
-- [ ] Rail tooltips per D-S11 (on focus, hoverable, Escape dismisses, not double-announced).
+- [ ] Rail and tooltips removed (D-S11, A1); no tooltip test.
 - [ ] D-T4 palette change applied (or Q4 answered otherwise and recorded here).
-- [ ] D-H11 Browse gains the rail branch.
+- [ ] D-H11 Browse opens the drawer at every width (A1).
 - [ ] Theme matrix per D-T1. axe reports 0 violations on the sidebar and header in each cell.
-- [ ] **Route sweep:** `/`, `/chat/:characterId` (via STscript `/go`), `/guides`, `/guides/:slug` (contributor+), `/profile`, `/login`, `/register`, `/forgot-password`, `/invite/:token`, an unknown path (redirects to `/`). Check each with the sidebar expanded, rail and drawer where `MainLayout` applies. Also open each right panel (Settings, Guides, Works) and Help at each sidebar state.
+- [ ] **Route sweep:** `/`, `/chat/:characterId` (via STscript `/go`), `/guides`, `/guides/:slug` (contributor+), `/profile`, `/login`, `/register`, `/forgot-password`, `/invite/:token`, an unknown path (redirects to `/`). Check each with the drawer open and closed where `MainLayout` applies. Also open each right panel (Settings, Guides, Works) and Help with the drawer closed.
 - [ ] Frames S1–S7 match.
 
 ### E6-S4 — Desktop chat layout
 
-- [ ] Order and sizing per D-C1; widths match the §5.2 table at 1024 (both sidebar states), 1280, 1440 and 1920, within ±1px.
+- [ ] Order and sizing per D-C1; widths match the §5.2 table at 1024, 1279, 1440 and 1920, within ±1px (A1: no sidebar column).
 - [ ] Render conditions per D-C2; container guard per D-C3 (test by forcing a main width of 590px).
 - [ ] Source resolution per D-C5, including explicit-mode-without-assets → static.
 - [ ] Reduced motion + Live Portrait per D-C6. The `paused` prop on `LivePortraitVideo` is added. A Pause/Play button exists whenever Live Portrait plays.
@@ -601,7 +609,7 @@ Each story copies its block into its brief and PR body and ticks items with evid
 - [ ] Below 1024 unchanged: mobile portrait panel, resize, collapse and drag; landscape hides it.
 - [ ] A11y per D-C11–C14; axe reports 0 violations on the panel in each D-T1 cell.
 - [ ] No regression in chat interactions: message edit, swipe left/right (alternate replies), branch UI, regenerate, continue, group-chat turn order, prompt breakdown sheet, Live Portrait discovery, expressions fallback on a 404 sprite.
-- [ ] Frames C1–C7 match.
+- [ ] Frames match the approved v2 set (A1, §7).
 
 ---
 
@@ -616,6 +624,7 @@ Locked by Sammy on 2026-10-06, as interpreted by this spec:
 | 3 | Feature-slide CTA opens a modal with subject info (character info modal with avatar, tags, creator's notes) | D-H6: `character` kind → `CharacterPreviewModal`; `feature` kind → `FeatureInfoModal` |
 | 4 | Personal sidebar: Profile, Logout, Settings, user's Character. Header keeps Guides, Help | D-S9 order (Profile, Persona, Settings, Install?, Logout); D-S10 |
 | 5 | Avatar panel: Auto → LP → Expressions → static; group chat focuses the current or most recent speaker with small thumbnails; no VN mode | D-C5 (restated, K3); D-C7; VN exists → D-C9 (Q1) |
-| — | Mockup frame count ≈ 22 (hero ≈ 8, sidebar ≈ 7, chat ≈ 7) | §7, exactly 22 |
+| — | Mockup frame count ≈ 22 (hero ≈ 8, sidebar ≈ 7, chat ≈ 7) | §7, exactly 22 (v1; superseded by A1) |
+| A1 (2026-10-10) | Sidebar is a hidden drawer at every width (z-index 1000, the top app layer). Hero is followed by category rows | §0.3; D-S2–S4, D-S10–S12, D-S14, D-S15, D-S17, §3.4, D-C1, D-C10, §5.2, D-H2, D-H4, D-H7 (≥640), D-H11, D-H21 (new), §7, §8. Toast and Onboarding raised to 1100 and 1200 (confirm) |
 
-Deviations from the brief's non-locked details, each with its reason in place: D-G5 (no focus-trap dependency), D-G7 (`stm:` key names, one JSON key for sections), D-H13 (no zoom), D-H14/H17 (APG stop-on-focus and action labels), D-S5 (stable member order; no dropdown mode), D-S1 (rail 72px rather than ~80px), D-S8 (Works default expanded, now persisted), D-S15 (`aria-label="Main"`), D-C7 (thumbnails include all members in stable order).
+Deviations from the brief's non-locked details, each with its reason in place: D-G5 (no focus-trap dependency), D-G7 (`stm:` key names, one JSON key for sections), D-H13 (no zoom), D-H14/H17 (APG stop-on-focus and action labels), D-S5 (stable member order; no dropdown mode), D-S1 (A1: the rail is removed; the drawer is 320px), D-S8 (Works default expanded, now persisted), D-S15 (`aria-label="Main"`), D-C7 (thumbnails include all members in stable order).
