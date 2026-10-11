@@ -1,6 +1,6 @@
 # E6 UI Redesign — Design Specification (E6-S1)
 
-**Status:** Draft for Sammy's sign-off · **Date:** 2026-10-06 · **Amended:** 2026-10-10 (A1, §0.3: sidebar is a hidden drawer at every width; hero is followed by category rows) · **Story:** E6-S1 (design-first gate for E6-S2, E6-S3, E6-S4)
+**Status:** Frames approved 2026-10-11; QA re-run pending · **Date:** 2026-10-06 · **Amended:** 2026-10-10 (A1, §0.3: sidebar is a hidden drawer at every width; hero is followed by category rows) · **Story:** E6-S1 (design-first gate for E6-S2, E6-S3, E6-S4)
 **Grounded against:** `goodgirlsbotclub` `main` @ `766d0ca8`, `ggbc-backend` `origin/main` @ `fb26a80`
 
 This document is the source of truth for the three E6 surfaces. Implementation stories copy their checklist from §8 and inherit every decision here. Where this spec and the Fable mockups disagree, **this spec wins** unless Sammy's mockup approval explicitly overrides a numbered decision (cite the decision ID, e.g. "overrides D-H7").
@@ -22,14 +22,14 @@ The brief for this spec contained premises that the codebase contradicts. Each o
 | K3 | Avatar source priority "Auto → Live Portrait → Expressions → static" | "Auto" is not a source. It is one of four per-character **motion modes** (`auto`, `liveportrait`, `expressions`, `none`). `auto` *resolves* to Live Portrait if clips exist, otherwise Expressions if sprites exist, otherwise static. An explicit mode whose assets are missing resolves to static. | `src/stores/motionModeStore.ts:88-103` | **D-C5** restates it as a resolution rule. |
 | K4 | Themes: "light, dark, and cyberpunk" | Theme = **mode** (`light`/`dark`/`auto`) × **preset** (`purple`, `blue`, `green`, `red`, `amber`, `cyberpunk`, or `custom:<id>`). Cyberpunk is a preset, and it is the **default** preset. Users can also define custom themes with arbitrary colors. | `src/hooks/themePreferences.ts:15-19, 168-176` | **D-T1** defines the QA matrix as mode × preset. |
 | K5 | Tokens `--color-secondary`, `--color-border-light` | Neither exists. The real set is listed in §6.1. | `src/index.css:7-40`, `ThemeColors` | **D-T2**: E6 introduces no new themed tokens. |
-| K6 | 1/3 avatar ≈ 230–245px and chat ≈ 490–510px "at 1280px" | At 1280px with the 288px sidebar, the main column is 992px, so the avatar is 330px and the chat 662px. The brief's numbers are what you get at **1024px with the sidebar expanded**. | arithmetic, §5.2 table | §5.2 table is authoritative. |
-| K7 | Hero is "full viewport width" | At ≥1024px the sidebar occupies the left edge, so the hero spans the `<main>` column, not the viewport. | `MainLayout.tsx` | **D-H1**. |
+| K6 | 1/3 avatar ≈ 230–245px and chat ≈ 490–510px "at 1280px" | Before A1, at 1280px with the 288px sidebar the main column was 992px, so the avatar was 330px and the chat 662px. The brief's numbers matched **1024px with the sidebar expanded**. | arithmetic, §5.2 table | §5.2 table is authoritative (A1: no sidebar column). |
+| K7 | Hero is "full viewport width" | Before A1, at ≥1024px the sidebar occupied the left edge, so the hero spanned the `<main>` column. Under A1 the drawer overlays, and the hero spans the viewport. | `MainLayout.tsx` | **D-H1**. |
 | K8 | "Personal: Profile, Logout, Settings, user's Character" (decision 4) and "Profile, Settings, Character, Logout (in this order)" (brief §3) | Two different orders | — | **D-S9** fixes one order. The meaning of "user's Character" is assumed to be the **persona** (confirmation **Q3**). |
 | K9 | The header currently holds only account clutter | The header also holds the PWA **Install app** button, the **PersonaSelector**, a permission-split **Settings** / **My API Keys** button, and a **kebab overflow menu** below `sm`. All of these need a destination. | `src/components/layout/Header.tsx:110-283` | **D-S10**. |
 | K10 | "Feature-slide CTA opens character modal"; "link to character library/browse" | `CharacterPreviewModal` exists and fits. There is **no** library, catalog or browse route; the character list lives in the sidebar. The roadmap's S2 acceptance criterion "catalog grid below unaffected" is vacuous because no catalog exists. | `src/components/character/CharacterPreviewModal.tsx`; `src/App.tsx:41-60` | **D-H11** ("Browse" opens or focuses the sidebar list); the S2 checklist drops the catalog item. |
 | K11 | Implied: a user can get back to the hero | Nothing calls `characterStore.clearSelection()`. After a user selects a character there is no UI path back to the no-selection state, so the hero would only appear on a cold load. | `grep clearSelection() src` → tests only | **D-S6** adds a Home control. |
 | K12 | Drawer "focus trapped using focus-trap library" | No focus-trap dependency exists, and this repo **commits `node_modules`**, so adding a dependency has outsized churn. The shared `Modal` also lacks `role="dialog"`, `aria-modal` and focus containment. | `package.json`; `src/components/ui/Modal.tsx` | **D-G5**: an in-repo `inert`-based trap, built in S2 (first consumer) and reused by S3. |
-| K13 | Drawer at `z-50`, right panels at `z-40` | Today the drawer, the Settings/Guides/Works panels and BottomSheet **all** sit at `z-50` with `z-40` scrims. | `Sidebar.tsx:299-307`, `SettingsPanel.tsx:103-111`, etc. | **D-S14** keeps the values and adds a mutual-exclusion rule. |
+| K13 | Drawer at `z-50`, right panels at `z-40` | Today the drawer, the Settings/Guides/Works panels and BottomSheet **all** sit at `z-50` with `z-40` scrims. | `Sidebar.tsx:299-307`, `SettingsPanel.tsx:103-111`, etc. | **D-S14** moves the drawer to z 1000 (A1), above the z 50 panels, and adds a mutual-exclusion rule. |
 | K14 | Speaker tracking can use the current speaker | `chatStore.currentSpeakerName` is **name**-keyed, and names are not unique within a roster. Group-chat identity is positional and fragile (#458 parked, ggbc-backend#84). | `src/stores/chatStore.ts:527` | **D-C7** keys only by `characterAvatar`. |
 | K15 | Carousel `aria-label="Auto-advance: on/off"`; "pauses on hover OR focus" | The WAI-ARIA APG carousel pattern says keyboard focus *stops* rotation until the user restarts it (hover only *pauses*), and the rotation button's label names the action. | APG Carousel pattern | **D-H14, D-H15** follow APG. |
 | K16 | `<nav aria-label="Main navigation">` | Screen readers read that as "Main navigation navigation". | — | **D-S15** uses `aria-label="Main"`. |
@@ -39,9 +39,9 @@ The brief for this spec contained premises that the codebase contradicts. Each o
 | ID | Question | Default this spec uses |
 |---|---|---|
 | **Q1** | VN mode exists (K2). Should VN mode suppress the 1/3 avatar panel? | **Yes.** VN wins and the panel is not rendered (D-C9). |
-| **Q2** | Avatar panel side. The 2026-09 epic notes said the avatar takes "1/3 of left side"; the E6-S1 brief says right. | **LEFT.** Layout is `sidebar │ avatar 1/3 │ chat 2/3`, placing the avatar left of chat but right of the sidebar (D-C1). |
+| **Q2** | Avatar panel side. The 2026-09 epic notes said the avatar takes "1/3 of left side"; the E6-S1 brief says right. | **LEFT.** Layout is `avatar 1/3 │ chat 2/3`, with no sidebar column (A1; D-C1). |
 | **Q3** | "user's Character" in the Personal section: the **persona** (the character the user plays as), or something else? | **Persona.** The PersonaSelector moves into Personal (D-S9). |
-| **Q4** | Light mode `--color-text-secondary` on `--color-bg-secondary` measures **4.40:1** (below AA 4.5:1) for the five non-cyberpunk presets, and 3.81:1 on `bg-tertiary`. The sidebar uses that pair for small text, so "axe clean" (epic criterion) cannot pass without a fix. | **APPLY.** S3 changes light `textSecondary` from `#71717a` to `#52525b` for purple/blue/green/red/amber (also `textQuote`), raising the pair to 4.55:1. This is an app-wide visual change in light mode (D-T4). |
+| **Q4** | Light mode `--color-text-secondary` on `--color-bg-secondary` measures **4.40:1** (below AA 4.5:1) for the five non-cyberpunk presets, and 3.81:1 on `bg-tertiary`. The sidebar uses that pair for small text, so "axe clean" (epic criterion) cannot pass without a fix. | **APPLY.** S3 changes light `textSecondary` from `#71717a` to `#52525b` for purple/blue/green/red/amber (also `textQuote`), raising the pair to 7.03:1 on `bg-secondary` (D-T4). This is an app-wide visual change in light mode. |
 | **Q5** | The hero carousel purpose: sort by recent chats or curate featured characters + announcements? | **Featured characters + announcements.** The hero is a storefront, not a recently-used list. Slides are: curated featured characters (from admin config or a backend-determined list) and product announcements. The featured list is populated by S2 backend endpoint; new users see the same featured carousel as everyone (D-H4, D-H9). |
 | **Q6** | S2 now needs a small backend endpoint (K1). Accept the scope addition, which takes S2 from M to roughly M+? | **Accept.** It is the only way to honor "most recently used". |
 
@@ -57,7 +57,7 @@ Sammy's direction, from reference screenshots of a streaming home page (a hero f
 - **Confirmed by Sammy (2026-10-11):** the drawer z-index is 1000, the top app layer (Modal stays at 100, panels at 50). Toast and Onboarding are raised to 1100 and 1200 so they stay above the drawer.
 - **Reference imagery:** only the layout pattern is in scope. Third-party branding, copy and imagery are not.
 - **Data source confirmed (2026-10-11):** "New this week" (D-H21) uses `create_date`, a non-null server-default timestamp on the character row. It is set once at creation and does not change on edits (the backend's `last_modified` does change, so it is not used). The frontend already reads it (`src/api/client.ts:251`).
-- **Open items:** §7's v2 approval set is being reissued against A1.
+- **Approved:** the 22 v2 frames in §7 were approved by Sammy on 2026-10-11.
 
 ---
 
@@ -112,7 +112,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
 ### 2.2 Content and data
 
-- **D-H3 Featured characters source.** S2 adds a backend route on the **existing** chats router, next to `/chats/list`: `POST /chats/recency`, body `{ "limit": int (1–500, default 5) }`, response `[{ "character_avatar": str, "last_chat_at": datetime }]`. It returns the caller's own chats, one row per character, `max(updated_at)` per character, ordered descending (to honor "most recently used" per Q6). Because it lives on an existing router prefix, no nginx/vite registration is needed (the registration rule applies to new bare-prefix routers only). Requirements:
+- **D-H3 Recency endpoint (feeds the D-H21 row and the D-S7 sort).** S2 adds a backend route on the **existing** chats router, next to `/chats/list`: `POST /chats/recency`, body `{ "limit": int (1–500, default 5) }`, response `[{ "character_avatar": str, "last_chat_at": datetime }]`. It returns the caller's own chats, one row per character, `max(updated_at)` per character, ordered descending (to honor "most recently used" per Q6). Because it lives on an existing router prefix, no nginx/vite registration is needed (the registration rule applies to new bare-prefix routers only). Requirements:
   - **Solo chats only.** Group chat rows are keyed by roster slot 0's avatar (positional identity; #458 / ggbc-backend#84) and must **not** count toward slot 0's recency. If the backend cannot tell a group row from a solo row, S2 **stops and raises it** instead of guessing.
   - The client joins the rows against `characterStore.characters` by avatar and **drops** any avatar the user can no longer see (deleted or unshared).
   - Backend tests cover: ordering, de-duplication per character, owner scoping (another user's chats never appear), group exclusion, and the limit bounds.
@@ -158,7 +158,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   - Feature slides use the same frames with `image` in place of the avatar.
 - **D-H8 Image loading.** The first two slides load eagerly; the rest use `loading="lazy"`. On image error the slide stays and shows a placeholder: a `--color-bg-tertiary` fill with the character's initial in `--color-text-primary`, 64px.
 - **D-H9 New user / empty featured carousel.** When the featured-character list is empty or the user has no permission to see any, no carousel and no controls. The region renders one static welcome panel: heading "Start a new conversation", body "Pick a character to chat with, or create your own.", and a **Browse characters** button (D-H11). No feature slides.
-- **D-H10 One slide total** (e.g. one recent character and no features): render it statically, with no rotation, no prev/next and no indicator.
+- **D-H10 One slide total** (e.g. one featured character and no announcements): render it statically, with no rotation, no prev/next and no indicator.
 - **D-H11 Browse (A1).** The **Browse characters** button (the D-H9 welcome panel and the hero's secondary action) opens the drawer and focuses `#character-search` at every width. The Start row is removed; the category rows (D-H21) replace it. S2 ships it against today's sidebar; S3 makes the drawer the only sidebar.
 
 - **D-H21 Category rows (A1).** Below the hero, rows of cards. Each row has an `<h3>` heading and a "See all ›" button that opens the drawer with My Characters focused. Rows render in this fixed order. A row with no visible items is **omitted**, never shown empty:
@@ -222,7 +222,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 
   ```css
   --scrim-hero: linear-gradient(to top, rgb(0 0 0 / .80) 0%, rgb(0 0 0 / .55) 45%, rgb(0 0 0 / 0) 75%);
-  --scrim-hero-side: linear-gradient(to right, rgb(0 0 0 / .80) 0%, rgb(0 0 0 / .55) 55%, rgb(0 0 0 / .25) 100%); /* ≥640 split layout */
+  --scrim-hero-side: linear-gradient(to right, rgb(0 0 0 / .80) 0%, rgb(0 0 0 / .55) 55%, rgb(0 0 0 / .25) 100%); /* ≥640 full-bleed layout (A1) */
   --on-scrim-text: #ffffff;
   --on-scrim-text-muted: rgb(255 255 255 / .85);
   ```
@@ -340,7 +340,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   | Layer | z-index | Source |
   |---|---|---|
   | Header (sticky) | 20 | `Header.tsx` |
-  | Drawer scrim / right-panel scrims | 40 | unchanged |
+  | Right-panel scrims | 40 | unchanged |
   | Settings, Guides, Works panels / BottomSheet | 50 | unchanged |
   | Modal | 100 | `Modal.tsx` |
   | Drawer scrim | 999 | new (A1) |
@@ -348,7 +348,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
   | Toast | 1100 | `Toast.tsx`, raised from 200 so toasts stay above the drawer (A1) |
   | Onboarding | 1200 | `OnboardingWalkthrough.tsx`, raised from 110 (A1) |
 
-  **Rule:** the drawer and a right panel are never open together. Any drawer item that opens a right panel calls the drawer's close function first. `useSwipeSidebar`'s `onOpen` is a no-op while any right panel is open (it checks the three panel stores). With that rule, equal z-values cannot conflict. The drawer is always an overlay (A1); there is no normal-flow sidebar.
+  **Rule:** the drawer and a right panel are never open together. Any drawer item that opens a right panel calls the drawer's close function first. `useSwipeSidebar`'s `onOpen` is a no-op while any right panel is open (it checks the three panel stores). With that rule, the drawer (z 1000) never has to compete with a right panel (z 50). The drawer is always an overlay (A1); there is no normal-flow sidebar.
 
 ### 3.6 A11y contract
 
@@ -461,7 +461,7 @@ The user's chat-width preference (`getChatMaxWidth()`, 60–100%) keeps applying
 | `--color-text-secondary` | Teasers, counts, icons, section toggles at rest (see D-T4) |
 | `--color-primary` | Active-row bar and tint, focused-member ring in the sidebar card, primary buttons, focus rings on themed surfaces. **Never small text** (D-T3) |
 | `--color-primary-hover` | Hover state of primary buttons |
-| `--color-border` | Dividers, sidebar edge, panel left edge. **Decorative only** (1.27–1.67:1; nothing may rely on it for identification) |
+| `--color-border` | Dividers, drawer edge, avatar panel right edge. **Decorative only** (1.27–1.67:1; nothing may rely on it for identification) |
 | `--color-accent` | Alias of primary; not used by E6 |
 | `--color-warning` / `-error` / `-success` | Fixed status colors; not used by E6 except the Logout hover may use `--color-error` |
 
@@ -495,7 +495,7 @@ Bold = fails AA for normal text (or fails 3:1 for non-text).
 |---|---|---|
 | Hero slide duration | 6000 ms | Rotation starts stopped |
 | Hero cross-fade | 300 ms ease-out | 0 ms |
-| Sidebar width / drawer slide | 200 ms ease-in-out | 0 ms |
+| Drawer slide and scrim fade | 200 ms ease-in-out | 0 ms |
 | Avatar speaker cross-fade | 200 ms | 0 ms |
 | Tooltip hover delay | 300 ms (focus: 0 ms) | unchanged |
 
@@ -508,7 +508,7 @@ The type scale is unchanged: system font stack and Tailwind sizes.
 
 ---
 
-## 7. Mockup frame inventory (v1 superseded by A1; v2 reissue pending)
+## 7. Mockup frame inventory (v2 approved 2026-10-11; v1 superseded by A1)
 
 Sammy approves each frame. A frame is approved when it matches the decisions cited, or when the approval note explicitly overrides one by ID.
 
@@ -568,7 +568,7 @@ Frames use placeholder art and copy, and placeholder token values approximate th
 | C6 | Wide desktop | 1920 | light · cyberpunk | §5.2 last row |
 | C7 | Mobile reference (unchanged): portrait + landscape | 375 / 812×375 | dark · cyberpunk | D-G2, §5.1 |
 
-Counts (v1): hero 8, sidebar 7, chat 7 → **22**. The v2 count is set at reissue.
+Counts (v1): hero 8, sidebar 7, chat 7 → **22**. Counts (v2, approved): hero 8, sidebar 7, chat 7 → **22**.
 
 ---
 
@@ -634,7 +634,7 @@ Each story copies its block into its brief and PR body and ticks items with evid
 - [ ] Group focus per D-C7: streaming message avatar (if carried) → last speaker → slot 0; never by name; manual pin until the next AI message; stable roster order.
 - [ ] Framing per D-C8: separate desktop positions, store migration v1→v2 keeps mobile values (unit test), keyboard arrows (5% / 1%), Reset, Enter/Escape exit.
 - [ ] VN precedence per D-C9.
-- [ ] Sidebar expanded-portrait path deleted in the same PR (D-C10).
+- [ ] Expanded-portrait path removed in S3 (D-S5); the drawer shows no portrait, so S4 adds none to it (D-C10).
 - [ ] Below 1024 unchanged: mobile portrait panel, resize, collapse and drag; landscape hides it.
 - [ ] A11y per D-C11–C14; axe reports 0 violations on the panel in each D-T1 cell.
 - [ ] No regression in chat interactions: message edit, swipe left/right (alternate replies), branch UI, regenerate, continue, group-chat turn order, prompt breakdown sheet, Live Portrait discovery, expressions fallback on a 404 sprite.
@@ -654,6 +654,6 @@ Locked by Sammy on 2026-10-06, as interpreted by this spec:
 | 4 | Personal sidebar: Profile, Logout, Settings, user's Character. Header keeps Guides, Help | D-S9 order (Profile, Persona, Settings, Install?, Logout); D-S10 |
 | 5 | Avatar panel: Auto → LP → Expressions → static; group chat focuses the current or most recent speaker with small thumbnails; no VN mode | D-C5 (restated, K3); D-C7; VN exists → D-C9 (Q1) |
 | — | Mockup frame count ≈ 22 (hero ≈ 8, sidebar ≈ 7, chat ≈ 7) | §7, exactly 22 (v1; superseded by A1) |
-| A1 (2026-10-10) | Sidebar is a hidden drawer at every width (z-index 1000, the top app layer). Hero is followed by category rows | §0.3; D-S2–S4, D-S10–S12, D-S14, D-S15, D-S17, §3.4, D-C1, D-C10, §5.2, D-H2, D-H4, D-H7 (≥640), D-H11, D-H21 (new), §7, §8. Toast and Onboarding raised to 1100 and 1200 (confirmed 2026-10-11) |
+| A1 (2026-10-10) | Sidebar is a hidden drawer at every width (z-index 1000, the top app layer). Hero is followed by category rows | §0.3; D-G2, D-G7, D-S1–S5, D-S10–S12, D-S14, D-S15, D-S17, D-S11 (removed), §3.4, D-C1, D-C10, §5.2, D-H2, D-H4, D-H7 (≥640), D-H11, D-H21 (new), §7, §8. Toast and Onboarding raised to 1100 and 1200 (confirmed 2026-10-11) |
 
 Deviations from the brief's non-locked details, each with its reason in place: D-G5 (no focus-trap dependency), D-G7 (`stm:` key names, one JSON key for sections), D-H13 (no zoom), D-H14/H17 (APG stop-on-focus and action labels), D-S5 (stable member order; no dropdown mode), D-S1 (A1: the rail is removed; the drawer is 320px), D-S8 (Works default expanded, now persisted), D-S15 (`aria-label="Main"`), D-C7 (thumbnails include all members in stable order).
