@@ -159,7 +159,7 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
 - **D-H8 Image loading.** The first two slides load eagerly; the rest use `loading="lazy"`. On image error the slide stays and shows a placeholder: a `--color-bg-tertiary` fill with the character's initial in `--color-text-primary`, 64px.
 - **D-H9 New user / empty featured carousel.** When the featured-character list is empty or the user has no permission to see any, no carousel and no controls. The region renders one static welcome panel: heading "Start a new conversation", body "Pick a character to chat with, or create your own.", and a **Browse characters** button (D-H11). No feature slides.
 - **D-H10 One slide total** (e.g. one featured character and no announcements): render it statically, with no rotation, no prev/next and no indicator.
-- **D-H11 Browse (A1).** The **Browse characters** button (the D-H9 welcome panel and the hero's secondary action) opens the drawer and focuses `#character-search` at every width. The Start row is removed; the category rows (D-H21) replace it. S2 ships it against today's sidebar; S3 makes the drawer the only sidebar.
+- **D-H11 Browse (A1).** The **Browse characters** button (the D-H9 welcome panel; the hero's secondary CTA is "About", D-H5) opens the drawer and focuses `#character-search` at every width. The Start row is removed; the category rows (D-H21) replace it. S2 ships it against today's sidebar; S3 makes the drawer the only sidebar.
 
 - **D-H21 Category rows (A1).** Below the hero, rows of cards. Each row has an `<h3>` heading and a "See all ›" button that opens the drawer with My Characters focused. Rows render in this fixed order. A row with no visible items is **omitted**, never shown empty:
   1. **Pick up where you left off:** solo chats by D-H3 recency, up to 20, 2:3 cards.
@@ -203,8 +203,8 @@ Order is fixed: **S2 → S3 → S4** (roadmap). Each story must leave `main` rel
       <button aria-label="Go to slide 2: Ivy" aria-current="true|undefined">…</button> …
     </div>
     <div id="hero-slides" aria-live="off | polite">
-      <div role="group" aria-roledescription="slide" aria-label="2 of 7: Ivy">…</div>
-      <div role="group" aria-roledescription="slide" aria-label="3 of 7: Selfie mode" inert>…</div>
+      <div role="group" aria-roledescription="slide" aria-label="2 of 5: Ivy">…</div>
+      <div role="group" aria-roledescription="slide" aria-label="3 of 5: Selfie mode" inert>…</div>
     </div>
   </section>
   ```
@@ -585,7 +585,7 @@ Each story copies its block into its brief and PR body and ticks items with evid
 - [ ] `public/hero/feature-slides.json` is loaded per the D-H6 schema. Invalid entries are skipped with a warning; a failed fetch gives zero feature slides without an error; the `requires` permission is honored; a `character` slide for an invisible avatar is dropped.
 - [ ] `FeatureInfoModal` is built on `Modal` + `MarkdownDoc`.
 - [ ] Layout per D-H7 at 375, 640, 1024 and 1440; heights per D-H2; images per D-H8 (lazy loading, error placeholder).
-- [ ] Empty featured list and no recency → static welcome panel, no carousel, no controls (D-H9). Exactly one slide → static (D-H10).
+- [ ] Empty featured list → static welcome panel, no carousel, no controls (D-H9). Exactly one slide → static (D-H10).
 - [ ] Browse per D-H11 against the current sidebar, as S2 specified before A1. Category rows scroll and omit empty rows per D-H21.
 - [ ] Rotation 6000 ms, cross-fade 300 ms, wraps, timer resets on manual navigation (D-H12, H13).
 - [ ] Hover pauses and resumes; keyboard focus stops until play is pressed; pauses while hidden or while a modal or right panel is open; reduced motion starts stopped (D-H14). Each has a unit test with fake timers.
