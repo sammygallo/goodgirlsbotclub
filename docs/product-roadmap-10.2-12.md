@@ -510,7 +510,7 @@ One design language, three staggered ships, ascending blast radius. Hero doubles
 - Mobile: sidebar collapses to drawer; chat layout untouched on portrait; no horizontal scroll anywhere.
 
 #### E6-S1 · Design workshop — **Kanban: Design** · Size M
-All three surfaces in one Fable design-canvas session (hero slides incl. feature-highlight template, sidebar states expanded/collapsed/drawer, chat 1/3-avatar layout with breakpoint behavior), annotated for responsive + dark mode + a11y. Fable — this is the design-first gate for the whole epic. **Acceptance:** Sammy approves mockups; implementation stories inherit specs, not vibes.
+All three surfaces in one Fable design-canvas session (hero slides incl. feature-highlight template, sidebar as a hidden drawer at every width, hero followed by category rows, chat 1/3-avatar layout with no sidebar column), annotated for responsive + dark mode + a11y. Fable — this is the design-first gate for the whole epic. Amended 2026-10-11 to spec A1 (`docs/ui-redesign-e6-design-spec.md` §0.3). **Acceptance:** Sammy approves mockups; implementation stories inherit specs, not vibes.
 
 #### E6-S2 · Hero banner — **Kanban: Backlog (gated on S1)** · Size M
 
