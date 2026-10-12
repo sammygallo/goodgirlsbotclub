@@ -117,8 +117,6 @@ describe('characterStore.charactersFetchFailed', () => {
   });
 
   it('rises when the fetch fails, and outlives `error` being cleared', async () => {
-    // `error` is shared by every action on the store, and each of them clears it
-    // as it starts; the failure has to survive that.
     getCharacters.mockRejectedValue(new Error('offline'));
     await useCharacterStore.getState().fetchCharacters();
     expect(useCharacterStore.getState().charactersFetchFailed).toBe(true);

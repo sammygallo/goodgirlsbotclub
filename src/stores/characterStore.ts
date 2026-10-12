@@ -117,12 +117,7 @@ interface CharacterState {
    * it rather than inheriting the previous account's.
    */
   charactersLoaded: boolean;
-  /**
-   * True when the most recent fetchCharacters FAILED; false after a success
-   * and after resetUser. Its own field because `error` is shared by every
-   * action on this store and any of them clears it, so a failed first fetch
-   * cannot be read back from `error` for long.
-   */
+  /** True after fetchCharacters fails, until a later fetch succeeds or resetUser runs. */
   charactersFetchFailed: boolean;
   selectedCharacter: CharacterInfo | null;
   // Group chat support
