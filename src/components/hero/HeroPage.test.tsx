@@ -648,7 +648,8 @@ describe('category rows (D-H21)', () => {
       const row = screen.getByRole('region', { name: 'New this week' });
       fireEvent.error(row.querySelector('img')!);
       expect(row.querySelector('img')).toBeNull();
-      expect(within(row).getByRole('button', { name: 'Ivy' }).textContent).toContain('I');
+      // The placeholder node itself: the card's title "Ivy" already holds an 'I'.
+      expect(row.querySelector('[aria-hidden="true"] .text-\\[64px\\]')?.textContent).toBe('I');
     });
   });
 

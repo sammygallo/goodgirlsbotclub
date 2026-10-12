@@ -629,7 +629,9 @@ describe('images and geometry (D-H2, D-H7, D-H8)', () => {
     fireEvent.error(ivy);
     expect(imgs()).toHaveLength(2);
     const slide = slideEls()[0];
-    expect(slide.textContent).toContain('I');
+    // The placeholder node itself: the name "Ivy" already holds an 'I', so the
+    // slide's text could not tell an initial from none.
+    expect(slide.querySelector('[aria-hidden="true"] .text-\\[64px\\]')?.textContent).toBe('I');
     // The text content is untouched.
     expect(slide.querySelector('h3')?.textContent).toBe('Ivy');
     expect(button('Chat with Ivy')).toBeTruthy();
