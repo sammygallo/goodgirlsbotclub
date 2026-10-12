@@ -95,6 +95,9 @@ describe('public/hero/feature-slides.json (as shipped)', () => {
 // ---------------------------------------------------------------------------
 // D-H20: fixed hero colours
 
+/** How far into each scrim D-H20 holds alpha at .55 or more, in percent: the first 55% of the side scrim, the bottom 45% of the bottom one. */
+const BAND = { side: 55, bottom: 45 } as const;
+
 describe('index.css hero colours (D-H20)', () => {
   const css = read('src/index.css');
   const decl = (name: string) => {
@@ -131,6 +134,89 @@ describe('index.css hero colours (D-H20)', () => {
 
   it('defines the contrast-safe focus ring (D-H19)', () => {
     expect(css).toMatch(/\.focus-ring-contrast:focus-visible\s*{[^}]*outline:\s*2px solid #ffffff[^}]*outline-offset:\s*2px[^}]*box-shadow:\s*0 0 0 6px #000000/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D-H20 geometry: the phone text block against the bottom scrim's >= .55 band
+
+describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H20)', () => {
+  const frame = read('src/components/hero/SlideFrame.tsx');
+  const featureSlide = read('src/components/hero/FeatureSlide.tsx');
+  const characterSlide = read('src/components/hero/CharacterSlide.tsx');
+
+  /** Tailwind's default theme at a 16px root: the line heights used below, and the 4px spacing unit. */
+  const LINE_HEIGHT_PX: Record<string, number> = { 'text-sm': 20, 'text-base': 24, 'text-xl': 28 };
+  const SPACING_PX = 4;
+
+  /** The classes of the element whose class list `tag` captures, minus responsive variants: what applies below 640px. */
+  const phoneClasses = (source: string, tag: RegExp): string[] => {
+    const m = source.match(tag);
+    if (!m) throw new Error(`no element matches ${tag}`);
+    return m[1].split(/\s+/).filter((c) => c && !c.includes(':'));
+  };
+  const spacing = (classes: string[], prefix: string) => {
+    const c = classes.find((x) => new RegExp(`^${prefix}-[\\d.]+$`).test(x));
+    if (!c) throw new Error(`no ${prefix}-N among: ${classes.join(' ')}`);
+    return Number(c.slice(prefix.length + 1)) * SPACING_PX;
+  };
+  /** A text element's height: its lines (line-clamp-N, or truncate = one) times its line height. */
+  const textHeight = (classes: string[]) => {
+    const size = classes.find((c) => c in LINE_HEIGHT_PX);
+    const clamp = classes.find((c) => /^line-clamp-\d+$/.test(c));
+    const lines = clamp ? Number(clamp.slice('line-clamp-'.length)) : classes.includes('truncate') ? 1 : NaN;
+    if (!size || Number.isNaN(lines)) throw new Error(`cannot size: ${classes.join(' ')}`);
+    return lines * LINE_HEIGHT_PX[size];
+  };
+
+  /**
+   * How far above the hero's bottom edge a slide's text block reaches below
+   * 640px: its rows and the CTA row, the gaps between them, and the frame's
+   * bottom padding. The kicker is `display: none` there (asserted below), so it
+   * adds neither a row nor a gap.
+   */
+  function blockTop(rows: string[][], ctaRow: string[]): number {
+    const cta = phoneClasses(frame, /const CTA_BASE =\s*'([^']+)'/);
+    const ctaHeight = Math.max(spacing(cta, 'min-h'), LINE_HEIGHT_PX['text-sm'] + 2 * spacing(cta, 'py'));
+    const column = phoneClasses(frame, /<div className="(flex w-full min-w-0 flex-col[^"]*)"/);
+    const padded = phoneClasses(frame, /<div className="([^"]*\bitems-end\b[^"]*)"/);
+    const text = rows.reduce((sum, r) => sum + textHeight(r), 0);
+    return text + ctaHeight + spacing(ctaRow, 'mt') + rows.length * spacing(column, 'gap') + spacing(padded, 'pb');
+  }
+
+  const ctaRowOf = (source: string) => phoneClasses(source, /<div className="([^"]*\bflex-wrap\b[^"]*)"/);
+  const featureTop = (source: string) =>
+    blockTop(
+      [phoneClasses(source, /<h3 className="([^"]+)"/), phoneClasses(source, /<p className="([^"]+)"/)],
+      ctaRowOf(source),
+    );
+  // Worst case: both optional lines are present.
+  const characterTop = (source: string) =>
+    blockTop(
+      [
+        phoneClasses(source, /<h3 className="([^"]+)"/),
+        phoneClasses(source, /\{creator && <p className="([^"]+)"/),
+        phoneClasses(source, /\{blurb && <p className="([^"]+)"/),
+      ],
+      ctaRowOf(source),
+    );
+
+  const layerMin = Number(frame.match(/h-\[max\(100%,(\d+)px\)\]/)?.[1]);
+  const bandPx = (layerPx: number) => (layerPx * BAND.bottom) / 100;
+
+  it('hides the kicker below 640px, where the block is sized without it', () => {
+    expect(frame).toMatch(/<span className="hidden [^"]*\bsm:inline-block\b/);
+  });
+
+  it('has a scrim layer tall enough that the >= .55 band covers the tallest slide', () => {
+    expect(layerMin).toBeGreaterThan(0);
+    expect(featureTop(featureSlide)).toBeLessThanOrEqual(bandPx(layerMin));
+    expect(characterTop(characterSlide)).toBeLessThanOrEqual(bandPx(layerMin));
+  });
+
+  it('has a detector that WOULD notice a fourth body line, or the 400px layer this replaced', () => {
+    expect(featureTop(featureSlide.replace('line-clamp-3', 'line-clamp-4'))).toBeGreaterThan(bandPx(layerMin));
+    expect(featureTop(featureSlide)).toBeGreaterThan(bandPx(400));
   });
 });
 
