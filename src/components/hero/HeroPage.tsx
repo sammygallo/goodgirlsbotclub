@@ -45,6 +45,10 @@ interface FeatureModalState {
 export function HeroPage({ onOpenSidebar }: HeroPageProps) {
   const { settled, slides } = useFeatureSlides();
 
+  // The hero READS the character and Works lists; it does not fetch them. The
+  // sidebar does (fetchCharacters on mount, fetchProjects with project:view), so
+  // E6-S3 must keep those calls when it rebuilds the sidebar, or the hero would
+  // sit on its loading placeholder for good.
   const characters = useCharacterStore((s) => s.characters);
   const charactersLoaded = useCharacterStore((s) => s.charactersLoaded);
   // A failed fetch leaves charactersLoaded false forever, so "failed" has to be
