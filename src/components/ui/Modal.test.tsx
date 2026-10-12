@@ -663,3 +663,104 @@ describe('a nested modal on top of an outer one that unmounts', () => {
     expect(document.activeElement).toBe(transfer);
   });
 });
+
+describe('a modal swapped for another in one handler', () => {
+  /**
+   * CharacterEdit's "Convert to persona": the outer Modal closes itself and a
+   * sibling Modal mounts, in one handler. The sibling's opener is the button
+   * inside the outer dialog, which is gone once the exit animation ends.
+   */
+  function Swap() {
+    const [edit, setEdit] = useState(false);
+    const [persona, setPersona] = useState(false);
+    return (
+      <>
+        <button onClick={() => setEdit(true)}>Edit</button>
+        <Modal isOpen={edit} onClose={() => setEdit(false)} title="Editor">
+          <button
+            onClick={() => {
+              setEdit(false);
+              setPersona(true);
+            }}
+          >
+            Convert
+          </button>
+        </Modal>
+        {persona && (
+          <Modal isOpen onClose={() => setPersona(false)} title="Persona">
+            body
+          </Modal>
+        )}
+      </>
+    );
+  }
+
+  const settle = () =>
+    act(() => {
+      vi.advanceTimersByTime(EXIT_MS + 20);
+    });
+
+  it('puts focus back on the element that opened the first one when the second closes', () => {
+    vi.useFakeTimers();
+    render(<Swap />);
+    const edit = screen.getByText('Edit');
+    open(edit);
+    open(screen.getByText('Convert'));
+    settle();
+    expect(screen.queryByRole('dialog', { name: 'Editor' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Persona' })).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(edit);
+  });
+
+  it('does the same under StrictMode, whose trial cleanup of the new modal is not a departure', () => {
+    vi.useFakeTimers();
+    render(
+      <StrictMode>
+        <Swap />
+      </StrictMode>,
+    );
+    const edit = screen.getByText('Edit');
+    open(edit);
+    open(screen.getByText('Convert'));
+    settle();
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(document.activeElement).toBe(edit);
+  });
+
+  it('does not lend the last restore target to a modal that never had an opener', () => {
+    vi.useFakeTimers();
+    function Tree({ mounted }: { mounted: boolean }) {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open</button>
+          <Modal isOpen={open} onClose={() => setOpen(false)} title="A">
+            a
+          </Modal>
+          {mounted && (
+            <Modal isOpen onClose={() => {}} title="B">
+              b
+            </Modal>
+          )}
+        </>
+      );
+    }
+    const { rerender } = render(<Tree mounted={false} />);
+    open(screen.getByText('Open'));
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    // Open is now the last element a departing surface restored focus to.
+    expect(document.activeElement).toBe(screen.getByText('Open'));
+
+    (document.activeElement as HTMLElement).blur();
+    rerender(<Tree mounted />);
+    rerender(<Tree mounted={false} />);
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+

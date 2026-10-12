@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 
 /**
  * Focus containment for modal surfaces, without a dependency (D-G5).
@@ -57,6 +57,8 @@ interface Surface {
 }
 
 const stack: Surface[] = [];
+
+let lastRestored: HTMLElement | null = null;
 
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'TEMPLATE', 'NOSCRIPT']);
 
@@ -131,6 +133,11 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
     onEscapeRef.current = onEscape;
   });
 
+  const activeNow = useRef(active);
+  useLayoutEffect(() => {
+    activeNow.current = active;
+  });
+
   // The opener is read DURING RENDER, on the render where `active` turns true,
   // and not in the activation effect below. By the time any effect runs, the
   // body's own `autoFocus` (applied in React's commit, before passive effects)
@@ -189,7 +196,14 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
       // Only the top surface hands focus back. A lower one closing out of order
       // must leave focus with the surface that is still open on top of it.
       if (wasTop) {
-        if (surface.opener?.isConnected) surface.opener.focus();
+        let target = surface.opener;
+        // An opener that left with a dialog closed in the same batch (a swap) is gone, so go where the last surface to leave for real put focus (StrictMode's trial cleanup does not count).
+        if (target && !target.isConnected && lastRestored?.isConnected) target = lastRestored;
+        if (target?.isConnected) {
+          target.focus();
+          const leavingForReal = !activeNow.current || !root.isConnected;
+          if (leavingForReal && document.activeElement === target) lastRestored = target;
+        }
       } else if (surface.opener?.isConnected) {
         // A surface above this one that was opened from inside its dialog (a
         // confirm over a panel) is about to lose its own opener with it. It takes
