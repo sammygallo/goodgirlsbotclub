@@ -183,6 +183,22 @@ describe('loading', () => {
     expect(screen.getByText('Start a new conversation')).toBeTruthy();
   });
 
+  it.each([
+    ['another characterStore action clears the shared error', { error: null }],
+    ['a retry begins', { isLoading: true, error: null }],
+  ])('keeps the welcome panel once the failed fetch has been seen, even after %s', async (_name, change) => {
+    seed({ characters: [], loaded: false, failed: true });
+    config({ version: 1, slides: [charSlideCfg('ivy.png')] });
+    await mount();
+    expect(screen.getByText('Start a new conversation')).toBeTruthy();
+
+    act(() => {
+      useCharacterStore.setState(change);
+    });
+    expect(screen.getByText('Start a new conversation')).toBeTruthy();
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
   it('fetches the config once on mount', async () => {
     seed();
     const fetchFn = config({ version: 1, slides: [] });

@@ -52,7 +52,7 @@ export function HeroPage({ onOpenSidebar }: HeroPageProps) {
   const characters = useCharacterStore((s) => s.characters);
   const charactersLoaded = useCharacterStore((s) => s.charactersLoaded);
   // A failed fetch leaves charactersLoaded false forever, so "failed" has to be
-  // told apart from "not asked yet" or the placeholder would never end.
+  // told apart from "not asked yet".
   const charactersFailed = useCharacterStore((s) => !s.isLoading && !s.charactersLoaded && s.error !== null);
   const selectCharacter = useCharacterStore((s) => s.selectCharacter);
 
@@ -128,7 +128,13 @@ export function HeroPage({ onOpenSidebar }: HeroPageProps) {
     [revealSidebar],
   );
 
-  const ready = settled && (charactersLoaded || charactersFailed);
+  const settledNow = settled && (charactersLoaded || charactersFailed);
+  // Latched: `error` is shared by every characterStore action, so a later import
+  // or edit clears it and a retry raises isLoading, either of which would put the
+  // placeholder back over a hero that had already been shown.
+  const [latched, setLatched] = useState(false);
+  if (settledNow && !latched) setLatched(true);
+  const ready = latched || settledNow;
 
   let top: ReactNode;
   if (!ready) {
