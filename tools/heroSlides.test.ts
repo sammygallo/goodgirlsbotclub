@@ -103,13 +103,29 @@ function networkOnlyPaths(source: string): string[] | null {
 }
 
 describe('public/sw.js', () => {
-  it('lists /hero/ among the paths the worker leaves to the network', () => {
+  it('lists /hero/ among the paths the worker leaves to the browser', () => {
     expect(networkOnlyPaths(read('public/sw.js'))).toEqual(expect.arrayContaining(['/api', '/characters', '/hero/']));
   });
 
   it('has a detector that WOULD notice /hero/ missing from the list, or no list at all', () => {
     expect(networkOnlyPaths(`if (url.pathname.startsWith('/api')) { return; }`)).toEqual(['/api']);
     expect(networkOnlyPaths('no such block')).toBeNull();
+  });
+});
+
+/** The slide config's fetch, with the option the curation guide's freshness sentence depends on. */
+const REVALIDATING_FETCH = /fetch\(\s*FEATURE_SLIDES_URL\s*,\s*\{[^}]*\bcache:\s*'no-cache'[^}]*\}\s*\)/;
+
+describe('useFeatureSlides.ts', () => {
+  it('fetches FEATURE_SLIDES_URL with cache: \'no-cache\'', () => {
+    expect(read('src/components/hero/useFeatureSlides.ts')).toMatch(REVALIDATING_FETCH);
+  });
+
+  it('has a detector that WOULD notice the option dropped, or another URL fetched', () => {
+    expect(`await fetch(FEATURE_SLIDES_URL, { cache: 'no-cache', signal })`).toMatch(REVALIDATING_FETCH);
+    expect(`await fetch(FEATURE_SLIDES_URL, { signal })`).not.toMatch(REVALIDATING_FETCH);
+    expect(`await fetch(FEATURE_SLIDES_URL)`).not.toMatch(REVALIDATING_FETCH);
+    expect(`await fetch('/other.json', { cache: 'no-cache' })`).not.toMatch(REVALIDATING_FETCH);
   });
 });
 

@@ -33,6 +33,7 @@ export function useFeatureSlides(): FeatureSlidesState {
     (async () => {
       let slides: SlideConfig[] = [];
       try {
+        // See "How a change reaches people" in docs/hero-feature-slides.md.
         const res = await fetch(FEATURE_SLIDES_URL, { cache: 'no-cache', signal: controller.signal });
         if (res.ok) slides = parseFeatureSlides(await res.json());
       } catch (err) {
