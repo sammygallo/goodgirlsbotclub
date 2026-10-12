@@ -266,16 +266,16 @@
     <div class="stamp">
       <b>25 Sep 2026</b><br>
       main <b>1e6a555f</b><br>
-      active <b>E3-S1 — in review, awaiting design sign-off</b>
+      active <b>none — E3-S1 merged 4 Oct</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">3</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-ok"><div class="n">5</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
-    <div class="tile"><div class="n">3</div><div class="k">In design</div></div>
+    <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">15</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">10</div><div class="k">Deployed</div></div>
@@ -319,20 +319,20 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E3">
-          <div class="id">E3-S1</div>
-          <div class="t">Cascade semantics design</div>
-          <div class="m"><b>In review</b> &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/545">#545</a> open on <code>claude/e3-s1-cascade-semantics</code> @ <code>5c5a4968</code>; awaiting Sammy&rsquo;s design sign-off (task 4). Docs-only: the spec + the task-2 refactor plan. <b>QA 3/3 AC pass.</b> Seven design-mode rounds, 0 errors: round 1 13 confirmed, fixed; round 2 15 + 2 in the persistence seam &mdash; Q2 fired, <b>Sammy chose DESCOPE</b>: &sect;6.4 persistence + migration is an OPEN design (13 constraints) for E3-S3 task 1&rsquo;s PLAN; rounds 3&ndash;7 fixed prose universals, counts and cites. Plan absorption: 50 verified corrections across the roadmap, audit, guides and ROADMAP.md; filed #541&ndash;#544 + backend#89. Verification &asymp; 9.06M vs the claim-set row&rsquo;s 3.4&ndash;9.8M at 1&ndash;2 passes.</div>
-          <div class="gates"><span class="gate">unblocks E3-S2/S3 · E7-S2 rails</span><span class="gate hot">&sect;6.4 open → E3-S3 PLAN</span></div>
-        </article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">4</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">5</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E3">
+          <div class="id">E3-S1</div>
+          <div class="t">Cascade semantics design</div>
+          <div class="m">4 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/545">#545</a> → <code>092cf2a1</code>, merged after Sammy's design sign-off. Docs only (spec + store-refactor plan). No deploy.</div>
+          <div class="gates"><span class="gate free">deploy n/a</span></div>
+        </article>
         <article class="card s-ok" data-epic="E6">
           <div class="id">E6-S1</div>
           <div class="t">UI workshop — hero, sidebar, chat</div>
@@ -449,7 +449,7 @@
   </div>
 
   <section class="focus">
-    <h2>E3-S1 &mdash; Cascade semantics design, in review 25 Sep</h2>
+    <h2>E3-S1 &mdash; Cascade semantics design, merged 4 Oct</h2>
     <p class="sub">One documented precedence rule &mdash; global &rarr; character &rarr; chat &mdash; enforced by one resolution function, over an enumerated setting inventory. The spec has to name the fourth level the audit found (on eligible solo chats the server activation engine replaces the client scan and the user&rsquo;s scan depth is never sent), decide whether worlds are settings containers in v1, and say whether lore-book composition stays a separate resolution path. E3-S2/S3/S4 implement it; E7-S2 builds its wizard pages on the rails it specifies.</p>
 
     <div class="steps">
