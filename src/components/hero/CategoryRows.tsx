@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, Library } from 'lucide-react';
 import type { CharacterInfo, ProjectListItem } from '../../api/client';
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 import { getDefaultAvatarUrl } from '../../utils/emotions';
-import type { RowModel } from '../../utils/hero/heroModel';
+import { initialOf, type RowModel } from '../../utils/hero/heroModel';
 
 interface CategoryRowsProps {
   rows: RowModel[];
@@ -168,7 +168,7 @@ function Card({ ratio, title, tag, image, eager, onActivate }: CardProps) {
             >
               {image !== undefined ? (
                 <span className="text-[64px] font-semibold leading-none text-[var(--color-text-primary)]">
-                  {title.trim().charAt(0).toUpperCase()}
+                  {initialOf(title)}
                 </span>
               ) : (
                 <Library size={36} />

@@ -1,4 +1,5 @@
 import type { FeatureSlideConfig } from '../../utils/hero/featureSlides';
+import { initialOf } from '../../utils/hero/heroModel';
 import { PRIMARY_CTA, SlideFrame, SlideKicker } from './SlideFrame';
 
 interface FeatureSlideProps {
@@ -19,7 +20,7 @@ export function FeatureSlide({ config, eager, onCta }: FeatureSlideProps) {
       image={config.image}
       imageAlt={config.imageAlt}
       eager={eager}
-      initial={config.title.trim().charAt(0).toUpperCase()}
+      initial={initialOf(config.title)}
     >
       <SlideKicker>Feature</SlideKicker>
       <h3 className="line-clamp-2 text-xl font-bold sm:text-2xl">{config.title}</h3>

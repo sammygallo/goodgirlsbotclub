@@ -15,6 +15,7 @@ import {
   MAX_HERO_SLIDES,
   NEW_WINDOW_MS,
   buildRows,
+  initialOf,
   isNewThisWeek,
   parseServerUtc,
   resolveHeroSlides,
@@ -394,5 +395,22 @@ describe('buildRows', () => {
     const snapshot = characters.map((c) => c.avatar);
     buildRows({ ...base, characters });
     expect(characters.map((c) => c.avatar)).toEqual(snapshot);
+  });
+});
+
+describe('initialOf', () => {
+  it('is the first letter, upper-cased', () => {
+    expect(initialOf('ivy')).toBe('I');
+    expect(initialOf('  rose ')).toBe('R');
+  });
+
+  it('keeps a leading emoji whole instead of splitting its surrogate pair', () => {
+    expect(initialOf('\u{1F338} Bloom')).toBe('\u{1F338}');
+    expect('\u{1F338} Bloom'.charAt(0)).not.toBe('\u{1F338}'); // what charAt would have done
+  });
+
+  it('falls back to a question mark for an empty name', () => {
+    expect(initialOf('')).toBe('?');
+    expect(initialOf('   ')).toBe('?');
   });
 });

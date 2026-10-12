@@ -100,6 +100,16 @@ export function resolveHeroSlides({ slides, characters, user }: ResolveInput): R
   };
 }
 
+/**
+ * The letter shown in place of art that failed to load (D-H8). Takes the first
+ * CODE POINT, not the first UTF-16 unit, so a name that opens with an emoji or
+ * another astral character does not render half a surrogate pair.
+ */
+export function initialOf(text: string): string {
+  const first = Array.from(text.trim())[0];
+  return first ? first.toUpperCase() : '?';
+}
+
 /** The visible name of a slide: the character's name, or the feature's title. */
 export function slideTitle(slide: HeroSlide): string {
   return slide.type === 'character' ? slide.character.name : slide.config.title;

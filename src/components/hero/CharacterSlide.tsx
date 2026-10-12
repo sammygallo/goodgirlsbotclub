@@ -1,6 +1,7 @@
 import type { CharacterInfo } from '../../api/client';
 import { firstSentence } from '../../utils/characterRichText';
 import { getDefaultAvatarUrl } from '../../utils/emotions';
+import { initialOf } from '../../utils/hero/heroModel';
 import { PRIMARY_CTA, SECONDARY_CTA, SlideFrame, SlideKicker } from './SlideFrame';
 
 interface CharacterSlideProps {
@@ -29,7 +30,7 @@ export function CharacterSlide({ character, eager, onChat, onAbout }: CharacterS
       image={getDefaultAvatarUrl(character.avatar)}
       imageAlt=""
       eager={eager}
-      initial={character.name.trim().charAt(0).toUpperCase()}
+      initial={initialOf(character.name)}
     >
       <SlideKicker>Featured</SlideKicker>
       <h3 className="truncate text-xl font-bold sm:text-2xl">{character.name}</h3>
