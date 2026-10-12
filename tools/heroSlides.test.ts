@@ -118,6 +118,27 @@ describe('public/sw.js', () => {
 /** How far into each scrim D-H20 holds alpha at .55 or more, in percent: the first 55% of the side scrim, the bottom 45% of the bottom one. */
 const BAND = { side: 55, bottom: 45 } as const;
 
+/**
+ * The `rgb(0 0 0 / a) p%` colour stops of a scrim declaration, in order. It
+ * throws on anything else in the declaration: a colour this cannot read is one
+ * the guard cannot vouch for.
+ */
+function scrimStops(value: string): { alpha: number; at: number }[] {
+  const stop = /rgb\(0 0 0 \/ ([\d.]+)\)\s+([\d.]+)%/g;
+  const stops = Array.from(value.matchAll(stop), (m) => ({ alpha: Number(m[1]), at: Number(m[2]) }));
+  const unread = value.replace(stop, '').replace(/^linear-gradient\(to \w+,/, '').replace(/[\s,)]/g, '');
+  if (unread) throw new Error(`cannot read "${unread}" in: ${value}`);
+  if (stops.some((s, i) => i > 0 && s.at < stops[i - 1].at)) throw new Error(`stops out of order in: ${value}`);
+  return stops;
+}
+
+/** The weakest alpha in the first `band`% of a scrim. The band has to END on a stop, so no stretch of it lies unread between two. */
+function weakestAlphaWithin(value: string, band: number): number {
+  const inBand = scrimStops(value).filter((s) => s.at <= band);
+  if (inBand[inBand.length - 1]?.at !== band) throw new Error(`no colour stop at ${band}% in: ${value}`);
+  return Math.min(...inBand.map((s) => s.alpha));
+}
+
 describe('index.css hero colours (D-H20)', () => {
   const css = read('src/index.css');
   const decl = (name: string) => {
@@ -133,23 +154,42 @@ describe('index.css hero colours (D-H20)', () => {
     expect(decl('--on-scrim-text-muted')).toBe('rgb(255 255 255 / .85)');
   });
 
+  const side = () => decl('--scrim-hero-side') ?? '';
+  const bottom = () => decl('--scrim-hero') ?? '';
+
   it('holds scrim alpha at .55 or more through the first 55% of the side scrim and the bottom 45% of the bottom scrim', () => {
-    expect(decl('--scrim-hero-side')).toMatch(/rgb\(0 0 0 \/ \.80\) 0%.*rgb\(0 0 0 \/ \.55\) 55%/);
-    expect(decl('--scrim-hero')).toMatch(/rgb\(0 0 0 \/ \.80\) 0%.*rgb\(0 0 0 \/ \.55\) 45%/);
+    expect(side()).toMatch(/^linear-gradient\(to right,/);
+    expect(bottom()).toMatch(/^linear-gradient\(to top,/);
+    expect(weakestAlphaWithin(side(), BAND.side)).toBeGreaterThanOrEqual(0.55);
+    expect(weakestAlphaWithin(bottom(), BAND.bottom)).toBeGreaterThanOrEqual(0.55);
   });
 
-  it('keeps white text at 4.5:1 or better over a pure-white image under that scrim (#737373: 4.74:1)', () => {
+  it('keeps white text at 4.5:1 or better over a pure-white image under the weakest alpha in those bands (#737373: 4.74:1)', () => {
     const linear = (c: number) => {
       const s = c / 255;
       return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
     };
     const luminance = (c: number) => linear(c); // grey: r = g = b
-    const alpha = 0.55; // the weakest stop any hero text sits on
+    // The weakest alpha any hero text sits on, read from the CSS above.
+    const alpha = Math.min(weakestAlphaWithin(side(), BAND.side), weakestAlphaWithin(bottom(), BAND.bottom));
     const whiteImageUnderScrim = Math.round(255 * (1 - alpha));
     expect(whiteImageUnderScrim).toBe(115); // #737373
     const ratio = (1 + 0.05) / (luminance(whiteImageUnderScrim) + 0.05);
     expect(ratio).toBeGreaterThanOrEqual(4.5);
     expect(ratio).toBeCloseTo(4.74, 1);
+  });
+
+  it('has a detector that WOULD notice a weak stop inside a band, a band that does not end on a stop, or a colour it cannot read', () => {
+    const sideWith = (middle: string) =>
+      `linear-gradient(to right, rgb(0 0 0 / .80) 0%, ${middle}rgb(0 0 0 / .55) 55%, rgb(0 0 0 / .25) 100%)`;
+    expect(weakestAlphaWithin(sideWith(''), 55)).toBe(0.55);
+    expect(weakestAlphaWithin(sideWith('rgb(0 0 0 / .10) 30%, '), 55)).toBe(0.1);
+    expect(() => weakestAlphaWithin('linear-gradient(to right, rgb(0 0 0 / .80) 0%, rgb(0 0 0 / .25) 100%)', 55)).toThrow(
+      /no colour stop at 55%/,
+    );
+    expect(() => weakestAlphaWithin(sideWith('rgba(0, 0, 0, .1) 30%, '), 55)).toThrow(/cannot read/);
+    expect(() => weakestAlphaWithin(sideWith('rgb(0 0 0 / .1), '), 55)).toThrow(/cannot read/);
+    expect(() => weakestAlphaWithin(sideWith('rgb(0 0 0 / .9) 70%, '), 55)).toThrow(/out of order/);
   });
 
   it('defines the contrast-safe focus ring (D-H19)', () => {
