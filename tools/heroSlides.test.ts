@@ -1,5 +1,6 @@
-// E6-S2 guards that need node's `fs`: the shipped slide config, the fixed hero
-// colours, and the places the hero is wired in.
+// E6-S2 guards that need node's `fs`: the shipped slide config, the service
+// worker's entry for /hero/, the fixed hero colours and the geometry they depend
+// on, and the places the hero is wired in.
 //
 // Lives in `tools/` for the same reason as provenanceWiring.test.ts: it reads
 // files, and `tsconfig.app.json` (the project covering `src/`) carries no node
@@ -102,7 +103,7 @@ function networkOnlyPaths(source: string): string[] | null {
 }
 
 describe('public/sw.js', () => {
-  it('leaves /hero/ to the network, so the slide config and its art are never served from the worker\'s cache', () => {
+  it('lists /hero/ among the paths the worker leaves to the network', () => {
     expect(networkOnlyPaths(read('public/sw.js'))).toEqual(expect.arrayContaining(['/api', '/characters', '/hero/']));
   });
 
