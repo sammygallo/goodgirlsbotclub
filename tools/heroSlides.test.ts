@@ -259,6 +259,20 @@ function blockAfter(source: string, marker: string): string | null {
 
 const countOf = (source: string, needle: string) => source.split(needle).length - 1;
 
+/** The opening tag of the element carrying `needle`: from its `<` to the first `>` that is not inside braces. Null if absent. */
+function openingTagWith(source: string, needle: string): string | null {
+  const at = source.indexOf(needle);
+  if (at === -1) return null;
+  const start = source.lastIndexOf('<', at);
+  let depth = 0;
+  for (let i = start; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') depth--;
+    else if (source[i] === '>' && depth === 0) return source.slice(start, i + 1);
+  }
+  return null;
+}
+
 describe('where the hero is wired in', () => {
   const NO_SELECTION = 'if (!selectedCharacter && !isGroupChatMode) {';
 
@@ -308,5 +322,21 @@ describe('where the hero is wired in', () => {
       expect(sidebar, `Sidebar.tsx id="${id}"`).toMatch(new RegExp(`id="${id}"`));
       expect(hero, `HeroPage.tsx focuses #${id}`).toContain(`'${id}'`);
     }
+  });
+
+  // A <div> takes focus only with a tabindex. HeroPage.test.tsx stands in its own
+  // #character-list with one, so only this keeps the real element focusable.
+  it('the sidebar\'s #character-list can take focus (tabIndex={-1}), or See all focuses nothing', () => {
+    const tag = openingTagWith(read('src/components/layout/Sidebar.tsx'), 'id="character-list"');
+    expect(tag).not.toBeNull();
+    expect(tag).toMatch(/\btabIndex=\{-1\}/);
+  });
+
+  it('detects an element that cannot take focus, whichever order its attributes come in', () => {
+    const needle = 'id="character-list"';
+    expect(openingTagWith(`<div ref={r} ${needle} className="a">`, needle)).not.toMatch(/tabIndex/);
+    expect(openingTagWith(`<div ${needle} tabIndex={-1} className="a">`, needle)).toMatch(/\btabIndex=\{-1\}/);
+    expect(openingTagWith(`<div tabIndex={-1} ref={() => x()} ${needle}>`, needle)).toMatch(/\btabIndex=\{-1\}/);
+    expect(openingTagWith('<div className="a">', needle)).toBeNull();
   });
 });
