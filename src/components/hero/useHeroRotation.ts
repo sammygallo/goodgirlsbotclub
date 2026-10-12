@@ -62,7 +62,10 @@ export function useHeroRotation({ count, paused }: UseHeroRotationOptions) {
     const onPointer = () => {
       lastInput.current = 'pointer';
     };
-    const onKey = () => {
+    const onKey = (e: KeyboardEvent) => {
+      // Escape moves nothing. When it closes a modal the hero opened, the focus
+      // coming back to the opener is the modal restoring it, not navigation.
+      if (e.key === 'Escape') return;
       lastInput.current = 'key';
     };
     document.addEventListener('pointerdown', onPointer, true);

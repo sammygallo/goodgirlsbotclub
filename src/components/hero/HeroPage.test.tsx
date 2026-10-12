@@ -498,6 +498,31 @@ describe('what pauses the carousel (D-H14)', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getAllByRole('button', { name: 'Close' })[0]);
     expect(screen.getByRole('button', { name: 'Stop slide rotation' })).toBeTruthy();
   });
+
+  it('a modal the mouse opened and Escape closed only paused the carousel: the focus restore is not keyboard navigation', async () => {
+    await mountTwo();
+    const about = screen.getByRole('button', { name: 'About Ivy' });
+    fireEvent.pointerDown(about);
+    about.focus();
+    fireEvent.click(about);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByRole('button', { name: 'Stop slide rotation' })).toBeTruthy();
+    advance(SLIDE_MS);
+    expect(slideName()).toBe('2 of 2: Rose');
+  });
+
+  it('a modal the keyboard opened leaves the carousel stopped after Escape', async () => {
+    await mountTwo();
+    const about = screen.getByRole('button', { name: 'About Ivy' });
+    fireEvent.keyDown(document, { key: 'Tab' });
+    about.focus();
+    fireEvent.keyDown(about, { key: 'Enter' });
+    fireEvent.click(about);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByRole('button', { name: 'Start slide rotation' })).toBeTruthy();
+    advance(SLIDE_MS * 2);
+    expect(slideName()).toBe('1 of 2: Ivy');
+  });
 });
 
 describe('category rows (D-H21)', () => {
