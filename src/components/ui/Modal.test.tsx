@@ -623,6 +623,24 @@ describe('a nested modal on top of an outer one that unmounts', () => {
     expect(document.activeElement).toBe(edit);
   });
 
+  it('does the same under StrictMode, whose extra mount cycle runs the hook again around the stack', () => {
+    render(
+      <StrictMode>
+        <Page />
+      </StrictMode>,
+    );
+    const edit = screen.getByText('Edit');
+    open(edit);
+    const transfer = screen.getByText('Transfer');
+    transfer.focus();
+    fireEvent.click(transfer);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(edit);
+    expect(document.querySelector('[inert]')).toBeNull();
+  });
+
   it('leaves nothing inert behind', () => {
     const { container } = render(<Page />);
     open(screen.getByText('Edit'));
