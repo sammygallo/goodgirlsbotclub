@@ -99,6 +99,8 @@ import {
 } from '../../hooks/displayPreferences';
 import { useDisplayPreferencesStore } from '../../stores/displayPreferencesStore';
 import { fireSandboxLifecycleEvent } from '../../extensions/sandbox/sandboxEventBus';
+import { HeroPage } from '../hero/HeroPage';
+import { useLayoutContext } from '../layout/layoutContext';
 
 // How many of the most recent messages render on open, and how many more each
 // "Load older" click reveals. Purely a render window — the store still holds
@@ -145,6 +147,8 @@ function PortraitHeaderActions({
 
 export function ChatView() {
   const routerNavigate = useNavigate();
+  // MainLayout's drawer opener, for the no-chat hero's Browse / See all (E6-S2).
+  const layout = useLayoutContext();
   const storeSetVnMode = useDisplayPreferencesStore(s => s.setVnMode);
   const storeSetCostume = useDisplayPreferencesStore(s => s.setCostume);
   const storeClearCostume = useDisplayPreferencesStore(s => s.clearCostume);
@@ -1209,18 +1213,9 @@ export function ChatView() {
   };
 
   if (!selectedCharacter && !isGroupChatMode) {
-    return (
-      <div className="h-full flex flex-col items-center justify-center text-center p-8">
-        <MessageSquare size={64} className="text-[var(--color-text-secondary)] mb-4" />
-        <h2 className="text-xl font-semibold text-[var(--color-text-primary)] mb-2">
-          Select a Character
-        </h2>
-        <p className="text-[var(--color-text-secondary)] max-w-md">
-          Choose a character from the sidebar to start chatting. You can search for
-          characters or create a new one.
-        </p>
-      </div>
-    );
+    // D-H1: the hero replaces this branch and nothing else — a selected solo or
+    // group chat never reaches it.
+    return <HeroPage onOpenSidebar={layout?.openSidebar} />;
   }
 
   // ChatLorePanel's characterAvatars: solo chat is the one selected

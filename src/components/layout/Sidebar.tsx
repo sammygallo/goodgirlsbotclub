@@ -640,7 +640,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             </div>
 
             {/* Character List */}
-            <div ref={charListRef} className="flex-1 overflow-y-auto">
+            <div ref={charListRef} id="character-list" tabIndex={-1} className="flex-1 overflow-y-auto focus:outline-none">
               {/* Pull-to-refresh indicator */}
               {(pullDistance > 0 || isRefreshing) && (
                 <div
