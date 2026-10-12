@@ -526,7 +526,7 @@ describe('what pauses the carousel (D-H14)', () => {
     const about = screen.getByRole('button', { name: 'About Ivy' });
     // Focus arrives by pointer, so the carousel is still rotating when Enter opens the modal.
     fireEvent.pointerDown(about);
-    about.focus();
+    act(() => about.focus());
     expect(screen.getByRole('button', { name: 'Stop slide rotation' })).toBeTruthy();
 
     fireEvent.keyDown(about, { key: 'Enter' });
