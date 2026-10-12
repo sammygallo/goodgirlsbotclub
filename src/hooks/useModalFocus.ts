@@ -14,7 +14,8 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
  *       else the first focusable one, unless focus is already inside (so a body
  *       that uses `autoFocus` keeps the field it asked for);
  *   (c) on close, or on unmount while open, puts focus back on the element that
- *       had it when the surface opened;
+ *       opened the surface — or, when the outer surface it was opened from has
+ *       already left, on that surface's opener (the hand-off);
  *   (d) closes the TOPMOST surface on Escape.
  *
  * Surfaces stack. Only the top one is interactive, and every surface below it
@@ -43,7 +44,11 @@ export interface UseModalFocusOptions {
 
 interface Surface {
   root: HTMLElement;
-  /** Where focus goes when this surface closes. Handed on to a surface stacked above it if this one leaves first. */
+  /**
+   * Where focus goes when this surface closes. If this surface leaves first, a
+   * surface stacked above it takes it over only when this one's opener is still
+   * connected and the upper surface's own opener lies inside this dialog.
+   */
   opener: HTMLElement | null;
   /** Read at keydown time, so a fresh inline callback never re-runs activation. */
   onEscape: { current: (() => void) | undefined };
