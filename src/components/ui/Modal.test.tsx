@@ -701,6 +701,34 @@ describe('a modal swapped for another in one handler', () => {
     );
   }
 
+  /** The same swap with the editor mounted behind a condition: it is unmounted in the handler, not closed. */
+  function UnmountSwap() {
+    const [edit, setEdit] = useState(false);
+    const [persona, setPersona] = useState(false);
+    return (
+      <>
+        <button onClick={() => setEdit(true)}>Edit</button>
+        {edit && (
+          <Modal isOpen onClose={() => setEdit(false)} title="Editor">
+            <button
+              onClick={() => {
+                setEdit(false);
+                setPersona(true);
+              }}
+            >
+              Convert
+            </button>
+          </Modal>
+        )}
+        {persona && (
+          <Modal isOpen onClose={() => setPersona(false)} title="Persona">
+            body
+          </Modal>
+        )}
+      </>
+    );
+  }
+
   const settle = () =>
     act(() => {
       vi.advanceTimersByTime(EXIT_MS + 20);
@@ -735,6 +763,22 @@ describe('a modal swapped for another in one handler', () => {
     settle();
     fireEvent.click(screen.getByLabelText('Close'));
     settle();
+    expect(document.activeElement).toBe(edit);
+  });
+
+  it('does the same when the first modal was unmounted, not closed, in the swap handler', () => {
+    vi.useFakeTimers();
+    render(<UnmountSwap />);
+    const edit = screen.getByText('Edit');
+    open(edit);
+    open(screen.getByText('Convert'));
+    // The editor is gone at once: there is no exit animation to wait out.
+    expect(screen.queryByRole('dialog', { name: 'Editor' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Persona' })).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(edit);
   });
 
