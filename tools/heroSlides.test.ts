@@ -93,6 +93,26 @@ describe('public/hero/feature-slides.json (as shipped)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The service worker and /hero/
+
+/** The paths in the fetch handler's network-only list: the first `if (...) { return; }`, whose requests the worker never answers. */
+function networkOnlyPaths(source: string): string[] | null {
+  const m = source.match(/if \(([^{}]*?)\)\s*\{\s*return;\s*\}/);
+  return m ? Array.from(m[1].matchAll(/url\.pathname\.startsWith\('([^']+)'\)/g), (p) => p[1]) : null;
+}
+
+describe('public/sw.js', () => {
+  it('leaves /hero/ to the network, so the slide config and its art are never served from the worker\'s cache', () => {
+    expect(networkOnlyPaths(read('public/sw.js'))).toEqual(expect.arrayContaining(['/api', '/characters', '/hero/']));
+  });
+
+  it('has a detector that WOULD notice /hero/ missing from the list, or no list at all', () => {
+    expect(networkOnlyPaths(`if (url.pathname.startsWith('/api')) { return; }`)).toEqual(['/api']);
+    expect(networkOnlyPaths('no such block')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // D-H20: fixed hero colours
 
 /** How far into each scrim D-H20 holds alpha at .55 or more, in percent: the first 55% of the side scrim, the bottom 45% of the bottom one. */

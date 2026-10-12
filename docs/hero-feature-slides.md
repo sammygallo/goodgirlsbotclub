@@ -14,7 +14,7 @@ Design reference: `docs/ui-redesign-e6-design-spec.md` (decisions D-H4 to D-H11 
 
 The file is a static asset, baked into the frontend image, so a change goes live with the next frontend deploy. While you are editing, `npm run dev` serves `public/` live: save the file and reload the page.
 
-The browser re-checks the file on every visit (a cheap conditional request), so once the new image is deployed nobody waits on a cache.
+The service worker fetches `/hero/` from the network, so an edited file shows on the next page load after a deploy.
 
 ## The file
 

@@ -20,10 +20,6 @@ export interface FeatureSlidesState {
  * with a 200 and index.html (the SPA fallback), so `res.ok` alone proves
  * nothing: `res.json()` is what rejects the HTML, and it is covered by the same
  * try/catch as the fetch itself.
- *
- * `cache: 'no-cache'` makes the browser revalidate each time (a cheap
- * conditional request), so an edited file shows up on the next visit without
- * waiting out a heuristic cache lifetime. The service worker does not cache it.
  */
 export function useFeatureSlides(): FeatureSlidesState {
   const [state, setState] = useState<FeatureSlidesState>({ settled: false, slides: [] });
