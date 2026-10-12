@@ -222,6 +222,12 @@ describe('controls: order and labels (D-H15)', () => {
     expect(current()).toEqual([null, 'true', null]);
   });
 
+  it('backs the indicator dots with a dark capsule so they stay visible over bright artwork (1.4.11)', () => {
+    mount();
+    const dot = screen.getByRole('button', { name: 'Go to slide 1: Ivy' });
+    expect(dot.parentElement!.className).toContain('bg-black/60');
+  });
+
   it('gives every control a target of at least 24x24 (2.5.8): 40px controls, 24px indicators', () => {
     mount();
     for (const name of ['Stop slide rotation', 'Previous slide', 'Next slide']) {
@@ -629,10 +635,11 @@ describe('images and geometry (D-H2, D-H7, D-H8)', () => {
     expect(button('Chat with Ivy')).toBeTruthy();
   });
 
-  it('gives the hero its D-H2 height', () => {
+  it('gives the hero its D-H2 height, and never lets the rows below squash it', () => {
     mount();
     expect(region().className).toContain('h-[clamp(320px,58dvh,460px)]');
     expect(region().className).toContain('sm:h-[clamp(300px,45dvh,440px)]');
+    expect(region().className).toContain('shrink-0');
   });
 
   it('caps the text block at min(620px, 55%) so it stays inside the D-H20 scrim guarantee', () => {

@@ -5,8 +5,13 @@ import { slideTitle, type HeroSlide } from '../../utils/hero/heroModel';
 import { HeroSlideView, type SlideActions } from './HeroSlideView';
 import { useHeroRotation } from './useHeroRotation';
 
-/** D-H2: the hero's height. clamp() so a short landscape phone still leaves room for the rows. */
-export const HERO_HEIGHT_CLASS = 'h-[clamp(320px,58dvh,460px)] sm:h-[clamp(300px,45dvh,440px)]';
+/**
+ * D-H2: the hero's height, clamped so a short landscape phone still leaves room
+ * for the rows. `shrink-0` matters: HeroPage is a scrolling flex column, and an
+ * overflow-hidden flex item has a minimum height of zero, so without it the
+ * rows below would squash the hero instead of scrolling past it.
+ */
+export const HERO_HEIGHT_CLASS = 'shrink-0 h-[clamp(320px,58dvh,460px)] sm:h-[clamp(300px,45dvh,440px)]';
 
 interface HeroCarouselProps extends SlideActions {
   slides: HeroSlide[];
@@ -123,7 +128,11 @@ export function HeroCarousel({ slides, paused, onChat, onAbout, onFeatureCta }: 
         >
           <ChevronRight size={20} aria-hidden="true" />
         </button>
-        <div className="flex items-center">
+        {/* A dark capsule behind the dots: white dots floating on a white or sky-bright
+            piece of art would vanish, and a control has to hold 3:1 over any artwork
+            (1.4.11). Worst case it composites to #666: the active dot is 5.7:1, the
+            inactive one 3.2:1. */}
+        <div className="flex items-center rounded-full bg-black/60 px-1.5">
           {slides.map((slide, i) => (
             <button
               key={slide.key}

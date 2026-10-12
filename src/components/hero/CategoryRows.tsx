@@ -24,7 +24,7 @@ const GUTTER = 'px-4 sm:px-8 lg:px-12';
 export function CategoryRows({ rows, onOpenCharacter, onOpenWork, onSeeAll }: CategoryRowsProps) {
   if (rows.length === 0) return null;
   return (
-    <div className="flex flex-col gap-6 pb-10 pt-6 sm:gap-8">
+    <div className="flex shrink-0 flex-col gap-6 pb-10 pt-6 sm:gap-8">
       {rows.map((row) =>
         row.id === 'works' ? (
           <Row key={row.id} title={row.title} onSeeAll={() => onSeeAll(row.id)}>
