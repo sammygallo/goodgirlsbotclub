@@ -72,6 +72,7 @@ function seed({
   useCharacterStore.setState({
     characters,
     charactersLoaded: loaded,
+    charactersFetchFailed: failed,
     isLoading: false,
     error: failed ? 'Failed to fetch characters' : null,
     selectedCharacter: null,
@@ -181,6 +182,15 @@ describe('loading', () => {
     config({ version: 1, slides: [charSlideCfg('ivy.png')] });
     await mount();
     expect(screen.getByText('Start a new conversation')).toBeTruthy();
+  });
+
+  it('shows the welcome panel when it mounts after the failed fetch and another action has already cleared the error', async () => {
+    seed({ characters: [], loaded: false, failed: true });
+    useCharacterStore.setState({ error: null });
+    config({ version: 1, slides: [charSlideCfg('ivy.png')] });
+    await mount();
+    expect(screen.getByText('Start a new conversation')).toBeTruthy();
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull();
   });
 
   it.each([

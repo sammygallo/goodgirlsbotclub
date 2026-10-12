@@ -117,6 +117,13 @@ interface CharacterState {
    * it rather than inheriting the previous account's.
    */
   charactersLoaded: boolean;
+  /**
+   * True when the most recent fetchCharacters FAILED; false after a success
+   * and after resetUser. Its own field because `error` is shared by every
+   * action on this store and any of them clears it, so a failed first fetch
+   * cannot be read back from `error` for long.
+   */
+  charactersFetchFailed: boolean;
   selectedCharacter: CharacterInfo | null;
   // Group chat support
   groupChatCharacters: CharacterInfo[];
@@ -249,6 +256,7 @@ interface CharacterState {
 export const useCharacterStore = create<CharacterState>((set, get) => ({
   characters: [],
   charactersLoaded: false,
+  charactersFetchFailed: false,
   selectedCharacter: null,
   groupChatCharacters: [],
   isGroupChatMode: false,
@@ -280,10 +288,11 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       // charactersLoaded rises only here, in the SUCCESS branch — a failed
       // fetch leaves it false, so a network hiccup at login never looks like
       // "this account has no characters" to anything reading it as evidence.
-      set({ characters, isLoading: false, charactersLoaded: true });
+      set({ characters, isLoading: false, charactersLoaded: true, charactersFetchFailed: false });
     } catch (error) {
       set({
         isLoading: false,
+        charactersFetchFailed: true,
         error: error instanceof Error ? error.message : 'Failed to fetch characters',
       });
     }
@@ -1035,6 +1044,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     set({
       characters: [],
       charactersLoaded: false,
+      charactersFetchFailed: false,
       selectedCharacter: null,
       isGroupChatMode: false,
       groupChatCharacters: [],

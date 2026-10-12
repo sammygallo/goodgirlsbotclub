@@ -56,7 +56,7 @@ const { useCharacterStore } = await import('./characterStore');
 beforeEach(() => {
   memoryStorage.clear();
   getCharacters.mockReset();
-  useCharacterStore.setState({ characters: [], charactersLoaded: false });
+  useCharacterStore.setState({ characters: [], charactersLoaded: false, charactersFetchFailed: false });
 });
 
 describe('characterStore.charactersLoaded', () => {
@@ -106,5 +106,43 @@ describe('characterStore.charactersLoaded', () => {
     // the previous one's — otherwise the first render after a user switch
     // judges the new account's documents against the old one's characters.
     expect(useCharacterStore.getState().charactersLoaded).toBe(false);
+  });
+});
+
+describe('characterStore.charactersFetchFailed', () => {
+  it('is false before anything has asked for the character list', async () => {
+    vi.resetModules();
+    const fresh = await import('./characterStore');
+    expect(fresh.useCharacterStore.getState().charactersFetchFailed).toBe(false);
+  });
+
+  it('rises when the fetch fails, and outlives `error` being cleared', async () => {
+    // `error` is shared by every action on the store, and each of them clears it
+    // as it starts; the failure has to survive that.
+    getCharacters.mockRejectedValue(new Error('offline'));
+    await useCharacterStore.getState().fetchCharacters();
+    expect(useCharacterStore.getState().charactersFetchFailed).toBe(true);
+
+    useCharacterStore.setState({ error: null });
+    expect(useCharacterStore.getState().charactersFetchFailed).toBe(true);
+  });
+
+  it('falls back to false when a later fetch succeeds', async () => {
+    getCharacters.mockRejectedValueOnce(new Error('offline'));
+    await useCharacterStore.getState().fetchCharacters();
+    expect(useCharacterStore.getState().charactersFetchFailed).toBe(true);
+
+    getCharacters.mockResolvedValue([]);
+    await useCharacterStore.getState().fetchCharacters();
+    expect(useCharacterStore.getState().charactersFetchFailed).toBe(false);
+  });
+
+  it('falls back to false on logout', async () => {
+    getCharacters.mockRejectedValue(new Error('offline'));
+    await useCharacterStore.getState().fetchCharacters();
+    expect(useCharacterStore.getState().charactersFetchFailed).toBe(true);
+
+    useCharacterStore.getState().resetUser();
+    expect(useCharacterStore.getState().charactersFetchFailed).toBe(false);
   });
 });
