@@ -31,7 +31,7 @@ import { CharacterInterview } from '../character/interview/CharacterInterview';
 import { CharacterImport } from '../character/CharacterImport';
 import { CharacterPreviewModal } from '../character/CharacterPreviewModal';
 import { CharacterRichText } from '../character/CharacterRichText';
-import { htmlToPlainText } from '../../utils/characterRichText';
+import { firstSentence, htmlToPlainText } from '../../utils/characterRichText';
 import type { CharacterInfo } from '../../api/client';
 import { useCharacterSprites } from '../../hooks/useCharacterSprites';
 import { getDefaultAvatarUrl, type Emotion } from '../../utils/emotions';
@@ -43,16 +43,6 @@ import { useMotionModeStore, resolveMotionMode } from '../../stores/motionModeSt
 interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
-}
-
-// Condensed teaser for list rows / the collapsed portrait blurb. Strips any
-// HTML markup first so notes that opted into rich formatting show clean text
-// here instead of a half-open tag, then clips to the first sentence.
-function firstSentence(text?: string): string {
-  const plain = htmlToPlainText(text);
-  if (!plain) return '';
-  const idx = plain.search(/[.!?]/);
-  return (idx === -1 ? plain : plain.slice(0, idx + 1)).trim();
 }
 
 // Manual drafts nest the name under `formData`, interview drafts under

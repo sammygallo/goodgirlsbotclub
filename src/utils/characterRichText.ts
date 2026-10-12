@@ -29,3 +29,19 @@ export function htmlToPlainText(content?: string): string {
   const doc = new DOMParser().parseFromString(content, 'text/html');
   return doc.body.textContent ?? '';
 }
+
+/**
+ * Condensed teaser for list rows, the collapsed portrait blurb and the hero
+ * slide (E6-S2, D-H5). Strips any HTML markup first so notes that opted into
+ * rich formatting show clean text instead of a half-open tag, then clips to
+ * the first sentence.
+ *
+ * Always feed this `creator_notes`, never `description`: that field is
+ * model-facing prompt text (the same rule CharacterPreviewModal documents).
+ */
+export function firstSentence(text?: string): string {
+  const plain = htmlToPlainText(text);
+  if (!plain) return '';
+  const idx = plain.search(/[.!?]/);
+  return (idx === -1 ? plain : plain.slice(0, idx + 1)).trim();
+}
