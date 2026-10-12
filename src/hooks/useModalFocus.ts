@@ -38,6 +38,8 @@ export interface UseModalFocusOptions {
 
 interface Surface {
   root: HTMLElement;
+  /** Where focus goes when this surface closes. Handed on to a surface stacked above it if this one leaves first. */
+  opener: HTMLElement | null;
   /** Read at keydown time, so a fresh inline callback never re-runs activation. */
   onEscape: { current: (() => void) | undefined };
   /** The elements THIS surface made inert, and so the only ones it may release. */
@@ -144,7 +146,7 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
     if (!root) return;
     const dialog = dialogRef?.current ?? root;
 
-    const surface: Surface = { root, onEscape: onEscapeRef, added: new Set() };
+    const surface: Surface = { root, opener, onEscape: onEscapeRef, added: new Set() };
     stack.push(surface);
     if (stack.length === 1) document.addEventListener('keydown', handleKeyDown);
     syncInert();
@@ -174,7 +176,18 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
       syncInert();
       // Only the top surface hands focus back. A lower one closing out of order
       // must leave focus with the surface that is still open on top of it.
-      if (wasTop && opener?.isConnected) opener.focus();
+      if (wasTop) {
+        if (surface.opener?.isConnected) surface.opener.focus();
+      } else if (surface.opener?.isConnected) {
+        // A surface above this one that was opened from inside its dialog (a
+        // confirm over a panel) is about to lose its own opener with it. It takes
+        // this surface's, so closing it later lands where the user was before
+        // either opened. That includes a parent that unmounts both at once,
+        // whose cleanup runs while the nested one is still on the stack.
+        for (const above of stack.slice(at)) {
+          if (above.opener && dialog.contains(above.opener)) above.opener = surface.opener;
+        }
+      }
     };
   }, [active, rootRef, dialogRef, opener]);
 }

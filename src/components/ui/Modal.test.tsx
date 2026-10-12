@@ -527,4 +527,121 @@ describe('stacked modals', () => {
     fireEvent.click(within(rootOf('B')).getByLabelText('Close'));
     expect(document.activeElement).toBe(openB);
   });
+
+  it('sends B\'s close to the element that opened A once A has gone, not to the button inside A that opened B', () => {
+    vi.useFakeTimers();
+    render(<Stack />);
+    const openA = screen.getByText('Open A');
+    open(openA);
+    const openB = screen.getByText('Open B');
+    openB.focus();
+    fireEvent.click(openB);
+
+    fireEvent.click(screen.getByText('Close A from outside'));
+    fireEvent.click(within(rootOf('B')).getByLabelText('Close'));
+    expect(document.activeElement).toBe(openA);
+  });
+
+  it('leaves a surface that was opened from elsewhere alone: its close still goes to its own opener', () => {
+    vi.useFakeTimers();
+    function Elsewhere() {
+      const [a, setA] = useState(false);
+      const [b, setB] = useState(false);
+      return (
+        <>
+          <button onClick={() => setA(true)}>Open A</button>
+          <button onClick={() => setB(true)}>Open B from the page</button>
+          <button onClick={() => setA(false)}>Close A from outside</button>
+          <Modal isOpen={a} onClose={() => setA(false)} title="A">
+            a
+          </Modal>
+          <Modal isOpen={b} onClose={() => setB(false)} title="B">
+            b
+          </Modal>
+        </>
+      );
+    }
+    render(<Elsewhere />);
+    open(screen.getByText('Open A'));
+    // jsdom ignores `inert`, so the page behind A can still be reached here, as
+    // a global shortcut or a toast action would reach it.
+    open(screen.getByText('Open B from the page'));
+    const fromPage = screen.getByText('Open B from the page');
+
+    fireEvent.click(screen.getByText('Close A from outside'));
+    fireEvent.click(within(rootOf('B')).getByLabelText('Close'));
+    expect(document.activeElement).toBe(fromPage);
+  });
+});
+
+describe('a nested modal on top of an outer one that unmounts', () => {
+  /**
+   * The CharacterEdit -> TransferOwnershipModal shape: the page mounts the outer
+   * Modal behind a condition, the outer opens an inner one from a button inside
+   * it, and the inner's Confirm tears both down in one batch. React runs the
+   * outer's cleanup first on a deleted subtree, while the inner is still on top.
+   */
+  function Editor({ onDone }: { onDone: () => void }) {
+    const [inner, setInner] = useState(false);
+    return (
+      <Modal isOpen onClose={onDone} title="Editor">
+        <button onClick={() => setInner(true)}>Transfer</button>
+        <Modal isOpen={inner} onClose={() => setInner(false)} title="Confirm">
+          <button
+            onClick={() => {
+              onDone();
+              setInner(false);
+            }}
+          >
+            Confirm
+          </button>
+        </Modal>
+      </Modal>
+    );
+  }
+  function Page() {
+    const [show, setShow] = useState(false);
+    return (
+      <>
+        <button onClick={() => setShow(true)}>Edit</button>
+        {show && <Editor onDone={() => setShow(false)} />}
+      </>
+    );
+  }
+
+  it('puts focus back on the element that opened the outer one', () => {
+    render(<Page />);
+    const edit = screen.getByText('Edit');
+    open(edit);
+    const transfer = screen.getByText('Transfer');
+    transfer.focus();
+    fireEvent.click(transfer);
+    expect(screen.getAllByRole('dialog')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(edit);
+  });
+
+  it('leaves nothing inert behind', () => {
+    const { container } = render(<Page />);
+    open(screen.getByText('Edit'));
+    fireEvent.click(screen.getByText('Transfer'));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(container.hasAttribute('inert')).toBe(false);
+    expect(document.querySelector('[inert]')).toBeNull();
+  });
+
+  it('still closes the inner one alone back to the button that opened it', () => {
+    render(<Page />);
+    open(screen.getByText('Edit'));
+    const transfer = screen.getByText('Transfer');
+    transfer.focus();
+    fireEvent.click(transfer);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    // Inner closed, outer still up: focus is back inside the outer dialog.
+    expect(screen.getByRole('dialog', { name: 'Editor' })).toBeTruthy();
+    expect(document.activeElement).toBe(transfer);
+  });
 });
