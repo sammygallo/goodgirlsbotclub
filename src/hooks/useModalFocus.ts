@@ -129,8 +129,17 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
   }
   const opener = captured.opener;
 
+  // Where the body put focus itself (an `autoFocus` field) when the surface
+  // activated. StrictMode runs the effect, its cleanup and the effect again; the
+  // cleanup hands focus back to the opener and React does not apply `autoFocus`
+  // a second time, so the second run has to put it back.
+  const initialFocus = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      initialFocus.current = null;
+      return;
+    }
     const root = rootRef.current;
     if (!root) return;
     const dialog = dialogRef?.current ?? root;
@@ -143,8 +152,12 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
     const marked = dialog.querySelector<HTMLElement>('[data-autofocus]');
     if (marked) {
       if (document.activeElement !== marked) marked.focus();
-    } else if (!dialog.contains(document.activeElement)) {
-      (tabbable(dialog)[0] ?? dialog).focus();
+    } else if (dialog.contains(document.activeElement)) {
+      if (document.activeElement instanceof HTMLElement) initialFocus.current = document.activeElement;
+    } else {
+      const remembered = initialFocus.current;
+      const target = remembered?.isConnected && dialog.contains(remembered) ? remembered : (tabbable(dialog)[0] ?? dialog);
+      target.focus();
     }
 
     return () => {

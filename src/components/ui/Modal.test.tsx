@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { useState, type ReactNode } from 'react';
+import { StrictMode, useState, type ReactNode } from 'react';
 import { Modal } from './Modal';
 
 const EXIT_MS = 180;
@@ -208,6 +208,56 @@ describe('focus in', () => {
     render(<Opener body={<input aria-label="Name" autoFocus />} />);
     open(screen.getByText('Open'));
     expect(document.activeElement).toBe(screen.getByLabelText('Name'));
+  });
+
+  describe('under StrictMode, whose extra mount cycle hands focus back to the opener in between', () => {
+    /** The caller shape the cycle bites: a Modal mounted already open, behind a condition. */
+    function Mounted({ body }: { body: ReactNode }) {
+      const [show, setShow] = useState(false);
+      return (
+        <>
+          <button onClick={() => setShow(true)}>Open</button>
+          {show && (
+            <Modal isOpen onClose={() => setShow(false)} title="t">
+              {body}
+            </Modal>
+          )}
+        </>
+      );
+    }
+
+    it('leaves focus on the field the body took with autoFocus', () => {
+      render(
+        <StrictMode>
+          <Mounted body={<input aria-label="f" autoFocus />} />
+        </StrictMode>,
+      );
+      open(screen.getByText('Open'));
+      expect(document.activeElement).toBe(screen.getByLabelText('f'));
+    });
+
+    it('still opens on the first focusable element when the body took nothing', () => {
+      render(
+        <StrictMode>
+          <Mounted body={<button>First</button>} />
+        </StrictMode>,
+      );
+      open(screen.getByText('Open'));
+      expect(document.activeElement).toBe(screen.getByLabelText('Close'));
+    });
+
+    it('still hands focus back to the opener on close', () => {
+      vi.useFakeTimers();
+      render(
+        <StrictMode>
+          <Mounted body={<input aria-label="f" autoFocus />} />
+        </StrictMode>,
+      );
+      const opener = screen.getByText('Open');
+      open(opener);
+      fireEvent.click(screen.getByLabelText('Close'));
+      expect(document.activeElement).toBe(opener);
+    });
   });
 
   it('does not run activation again when the parent re-renders with a new onClose', () => {
