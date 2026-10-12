@@ -96,3 +96,58 @@ describe('the inert walk over an in-tree surface', () => {
     expect(inert(header)).toBe(true);
   });
 });
+
+describe('data-modal-exempt', () => {
+  const exempt = (id: string, parent: HTMLElement) => {
+    const el = add('div', id, parent);
+    el.setAttribute('data-modal-exempt', '');
+    return el;
+  };
+
+  it('stays live while the siblings around it go inert, and is still live once they are released', () => {
+    const app = add('div', 'app', document.body);
+    const surface = add('aside', 'surface', app);
+    const plain = add('div', 'plain', document.body);
+    const chip = exempt('chip', document.body);
+    const chipButton = add('button', 'chip-button', chip);
+
+    const { rerender } = mountOn(surface);
+    expect(inert(plain)).toBe(true);
+    expect(inert(chip)).toBe(false);
+    // Inert is inherited, so nothing beneath the exempt branch may carry it either.
+    expect(chip.querySelector('[inert]')).toBeNull();
+    expect(chipButton.closest('[inert]')).toBeNull();
+
+    rerender({ active: false });
+    expect(inert(plain)).toBe(false);
+    expect(inert(chip)).toBe(false);
+  });
+
+  it('is skipped at any level of the walk, not only beside <body>', () => {
+    const app = add('div', 'app', document.body);
+    const toolbar = exempt('toolbar', app);
+    const shell = add('div', 'shell', app);
+    const surface = add('aside', 'surface', shell);
+    const main = add('main', 'main', shell);
+
+    mountOn(surface);
+    expect(inert(main)).toBe(true);
+    expect(inert(toolbar)).toBe(false);
+  });
+
+  it('stays live through stacked surfaces too', () => {
+    const first = add('aside', 'first', document.body);
+    const second = add('aside', 'second', document.body);
+    const chip = exempt('chip', document.body);
+
+    const { rerender } = mountOn(first);
+    const upper = mountOn(second);
+    expect(inert(first)).toBe(true);
+    expect(inert(chip)).toBe(false);
+
+    upper.rerender({ active: false });
+    expect(inert(first)).toBe(false);
+    expect(inert(chip)).toBe(false);
+    rerender({ active: false });
+  });
+});

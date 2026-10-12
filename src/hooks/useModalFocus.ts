@@ -23,6 +23,11 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
  * open. Because the inert set is rebuilt from the stack on every push and pop,
  * and only ever releases attributes this module itself added, an element that
  * was already inert for some other reason is never un-inerted by us.
+ *
+ * A branch carrying `data-modal-exempt` is skipped by that walk, and so is
+ * everything inside it: the attribute is for controls that must stay operable
+ * above an open modal (the toasts, the onboarding chip), and nothing else may
+ * use it without review.
  */
 
 export interface UseModalFocusOptions {
@@ -50,6 +55,8 @@ const stack: Surface[] = [];
 
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'TEMPLATE', 'NOSCRIPT']);
 
+export const MODAL_EXEMPT_ATTRIBUTE = 'data-modal-exempt';
+
 const FOCUSABLE = [
   'a[href]',
   'button',
@@ -69,7 +76,7 @@ function otherBranches(root: HTMLElement): Element[] {
     const parent = node.parentElement;
     if (!parent) break;
     for (const child of Array.from(parent.children)) {
-      if (child !== node && !SKIP_TAGS.has(child.tagName)) out.push(child);
+      if (child !== node && !SKIP_TAGS.has(child.tagName) && !child.hasAttribute(MODAL_EXEMPT_ATTRIBUTE)) out.push(child);
     }
     node = parent;
   }

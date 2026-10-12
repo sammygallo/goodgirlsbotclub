@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, useRef, type ReactNode } from 'react';
+import { ModalExemptPortal } from './ModalExemptPortal';
 
 type ToastVariant = 'info' | 'warning' | 'error' | 'success';
 
@@ -63,16 +64,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       {/* Toast container */}
       {toasts.length > 0 && (
-        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2 pointer-events-none max-w-sm w-full px-4">
-          {toasts.map(t => (
-            <div
-              key={t.id}
-              className={`${VARIANT_STYLES[t.variant]} text-white px-4 py-2 rounded-lg shadow-lg text-sm animate-fade-in pointer-events-auto`}
-            >
-              {t.message}
-            </div>
-          ))}
-        </div>
+        <ModalExemptPortal>
+          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2 pointer-events-none max-w-sm w-full px-4">
+            {toasts.map(t => (
+              <div
+                key={t.id}
+                className={`${VARIANT_STYLES[t.variant]} text-white px-4 py-2 rounded-lg shadow-lg text-sm animate-fade-in pointer-events-auto`}
+              >
+                {t.message}
+              </div>
+            ))}
+          </div>
+        </ModalExemptPortal>
       )}
     </ToastContext.Provider>
   );
