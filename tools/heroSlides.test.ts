@@ -277,6 +277,24 @@ describe('where the hero is wired in', () => {
     expect(blockAfter('no such branch', NO_SELECTION)).toBeNull();
   });
 
+  // Below 1024px the character list is in the drawer, and Browse / See all can
+  // only open it through this prop. Both ends of the seam have their own tests
+  // (layoutContext.test.tsx, HeroPage.test.tsx); this is the link between them.
+  const OPENER_PROP = /<HeroPage\s+onOpenSidebar=\{layout\?\.openSidebar\}/;
+
+  it('ChatView hands HeroPage the layout\'s drawer opener (D-H11)', () => {
+    const chatView = read('src/components/chat/ChatView.tsx');
+    expect(blockAfter(chatView, NO_SELECTION)).toMatch(OPENER_PROP);
+    expect(chatView).toMatch(/\bconst layout = useLayoutContext\(\);/);
+  });
+
+  it('detects a HeroPage rendered without the opener, or with a dead one', () => {
+    for (const element of ['<HeroPage />', '<HeroPage onOpenSidebar={undefined} />', '<HeroPage onOpenSidebar={() => {}} />']) {
+      expect(blockAfter(`${NO_SELECTION} return ${element}; }`, NO_SELECTION)).not.toMatch(OPENER_PROP);
+    }
+    expect(blockAfter(`${NO_SELECTION} return <HeroPage onOpenSidebar={layout?.openSidebar} />; }`, NO_SELECTION)).toMatch(OPENER_PROP);
+  });
+
   it('MainLayout hands the page its drawer opener through the Outlet context', () => {
     const layout = read('src/components/layout/MainLayout.tsx');
     expect(layout).toMatch(/<Outlet\s+context=\{outletContext\}\s*\/>/);
