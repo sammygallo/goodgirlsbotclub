@@ -94,6 +94,7 @@ A permission string such as `"character:create"` or `"project:view"`. The slide 
 ## Images
 
 - Put artwork in `public/hero/` and refer to it as `/hero/<file>`. `.webp` keeps it small.
+- When you replace an image, give it a new file name: browsers may keep the old bytes under the old name, because the server sends no `Cache-Control` header for `/hero/`.
 - It fills the banner edge to edge, cropped to fit and anchored to the top, so keep the subject in the **upper right**: the left half is darkened behind the text, and on a phone the bottom half is.
 - Around 1600 x 640 pixels works for wide screens. Anything much larger is wasted bytes.
 - The first two slides load immediately; later ones load lazily.
