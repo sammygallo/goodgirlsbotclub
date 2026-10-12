@@ -25,7 +25,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
  * was already inert for some other reason is never un-inerted by us.
  */
 
-interface UseModalFocusOptions {
+export interface UseModalFocusOptions {
   /** True while the surface is open AND mounted (its refs are set). */
   active: boolean;
   /** The surface's outermost element: everything outside its ancestry goes inert. */
