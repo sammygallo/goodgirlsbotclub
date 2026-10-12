@@ -236,10 +236,15 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     if (!m) throw new Error(`no element matches ${tag}`);
     return phoneOf(m[1]);
   };
-  /** A `leading-*` class overrides the line height the table gives a text size; the sum models none, so one is refused, not ignored. */
+  /**
+   * A class that sets the line height (`leading-*`, a text size with a leading
+   * such as `text-sm/6`, or an arbitrary `[line-height:..]`) overrides the one
+   * the table gives a text size. The sum models none of them, so one is refused,
+   * not ignored.
+   */
   const refuseLeading = (classes: string[]) => {
-    const leading = classes.find((c) => c.startsWith('leading-'));
-    if (leading) throw new Error(`${leading} changes the line height, which the sum does not model: ${classes.join(' ')}`);
+    const leading = classes.find((c) => /^(?:leading-|text-[a-z0-9]+\/|\[line-height:)/.test(c));
+    if (leading) throw new Error(`${leading} sets the line height, which the sum does not model: ${classes.join(' ')}`);
   };
   const spacing = (classes: string[], prefix: string, root: number) => {
     const c = classes.find((x) => new RegExp(`^${prefix}-[\\d.]+$`).test(x));
@@ -262,15 +267,14 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
    * bottom padding. The kicker is `display: none` there (asserted below), so it
    * adds neither a row nor a gap.
    */
-  function blockTop(rows: string[][], ctaRow: string[], ctaLines: number, root: number): number {
-    const cta = phoneClasses(frame, /const CTA_BASE =\s*'([^']+)'/);
-    refuseLeading(cta);
+  function blockTop(rows: string[][], ctaRow: string[], ctaLines: number, root: number, frameSource = frame): number {
+    const cta = phoneClasses(frameSource, /const CTA_BASE =\s*'([^']+)'/);
     const ctaHeight = Math.max(
       spacing(cta, 'min-h', root),
       ctaLines * LINE_HEIGHT_REM['text-sm'] * root + 2 * spacing(cta, 'py', root),
     );
-    const column = phoneClasses(frame, /<div className="(flex w-full min-w-0 flex-col[^"]*)"/);
-    const padded = phoneClasses(frame, /<div className="([^"]*\bitems-end\b[^"]*)"/);
+    const column = phoneClasses(frameSource, /<div className="(flex w-full min-w-0 flex-col[^"]*)"/);
+    const padded = phoneClasses(frameSource, /<div className="([^"]*\bitems-end\b[^"]*)"/);
     const text = rows.reduce((sum, r) => sum + textHeight(r, root), 0);
     return (
       text +
@@ -320,9 +324,31 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     if (rows.length !== opened) throw new Error(`${opened} text rows in the source, ${rows.length} read`);
     return rows;
   };
+  /**
+   * Every class list that reaches a CTA button or its label: the frame's CTA
+   * strings, and in a slide each button's own className and each span inside it.
+   * A className that is neither a string, a template nor a bare constant is an
+   * error, not a list left unread.
+   */
+  const ctaClassLists = (source: string, frameSource: string): string[][] => {
+    const lists = [phoneClasses(frameSource, /const CTA_BASE =\s*'([^']+)'/)];
+    for (const m of frameSource.matchAll(/const (?:PRIMARY|SECONDARY)_CTA = `([^`]*)`/g)) {
+      lists.push(phoneOf(m[1].replace(/\$\{[^}]*\}/g, ' ')));
+    }
+    for (const { open, children } of buttonsOf(source)) {
+      const own = open.match(/className=(?:"([^"]*)"|\{`([^`]*)`\}|\{[A-Za-z_]+\})/);
+      if (!own) throw new Error(`cannot read a CTA button's className: ${open}`);
+      lists.push(phoneOf((own[1] ?? own[2] ?? '').replace(/\$\{[^}]*\}/g, ' ')));
+      for (const span of children.matchAll(/<span\b[^>]*\bclassName="([^"]*)"/g)) lists.push(phoneOf(span[1]));
+    }
+    return lists;
+  };
+
   // A row behind a condition (the character slide's creator and blurb) counts: this is the worst case.
-  const slideTop = (source: string, root = 16) =>
-    blockTop(textRowsOf(source), ctaRowOf(source), ctaLinesOf(source), root);
+  const slideTop = (source: string, root = 16, frameSource = frame) => {
+    for (const classes of ctaClassLists(source, frameSource)) refuseLeading(classes);
+    return blockTop(textRowsOf(source), ctaRowOf(source), ctaLinesOf(source), root, frameSource);
+  };
 
   /** The scrim layer's minimum height at a root font size: a rem minimum scales with it, a px one does not. */
   const layerMinPx = (source: string, root: number) => {
@@ -378,6 +404,26 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
 
     // A variant-only leading class is not what applies below 640px.
     expect(() => slideTop(featureSlide.replace('line-clamp-3 text-base', 'line-clamp-3 text-base sm:leading-relaxed'))).not.toThrow();
+  });
+
+  it('has a detector that WOULD notice a line-height class on any class list that reaches a CTA', () => {
+    const swap = (text: string, from: string, to: string) => {
+      expect(text).toContain(from);
+      return text.replace(from, () => to);
+    };
+    const refused = (source: string, frameSource = frame) => expect(() => slideTop(source, 16, frameSource)).toThrow(/line height/);
+
+    // The frame's own strings: the CTA base, and the primary and secondary suffixes.
+    refused(featureSlide, swap(frame, 'text-sm font-semibold', 'text-sm leading-loose font-semibold'));
+    refused(featureSlide, swap(frame, 'bg-white text-[#111111]', 'bg-white leading-loose text-[#111111]'));
+    refused(characterSlide, swap(frame, 'border border-white/80', 'border leading-loose border-white/80'));
+    // A slide's own button, and the label inside it.
+    refused(swap(featureSlide, 'max-w-full', 'max-w-full leading-loose'));
+    refused(swap(featureSlide, '<span className="truncate">', '<span className="truncate leading-loose">'));
+    // Another way to set it.
+    refused(featureSlide, swap(frame, 'text-sm font-semibold', 'text-sm/8 font-semibold'));
+    // Only below 640px counts: a variant-only class is not what applies there.
+    expect(() => slideTop(swap(featureSlide, 'max-w-full', 'max-w-full sm:leading-loose'))).not.toThrow();
   });
 
   it('has a detector that WOULD notice a CTA label that is not clamped, or a character CTA that takes config text', () => {
