@@ -26,8 +26,8 @@ export function FeatureSlide({ config, eager, onCta }: FeatureSlideProps) {
       <h3 className="line-clamp-2 text-xl font-bold sm:text-2xl">{config.title}</h3>
       <p className="line-clamp-3 text-base sm:line-clamp-2">{config.body}</p>
       <div className="mt-1 flex flex-wrap gap-3 sm:mt-2">
-        <button type="button" className={PRIMARY_CTA} onClick={onCta}>
-          {config.cta.label}
+        <button type="button" className={`${PRIMARY_CTA} max-w-full`} onClick={onCta}>
+          <span className="truncate">{config.cta.label}</span>
         </button>
       </div>
     </SlideFrame>

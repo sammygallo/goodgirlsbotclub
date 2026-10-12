@@ -236,20 +236,47 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
    * bottom padding. The kicker is `display: none` there (asserted below), so it
    * adds neither a row nor a gap.
    */
-  function blockTop(rows: string[][], ctaRow: string[]): number {
+  function blockTop(rows: string[][], ctaRow: string[], ctaLines: number): number {
     const cta = phoneClasses(frame, /const CTA_BASE =\s*'([^']+)'/);
-    const ctaHeight = Math.max(spacing(cta, 'min-h'), LINE_HEIGHT_PX['text-sm'] + 2 * spacing(cta, 'py'));
+    const ctaHeight = Math.max(spacing(cta, 'min-h'), ctaLines * LINE_HEIGHT_PX['text-sm'] + 2 * spacing(cta, 'py'));
     const column = phoneClasses(frame, /<div className="(flex w-full min-w-0 flex-col[^"]*)"/);
     const padded = phoneClasses(frame, /<div className="([^"]*\bitems-end\b[^"]*)"/);
     const text = rows.reduce((sum, r) => sum + textHeight(r), 0);
     return text + ctaHeight + spacing(ctaRow, 'mt') + rows.length * spacing(column, 'gap') + spacing(padded, 'pb');
   }
 
+  /** Every <button> in a slide's source: its opening tag (braces tracked, so an arrow's `>` does not end it) and its children. */
+  const buttonsOf = (source: string) => {
+    const out: { open: string; children: string }[] = [];
+    for (let at = source.indexOf('<button'); at !== -1; at = source.indexOf('<button', at + 1)) {
+      const open = openingTagWith(source.slice(at), '<button') ?? '';
+      out.push({ open, children: source.slice(at + open.length, source.indexOf('</button>', at)).trim() });
+    }
+    return out;
+  };
+
+  /**
+   * The lines a slide's CTA labels can take. A label written as plain text in
+   * the source is one line by construction. One that comes from config is one
+   * line only if the classes say so: the button capped to its row (`max-w-full`)
+   * around a label that truncates. Anything else is unbounded, and so is the
+   * block above it.
+   */
+  const ctaLinesOf = (source: string): number => {
+    const buttons = buttonsOf(source);
+    if (buttons.length === 0) throw new Error('no CTA button found');
+    const bounded = ({ open, children }: { open: string; children: string }) =>
+      !children.includes('{') ||
+      (/\bmax-w-full\b/.test(open) && /^<span className="[^"]*\btruncate\b[^"]*">\{[^}]*\}<\/span>$/.test(children));
+    return buttons.every(bounded) ? 1 : Infinity;
+  };
+
   const ctaRowOf = (source: string) => phoneClasses(source, /<div className="([^"]*\bflex-wrap\b[^"]*)"/);
   const featureTop = (source: string) =>
     blockTop(
       [phoneClasses(source, /<h3 className="([^"]+)"/), phoneClasses(source, /<p className="([^"]+)"/)],
       ctaRowOf(source),
+      ctaLinesOf(source),
     );
   // Worst case: both optional lines are present.
   const characterTop = (source: string) =>
@@ -260,6 +287,7 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
         phoneClasses(source, /\{blurb && <p className="([^"]+)"/),
       ],
       ctaRowOf(source),
+      ctaLinesOf(source),
     );
 
   const layerMin = Number(frame.match(/h-\[max\(100%,(\d+)px\)\]/)?.[1]);
@@ -269,10 +297,28 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     expect(frame).toMatch(/<span className="hidden [^"]*\bsm:inline-block\b/);
   });
 
+  it('bounds every CTA label to one line, which is all the block sum assumes about them', () => {
+    // The feature CTA's label comes from config, so the classes are what bound it...
+    expect(buttonsOf(featureSlide)[0].children).toContain('{config.cta.label}');
+    expect(ctaLinesOf(featureSlide)).toBe(1);
+    // ...and the character slide's labels are plain text in the source.
+    expect(buttonsOf(characterSlide).map((b) => b.children)).toEqual(['Chat', 'About']);
+    expect(ctaLinesOf(characterSlide)).toBe(1);
+  });
+
   it('has a scrim layer tall enough that the >= .55 band covers the tallest slide', () => {
     expect(layerMin).toBeGreaterThan(0);
     expect(featureTop(featureSlide)).toBeLessThanOrEqual(bandPx(layerMin));
     expect(characterTop(characterSlide)).toBeLessThanOrEqual(bandPx(layerMin));
+  });
+
+  it('has a detector that WOULD notice a CTA label that is not clamped, or a character CTA that takes config text', () => {
+    const unclamped = featureSlide.replace('<span className="truncate">', '<span>');
+    expect(unclamped).not.toBe(featureSlide);
+    expect(ctaLinesOf(unclamped)).toBe(Infinity);
+    expect(ctaLinesOf(featureSlide.replace('max-w-full', ''))).toBe(Infinity);
+    expect(featureTop(unclamped)).toBe(Infinity);
+    expect(ctaLinesOf(characterSlide.replace(/>\s*Chat\s*<\/button>/, '>{label}</button>'))).toBe(Infinity);
   });
 
   it('has a detector that WOULD notice a fourth body line, or the 400px layer this replaced', () => {
