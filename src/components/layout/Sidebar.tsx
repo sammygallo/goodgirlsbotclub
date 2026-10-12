@@ -186,10 +186,12 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const charListRef = useRef<HTMLDivElement>(null);
   const { pullDistance, isRefreshing } = usePullToRefresh(charListRef, fetchCharacters);
 
-  // When a character is selected, hide the list (show portrait)
+  // When a character is selected, hide the list (show portrait) and end group
+  // selection, as the cancel button and startGroupChat do
   useEffect(() => {
     if (selectedCharacter) {
       setShowCharacterList(false);
+      setIsGroupSelectMode(false);
       setFailedExpressions(new Set());
       setDescExpanded(false);
     }
