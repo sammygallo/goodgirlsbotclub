@@ -206,9 +206,12 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   const featureSlide = read('src/components/hero/FeatureSlide.tsx');
   const characterSlide = read('src/components/hero/CharacterSlide.tsx');
 
-  /** Tailwind's default theme at a 16px root: the line heights used below, and the 4px spacing unit. */
-  const LINE_HEIGHT_PX: Record<string, number> = { 'text-sm': 20, 'text-base': 24, 'text-xl': 28 };
-  const SPACING_PX = 4;
+  // Everything the band has to cover is rem (Tailwind v4's text sizes and spacing
+  // scale), so the block is summed at each root font size in ROOTS: the browser's
+  // default, and its "Large" setting.
+  const LINE_HEIGHT_REM: Record<string, number> = { 'text-sm': 1.25, 'text-base': 1.5, 'text-xl': 1.75 };
+  const SPACING_REM = 0.25;
+  const ROOTS = [16, 20];
 
   /** The classes of the element whose class list `tag` captures, minus responsive variants: what applies below 640px. */
   const phoneClasses = (source: string, tag: RegExp): string[] => {
@@ -216,18 +219,18 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     if (!m) throw new Error(`no element matches ${tag}`);
     return m[1].split(/\s+/).filter((c) => c && !c.includes(':'));
   };
-  const spacing = (classes: string[], prefix: string) => {
+  const spacing = (classes: string[], prefix: string, root: number) => {
     const c = classes.find((x) => new RegExp(`^${prefix}-[\\d.]+$`).test(x));
     if (!c) throw new Error(`no ${prefix}-N among: ${classes.join(' ')}`);
-    return Number(c.slice(prefix.length + 1)) * SPACING_PX;
+    return Number(c.slice(prefix.length + 1)) * SPACING_REM * root;
   };
   /** A text element's height: its lines (line-clamp-N, or truncate = one) times its line height. */
-  const textHeight = (classes: string[]) => {
-    const size = classes.find((c) => c in LINE_HEIGHT_PX);
+  const textHeight = (classes: string[], root: number) => {
+    const size = classes.find((c) => c in LINE_HEIGHT_REM);
     const clamp = classes.find((c) => /^line-clamp-\d+$/.test(c));
     const lines = clamp ? Number(clamp.slice('line-clamp-'.length)) : classes.includes('truncate') ? 1 : NaN;
     if (!size || Number.isNaN(lines)) throw new Error(`cannot size: ${classes.join(' ')}`);
-    return lines * LINE_HEIGHT_PX[size];
+    return lines * LINE_HEIGHT_REM[size] * root;
   };
 
   /**
@@ -236,13 +239,22 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
    * bottom padding. The kicker is `display: none` there (asserted below), so it
    * adds neither a row nor a gap.
    */
-  function blockTop(rows: string[][], ctaRow: string[], ctaLines: number): number {
+  function blockTop(rows: string[][], ctaRow: string[], ctaLines: number, root: number): number {
     const cta = phoneClasses(frame, /const CTA_BASE =\s*'([^']+)'/);
-    const ctaHeight = Math.max(spacing(cta, 'min-h'), ctaLines * LINE_HEIGHT_PX['text-sm'] + 2 * spacing(cta, 'py'));
+    const ctaHeight = Math.max(
+      spacing(cta, 'min-h', root),
+      ctaLines * LINE_HEIGHT_REM['text-sm'] * root + 2 * spacing(cta, 'py', root),
+    );
     const column = phoneClasses(frame, /<div className="(flex w-full min-w-0 flex-col[^"]*)"/);
     const padded = phoneClasses(frame, /<div className="([^"]*\bitems-end\b[^"]*)"/);
-    const text = rows.reduce((sum, r) => sum + textHeight(r), 0);
-    return text + ctaHeight + spacing(ctaRow, 'mt') + rows.length * spacing(column, 'gap') + spacing(padded, 'pb');
+    const text = rows.reduce((sum, r) => sum + textHeight(r, root), 0);
+    return (
+      text +
+      ctaHeight +
+      spacing(ctaRow, 'mt', root) +
+      rows.length * spacing(column, 'gap', root) +
+      spacing(padded, 'pb', root)
+    );
   }
 
   /** Every <button> in a slide's source: its opening tag (braces tracked, so an arrow's `>` does not end it) and its children. */
@@ -272,14 +284,15 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   };
 
   const ctaRowOf = (source: string) => phoneClasses(source, /<div className="([^"]*\bflex-wrap\b[^"]*)"/);
-  const featureTop = (source: string) =>
+  const featureTop = (source: string, root = 16) =>
     blockTop(
       [phoneClasses(source, /<h3 className="([^"]+)"/), phoneClasses(source, /<p className="([^"]+)"/)],
       ctaRowOf(source),
       ctaLinesOf(source),
+      root,
     );
   // Worst case: both optional lines are present.
-  const characterTop = (source: string) =>
+  const characterTop = (source: string, root = 16) =>
     blockTop(
       [
         phoneClasses(source, /<h3 className="([^"]+)"/),
@@ -288,9 +301,15 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
       ],
       ctaRowOf(source),
       ctaLinesOf(source),
+      root,
     );
 
-  const layerMin = Number(frame.match(/h-\[max\(100%,(\d+)px\)\]/)?.[1]);
+  /** The scrim layer's minimum height at a root font size: a rem minimum scales with it, a px one does not. */
+  const layerMinPx = (source: string, root: number) => {
+    const m = source.match(/h-\[max\(100%,([\d.]+)(px|rem)\)\]/);
+    if (!m) throw new Error('no scrim layer minimum found');
+    return Number(m[1]) * (m[2] === 'rem' ? root : 1);
+  };
   const bandPx = (layerPx: number) => (layerPx * BAND.bottom) / 100;
 
   it('hides the kicker below 640px, where the block is sized without it', () => {
@@ -306,10 +325,17 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     expect(ctaLinesOf(characterSlide)).toBe(1);
   });
 
-  it('has a scrim layer tall enough that the >= .55 band covers the tallest slide', () => {
-    expect(layerMin).toBeGreaterThan(0);
-    expect(featureTop(featureSlide)).toBeLessThanOrEqual(bandPx(layerMin));
-    expect(characterTop(characterSlide)).toBeLessThanOrEqual(bandPx(layerMin));
+  it('anchors the scrim layer to the bottom of a frame that clips it', () => {
+    expect(phoneClasses(frame, /<div className="(relative h-full w-full overflow-hidden[^"]*)"/)).toContain('overflow-hidden');
+    const layer = phoneClasses(frame, /className="([^"]*h-\[max\(100%,[^"]*)"/);
+    for (const c of ['absolute', 'inset-x-0', 'bottom-0']) expect(layer, c).toContain(c);
+  });
+
+  it.each(ROOTS)('has a scrim layer tall enough that the >= .55 band covers the tallest slide at a %ipx root', (root) => {
+    const band = bandPx(layerMinPx(frame, root));
+    expect(band).toBeGreaterThan(0);
+    expect(featureTop(featureSlide, root)).toBeLessThanOrEqual(band);
+    expect(characterTop(characterSlide, root)).toBeLessThanOrEqual(band);
   });
 
   it('has a detector that WOULD notice a CTA label that is not clamped, or a character CTA that takes config text', () => {
@@ -321,9 +347,13 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     expect(ctaLinesOf(characterSlide.replace(/>\s*Chat\s*<\/button>/, '>{label}</button>'))).toBe(Infinity);
   });
 
-  it('has a detector that WOULD notice a fourth body line, or the 400px layer this replaced', () => {
-    expect(featureTop(featureSlide.replace('line-clamp-3', 'line-clamp-4'))).toBeGreaterThan(bandPx(layerMin));
+  it('has a detector that WOULD notice a fourth body line, the 400px layer this replaced, or a minimum in px at a larger root', () => {
+    expect(featureTop(featureSlide.replace('line-clamp-3', 'line-clamp-4'))).toBeGreaterThan(bandPx(layerMinPx(frame, 16)));
     expect(featureTop(featureSlide)).toBeGreaterThan(bandPx(400));
+    const inPx = frame.replace(/h-\[max\(100%,[\d.]+rem\)\]/, 'h-[max(100%,460px)]');
+    expect(inPx).not.toBe(frame);
+    expect(featureTop(featureSlide, 16)).toBeLessThanOrEqual(bandPx(layerMinPx(inPx, 16)));
+    expect(featureTop(featureSlide, 20)).toBeGreaterThan(bandPx(layerMinPx(inPx, 20)));
   });
 });
 

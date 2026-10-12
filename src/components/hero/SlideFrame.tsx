@@ -20,8 +20,8 @@ interface SlideFrameProps {
  *   but D-H20's contrast guarantee only holds where scrim alpha is >= .55,
  *   which is the first 55% of --scrim-hero-side. Below ~1127px a 620px block
  *   would run past it.
- * - < 640px: the bottom scrim, text stacked at the bottom with 16px padding.
- *   The scrim layer is at least 460px tall (anchored to the bottom, clipped by
+ * - < 640px: the bottom scrim, text stacked at the bottom.
+ *   The scrim layer is at least 28.75rem tall (anchored to the bottom, clipped by
  *   the hero), so on a short viewport the >= .55 band — 45% of the layer —
  *   still covers the tallest text block rather than shrinking with the hero.
  *
@@ -56,7 +56,7 @@ export function SlideFrame({ image, imageAlt, eager, initial, children }: SlideF
 
       <div
         aria-hidden="true"
-        className="absolute inset-x-0 bottom-0 h-[max(100%,460px)] sm:hidden"
+        className="absolute inset-x-0 bottom-0 h-[max(100%,28.75rem)] sm:hidden"
         style={{ backgroundImage: 'var(--scrim-hero)' }}
       />
       <div
