@@ -668,11 +668,13 @@ describe('a modal swapped for another in one handler', () => {
   /**
    * CharacterEdit's "Convert to persona": the outer Modal closes itself and a
    * sibling Modal mounts, in one handler. The sibling's opener is the button
-   * inside the outer dialog, which is gone once the exit animation ends.
+   * inside the outer dialog, which is gone once the exit animation ends. The
+   * sibling can open a confirm of its own, as PersonaManager's Delete does.
    */
   function Swap() {
     const [edit, setEdit] = useState(false);
     const [persona, setPersona] = useState(false);
+    const [confirm, setConfirm] = useState(false);
     return (
       <>
         <button onClick={() => setEdit(true)}>Edit</button>
@@ -688,7 +690,12 @@ describe('a modal swapped for another in one handler', () => {
         </Modal>
         {persona && (
           <Modal isOpen onClose={() => setPersona(false)} title="Persona">
-            body
+            <button onClick={() => setConfirm(true)}>Delete</button>
+          </Modal>
+        )}
+        {confirm && (
+          <Modal isOpen onClose={() => setConfirm(false)} title="Confirm">
+            <button onClick={() => setConfirm(false)}>Cancel</button>
           </Modal>
         )}
       </>
@@ -727,6 +734,43 @@ describe('a modal swapped for another in one handler', () => {
     open(edit);
     open(screen.getByText('Convert'));
     settle();
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(document.activeElement).toBe(edit);
+  });
+
+  it('survives a confirm opened and cancelled inside the second modal', () => {
+    vi.useFakeTimers();
+    render(<Swap />);
+    const edit = screen.getByText('Edit');
+    open(edit);
+    open(screen.getByText('Convert'));
+    settle();
+    open(screen.getByText('Delete'));
+    expect(screen.getByRole('dialog', { name: 'Confirm' })).toBeTruthy();
+    fireEvent.click(screen.getByText('Cancel'));
+    // Cancelling put focus back on Delete, inside the persona dialog that is still open.
+    expect(document.activeElement).toBe(screen.getByText('Delete'));
+
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(edit);
+  });
+
+  it('survives it under StrictMode too', () => {
+    vi.useFakeTimers();
+    render(
+      <StrictMode>
+        <Swap />
+      </StrictMode>,
+    );
+    const edit = screen.getByText('Edit');
+    open(edit);
+    open(screen.getByText('Convert'));
+    settle();
+    open(screen.getByText('Delete'));
+    fireEvent.click(screen.getByText('Cancel'));
     fireEvent.click(screen.getByLabelText('Close'));
     settle();
     expect(document.activeElement).toBe(edit);

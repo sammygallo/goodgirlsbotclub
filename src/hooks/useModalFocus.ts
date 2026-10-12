@@ -201,8 +201,11 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
         if (target && !target.isConnected && lastRestored?.isConnected) target = lastRestored;
         if (target?.isConnected) {
           target.focus();
+          // A surface that really leaves records where it put focus (StrictMode's trial cleanup does not), unless that is inside a surface still open, which is no fallback for anything outside it.
           const leavingForReal = !activeNow.current || !root.isConnected;
-          if (leavingForReal && document.activeElement === target) lastRestored = target;
+          if (leavingForReal && document.activeElement === target && !stack.some((s) => s.root.contains(target))) {
+            lastRestored = target;
+          }
         }
       } else if (surface.opener?.isConnected) {
         // A surface above this one that was opened from inside its dialog (a
