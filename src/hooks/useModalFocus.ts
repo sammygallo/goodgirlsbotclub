@@ -13,9 +13,13 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
  *   (b) moves focus into the surface — the element marked `data-autofocus`,
  *       else the first focusable one, unless focus is already inside (so a body
  *       that uses `autoFocus` keeps the field it asked for);
- *   (c) on close, or on unmount while open, puts focus back on the element that
- *       opened the surface — or, when the outer surface it was opened from has
- *       already left, on that surface's opener (the hand-off);
+ *   (c) on close, or on unmount while open, returns focus to the surface's
+ *       opener; if the surface was opened from inside an outer surface that has
+ *       already left, to that outer surface's opener (the hand-off); if the
+ *       opener is no longer connected, to the most recent element a departing
+ *       top surface restored focus to, when that element is still connected and
+ *       was not inside a surface still open at the time; otherwise focus is
+ *       left where it is;
  *   (d) closes the TOPMOST surface on Escape.
  *
  * Surfaces stack. Only the top one is interactive, and every surface below it
@@ -45,9 +49,9 @@ export interface UseModalFocusOptions {
 interface Surface {
   root: HTMLElement;
   /**
-   * Where focus goes when this surface closes. If this surface leaves first, a
-   * surface stacked above it takes it over only when this one's opener is still
-   * connected and the upper surface's own opener lies inside this dialog.
+   * See (c) in the module docstring. If this surface leaves first, a surface
+   * stacked above it takes this opener over only when it is still connected and
+   * the upper surface's own opener lies inside this dialog.
    */
   opener: HTMLElement | null;
   /** Read at keydown time, so a fresh inline callback never re-runs activation. */
@@ -197,7 +201,6 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
       // must leave focus with the surface that is still open on top of it.
       if (wasTop) {
         let target = surface.opener;
-        // An opener that left with a dialog closed in the same batch (a swap) is gone, so go where the last surface to leave for real put focus (StrictMode's trial cleanup does not count).
         if (target && !target.isConnected && lastRestored?.isConnected) target = lastRestored;
         if (target?.isConnected) {
           target.focus();

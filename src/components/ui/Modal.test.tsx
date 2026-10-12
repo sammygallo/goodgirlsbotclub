@@ -364,7 +364,6 @@ describe('focus out', () => {
     act(() => {
       vi.advanceTimersByTime(EXIT_MS + 20);
     });
-    // Nowhere to send focus to: it simply falls to <body>.
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(document.body);
   });
@@ -805,6 +804,65 @@ describe('a modal swapped for another in one handler', () => {
     rerender(<Tree mounted />);
     rerender(<Tree mounted={false} />);
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe('a modal whose opener unmounts in the handler that opens it', () => {
+  /** The overflow-menu shape: a menu item that removes itself and mounts a modal in one click. */
+  function Menu() {
+    const [first, setFirst] = useState(false);
+    const [menu, setMenu] = useState(false);
+    const [second, setSecond] = useState(false);
+    return (
+      <>
+        <button onClick={() => setFirst(true)}>H</button>
+        <Modal isOpen={first} onClose={() => setFirst(false)} title="First">
+          a
+        </Modal>
+        <button onClick={() => setMenu(true)}>Menu</button>
+        {menu && (
+          <button
+            onClick={() => {
+              setMenu(false);
+              setSecond(true);
+            }}
+          >
+            Item
+          </button>
+        )}
+        {second && (
+          <Modal isOpen onClose={() => setSecond(false)} title="Second">
+            b
+          </Modal>
+        )}
+      </>
+    );
+  }
+
+  const settle = () =>
+    act(() => {
+      vi.advanceTimersByTime(EXIT_MS + 20);
+    });
+
+  it('lands on the last element a departing surface restored focus to, while that is still on the page', () => {
+    vi.useFakeTimers();
+    render(<Menu />);
+    const h = screen.getByText('H');
+    open(h);
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    // H is now the last element a departing surface restored focus to.
+    expect(document.activeElement).toBe(h);
+
+    open(screen.getByText('Menu'));
+    open(screen.getByText('Item'));
+    expect(screen.getByRole('dialog', { name: 'Second' })).toBeTruthy();
+    expect(screen.queryByText('Item')).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(h);
   });
 });
 
