@@ -230,10 +230,16 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   const ROOTS = [16, 20];
 
   /** The classes of the element whose class list `tag` captures, minus responsive variants: what applies below 640px. */
+  const phoneOf = (classList: string) => classList.split(/\s+/).filter((c) => c && !c.includes(':'));
   const phoneClasses = (source: string, tag: RegExp): string[] => {
     const m = source.match(tag);
     if (!m) throw new Error(`no element matches ${tag}`);
-    return m[1].split(/\s+/).filter((c) => c && !c.includes(':'));
+    return phoneOf(m[1]);
+  };
+  /** A `leading-*` class overrides the line height the table gives a text size; the sum models none, so one is refused, not ignored. */
+  const refuseLeading = (classes: string[]) => {
+    const leading = classes.find((c) => c.startsWith('leading-'));
+    if (leading) throw new Error(`${leading} changes the line height, which the sum does not model: ${classes.join(' ')}`);
   };
   const spacing = (classes: string[], prefix: string, root: number) => {
     const c = classes.find((x) => new RegExp(`^${prefix}-[\\d.]+$`).test(x));
@@ -242,6 +248,7 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   };
   /** A text element's height: its lines (line-clamp-N, or truncate = one) times its line height. */
   const textHeight = (classes: string[], root: number) => {
+    refuseLeading(classes);
     const size = classes.find((c) => c in LINE_HEIGHT_REM);
     const clamp = classes.find((c) => /^line-clamp-\d+$/.test(c));
     const lines = clamp ? Number(clamp.slice('line-clamp-'.length)) : classes.includes('truncate') ? 1 : NaN;
@@ -257,6 +264,7 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
    */
   function blockTop(rows: string[][], ctaRow: string[], ctaLines: number, root: number): number {
     const cta = phoneClasses(frame, /const CTA_BASE =\s*'([^']+)'/);
+    refuseLeading(cta);
     const ctaHeight = Math.max(
       spacing(cta, 'min-h', root),
       ctaLines * LINE_HEIGHT_REM['text-sm'] * root + 2 * spacing(cta, 'py', root),
@@ -300,25 +308,21 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   };
 
   const ctaRowOf = (source: string) => phoneClasses(source, /<div className="([^"]*\bflex-wrap\b[^"]*)"/);
-  const featureTop = (source: string, root = 16) =>
-    blockTop(
-      [phoneClasses(source, /<h3 className="([^"]+)"/), phoneClasses(source, /<p className="([^"]+)"/)],
-      ctaRowOf(source),
-      ctaLinesOf(source),
-      root,
-    );
-  // Worst case: both optional lines are present.
-  const characterTop = (source: string, root = 16) =>
-    blockTop(
-      [
-        phoneClasses(source, /<h3 className="([^"]+)"/),
-        phoneClasses(source, /\{creator && <p className="([^"]+)"/),
-        phoneClasses(source, /\{blurb && <p className="([^"]+)"/),
-      ],
-      ctaRowOf(source),
-      ctaLinesOf(source),
-      root,
-    );
+
+  /**
+   * The text rows of a slide's block, in source order: every <h3> and <p>. As
+   * many must be read as are opened, so a row the sum cannot read (no
+   * className) is an error and not a row left out of it.
+   */
+  const textRowsOf = (source: string): string[][] => {
+    const opened = (source.match(/<(?:h3|p)\b/g) ?? []).length;
+    const rows = Array.from(source.matchAll(/<(?:h3|p)\b[^>]*?\bclassName="([^"]+)"/g), (m) => phoneOf(m[1]));
+    if (rows.length !== opened) throw new Error(`${opened} text rows in the source, ${rows.length} read`);
+    return rows;
+  };
+  // A row behind a condition (the character slide's creator and blurb) counts: this is the worst case.
+  const slideTop = (source: string, root = 16) =>
+    blockTop(textRowsOf(source), ctaRowOf(source), ctaLinesOf(source), root);
 
   /** The scrim layer's minimum height at a root font size: a rem minimum scales with it, a px one does not. */
   const layerMinPx = (source: string, root: number) => {
@@ -350,8 +354,30 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   it.each(ROOTS)('has a scrim layer tall enough that the >= .55 band covers the tallest slide at a %ipx root', (root) => {
     const band = bandPx(layerMinPx(frame, root));
     expect(band).toBeGreaterThan(0);
-    expect(featureTop(featureSlide, root)).toBeLessThanOrEqual(band);
-    expect(characterTop(characterSlide, root)).toBeLessThanOrEqual(band);
+    expect(slideTop(featureSlide, root)).toBeLessThanOrEqual(band);
+    expect(slideTop(characterSlide, root)).toBeLessThanOrEqual(band);
+  });
+
+  it('reads every text row of both slides: title and body, name and creator and blurb', () => {
+    expect(textRowsOf(featureSlide)).toHaveLength(2);
+    expect(textRowsOf(characterSlide)).toHaveLength(3);
+  });
+
+  it('has a detector that WOULD notice a text row it did not count, or a leading class it does not model', () => {
+    const relaxed = featureSlide.replace('line-clamp-3 text-base', 'line-clamp-3 text-base leading-relaxed');
+    expect(relaxed).not.toBe(featureSlide);
+    expect(() => slideTop(relaxed)).toThrow(/leading-relaxed/);
+
+    const extraRow = featureSlide.replace('</p>', '</p>\n      <p className="truncate text-sm">More</p>');
+    expect(extraRow).not.toBe(featureSlide);
+    expect(slideTop(extraRow)).toBeGreaterThan(bandPx(layerMinPx(frame, 16)));
+
+    const bareRow = featureSlide.replace('</p>', '</p>\n      <p>Bare</p>');
+    expect(bareRow).not.toBe(featureSlide);
+    expect(() => slideTop(bareRow)).toThrow(/text rows/);
+
+    // A variant-only leading class is not what applies below 640px.
+    expect(() => slideTop(featureSlide.replace('line-clamp-3 text-base', 'line-clamp-3 text-base sm:leading-relaxed'))).not.toThrow();
   });
 
   it('has a detector that WOULD notice a CTA label that is not clamped, or a character CTA that takes config text', () => {
@@ -359,17 +385,17 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     expect(unclamped).not.toBe(featureSlide);
     expect(ctaLinesOf(unclamped)).toBe(Infinity);
     expect(ctaLinesOf(featureSlide.replace('max-w-full', ''))).toBe(Infinity);
-    expect(featureTop(unclamped)).toBe(Infinity);
+    expect(slideTop(unclamped)).toBe(Infinity);
     expect(ctaLinesOf(characterSlide.replace(/>\s*Chat\s*<\/button>/, '>{label}</button>'))).toBe(Infinity);
   });
 
   it('has a detector that WOULD notice a fourth body line, the 400px layer this replaced, or a minimum in px at a larger root', () => {
-    expect(featureTop(featureSlide.replace('line-clamp-3', 'line-clamp-4'))).toBeGreaterThan(bandPx(layerMinPx(frame, 16)));
-    expect(featureTop(featureSlide)).toBeGreaterThan(bandPx(400));
+    expect(slideTop(featureSlide.replace('line-clamp-3', 'line-clamp-4'))).toBeGreaterThan(bandPx(layerMinPx(frame, 16)));
+    expect(slideTop(featureSlide)).toBeGreaterThan(bandPx(400));
     const inPx = frame.replace(/h-\[max\(100%,[\d.]+rem\)\]/, 'h-[max(100%,460px)]');
     expect(inPx).not.toBe(frame);
-    expect(featureTop(featureSlide, 16)).toBeLessThanOrEqual(bandPx(layerMinPx(inPx, 16)));
-    expect(featureTop(featureSlide, 20)).toBeGreaterThan(bandPx(layerMinPx(inPx, 20)));
+    expect(slideTop(featureSlide, 16)).toBeLessThanOrEqual(bandPx(layerMinPx(inPx, 16)));
+    expect(slideTop(featureSlide, 20)).toBeGreaterThan(bandPx(layerMinPx(inPx, 20)));
   });
 });
 
