@@ -350,6 +350,19 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     return blockTop(textRowsOf(source), ctaRowOf(source), ctaLinesOf(source), root, frameSource);
   };
 
+  /**
+   * What is wrong with how a frame's source anchors the scrim layer: not
+   * absolute, not pinned to the bottom edge, or given a vertical offset. With top,
+   * bottom and height all set the box is over-constrained and `bottom` is dropped
+   * (CSS 2.1 s10.6.4), which would anchor it to the top.
+   */
+  const anchorProblems = (source: string): string[] => {
+    const layer = phoneClasses(source, /className="([^"]*h-\[max\(100%,[^"]*)"/);
+    const missing = ['absolute', 'inset-x-0', 'bottom-0'].filter((c) => !layer.includes(c)).map((c) => `no ${c}`);
+    const offset = layer.filter((c) => /^-?(?:top-|inset-y-|inset-(?!x-))/.test(c)).map((c) => `${c} offsets the top`);
+    return [...missing, ...offset];
+  };
+
   /** The scrim layer's minimum height at a root font size: a rem minimum scales with it, a px one does not. */
   const layerMinPx = (source: string, root: number) => {
     const m = source.match(/h-\[max\(100%,([\d.]+)(px|rem)\)\]/);
@@ -373,8 +386,20 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
 
   it('anchors the scrim layer to the bottom of a frame that clips it', () => {
     expect(phoneClasses(frame, /<div className="(relative h-full w-full overflow-hidden[^"]*)"/)).toContain('overflow-hidden');
-    const layer = phoneClasses(frame, /className="([^"]*h-\[max\(100%,[^"]*)"/);
-    for (const c of ['absolute', 'inset-x-0', 'bottom-0']) expect(layer, c).toContain(c);
+    expect(anchorProblems(frame)).toEqual([]);
+  });
+
+  it('has a detector that WOULD notice a layer that is not bottom-anchored, or is also given a top offset', () => {
+    const swap = (from: string, to: string) => {
+      expect(frame).toContain(from);
+      return frame.replace(from, () => to);
+    };
+    expect(anchorProblems(swap('bottom-0 h-[max', 'top-0 bottom-0 h-[max'))).toEqual(['top-0 offsets the top']);
+    expect(anchorProblems(swap('inset-x-0', 'inset-x-0 inset-y-0'))).toEqual(['inset-y-0 offsets the top']);
+    expect(anchorProblems(swap('inset-x-0', 'inset-0'))).toEqual(['no inset-x-0', 'inset-0 offsets the top']);
+    expect(anchorProblems(swap('bottom-0 h-[max', 'h-[max'))).toEqual(['no bottom-0']);
+    // Only below 640px counts: a variant-only offset is not what applies there.
+    expect(anchorProblems(swap('bottom-0 h-[max', 'sm:top-0 bottom-0 h-[max'))).toEqual([]);
   });
 
   it.each(ROOTS)('has a scrim layer tall enough that the >= .55 band covers the tallest slide at a %ipx root', (root) => {
