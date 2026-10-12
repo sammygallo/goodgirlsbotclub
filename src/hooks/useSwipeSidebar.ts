@@ -1,8 +1,11 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { hapticMedium } from '../utils/haptics';
 
-const EDGE_ZONE = 30;     // px from left edge to start open gesture
-const SWIPE_THRESHOLD = 50; // minimum px to trigger open/close
+// Exported so the hero carousel's own swipe (E6-S2, D-H16a) uses the SAME
+// numbers: a touch that starts inside the edge zone belongs to the drawer, and
+// the carousel must agree on exactly where that zone ends.
+export const EDGE_ZONE = 30;     // px from left edge to start open gesture
+export const SWIPE_THRESHOLD = 50; // minimum px to trigger open/close
 
 /**
  * Adds swipe-right-from-edge-to-open and swipe-left-to-close gestures
