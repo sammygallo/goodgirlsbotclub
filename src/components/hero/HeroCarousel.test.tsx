@@ -409,6 +409,19 @@ describe('what STOPS it (only the rotation button restarts it) (D-H14)', () => {
     act(() => button('Previous slide').focus());
     expect(rotationLabel()).toBe('Start slide rotation');
   });
+
+  it('an arrow key after a mouse click is keyboard again: arrowing along the indicators stops it', () => {
+    mount();
+    const first = button('Go to slide 1: Ivy');
+    fireEvent.pointerDown(first);
+    act(() => first.focus());
+    fireEvent.click(first);
+    expect(rotationLabel()).toBe('Stop slide rotation');
+
+    fireEvent.keyDown(first, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(button('Go to slide 2: Rose'));
+    expect(rotationLabel()).toBe('Start slide rotation');
+  });
 });
 
 describe('reduced motion (D-H14, D-G6)', () => {
