@@ -90,4 +90,4 @@ const CTA_BASE =
 export const PRIMARY_CTA = `${CTA_BASE} bg-white text-[#111111] hover:bg-[#e5e5e5]`;
 
 /** D-H20: the secondary CTA is transparent with a 1px white border. */
-export const SECONDARY_CTA = `${CTA_BASE} border border-white/80 bg-transparent text-[color:var(--on-scrim-text)] hover:bg-white/10`;
+export const SECONDARY_CTA = `${CTA_BASE} border border-white/80 bg-transparent text-[color:var(--on-scrim-text)] hover:bg-white/12`;
