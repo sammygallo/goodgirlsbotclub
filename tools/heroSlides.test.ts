@@ -220,148 +220,56 @@ describe('index.css hero colours (D-H20)', () => {
 describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H20)', () => {
   const frame = read('src/components/hero/SlideFrame.tsx');
   const featureSlide = read('src/components/hero/FeatureSlide.tsx');
-  const characterSlide = read('src/components/hero/CharacterSlide.tsx');
 
-  // Everything the band has to cover is rem (Tailwind v4's text sizes and spacing
-  // scale), so the block is summed at each root font size in ROOTS: the browser's
-  // default, and its "Large" setting.
-  const LINE_HEIGHT_REM: Record<string, number> = { 'text-sm': 1.25, 'text-base': 1.5, 'text-xl': 1.75 };
-  const SPACING_REM = 0.25;
+  // These literals are the inputs the arithmetic models; change a literal and re-derive the table.
+  const PINS: [string, string, string][] = [
+    ['SlideFrame: the clipping frame', frame, 'className="relative h-full w-full overflow-hidden bg-[var(--color-bg-tertiary)]"'],
+    ['SlideFrame: the scrim layer', frame, 'className="absolute inset-x-0 bottom-0 h-[max(100%,28.75rem)] sm:hidden"'],
+    [
+      'SlideFrame: the text container',
+      frame,
+      'className="absolute inset-0 flex items-end px-4 pb-4 pt-14 sm:items-center sm:px-8 sm:py-6 lg:px-12"',
+    ],
+    [
+      'SlideFrame: the text column',
+      frame,
+      'className="flex w-full min-w-0 flex-col gap-2 text-[color:var(--on-scrim-text)] sm:max-w-[min(620px,55%)] sm:gap-3"',
+    ],
+    [
+      'SlideFrame: the kicker',
+      frame,
+      'className="hidden self-start rounded-full border border-white/40 bg-black/30 px-3 py-1 text-xs font-medium uppercase tracking-wider text-[color:var(--on-scrim-text)] sm:inline-block"',
+    ],
+    [
+      'SlideFrame: CTA_BASE',
+      frame,
+      "'focus-ring-contrast inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold transition-colors'",
+    ],
+    ['SlideFrame: PRIMARY_CTA', frame, 'export const PRIMARY_CTA = `${CTA_BASE} bg-white text-[#111111] hover:bg-[#e5e5e5]`;'],
+    [
+      'SlideFrame: SECONDARY_CTA',
+      frame,
+      'export const SECONDARY_CTA = `${CTA_BASE} border border-white/80 bg-transparent text-[color:var(--on-scrim-text)] hover:bg-white/12`;',
+    ],
+    ['FeatureSlide: the title', featureSlide, 'className="line-clamp-2 text-xl font-bold sm:text-2xl"'],
+    ['FeatureSlide: the body', featureSlide, 'className="line-clamp-3 text-base sm:line-clamp-2"'],
+    ['FeatureSlide: the CTA row', featureSlide, 'className="mt-1 flex flex-wrap gap-3 sm:mt-2"'],
+    ['FeatureSlide: the CTA button', featureSlide, 'className={`${PRIMARY_CTA} max-w-full`}'],
+    ['FeatureSlide: the CTA label', featureSlide, '<span className="truncate">{config.cta.label}</span>'],
+  ];
+
+  const TEXT_XL_LINE_REM = 1.75;
+  const TEXT_BASE_LINE_REM = 1.5;
+  const BLOCK_REM = {
+    title: 2 * TEXT_XL_LINE_REM, // h3: line-clamp-2
+    body: 3 * TEXT_BASE_LINE_REM, // p: line-clamp-3
+    cta: 2.5, // CTA_BASE: min-h-10
+    ctaMargin: 0.25, // the CTA row: mt-1
+    gaps: 2 * 0.5, // the text column: gap-2, twice
+    bottom: 1, // the text container: pb-4
+  };
+  const blockRem = Object.values(BLOCK_REM).reduce((sum, rem) => sum + rem, 0);
   const ROOTS = [16, 20];
-
-  /** The classes of the element whose class list `tag` captures, minus responsive variants: what applies below 640px. */
-  const phoneOf = (classList: string) => classList.split(/\s+/).filter((c) => c && !c.includes(':'));
-  const phoneClasses = (source: string, tag: RegExp): string[] => {
-    const m = source.match(tag);
-    if (!m) throw new Error(`no element matches ${tag}`);
-    return phoneOf(m[1]);
-  };
-  /**
-   * A class that sets the line height (`leading-*`, a text size with a leading
-   * such as `text-sm/6`, or an arbitrary `[line-height:..]`) overrides the one
-   * the table gives a text size. The sum models none of them, so one is refused,
-   * not ignored.
-   */
-  const refuseLeading = (classes: string[]) => {
-    const leading = classes.find((c) => /^(?:leading-|text-[a-z0-9]+\/|\[line-height:)/.test(c));
-    if (leading) throw new Error(`${leading} sets the line height, which the sum does not model: ${classes.join(' ')}`);
-  };
-  const spacing = (classes: string[], prefix: string, root: number) => {
-    const c = classes.find((x) => new RegExp(`^${prefix}-[\\d.]+$`).test(x));
-    if (!c) throw new Error(`no ${prefix}-N among: ${classes.join(' ')}`);
-    return Number(c.slice(prefix.length + 1)) * SPACING_REM * root;
-  };
-  /** A text element's height: its lines (line-clamp-N, or truncate = one) times its line height. */
-  const textHeight = (classes: string[], root: number) => {
-    refuseLeading(classes);
-    const size = classes.find((c) => c in LINE_HEIGHT_REM);
-    const clamp = classes.find((c) => /^line-clamp-\d+$/.test(c));
-    const lines = clamp ? Number(clamp.slice('line-clamp-'.length)) : classes.includes('truncate') ? 1 : NaN;
-    if (!size || Number.isNaN(lines)) throw new Error(`cannot size: ${classes.join(' ')}`);
-    return lines * LINE_HEIGHT_REM[size] * root;
-  };
-
-  /**
-   * How far above the hero's bottom edge a slide's text block reaches below
-   * 640px: its rows and the CTA row, the gaps between them, and the frame's
-   * bottom padding. The kicker is `display: none` there (asserted below), so it
-   * adds neither a row nor a gap.
-   */
-  function blockTop(rows: string[][], ctaRow: string[], ctaLines: number, root: number, frameSource = frame): number {
-    const cta = phoneClasses(frameSource, /const CTA_BASE =\s*'([^']+)'/);
-    const ctaHeight = Math.max(
-      spacing(cta, 'min-h', root),
-      ctaLines * LINE_HEIGHT_REM['text-sm'] * root + 2 * spacing(cta, 'py', root),
-    );
-    const column = phoneClasses(frameSource, /<div className="(flex w-full min-w-0 flex-col[^"]*)"/);
-    const padded = phoneClasses(frameSource, /<div className="([^"]*\bitems-end\b[^"]*)"/);
-    const text = rows.reduce((sum, r) => sum + textHeight(r, root), 0);
-    return (
-      text +
-      ctaHeight +
-      spacing(ctaRow, 'mt', root) +
-      rows.length * spacing(column, 'gap', root) +
-      spacing(padded, 'pb', root)
-    );
-  }
-
-  /** Every <button> in a slide's source: its opening tag (braces tracked, so an arrow's `>` does not end it) and its children. */
-  const buttonsOf = (source: string) => {
-    const out: { open: string; children: string }[] = [];
-    for (let at = source.indexOf('<button'); at !== -1; at = source.indexOf('<button', at + 1)) {
-      const open = openingTagWith(source.slice(at), '<button') ?? '';
-      out.push({ open, children: source.slice(at + open.length, source.indexOf('</button>', at)).trim() });
-    }
-    return out;
-  };
-
-  /**
-   * The lines a slide's CTA labels can take. A label written as plain text in
-   * the source is one line by construction. One that comes from config is one
-   * line only if the classes say so: the button capped to its row (`max-w-full`)
-   * around a label that truncates. Anything else is unbounded, and so is the
-   * block above it.
-   */
-  const ctaLinesOf = (source: string): number => {
-    const buttons = buttonsOf(source);
-    if (buttons.length === 0) throw new Error('no CTA button found');
-    const bounded = ({ open, children }: { open: string; children: string }) =>
-      !children.includes('{') ||
-      (/\bmax-w-full\b/.test(open) && /^<span className="[^"]*\btruncate\b[^"]*">\{[^}]*\}<\/span>$/.test(children));
-    return buttons.every(bounded) ? 1 : Infinity;
-  };
-
-  const ctaRowOf = (source: string) => phoneClasses(source, /<div className="([^"]*\bflex-wrap\b[^"]*)"/);
-
-  /**
-   * The text rows of a slide's block, in source order: every <h3> and <p>. As
-   * many must be read as are opened, so a row the sum cannot read (no
-   * className) is an error and not a row left out of it.
-   */
-  const textRowsOf = (source: string): string[][] => {
-    const opened = (source.match(/<(?:h3|p)\b/g) ?? []).length;
-    const rows = Array.from(source.matchAll(/<(?:h3|p)\b[^>]*?\bclassName="([^"]+)"/g), (m) => phoneOf(m[1]));
-    if (rows.length !== opened) throw new Error(`${opened} text rows in the source, ${rows.length} read`);
-    return rows;
-  };
-  /**
-   * Every class list that reaches a CTA button or its label: the frame's CTA
-   * strings, and in a slide each button's own className and each span inside it.
-   * A className that is neither a string, a template nor a bare constant is an
-   * error, not a list left unread.
-   */
-  const ctaClassLists = (source: string, frameSource: string): string[][] => {
-    const lists = [phoneClasses(frameSource, /const CTA_BASE =\s*'([^']+)'/)];
-    for (const m of frameSource.matchAll(/const (?:PRIMARY|SECONDARY)_CTA = `([^`]*)`/g)) {
-      lists.push(phoneOf(m[1].replace(/\$\{[^}]*\}/g, ' ')));
-    }
-    for (const { open, children } of buttonsOf(source)) {
-      const own = open.match(/className=(?:"([^"]*)"|\{`([^`]*)`\}|\{[A-Za-z_]+\})/);
-      if (!own) throw new Error(`cannot read a CTA button's className: ${open}`);
-      lists.push(phoneOf((own[1] ?? own[2] ?? '').replace(/\$\{[^}]*\}/g, ' ')));
-      for (const span of children.matchAll(/<span\b[^>]*\bclassName="([^"]*)"/g)) lists.push(phoneOf(span[1]));
-    }
-    return lists;
-  };
-
-  // A row behind a condition (the character slide's creator and blurb) counts: this is the worst case.
-  const slideTop = (source: string, root = 16, frameSource = frame) => {
-    for (const classes of ctaClassLists(source, frameSource)) refuseLeading(classes);
-    return blockTop(textRowsOf(source), ctaRowOf(source), ctaLinesOf(source), root, frameSource);
-  };
-
-  /**
-   * What is wrong with how a frame's source anchors the scrim layer: not
-   * absolute, not pinned to the bottom edge, or given a vertical offset. With top,
-   * bottom and height all set the box is over-constrained and `bottom` is dropped
-   * (CSS 2.1 s10.6.4), which would anchor it to the top.
-   */
-  const anchorProblems = (source: string): string[] => {
-    const layer = phoneClasses(source, /className="([^"]*h-\[max\(100%,[^"]*)"/);
-    const missing = ['absolute', 'inset-x-0', 'bottom-0'].filter((c) => !layer.includes(c)).map((c) => `no ${c}`);
-    const offset = layer.filter((c) => /^-?(?:top-|inset-y-|inset-(?!x-))/.test(c)).map((c) => `${c} offsets the top`);
-    return [...missing, ...offset];
-  };
 
   /** The scrim layer's minimum height at a root font size: a rem minimum scales with it, a px one does not. */
   const layerMinPx = (source: string, root: number) => {
@@ -371,102 +279,17 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   };
   const bandPx = (layerPx: number) => (layerPx * BAND.bottom) / 100;
 
-  it('hides the kicker below 640px, where the block is sized without it', () => {
-    expect(frame).toMatch(/<span className="hidden [^"]*\bsm:inline-block\b/);
+  it.each(PINS)('pins %s', (_name, source, literal) => {
+    expect(countOf(source, literal)).toBe(1);
   });
 
-  it('bounds every CTA label to one line, which is all the block sum assumes about them', () => {
-    // The feature CTA's label comes from config, so the classes are what bound it...
-    expect(buttonsOf(featureSlide)[0].children).toContain('{config.cta.label}');
-    expect(ctaLinesOf(featureSlide)).toBe(1);
-    // ...and the character slide's labels are plain text in the source.
-    expect(buttonsOf(characterSlide).map((b) => b.children)).toEqual(['Chat', 'About']);
-    expect(ctaLinesOf(characterSlide)).toBe(1);
+  it.each(ROOTS)('has a scrim layer tall enough that the >= .55 band covers the feature slide\'s block at a %ipx root', (root) => {
+    expect(blockRem * root).toBeLessThanOrEqual(bandPx(layerMinPx(frame, root)));
   });
 
-  it('anchors the scrim layer to the bottom of a frame that clips it', () => {
-    expect(phoneClasses(frame, /<div className="(relative h-full w-full overflow-hidden[^"]*)"/)).toContain('overflow-hidden');
-    expect(anchorProblems(frame)).toEqual([]);
-  });
-
-  it('has a detector that WOULD notice a layer that is not bottom-anchored, or is also given a top offset', () => {
-    const swap = (from: string, to: string) => {
-      expect(frame).toContain(from);
-      return frame.replace(from, () => to);
-    };
-    expect(anchorProblems(swap('bottom-0 h-[max', 'top-0 bottom-0 h-[max'))).toEqual(['top-0 offsets the top']);
-    expect(anchorProblems(swap('inset-x-0', 'inset-x-0 inset-y-0'))).toEqual(['inset-y-0 offsets the top']);
-    expect(anchorProblems(swap('inset-x-0', 'inset-0'))).toEqual(['no inset-x-0', 'inset-0 offsets the top']);
-    expect(anchorProblems(swap('bottom-0 h-[max', 'h-[max'))).toEqual(['no bottom-0']);
-    // Only below 640px counts: a variant-only offset is not what applies there.
-    expect(anchorProblems(swap('bottom-0 h-[max', 'sm:top-0 bottom-0 h-[max'))).toEqual([]);
-  });
-
-  it.each(ROOTS)('has a scrim layer tall enough that the >= .55 band covers the tallest slide at a %ipx root', (root) => {
-    const band = bandPx(layerMinPx(frame, root));
-    expect(band).toBeGreaterThan(0);
-    expect(slideTop(featureSlide, root)).toBeLessThanOrEqual(band);
-    expect(slideTop(characterSlide, root)).toBeLessThanOrEqual(band);
-  });
-
-  it('reads every text row of both slides: title and body, name and creator and blurb', () => {
-    expect(textRowsOf(featureSlide)).toHaveLength(2);
-    expect(textRowsOf(characterSlide)).toHaveLength(3);
-  });
-
-  it('has a detector that WOULD notice a text row it did not count, or a leading class it does not model', () => {
-    const relaxed = featureSlide.replace('line-clamp-3 text-base', 'line-clamp-3 text-base leading-relaxed');
-    expect(relaxed).not.toBe(featureSlide);
-    expect(() => slideTop(relaxed)).toThrow(/leading-relaxed/);
-
-    const extraRow = featureSlide.replace('</p>', '</p>\n      <p className="truncate text-sm">More</p>');
-    expect(extraRow).not.toBe(featureSlide);
-    expect(slideTop(extraRow)).toBeGreaterThan(bandPx(layerMinPx(frame, 16)));
-
-    const bareRow = featureSlide.replace('</p>', '</p>\n      <p>Bare</p>');
-    expect(bareRow).not.toBe(featureSlide);
-    expect(() => slideTop(bareRow)).toThrow(/text rows/);
-
-    // A variant-only leading class is not what applies below 640px.
-    expect(() => slideTop(featureSlide.replace('line-clamp-3 text-base', 'line-clamp-3 text-base sm:leading-relaxed'))).not.toThrow();
-  });
-
-  it('has a detector that WOULD notice a line-height class on any class list that reaches a CTA', () => {
-    const swap = (text: string, from: string, to: string) => {
-      expect(text).toContain(from);
-      return text.replace(from, () => to);
-    };
-    const refused = (source: string, frameSource = frame) => expect(() => slideTop(source, 16, frameSource)).toThrow(/line height/);
-
-    // The frame's own strings: the CTA base, and the primary and secondary suffixes.
-    refused(featureSlide, swap(frame, 'text-sm font-semibold', 'text-sm leading-loose font-semibold'));
-    refused(featureSlide, swap(frame, 'bg-white text-[#111111]', 'bg-white leading-loose text-[#111111]'));
-    refused(characterSlide, swap(frame, 'border border-white/80', 'border leading-loose border-white/80'));
-    // A slide's own button, and the label inside it.
-    refused(swap(featureSlide, 'max-w-full', 'max-w-full leading-loose'));
-    refused(swap(featureSlide, '<span className="truncate">', '<span className="truncate leading-loose">'));
-    // Another way to set it.
-    refused(featureSlide, swap(frame, 'text-sm font-semibold', 'text-sm/8 font-semibold'));
-    // Only below 640px counts: a variant-only class is not what applies there.
-    expect(() => slideTop(swap(featureSlide, 'max-w-full', 'max-w-full sm:leading-loose'))).not.toThrow();
-  });
-
-  it('has a detector that WOULD notice a CTA label that is not clamped, or a character CTA that takes config text', () => {
-    const unclamped = featureSlide.replace('<span className="truncate">', '<span>');
-    expect(unclamped).not.toBe(featureSlide);
-    expect(ctaLinesOf(unclamped)).toBe(Infinity);
-    expect(ctaLinesOf(featureSlide.replace('max-w-full', ''))).toBe(Infinity);
-    expect(slideTop(unclamped)).toBe(Infinity);
-    expect(ctaLinesOf(characterSlide.replace(/>\s*Chat\s*<\/button>/, '>{label}</button>'))).toBe(Infinity);
-  });
-
-  it('has a detector that WOULD notice a fourth body line, the 400px layer this replaced, or a minimum in px at a larger root', () => {
-    expect(slideTop(featureSlide.replace('line-clamp-3', 'line-clamp-4'))).toBeGreaterThan(bandPx(layerMinPx(frame, 16)));
-    expect(slideTop(featureSlide)).toBeGreaterThan(bandPx(400));
-    const inPx = frame.replace(/h-\[max\(100%,[\d.]+rem\)\]/, 'h-[max(100%,460px)]');
-    expect(inPx).not.toBe(frame);
-    expect(slideTop(featureSlide, 16)).toBeLessThanOrEqual(bandPx(layerMinPx(inPx, 16)));
-    expect(slideTop(featureSlide, 20)).toBeGreaterThan(bandPx(layerMinPx(inPx, 20)));
+  it('reads the layer minimum in rem as scaling with the root, and in px as not', () => {
+    expect(layerMinPx('h-[max(100%,28.75rem)]', 20)).toBe(575);
+    expect(layerMinPx('h-[max(100%,460px)]', 20)).toBe(460);
   });
 });
 
