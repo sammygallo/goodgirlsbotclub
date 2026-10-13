@@ -1328,7 +1328,9 @@ const validate = (schema, v) => {
 //       finding kept both votes and `null` on the held and all-lenses-died
 //       returns, which verified nothing; a finding that lost BOTH votes is
 //       `unverified`, not single-vote, and a long title is named whole, not at
-//       the log line's 40-character cut (round-6 C11)
+//       the log line's 40-character cut (round-6 C11); and a mixed stub leaves
+//       single-vote findings of BOTH statuses, so a singleVote that drops the
+//       confirmed ones goes red (round-7 C5)
 {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
   const slice = (r) => ({ story: r.story, context: r.context, lensRoster: r.lensRoster,
@@ -1502,6 +1504,21 @@ const validate = (schema, v) => {
     const rl = await oneDeadLong.run()
     check('24f: a single-vote finding with a long title is named byte-identical, not at the log cut',
           rl.singleVote.includes(LONGT), `singleVote=${JSON.stringify(rl.singleVote)}`)
+    // one dead batch, survivors split by index parity: single-vote findings of both statuses
+    const mixed = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: ({ call, indices }) => (call === 1 ? null : indices.map((i) => ({ index: i, refuted: i % 2 === 0, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const rm = await mixed.run()
+    const all = [...rm.confirmed, ...rm.plausible, ...rm.refuted, ...rm.unverified]
+    const onceAll = all.filter((f) => f.skepticVotes === 1)
+    check('24f: the mixed stub leaves single-vote findings of both statuses (precondition)',
+          onceAll.some((f) => f.status === 'confirmed') && onceAll.some((f) => f.status === 'refuted'),
+          `once=${JSON.stringify(onceAll.map((f) => [f.title, f.status]))}`)
+    check('24f: singleVote names every single-vote finding, confirmed ones included',
+          same([...rm.singleVote].sort(), onceAll.map((f) => f.title).sort()),
+          `singleVote=${JSON.stringify(rm.singleVote)} once=${JSON.stringify(onceAll.map((f) => f.title))}`)
   }
 }
 
