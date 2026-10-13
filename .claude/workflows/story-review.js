@@ -208,7 +208,7 @@ log(`lenses: ${lenses.length - deadLenses.length}/${lenses.length} returned` +
 if (lenses.length && deadLenses.length === lenses.length) {
   log(`ALL ${lenses.length} lenses died — NOT A REVIEW ROUND, nothing was hunted.`)
   return { story: args.story, mode, status: 'all_lenses_died',
-           confirmed: null, plausible: null, refuted: null, unverified: null,
+           confirmed: null, plausible: null, refuted: null, unverified: null, singleVote: null,
            deadLenses, lensCount: lenses.length, ...record }
 }
 const seen = new Set()
@@ -417,7 +417,7 @@ if (gateArmed && cumulativeTokens > classBudgetTokens && args.confirmOverBudget 
     story: args.story, mode, status: 'held_over_budget',
     // Explicitly null, not absent and not []: a held run verified nothing, and
     // must not satisfy §8 item 3 or §5's zero-confirmed predicate by omission.
-    confirmed: null, plausible: null, refuted: null, unverified: null,
+    confirmed: null, plausible: null, refuted: null, unverified: null, singleVote: null,
     projectedAgents, projectedTokens, spentTokens, cumulativeTokens,
     classBudgetTokens, gateArmed,
     rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
@@ -521,7 +521,11 @@ if (unverified.length) log(`WARNING: ${unverified.length} finding(s) got no surv
 const singleVote = results.filter(f => f.skepticVotes === 1)
 if (singleVote.length) log(`WARNING: ${singleVote.length} finding(s) got only ONE surviving skeptic vote — ` +
   `verified once, not twice: ${singleVote.map(f => f.title.slice(0, 40)).join(' · ')}`)
-return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length, deadLenses,
+// Named on the return as well as in the log: run-story §5's exit round reads
+// `singleVote` off the record, because a lone refuting survivor scores
+// `refuted` exactly like two (PR #559 round-5 C2) and the log is not the record.
+return { story: args.story, mode, confirmed, plausible, refuted, unverified, singleVote: singleVote.map(f => f.title),
+         lensCount: lenses.length, deadLenses,
          gateArmed, classBudgetTokens, spentTokens, projectedAgents, projectedTokens, cumulativeTokens,
          rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
          clusterOutcome, skepticBatchSize, ...record }

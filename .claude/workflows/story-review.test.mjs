@@ -1291,8 +1291,8 @@ const validate = (schema, v) => {
 // widened nor narrowed, no dead lens — off the workflow's OWN return, never off
 // the PM's notes. The adequacy-sweep red-team (E2-S3 P-A, pass 2, 2026-09-13)
 // found the return carried none of them, so the exit round was PM-certified.
-// PR #559's rounds 1–3 mutation-tested this block three times; each case
-// below names the mutant it kills.
+// PR #559's red-team rounds mutation-tested this block round after round;
+// each case below names the mutant it kills.
 //
 //  24a  a completed run returns `story` and `context` byte-identical to the
 //       args — each a long string with surrounding whitespace and a tail
@@ -1317,8 +1317,15 @@ const validate = (schema, v) => {
 //       START, so dropping either anchor goes red (round-3 C10, round-4 C3); a
 //       41-hex string, so dropping the upper bound goes red; a ref name in the
 //       SECOND target and TWO ref-name targets, so a loop over the first target
-//       or the first offender alone goes red (round-3 C11, round-4 C4); and a
-//       target with NO branch, so a falsy-skip guard goes red (round-4 C5)
+//       or the first offender alone goes red (round-3 C11, round-4 C4); a
+//       target with NO branch, so a falsy-skip guard goes red (round-4 C5);
+//       and a 6-hex ref name, so loosening the lower bound goes red (round-5
+//       C5)
+//  24f  `singleVote` names, on the completed return, every finding that kept
+//       only one skeptic vote — a lone refuting survivor scores `refuted` like
+//       two and the log is not the record (round-5 C2); it is `[]` when every
+//       finding kept both votes and `null` on the held and all-lenses-died
+//       returns, which verified nothing
 {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
   const slice = (r) => ({ story: r.story, context: r.context, lensRoster: r.lensRoster,
@@ -1441,6 +1448,31 @@ const validate = (schema, v) => {
     const design = makeHarness({ findingsPerLens: {}, args: baseArgs({ lenses: LENSES }) })
     await design.run()
     check('24e: design mode (no targets) logs no such WARNING', warned(design).length === 0)
+    const shortHex = makeHarness({ findingsPerLens: {}, args: diffArgs([T('decade')]) })
+    await shortHex.run()
+    check('24e: a 6-hex ref name is below the sha floor and logs the WARNING (the lower bound holds)',
+          warned(shortHex).length === 1, `logs=${JSON.stringify(shortHex.calls.logs)}`)
+  }
+  // 24f — singleVote names every finding verified once, and is null where nothing was verified
+  {
+    const oneDead = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: ({ call, indices }) => (call === 1 ? null : indices.map((i) => ({ index: i, refuted: true, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const r1 = await oneDead.run()
+    const once = [...r1.confirmed, ...r1.plausible, ...r1.refuted].filter((f) => f.skepticVotes === 1).map((f) => f.title)
+    check('24f: one dead skeptic batch leaves single-vote findings, and singleVote names exactly them',
+          once.length > 0 && same([...r1.singleVote].sort(), [...once].sort()),
+          `singleVote=${JSON.stringify(r1.singleVote)} once=${JSON.stringify(once)}`)
+    check('24f: a lone refuting survivor still scores refuted, which is why singleVote must be read',
+          r1.refuted.some((f) => f.skepticVotes === 1), `refuted votes=${r1.refuted.map((f) => f.skepticVotes).join(',')}`)
+    const allAlive = await makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }) }).run()
+    check('24f: with both votes on every finding, singleVote is an empty array', same(allAlive.singleVote, []), `singleVote=${JSON.stringify(allAlive.singleVote)}`)
+    const held = await makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS - 1 }) }).run()
+    check('24f: a held run carries singleVote null, like its verdict keys', held.status === 'held_over_budget' && held.singleVote === null && 'singleVote' in held)
+    const dead = await makeHarness({ findingsPerLens: {}, deadLenses: ['a', 'b'], args: baseArgs({ lenses: LENSES }) }).run()
+    check('24f: an all-lenses-died run carries singleVote null', dead.status === 'all_lenses_died' && dead.singleVote === null && 'singleVote' in dead)
   }
 }
 
