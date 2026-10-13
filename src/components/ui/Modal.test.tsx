@@ -804,6 +804,7 @@ describe('a confirm that closes its panel and removes the panel\'s opener in one
     expect(screen.getByRole('dialog', { name: 'Confirm' })).toBeTruthy();
 
     fireEvent.click(screen.getByText('Yes'));
+    expect(document.activeElement?.textContent).toBe('Delete');
     settle();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(row.isConnected).toBe(false);
