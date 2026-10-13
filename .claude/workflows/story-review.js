@@ -92,6 +92,22 @@ const CLUSTER_SCHEMA = {
 
 const mode = args.mode || 'diff'
 const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAULT_DIFF_LENSES)
+// The exit-round conditions run-story §5 reads (its ADEQUACY sub-bullet) —
+// the subject, the roster and the PM's context — are recorded VERBATIM on
+// every return, the held and all-lenses-died ones included, so a round's own
+// record says what it hunted and under which instruction. Before this the
+// return carried none of them and the PM certified an exit round from notes
+// (E2-S3's adequacy-sweep red-team, pass 2, 2026-09-13). `lensKeys` is what
+// was LAUNCHED, in order; `deadLenses` (set below) says which of those
+// returned nothing. `lensesOverridden` is the only honest test for "the
+// default roster ran": an `args.lenses` with the shipped keys and a changed
+// focus text is still an override.
+const record = {
+  context: args.context,
+  lensKeys: lenses.map(l => l.key),
+  lensesOverridden: Array.isArray(args.lenses),
+  ...(mode === 'design' ? { docPath: args.docPath } : { targets: args.targets }),
+}
 // `subject` reaches EVERY lens and EVERY skeptic verbatim, so it is
 // script-authored prose with the same reach as the stance. The test suite
 // renders both templates (sentinels only for the `args.*` values) and compares
@@ -181,7 +197,7 @@ if (lenses.length && deadLenses.length === lenses.length) {
   log(`ALL ${lenses.length} lenses died — NOT A REVIEW ROUND, nothing was hunted.`)
   return { story: args.story, mode, status: 'all_lenses_died',
            confirmed: null, plausible: null, refuted: null, unverified: null,
-           deadLenses, lensCount: lenses.length }
+           deadLenses, lensCount: lenses.length, ...record }
 }
 const seen = new Set()
 const exact = all.filter(f => {
@@ -394,7 +410,7 @@ if (gateArmed && cumulativeTokens > classBudgetTokens && args.confirmOverBudget 
     classBudgetTokens, gateArmed,
     rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
     clusterOutcome, skepticBatchSize,
-    lensCount: lenses.length, unverifiedFindings: deduped,
+    lensCount: lenses.length, unverifiedFindings: deduped, ...record,
   }
 }
 
@@ -496,4 +512,4 @@ if (singleVote.length) log(`WARNING: ${singleVote.length} finding(s) got only ON
 return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length, deadLenses,
          gateArmed, classBudgetTokens, spentTokens, projectedAgents, projectedTokens, cumulativeTokens,
          rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
-         clusterOutcome, skepticBatchSize }
+         clusterOutcome, skepticBatchSize, ...record }
