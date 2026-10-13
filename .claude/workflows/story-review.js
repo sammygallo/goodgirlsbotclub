@@ -96,23 +96,20 @@ const CLUSTER_SCHEMA = {
 const mode = args.mode || 'diff'
 const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAULT_DIFF_LENSES)
 // The exit-round conditions run-story §5 reads (its ADEQUACY sub-bullet) —
-// the subject, the roster and the PM's context — are recorded VERBATIM on
+// the subject, the roster and the PM's free text — are recorded VERBATIM on
 // every return, the held and all-lenses-died ones included, so a round's own
-// record says what it hunted and under which instruction. Before this the
-// return carried none of them and the PM certified an exit round from notes
-// (E2-S3's adequacy-sweep red-team, pass 2, 2026-09-13). `lensKeys` is what
-// was LAUNCHED, in order; `deadLenses` (set below, and on every return — the
-// held one included, PR #559 round-1 C12) says which of those returned
-// nothing. `lensesOverridden` is the only honest test for "the
-// default roster ran": an `args.lenses` with the shipped keys and a changed
-// focus text is still an override.
+// record says what it hunted and under which instruction (`story` is already
+// on every return). Before this the return carried none of them and the PM
+// certified an exit round from notes (E2-S3's adequacy-sweep red-team, pass
+// 2, 2026-09-13). `lensRoster` is what was LAUNCHED, key and focus verbatim —
+// CONTENT, so a shipped-keys roster with an edited focus and a verbatim copy
+// of the defaults passed through `args.lenses` each read as what they are
+// (PR #559 rounds 2 and 3; a keys-only field and an "overridden" flag both
+// misread one of those) — and `deadLenses` (set below, on every return) says
+// which of those returned nothing.
 const record = {
   context: args.context,
-  lensKeys: lenses.map(l => l.key),
-  // Key and focus VERBATIM: `lensKeys` alone cannot tell a shipped roster from
-  // one whose focus text was edited under the same keys (PR #559 round-2 C4).
   lensRoster: lenses.map(l => ({ key: l.key, focus: l.focus })),
-  lensesOverridden: Array.isArray(args.lenses),
   ...(mode === 'design' ? { docPath: args.docPath } : { targets: args.targets }),
 }
 if (mode !== 'design') {
