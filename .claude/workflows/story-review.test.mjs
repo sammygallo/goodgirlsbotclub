@@ -1307,6 +1307,12 @@ const validate = (schema, v) => {
 //       presence-only check; the held return carried no deadLenses at all)
 //  24c  `lensKeys` lists what was LAUNCHED, a dead lens included — the record
 //       must not quietly shrink the roster; `deadLenses` is where a death shows
+//  24e  a diff-mode target whose `branch` is not a commit sha is logged as a
+//       WARNING and a sha is not (round-2 C8: the binding rule lived only in
+//       prose and the args header still showed a ref name)
+//  24f  `lensRoster` carries key AND focus text verbatim, so a default roster
+//       with an edited focus string is distinguishable from the shipped one
+//       (round-2 C4) — the shipped default rosters' focus texts are pinned
 //  24d  a default-roster run records lensesOverridden=false with the shipped
 //       keys IN BOTH MODES (C9: the design-only version let a diff-mode default
 //       roster record `lensesOverridden: true`, or the design roster's keys,
@@ -1315,7 +1321,7 @@ const validate = (schema, v) => {
 //       key is still an override and `lensKeys` alone cannot see it
 {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
-  const slice = (r) => ({ context: r.context, lensKeys: r.lensKeys, lensesOverridden: r.lensesOverridden,
+  const slice = (r) => ({ context: r.context, lensKeys: r.lensKeys, lensRoster: r.lensRoster, lensesOverridden: r.lensesOverridden,
                           targets: r.targets, docPath: r.docPath })
   const LONG_CTX = '  \n' + 'x'.repeat(5000) + '\nKNOWN AND ACCEPTED, not findings: a tail clause that narrows the round  \n'
   // 24a — diff mode: the subject is `targets`, verbatim; context survives whole
@@ -1349,11 +1355,13 @@ const validate = (schema, v) => {
     const rc = await done.run()
     check('24b: the completed diff-mode run carries targets and no docPath',
           same(rc.targets, SENTINEL_TARGETS) && !('docPath' in rc) && rc.lensesOverridden === true)
-    // lens a dies; b and c return six findings; 3 lenses + 12 skeptics at batch
-    // size 1 project to 1.2M, so a 100k budget holds before any skeptic runs.
+    // lens a dies; the three findings SIX holds for lens b project to 9 agents
+    // (3 lenses + 6 skeptics at batch size 1), above a 100k budget, so the run
+    // holds before any skeptic runs — the figure is pinned below, not stated.
     const held = makeHarness({ findingsPerLens: SIX, deadLenses: ['a'], args: diffArgs({ classBudgetTokens: 100_000 }) })
     const rh = await held.run()
-    check('24b: the held run holds (precondition)', rh.status === 'held_over_budget' && held.calls.skeptic === 0, `status=${rh.status}`)
+    check('24b: the held run holds (precondition)', rh.status === 'held_over_budget' && held.calls.skeptic === 0 && rh.projectedAgents === 9,
+          `status=${rh.status} agents=${rh.projectedAgents}`)
     check('24b: the held return carries the completed run\'s record slice, value for value',
           same(slice(rh), slice(rc)) && !('docPath' in rh), `held=${JSON.stringify(slice(rh))} done=${JSON.stringify(slice(rc))}`)
     check('24b: the held return names its dead lens', same(rh.deadLenses, ['a']) && same(rh.lensKeys, ['a', 'b', 'c']),
@@ -1362,6 +1370,22 @@ const validate = (schema, v) => {
     const rd = await dead.run()
     check('24b: the all-lenses-died return carries the same record slice',
           rd.status === 'all_lenses_died' && same(slice(rd), slice(rc)) && same(rd.deadLenses, ['a', 'b', 'c']) && !('docPath' in rd),
+          `dead=${JSON.stringify(slice(rd))}`)
+  }
+  // 24b — design mode too (round-2 C9): a hand-built early return that always
+  //       wrote `targets` passed the diff-only version of this case
+  {
+    const THREE = [{ key: 'a', focus: 'a' }, { key: 'b', focus: 'b' }, { key: 'c', focus: 'c' }]
+    const designArgs = (extra) => baseArgs({ context: LONG_CTX, lenses: THREE, ...extra })
+    const rc = await makeHarness({ findingsPerLens: SIX, args: designArgs({}) }).run()
+    const held = makeHarness({ findingsPerLens: SIX, deadLenses: ['a'], args: designArgs({ classBudgetTokens: 100_000 }) })
+    const rh = await held.run()
+    check('24b: a design-mode held return carries the completed run\'s record slice, docPath and no targets',
+          rh.status === 'held_over_budget' && same(slice(rh), slice(rc)) && rh.docPath === '/tmp/doc.md' && !('targets' in rh) && same(rh.deadLenses, ['a']),
+          `held=${JSON.stringify(slice(rh))}`)
+    const rd = await makeHarness({ findingsPerLens: {}, deadLenses: ['a', 'b', 'c'], args: designArgs({}) }).run()
+    check('24b: a design-mode all-lenses-died return carries the same record slice',
+          rd.status === 'all_lenses_died' && same(slice(rd), slice(rc)) && rd.docPath === '/tmp/doc.md' && !('targets' in rd),
           `dead=${JSON.stringify(slice(rd))}`)
   }
   // 24c — a dead lens stays in lensKeys; deadLenses is the only place it shows
@@ -1376,6 +1400,43 @@ const validate = (schema, v) => {
     check('24c: lensKeys lists the launched roster, dead lens included',
           same(r.lensKeys, ['a', 'b', 'c']) && same(r.deadLenses, ['a']),
           `lensKeys=${JSON.stringify(r.lensKeys)} deadLenses=${JSON.stringify(r.deadLenses)}`)
+  }
+  // 24e — a non-sha `branch` is logged as a WARNING; a sha is not
+  {
+    const named = makeHarness({ findingsPerLens: {}, args: baseArgs({ mode: 'diff', docPath: undefined, lenses: LENSES,
+      targets: [{ repo: 'r', path: '/p', base: 'origin/main', branch: 'claude/some-branch' }] }) })
+    await named.run()
+    check('24e: a ref-name branch logs a WARNING naming the target',
+          named.calls.logs.some((l) => /WARNING/.test(l) && /branch=claude\/some-branch/.test(l) && /not a commit sha/.test(l)),
+          `logs=${JSON.stringify(named.calls.logs)}`)
+    const sha = makeHarness({ findingsPerLens: {}, args: baseArgs({ mode: 'diff', docPath: undefined, lenses: LENSES,
+      targets: [{ repo: 'r', path: '/p', base: 'origin/main', branch: 'f3af797c'.padEnd(40, '0') }] }) })
+    await sha.run()
+    check('24e: a 40-hex sha branch logs no such WARNING', !sha.calls.logs.some((l) => /not a commit sha/.test(l)),
+          `logs=${JSON.stringify(sha.calls.logs)}`)
+    const short = makeHarness({ findingsPerLens: {}, args: baseArgs({ mode: 'diff', docPath: undefined, lenses: LENSES,
+      targets: [{ repo: 'r', path: '/p', base: 'origin/main', branch: 'f3af797c' }] }) })
+    await short.run()
+    check('24e: an abbreviated sha branch logs no such WARNING', !short.calls.logs.some((l) => /not a commit sha/.test(l)),
+          `logs=${JSON.stringify(short.calls.logs)}`)
+    const design = makeHarness({ findingsPerLens: {}, args: baseArgs({ lenses: LENSES }) })
+    await design.run()
+    check('24e: design mode (no targets) logs no such WARNING', !design.calls.logs.some((l) => /not a commit sha/.test(l)))
+  }
+  // 24f — lensRoster is key AND focus, verbatim
+  {
+    for (const m of ['design', 'diff']) {
+      const subj = m === 'design' ? { docPath: '/tmp/d.md' } : { targets: SENTINEL_TARGETS }
+      const rd = await makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: m, context: 't', ...subj } }).run()
+      const want = DEFAULT_LENSES_ALLOWED[m].map(([key, focus]) => ({ key, focus }))
+      check(`24f: a ${m}-mode default-roster run records the shipped keys AND focus texts`,
+            same(rd.lensRoster, want), `roster=${JSON.stringify(rd.lensRoster)}`)
+      const edited = want.map((l, i) => (i === 0 ? { ...l, focus: 'only the most recent commit' } : l))
+      const re = await makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: m, context: 't', lenses: edited, ...subj } }).run()
+      check(`24f: a ${m}-mode roster with one edited focus is recorded as edited, keys unchanged`,
+            same(re.lensRoster, edited) && same(re.lensKeys, rd.lensKeys) && !same(re.lensRoster, want),
+            `roster=${JSON.stringify(re.lensRoster)}`)
+    }
   }
   // 24d — lensesOverridden is the test for "the default roster ran", in both modes
   {

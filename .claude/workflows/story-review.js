@@ -12,7 +12,10 @@ export const meta = {
 // args: {
 //   story: 'E1-S1',
 //   mode: 'diff' | 'design',
-//   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<branch>' }]   (diff mode)
+//   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<head sha>' }]   (diff mode)
+//     `branch` is the COMMIT the lenses are to read, not a ref name: the record
+//     carries it verbatim (run-story §5, ADEQUACY) and a ref binds it to nothing.
+//     A non-sha value is accepted but logged as a WARNING.
 //   docPath: '/abs/path/to/design.md'                                                            (design mode)
 //   context: 'PM-written brief excerpt: what this change is, safety invariants, known constraints'
 //   classBudgetTokens: optional number — the story's roadmap §5 class-row budget. When set, the run
@@ -106,8 +109,19 @@ const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAU
 const record = {
   context: args.context,
   lensKeys: lenses.map(l => l.key),
+  // Key and focus VERBATIM: `lensKeys` alone cannot tell a shipped roster from
+  // one whose focus text was edited under the same keys (PR #559 round-2 C4).
+  lensRoster: lenses.map(l => ({ key: l.key, focus: l.focus })),
   lensesOverridden: Array.isArray(args.lenses),
   ...(mode === 'design' ? { docPath: args.docPath } : { targets: args.targets }),
+}
+if (mode !== 'design') {
+  for (const t of args.targets || []) {
+    if (!/^[0-9a-f]{7,40}$/.test(String(t.branch))) {
+      log(`WARNING: target ${t.repo} branch=${t.branch} is not a commit sha — the record binds to a mutable ref, ` +
+          `not to what the lenses read (run-story §5, ADEQUACY: pass the head sha)`)
+    }
+  }
 }
 // `subject` reaches EVERY lens and EVERY skeptic verbatim, so it is
 // script-authored prose with the same reach as the stance. The test suite
