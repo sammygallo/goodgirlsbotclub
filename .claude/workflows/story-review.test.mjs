@@ -1291,32 +1291,42 @@ const validate = (schema, v) => {
 // widened nor narrowed, no dead lens — off the workflow's OWN return, never off
 // the PM's notes. The adequacy-sweep red-team (E2-S3 P-A, pass 2, 2026-09-13)
 // found the return carried none of them, so the exit round was PM-certified.
+// PR #559's round 1 then mutation-tested the first version of this block and
+// found four blind spots (C9–C12); each case below names the mutant it kills.
 //
-//  24a  a completed run returns `context` byte-identical to args.context,
-//       `lensKeys` in launch order, `lensesOverridden`, and the subject —
-//       `targets` verbatim in diff mode, `docPath` in design mode, never both
-//  24b  a held run and an all-lenses-died run carry the same record: a hold
-//       that is resumed must present what it hunted, and a dead round must
-//       still say what it would have
+//  24a  a completed run returns `context` byte-identical to args.context —
+//       a 5,000-character context with leading/trailing whitespace and a tail
+//       clause, so a slice or trim goes red (C10) — `lensKeys` in launch
+//       order, `lensesOverridden`, and the subject: `targets` verbatim in diff
+//       mode, `docPath` in design mode, never both
+//  24b  in DIFF mode (the trigger tier), a held run and an all-lenses-died run
+//       carry the same record slice as a completed run with the same args —
+//       deep-compared, value for value, `targets` included — and the held
+//       return names its dead lens in `deadLenses` (C11, C12: a hand-built
+//       early return with lensesOverridden=false and no targets passed the
+//       presence-only check; the held return carried no deadLenses at all)
 //  24c  `lensKeys` lists what was LAUNCHED, a dead lens included — the record
 //       must not quietly shrink the roster; `deadLenses` is where a death shows
 //  24d  a default-roster run records lensesOverridden=false with the shipped
-//       keys; an `args.lenses` run records true even when its keys equal the
-//       defaults, because a changed focus text under the same key is still an
-//       override and `lensKeys` alone cannot see it
+//       keys IN BOTH MODES (C9: the design-only version let a diff-mode default
+//       roster record `lensesOverridden: true`, or the design roster's keys,
+//       with the suite green); an `args.lenses` run records true even when its
+//       keys equal the defaults, because a changed focus text under the same
+//       key is still an override and `lensKeys` alone cannot see it
 {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
-  const RECORD_KEYS = ['context', 'lensKeys', 'lensesOverridden']
-  const hasRecord = (r) => RECORD_KEYS.every((k) => k in r)
-  // 24a — diff mode: the subject is `targets`, verbatim
+  const slice = (r) => ({ context: r.context, lensKeys: r.lensKeys, lensesOverridden: r.lensesOverridden,
+                          targets: r.targets, docPath: r.docPath })
+  const LONG_CTX = '  \n' + 'x'.repeat(5000) + '\nKNOWN AND ACCEPTED, not findings: a tail clause that narrows the round  \n'
+  // 24a — diff mode: the subject is `targets`, verbatim; context survives whole
   {
-    const ctx = 'WIDENED: mutation-verify every guard, branch and assignment'
     const h = makeHarness({
       findingsPerLens: SIX,
-      args: baseArgs({ mode: 'diff', docPath: undefined, targets: SENTINEL_TARGETS, context: ctx, lenses: LENSES }),
+      args: baseArgs({ mode: 'diff', docPath: undefined, targets: SENTINEL_TARGETS, context: LONG_CTX, lenses: LENSES }),
     })
     const r = await h.run()
-    check('24a: context is returned verbatim', r.context === ctx, `context=${JSON.stringify(r.context)}`)
+    check('24a: a 5,000-char context with surrounding whitespace is returned byte-identical',
+          r.context === LONG_CTX, `len=${r.context && r.context.length} want=${LONG_CTX.length}`)
     check('24a: lensKeys is the launched roster in order', same(r.lensKeys, ['a', 'b']), `lensKeys=${JSON.stringify(r.lensKeys)}`)
     check('24a: lensesOverridden is true under args.lenses', r.lensesOverridden === true, `overridden=${r.lensesOverridden}`)
     check('24a: diff mode returns targets verbatim and no docPath',
@@ -1324,26 +1334,35 @@ const validate = (schema, v) => {
   }
   // 24a — design mode: the subject is `docPath`
   {
-    const h = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES }) })
+    const h = makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES, context: LONG_CTX }) })
     const r = await h.run()
     check('24a: design mode returns docPath and no targets',
           r.docPath === '/tmp/doc.md' && !('targets' in r), `docPath=${r.docPath} targets=${JSON.stringify(r.targets)}`)
+    check('24a: design-mode context is byte-identical too', r.context === LONG_CTX)
   }
-  // 24b — the held and all-lenses-died returns carry the record too
+  // 24b — diff mode: held and all-lenses-died returns carry the completed run's
+  //       record slice, value for value; the held return names its dead lens
   {
-    const held = makeHarness({
-      findingsPerLens: SIX,
-      args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS - 1, context: 'held-ctx' }),
-    })
+    const THREE = [{ key: 'a', focus: 'a' }, { key: 'b', focus: 'b' }, { key: 'c', focus: 'c' }]
+    const diffArgs = (extra) => baseArgs({ mode: 'diff', docPath: undefined, targets: SENTINEL_TARGETS, context: LONG_CTX, lenses: THREE, ...extra })
+    const done = makeHarness({ findingsPerLens: SIX, args: diffArgs({}) })
+    const rc = await done.run()
+    check('24b: the completed diff-mode run carries targets and no docPath',
+          same(rc.targets, SENTINEL_TARGETS) && !('docPath' in rc) && rc.lensesOverridden === true)
+    // lens a dies; b and c return six findings; 3 lenses + 12 skeptics at batch
+    // size 1 project to 1.2M, so a 100k budget holds before any skeptic runs.
+    const held = makeHarness({ findingsPerLens: SIX, deadLenses: ['a'], args: diffArgs({ classBudgetTokens: 100_000 }) })
     const rh = await held.run()
-    check('24b: a held run carries the record',
-          rh.status === 'held_over_budget' && hasRecord(rh) && rh.context === 'held-ctx' && same(rh.lensKeys, ['a', 'b']) && rh.docPath === '/tmp/doc.md',
-          `status=${rh.status} keys=${Object.keys(rh).join(',')}`)
-    const dead = makeHarness({ findingsPerLens: {}, deadLenses: ['a', 'b'], args: baseArgs({ lenses: LENSES, context: 'dead-ctx' }) })
+    check('24b: the held run holds (precondition)', rh.status === 'held_over_budget' && held.calls.skeptic === 0, `status=${rh.status}`)
+    check('24b: the held return carries the completed run\'s record slice, value for value',
+          same(slice(rh), slice(rc)) && !('docPath' in rh), `held=${JSON.stringify(slice(rh))} done=${JSON.stringify(slice(rc))}`)
+    check('24b: the held return names its dead lens', same(rh.deadLenses, ['a']) && same(rh.lensKeys, ['a', 'b', 'c']),
+          `deadLenses=${JSON.stringify(rh.deadLenses)} lensKeys=${JSON.stringify(rh.lensKeys)}`)
+    const dead = makeHarness({ findingsPerLens: {}, deadLenses: ['a', 'b', 'c'], args: diffArgs({}) })
     const rd = await dead.run()
-    check('24b: an all-lenses-died run carries the record',
-          rd.status === 'all_lenses_died' && hasRecord(rd) && rd.context === 'dead-ctx' && same(rd.lensKeys, ['a', 'b']) && rd.docPath === '/tmp/doc.md',
-          `status=${rd.status} keys=${Object.keys(rd).join(',')}`)
+    check('24b: the all-lenses-died return carries the same record slice',
+          rd.status === 'all_lenses_died' && same(slice(rd), slice(rc)) && same(rd.deadLenses, ['a', 'b', 'c']) && !('docPath' in rd),
+          `dead=${JSON.stringify(slice(rd))}`)
   }
   // 24c — a dead lens stays in lensKeys; deadLenses is the only place it shows
   {
@@ -1358,19 +1377,23 @@ const validate = (schema, v) => {
           same(r.lensKeys, ['a', 'b', 'c']) && same(r.deadLenses, ['a']),
           `lensKeys=${JSON.stringify(r.lensKeys)} deadLenses=${JSON.stringify(r.deadLenses)}`)
   }
-  // 24d — lensesOverridden is the test for "the default roster ran"
+  // 24d — lensesOverridden is the test for "the default roster ran", in both modes
   {
-    const def = makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: 'design', docPath: '/tmp/d.md', context: 't' } })
-    const rd = await def.run()
-    check('24d: a default-roster run records lensesOverridden=false and the shipped keys',
-          rd.lensesOverridden === false && same(rd.lensKeys, DEFAULT_LENSES_ALLOWED.design.map(([k]) => k)),
-          `overridden=${rd.lensesOverridden} lensKeys=${JSON.stringify(rd.lensKeys)}`)
-    const sameKeys = DEFAULT_LENSES_ALLOWED.design.map(([k]) => ({ key: k, focus: 'a changed focus under the shipped key' }))
-    const ov = makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: 'design', docPath: '/tmp/d.md', context: 't', lenses: sameKeys } })
-    const ro = await ov.run()
-    check('24d: an args.lenses run with the shipped keys still records lensesOverridden=true',
-          ro.lensesOverridden === true && same(ro.lensKeys, rd.lensKeys),
-          `overridden=${ro.lensesOverridden} lensKeys=${JSON.stringify(ro.lensKeys)}`)
+    for (const m of ['design', 'diff']) {
+      const subj = m === 'design' ? { docPath: '/tmp/d.md' } : { targets: SENTINEL_TARGETS }
+      const def = makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: m, context: 't', ...subj } })
+      const rd = await def.run()
+      const want = DEFAULT_LENSES_ALLOWED[m].map(([k]) => k)
+      check(`24d: a ${m}-mode default-roster run records lensesOverridden=false and the shipped ${m} keys`,
+            rd.lensesOverridden === false && same(rd.lensKeys, want),
+            `overridden=${rd.lensesOverridden} lensKeys=${JSON.stringify(rd.lensKeys)} want=${JSON.stringify(want)}`)
+      const sameKeys = want.map((k) => ({ key: k, focus: 'a changed focus under the shipped key' }))
+      const ov = makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: m, context: 't', lenses: sameKeys, ...subj } })
+      const ro = await ov.run()
+      check(`24d: a ${m}-mode args.lenses run with the shipped keys still records lensesOverridden=true`,
+            ro.lensesOverridden === true && same(ro.lensKeys, want),
+            `overridden=${ro.lensesOverridden} lensKeys=${JSON.stringify(ro.lensKeys)}`)
+    }
   }
 }
 

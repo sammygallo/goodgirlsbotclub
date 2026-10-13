@@ -98,8 +98,9 @@ const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAU
 // record says what it hunted and under which instruction. Before this the
 // return carried none of them and the PM certified an exit round from notes
 // (E2-S3's adequacy-sweep red-team, pass 2, 2026-09-13). `lensKeys` is what
-// was LAUNCHED, in order; `deadLenses` (set below) says which of those
-// returned nothing. `lensesOverridden` is the only honest test for "the
+// was LAUNCHED, in order; `deadLenses` (set below, and on every return — the
+// held one included, PR #559 round-1 C12) says which of those returned
+// nothing. `lensesOverridden` is the only honest test for "the
 // default roster ran": an `args.lenses` with the shipped keys and a changed
 // focus text is still an override.
 const record = {
@@ -410,7 +411,7 @@ if (gateArmed && cumulativeTokens > classBudgetTokens && args.confirmOverBudget 
     classBudgetTokens, gateArmed,
     rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
     clusterOutcome, skepticBatchSize,
-    lensCount: lenses.length, unverifiedFindings: deduped, ...record,
+    lensCount: lenses.length, deadLenses, unverifiedFindings: deduped, ...record,
   }
 }
 
