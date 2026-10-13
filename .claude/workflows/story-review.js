@@ -15,7 +15,8 @@ export const meta = {
 //   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<head sha>' }]   (diff mode)
 //     `branch` is the COMMIT the lenses are to read, not a ref name: the record
 //     carries it verbatim (run-story §5, ADEQUACY) and a ref binds it to nothing.
-//     A non-sha value is accepted but logged as a WARNING.
+//     A value that is not sha-SHAPED (7–40 hex) is accepted but logged as a WARNING —
+//     a shape test, which a hex-named ref passes: pass the full sha.
 //   docPath: '/abs/path/to/design.md'                                                            (design mode)
 //   context: 'PM-written brief excerpt: what this change is, safety invariants, known constraints'
 //   classBudgetTokens: optional number — the story's roadmap §5 class-row budget. When set, the run

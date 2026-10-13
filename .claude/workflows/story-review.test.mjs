@@ -1291,8 +1291,7 @@ const validate = (schema, v) => {
 // widened nor narrowed, no dead lens — off the workflow's OWN return, never off
 // the PM's notes. The adequacy-sweep red-team (E2-S3 P-A, pass 2, 2026-09-13)
 // found the return carried none of them, so the exit round was PM-certified.
-// PR #559's red-team rounds mutation-tested this block round after round;
-// each case below names the mutant it kills.
+// PR #559's red-team rounds mutation-tested this block round after round.
 //
 //  24a  a completed run returns `story` and `context` byte-identical to the
 //       args — each a long string with surrounding whitespace and a tail
@@ -1319,13 +1318,17 @@ const validate = (schema, v) => {
 //       SECOND target and TWO ref-name targets, so a loop over the first target
 //       or the first offender alone goes red (round-3 C11, round-4 C4); a
 //       target with NO branch, so a falsy-skip guard goes red (round-4 C5);
-//       and a 6-hex ref name, so loosening the lower bound goes red (round-5
-//       C5)
+//       a 6-hex ref name, so loosening the lower bound goes red (round-5 C5);
+//       a 7-hex sha, so tightening it goes red; and design-mode args carrying
+//       a leftover ref-name target, so deleting the mode guard goes red
+//       (round-6 C12)
 //  24f  `singleVote` names, on the completed return, every finding that kept
 //       only one skeptic vote — a lone refuting survivor scores `refuted` like
 //       two and the log is not the record (round-5 C2); it is `[]` when every
 //       finding kept both votes and `null` on the held and all-lenses-died
-//       returns, which verified nothing
+//       returns, which verified nothing; a finding that lost BOTH votes is
+//       `unverified`, not single-vote, and a long title is named whole, not at
+//       the log line's 40-character cut (round-6 C11)
 {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
   const slice = (r) => ({ story: r.story, context: r.context, lensRoster: r.lensRoster,
@@ -1452,6 +1455,12 @@ const validate = (schema, v) => {
     await shortHex.run()
     check('24e: a 6-hex ref name is below the sha floor and logs the WARNING (the lower bound holds)',
           warned(shortHex).length === 1, `logs=${JSON.stringify(shortHex.calls.logs)}`)
+    const seven = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f3af797')]) })
+    await seven.run()
+    check('24e: a 7-hex abbreviated sha logs no WARNING (the floor is not tightened)', warned(seven).length === 0, `logs=${JSON.stringify(seven.calls.logs)}`)
+    const designLeftover = makeHarness({ findingsPerLens: {}, args: baseArgs({ lenses: LENSES, targets: [T('claude/x')] }) })
+    await designLeftover.run()
+    check('24e: design mode ignores a leftover ref-name target (the mode guard holds)', warned(designLeftover).length === 0, `logs=${JSON.stringify(designLeftover.calls.logs)}`)
   }
   // 24f — singleVote names every finding verified once, and is null where nothing was verified
   {
@@ -1473,6 +1482,26 @@ const validate = (schema, v) => {
     check('24f: a held run carries singleVote null, like its verdict keys', held.status === 'held_over_budget' && held.singleVote === null && 'singleVote' in held)
     const dead = await makeHarness({ findingsPerLens: {}, deadLenses: ['a', 'b'], args: baseArgs({ lenses: LENSES }) }).run()
     check('24f: an all-lenses-died run carries singleVote null', dead.status === 'all_lenses_died' && dead.singleVote === null && 'singleVote' in dead)
+    // both batches covering finding 0 die: zero votes is `unverified`, never single-vote
+    const zero = makeHarness({
+      findingsPerLens: { a: [finding('zero-votes')], b: [finding('two-votes')] },
+      skeptic: ({ indices }) => (indices.includes(0) ? null : indices.map((i) => ({ index: i, refuted: false, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 1, clusterMinFindings: 999 }),
+    })
+    const rz = await zero.run()
+    check('24f: a finding that lost BOTH votes is unverified and absent from singleVote',
+          same(rz.singleVote, []) && rz.unverified.length === 1 && rz.unverified[0].title === 'zero-votes',
+          `singleVote=${JSON.stringify(rz.singleVote)} unverified=${JSON.stringify(rz.unverified.map((f) => f.title))}`)
+    const LONGT = 'a finding title that runs well past the forty-character cut the log line makes'
+    const longFix = { a: [finding(LONGT), finding('two'), finding('three')], b: [finding('four'), finding('five'), finding('six')] }
+    const oneDeadLong = makeHarness({
+      findingsPerLens: longFix,
+      skeptic: ({ call, indices }) => (call === 1 ? null : indices.map((i) => ({ index: i, refuted: true, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const rl = await oneDeadLong.run()
+    check('24f: a single-vote finding with a long title is named byte-identical, not at the log cut',
+          rl.singleVote.includes(LONGT), `singleVote=${JSON.stringify(rl.singleVote)}`)
   }
 }
 
