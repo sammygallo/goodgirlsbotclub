@@ -264,15 +264,15 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>12 Oct 2026</b><br>
+      <b>13 Oct 2026</b><br>
       main <b>f0098a81</b><br>
-      active <b>E6-S2 — hero banner, PLAN done, build next</b>
+      active <b>E6-S2 — hero banner, review converged, at the §8 gate</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
-    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">5</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
@@ -313,20 +313,20 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E6">
-          <div class="id">E6-S2</div>
-          <div class="t">Hero banner</div>
-          <div class="m">12 Oct · re-scoped by Sammy after INTAKE blocked. Ships: featured-character hero from <code>public/hero/feature-slides.json</code>, plus Featured characters, New this week and Works rows. Deferred to <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>: the recency route and the "Pick up where you left off" row. PLAN done; one PR; build next (story-dev, Sonnet). Branch <code>claude/e6-s2-hero-banner</code>. Trigger-tier review is held for an Opus or Fable session.</div>
-          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate">review held: Opus/Fable</span></div>
-        </article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E6">
+          <div class="id">E6-S2</div>
+          <div class="t">Hero banner</div>
+          <div class="m">13 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/553">#553</a> at <code>feb2ff8d</code>, at the &sect;8 gate. Re-scoped by Sammy 12 Oct (no recency route until <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>; featured characters from <code>public/hero/feature-slides.json</code>). <b>7 trigger-tier rounds, ~7.3M; round 7 zero.</b> Rounds 2&ndash;4 kept re-breaking two mechanisms fix rounds had added; Sammy chose to descope both (13 Oct) and the pre-existing focus-return cases went to #555; #554 filed at round 1. <b>QA: AC2/3/4 pass, AC1 pass on internals</b> &mdash; seven frame-vs-spec deltas need Sammy's sign-off; axe fails on the light&middot;amber welcome panel (the D-T4 token pair, scheduled for E6-S3). Gates 131 / 2770, build 0, eslint 0/18; CI green. Frontend-only, no migration.</div>
+          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate hot">&sect;8: Sammy merges</span><span class="gate">#554 #555 filed</span></div>
+        </article>
       </div>
     </section>
 
@@ -505,7 +505,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 12 Oct 2026 (E6-S2 in progress).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Oct 2026 (E6-S2 in review, #553).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
