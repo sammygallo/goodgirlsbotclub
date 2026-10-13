@@ -265,15 +265,15 @@
     </div>
     <div class="stamp">
       <b>13 Oct 2026</b><br>
-      main <b>f0098a81</b><br>
-      active <b>E6-S2 — hero banner, review converged, at the §8 gate</b>
+      main <b>23d64024</b><br>
+      active <b>none — E6-S2 merged 13 Oct, awaiting deploy</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">5</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-ok"><div class="n">6</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">15</div><div class="k">Gated</div></div>
@@ -319,20 +319,20 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E6">
-          <div class="id">E6-S2</div>
-          <div class="t">Hero banner</div>
-          <div class="m">13 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/553">#553</a> at <code>feb2ff8d</code>, at the &sect;8 gate. Re-scoped by Sammy 12 Oct (no recency route until <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>; featured characters from <code>public/hero/feature-slides.json</code>). <b>7 trigger-tier rounds, ~7.3M; round 7 zero.</b> Rounds 2&ndash;4 kept re-breaking two mechanisms fix rounds had added; Sammy chose to descope both (13 Oct) and the pre-existing focus-return cases went to #555; #554 filed at round 1. <b>QA: AC2/3/4 pass, AC1 pass on internals</b> &mdash; seven frame-vs-spec deltas need Sammy's sign-off; axe fails on the light&middot;amber welcome panel (the D-T4 token pair, scheduled for E6-S3). Gates 131 / 2770, build 0, eslint 0/18; CI green. Frontend-only, no migration.</div>
-          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate hot">&sect;8: Sammy merges</span><span class="gate">#554 #555 filed</span></div>
-        </article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">5</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">6</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E6">
+          <div class="id">E6-S2</div>
+          <div class="t">Hero banner</div>
+          <div class="m">13 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/553">#553</a> &rarr; <code>23d64024</code>, merged by Sammy at the &sect;8 gate (re-scope vision divergence, #556 standard not met, did-not-converge), undeployed. Frontend-only, no migration. Re-scoped 12 Oct: no recency route until <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>; featured characters from <code>public/hero/feature-slides.json</code>, shipped empty. <b>7 trigger-tier rounds, ~7.3M, round 7 zero.</b> Two fix-round mechanisms descoped at round 4; the hook ships as the state round 2 reviewed. <b>QA: AC2/3/4 pass, AC1 signed off as built</b> (spec wins over the frames). #556 accepted until E6-S3's D-T4; kicker 12px pending a &sect;6.5 amendment. Filed #554 #555 #556 #557. Gates 131 / 2770, build 0, eslint 0/18.</div>
+          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate">deploy: Sammy's go</span><span class="gate">#554&ndash;#557 filed</span></div>
+        </article>
         <article class="card s-ok" data-epic="E3">
           <div class="id">E3-S1</div>
           <div class="t">Cascade semantics design</div>
@@ -505,7 +505,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Oct 2026 (E6-S2 in review, #553).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Oct 2026 (E6-S2 merged, #553 &rarr; 23d64024, awaiting deploy).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
