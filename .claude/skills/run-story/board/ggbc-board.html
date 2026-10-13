@@ -266,19 +266,19 @@
     <div class="stamp">
       <b>13 Oct 2026</b><br>
       main <b>23d64024</b><br>
-      active <b>none — E6-S2 merged 13 Oct, awaiting deploy</b>
+      active <b>none — deployed 13 Oct (E6-S2 · E2-S3 · E2-S4)</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
     <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">6</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">15</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
-    <div class="tile is-ok"><div class="n">10</div><div class="k">Deployed</div></div>
+    <div class="tile is-ok"><div class="n">16</div><div class="k">Deployed</div></div>
     <div class="tile is-warn"><div class="n">24</div><div class="k">Open issues</div></div>
   </div>
 
@@ -325,44 +325,8 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">6</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-ok" data-epic="E6">
-          <div class="id">E6-S2</div>
-          <div class="t">Hero banner</div>
-          <div class="m">13 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/553">#553</a> &rarr; <code>23d64024</code>, merged by Sammy at the &sect;8 gate (re-scope vision divergence, #556 standard not met, did-not-converge), undeployed. Frontend-only, no migration. Re-scoped 12 Oct: no recency route until <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>; featured characters from <code>public/hero/feature-slides.json</code>, shipped empty. <b>7 trigger-tier rounds, ~7.3M, round 7 zero.</b> Two fix-round mechanisms descoped at round 4; the hook ships as the state round 2 reviewed. <b>QA: AC2/3/4 pass, AC1 signed off as built</b> (spec wins over the frames). #556 accepted until E6-S3's D-T4; kicker 12px pending a &sect;6.5 amendment. Filed #554 #555 #556 #557. Gates 131 / 2770, build 0, eslint 0/18.</div>
-          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate">deploy: Sammy's go</span><span class="gate">#554&ndash;#557 filed</span></div>
-        </article>
-        <article class="card s-ok" data-epic="E3">
-          <div class="id">E3-S1</div>
-          <div class="t">Cascade semantics design</div>
-          <div class="m">4 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/545">#545</a> → <code>092cf2a1</code>, merged after Sammy's design sign-off. Docs only (spec + store-refactor plan). No deploy.</div>
-          <div class="gates"><span class="gate free">deploy n/a</span></div>
-        </article>
-        <article class="card s-ok" data-epic="E6">
-          <div class="id">E6-S1</div>
-          <div class="t">UI workshop — hero, sidebar, chat</div>
-          <div class="m">11 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/549">#549</a> → <code>4dde86bb</code>, merged, docs only (no deploy). Spec A1: hidden drawer at every width; hero followed by category rows; chat has no sidebar column. 22 v2 frames approved by Sammy 2026-10-11. Unblocks E6-S2/S3/S4.</div>
-          <div class="gates"><span class="gate free">deploy n/a</span><span class="gate free">unblocks E6-S2/S3/S4</span></div>
-        </article>
-        <article class="card s-ok" data-epic="E2">
-          <div class="id">E2-S3</div>
-          <div class="t">Show-prompt toggle &mdash; post-transform exact-prompt viewer</div>
-          <div class="m">13 Sep &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/538">#538</a> &rarr; <code>a847e532</code>, merged by Sammy at the &sect;8 gate (did-not-converge, waived checklist item 3, arguable vision divergence). Frontend-only, no migration, no backend change. <b>QA 6/6 AC pass, 12 skeptic votes, 0 refutations.</b> 15 verified trigger-tier rounds + a 16th held at the &sect;5 cost gate; production logic unchanged since round 8. 116 files / 2415 tests; goldens untouched. AC2&rsquo;s interceptor arm cannot fire in production until the backend serves the route (#537); the collapse arm is live. Filed #534 #535 #536 #537.</div>
-          <div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate hot">#537 dead client hook</span></div>
-        </article>
-        <article class="card s-ok" data-epic="E2">
-          <div class="id">E2-S4 · PR2</div>
-          <div class="t">Insights data API — the store-level consumer surface</div>
-          <div class="m">12 Sep &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/533">#533</a> &rarr; <code>141967b6</code>, merged on Sammy&rsquo;s go after round 18 with three &sect;8 triggers fired. Six new files, no existing source edited. <b>QA 4/4 AC PASS.</b> 18 rounds + 2 design passes; production logic correct since round 12. The review found a chat file name is not a chat identity (<code>wiFiredByFile</code> is keyed by bare name across characters) &mdash; Sammy chose <b>option B</b>: never claim completeness or a direction, return <code>UnverifiedCount</code> with a type-pinned collision caveat. <b>2 of the card&rsquo;s 4 exposures delivered</b>; the rest routed to E5-S1&rsquo;s intake. Filed #530 (data loss on a failed chat switch), #531.</div>
-          <div class="gates"><span class="gate free">PR1 ✓ on main</span><span class="gate">unblocks E5-S1</span><span class="gate">2 of 4 exposures → E5-S1 intake</span></div>
-        </article>
-        <article class="card s-ok" data-epic="E2">
-          <div class="id">E2-S4 · PR1</div>
-          <div class="t">Per-entry World Info capture + server eviction facts</div>
-          <div class="m">8 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/525">#525</a> &rarr; <code>d4c90056</code>, merged by Sammy at the did-not-converge gate. <b>Run closed 8 Sep without a deploy</b> — the unshipped window is 8 commits, only this one touching <code>src/</code>. Frontend-only, no migration, no backend change. <b>9 rounds, 168 agents, 0 errors, converged at zero.</b> Zero behavior defects were ever confirmed in the production logic; the recurring class was fix rounds writing false checkable claims (6, then 3 &rarr; 0 under a deletion-only prose rule). Intake killed three dead carriers: the card&rsquo;s own eviction derivation, E2-S2&rsquo;s rotted golden count, and E5-S1&rsquo;s non-historical token figure. 2063 tests; goldens 146/146 untouched.</div>
-          <div class="gates"><span class="gate free">PR2 ✓ 12 Sep</span></div>
-        </article>
       </div>
     </section>
 
@@ -426,8 +390,44 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Deployed</h2><span class="ct">10</span></div>
+      <div class="colhead"><h2>Deployed</h2><span class="ct">16</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E6">
+          <div class="id">E6-S2</div>
+          <div class="t">Hero banner</div>
+          <div class="m">13 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/553">#553</a> &rarr; <code>23d64024</code>, merged by Sammy at the &sect;8 gate (re-scope vision divergence, #556 standard not met, did-not-converge), undeployed. Frontend-only, no migration. Re-scoped 12 Oct: no recency route until <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>; featured characters from <code>public/hero/feature-slides.json</code>, shipped empty. <b>7 trigger-tier rounds, ~7.3M, round 7 zero.</b> Two fix-round mechanisms descoped at round 4; the hook ships as the state round 2 reviewed. <b>QA: AC2/3/4 pass, AC1 signed off as built</b> (spec wins over the frames). #556 accepted until E6-S3's D-T4; kicker 12px pending a &sect;6.5 amendment. Filed #554 #555 #556 #557. Gates 131 / 2770, build 0, eslint 0/18.</div>
+          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate free">deployed 13 Oct</span><span class="gate">#554&ndash;#557 filed</span></div>
+        </article>
+        <article class="card s-ok" data-epic="E3">
+          <div class="id">E3-S1</div>
+          <div class="t">Cascade semantics design</div>
+          <div class="m">4 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/545">#545</a> → <code>092cf2a1</code>, merged after Sammy's design sign-off. Docs only (spec + store-refactor plan). No deploy.</div>
+          <div class="gates"><span class="gate free">deploy n/a</span></div>
+        </article>
+        <article class="card s-ok" data-epic="E6">
+          <div class="id">E6-S1</div>
+          <div class="t">UI workshop — hero, sidebar, chat</div>
+          <div class="m">11 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/549">#549</a> → <code>4dde86bb</code>, merged, docs only (no deploy). Spec A1: hidden drawer at every width; hero followed by category rows; chat has no sidebar column. 22 v2 frames approved by Sammy 2026-10-11. Unblocks E6-S2/S3/S4.</div>
+          <div class="gates"><span class="gate free">deploy n/a</span><span class="gate free">unblocks E6-S2/S3/S4</span></div>
+        </article>
+        <article class="card s-ok" data-epic="E2">
+          <div class="id">E2-S3</div>
+          <div class="t">Show-prompt toggle &mdash; post-transform exact-prompt viewer</div>
+          <div class="m">13 Sep &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/538">#538</a> &rarr; <code>a847e532</code>, merged by Sammy at the &sect;8 gate (did-not-converge, waived checklist item 3, arguable vision divergence). Frontend-only, no migration, no backend change. <b>QA 6/6 AC pass, 12 skeptic votes, 0 refutations.</b> 15 verified trigger-tier rounds + a 16th held at the &sect;5 cost gate; production logic unchanged since round 8. 116 files / 2415 tests; goldens untouched. AC2&rsquo;s interceptor arm cannot fire in production until the backend serves the route (#537); the collapse arm is live. Filed #534 #535 #536 #537.</div>
+          <div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate hot">#537 dead client hook</span></div>
+        </article>
+        <article class="card s-ok" data-epic="E2">
+          <div class="id">E2-S4 · PR2</div>
+          <div class="t">Insights data API — the store-level consumer surface</div>
+          <div class="m">12 Sep &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/533">#533</a> &rarr; <code>141967b6</code>, merged on Sammy&rsquo;s go after round 18 with three &sect;8 triggers fired. Six new files, no existing source edited. <b>QA 4/4 AC PASS.</b> 18 rounds + 2 design passes; production logic correct since round 12. The review found a chat file name is not a chat identity (<code>wiFiredByFile</code> is keyed by bare name across characters) &mdash; Sammy chose <b>option B</b>: never claim completeness or a direction, return <code>UnverifiedCount</code> with a type-pinned collision caveat. <b>2 of the card&rsquo;s 4 exposures delivered</b>; the rest routed to E5-S1&rsquo;s intake. Filed #530 (data loss on a failed chat switch), #531.</div>
+          <div class="gates"><span class="gate free">PR1 ✓ on main</span><span class="gate">unblocks E5-S1</span><span class="gate">2 of 4 exposures → E5-S1 intake</span></div>
+        </article>
+        <article class="card s-ok" data-epic="E2">
+          <div class="id">E2-S4 · PR1</div>
+          <div class="t">Per-entry World Info capture + server eviction facts</div>
+          <div class="m">8 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/525">#525</a> &rarr; <code>d4c90056</code>, merged by Sammy at the did-not-converge gate. <b>Run closed 8 Sep without a deploy</b> — the unshipped window is 8 commits, only this one touching <code>src/</code>. Frontend-only, no migration, no backend change. <b>9 rounds, 168 agents, 0 errors, converged at zero.</b> Zero behavior defects were ever confirmed in the production logic; the recurring class was fix rounds writing false checkable claims (6, then 3 &rarr; 0 under a deletion-only prose rule). Intake killed three dead carriers: the card&rsquo;s own eviction derivation, E2-S2&rsquo;s rotted golden count, and E5-S1&rsquo;s non-historical token figure. 2063 tests; goldens 146/146 untouched.</div>
+          <div class="gates"><span class="gate free">PR2 ✓ 12 Sep</span></div>
+        </article>
         <article class="card s-ok" data-epic="E9"><div class="id">E9-S10</div><div class="t">Depth injection on the anthropic and google families</div><div class="m">6 Sep · backend <a href="https://github.com/sammygallo/ggbc-backend/pull/87">#87</a> → <code>032de27</code> + <a href="https://github.com/sammygallo/ggbc-backend/pull/88">#88</a> → <code>fb26a80</code>, frontend <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/514">#514</a> → <code>37154b0f</code>, deployed 6 Sep (frontend image <code>2412ed12</code>) · closes #509 · hoist by <b>position</b>: only the leading system run goes to the out-of-band channel; the note, at-depth lore and post-history sections keep their index as a wrapped user turn · backend: 2 trigger-tier rounds, QA AC1/AC3 pass, 983 tests · docs: 9 standard rounds (Q2 fired at round 3, Sammy: keep hardening; rounds 8–9 zero), merged by Sammy at the did-not-converge gate · filed #513 / backend #85 #86 (text mode never produces a token), #515 (catalog drift).</div></article>
         <article class="card s-ok" data-epic="E9"><div class="id">E9-S7</div><div class="t">Surface recall's <code>no_key</code> reason</div><div class="m">1 Sep · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/504">#504</a> → <code>473c8aa2</code>, deployed 2 Sep · closes #455 · QA 4/4 · 19 review rounds (one code round with 3 confirmed defects; 16 rounds on the PM's own bookkeeping prose) · merged on Sammy's go after the "did not converge" trigger fired · first CURATE postmortem → <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/505">#505</a>, merged 2 Sep.</div></article>
         <article class="card s-ok" data-epic="E2"><div class="id">E2-S5</div><div class="t">WI telemetry coverage</div><div class="m">31 Aug · <code>2b3efa30</code> (<a href="https://github.com/sammygallo/goodgirlsbotclub/pull/500">#500</a>). Read-time remap of pre-cutover <code>wi_fired</code> keys + a "not observable" replay state. Re-scoped 30 Aug after the id-crosswalk premise was falsified at intake. <b>6 review rounds, ~30 findings, zero behavior defects.</b> <b>Deployed 1 Sep</b> (sync deploy of <code>main</code>, frontend image <code>9474fbfa</code>).</div><div class="gates"><span class="gate free">unblocks E5-S1</span></div></article>
@@ -505,7 +505,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Oct 2026 (E6-S2 merged, #553 &rarr; 23d64024, awaiting deploy).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Oct 2026 (deployed: E6-S2 &middot; E2-S3 &middot; E2-S4; frontend image f136073e).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
