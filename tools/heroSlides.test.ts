@@ -221,7 +221,6 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   const frame = read('src/components/hero/SlideFrame.tsx');
   const featureSlide = read('src/components/hero/FeatureSlide.tsx');
 
-  // These literals are the inputs the arithmetic models; change a literal and re-derive the table.
   const PINS: [string, string, string][] = [
     ['SlideFrame: the clipping frame', frame, 'className="relative h-full w-full overflow-hidden bg-[var(--color-bg-tertiary)]"'],
     ['SlideFrame: the scrim layer', frame, 'className="absolute inset-x-0 bottom-0 h-[max(100%,28.75rem)] sm:hidden"'],
