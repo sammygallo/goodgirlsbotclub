@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 
 /**
  * Focus containment for modal surfaces, without a dependency (D-G5).
@@ -13,13 +13,11 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
  *   (b) moves focus into the surface — the element marked `data-autofocus`,
  *       else the first focusable one, unless focus is already inside (so a body
  *       that uses `autoFocus` keeps the field it asked for);
- *   (c) on close, or on unmount while open, returns focus to the surface's
- *       opener; if the surface was opened from inside an outer surface that has
- *       already left, to that outer surface's opener (the hand-off); if the
- *       opener is no longer connected, to the most recent element a departing
- *       top surface restored focus to, when that element is still connected and
- *       was not inside a surface still open at the time; otherwise focus is
- *       left where it is;
+ *   (c) on close, or on unmount while open, returns focus to the element that
+ *       opened the surface — or, when the surface was opened from inside an
+ *       outer surface that has already left, to that outer surface's opener
+ *       (the hand-off); if that element is no longer connected, focus is left
+ *       where it is;
  *   (d) closes the TOPMOST surface on Escape.
  *
  * Surfaces stack. Only the top one is interactive, and every surface below it
@@ -61,8 +59,6 @@ interface Surface {
 }
 
 const stack: Surface[] = [];
-
-let lastRestored: HTMLElement | null = null;
 
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'TEMPLATE', 'NOSCRIPT']);
 
@@ -137,11 +133,6 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
     onEscapeRef.current = onEscape;
   });
 
-  const activeNow = useRef(active);
-  useLayoutEffect(() => {
-    activeNow.current = active;
-  });
-
   // The opener is read DURING RENDER, on the render where `active` turns true,
   // and not in the activation effect below. By the time any effect runs, the
   // body's own `autoFocus` (applied in React's commit, before passive effects)
@@ -200,16 +191,7 @@ export function useModalFocus({ active, rootRef, dialogRef, onEscape }: UseModal
       // Only the top surface hands focus back. A lower one closing out of order
       // must leave focus with the surface that is still open on top of it.
       if (wasTop) {
-        let target = surface.opener;
-        if (target && !target.isConnected && lastRestored?.isConnected) target = lastRestored;
-        if (target?.isConnected) {
-          target.focus();
-          // A surface that really leaves records where it put focus (StrictMode's trial cleanup does not), unless that is inside a surface still open, which is no fallback for anything outside it.
-          const leavingForReal = !activeNow.current || !root.isConnected;
-          if (leavingForReal && document.activeElement === target && !stack.some((s) => s.root.contains(target))) {
-            lastRestored = target;
-          }
-        }
+        if (surface.opener?.isConnected) surface.opener.focus();
       } else if (surface.opener?.isConnected) {
         // A surface above this one that was opened from inside its dialog (a
         // confirm over a panel) is about to lose its own opener with it. It takes
