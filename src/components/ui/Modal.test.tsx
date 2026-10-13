@@ -721,3 +721,94 @@ describe('a modal whose opener unmounts in the handler that opens it', () => {
     expect(document.activeElement).toBe(document.body);
   });
 });
+
+describe('a modal swapped for another in one handler', () => {
+  function Swap() {
+    const [edit, setEdit] = useState(false);
+    const [persona, setPersona] = useState(false);
+    return (
+      <>
+        <button onClick={() => setEdit(true)}>Edit</button>
+        <Modal isOpen={edit} onClose={() => setEdit(false)} title="Editor">
+          <button
+            onClick={() => {
+              setEdit(false);
+              setPersona(true);
+            }}
+          >
+            Convert
+          </button>
+        </Modal>
+        {persona && (
+          <Modal isOpen onClose={() => setPersona(false)} title="Persona">
+            b
+          </Modal>
+        )}
+      </>
+    );
+  }
+
+  it('leaves focus on <body> when the second closes, though the element that opened the first is still on the page', () => {
+    vi.useFakeTimers();
+    render(<Swap />);
+    const edit = screen.getByText('Edit');
+    open(edit);
+    open(screen.getByText('Convert'));
+    settle();
+    expect(screen.queryByRole('dialog', { name: 'Editor' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Persona' })).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(edit.isConnected).toBe(true);
+    // #555: no fallback target — a removed opener leaves focus on <body>
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe('a confirm that closes its panel and removes the panel\'s opener in one handler', () => {
+  function Rows() {
+    const [row, setRow] = useState(true);
+    const [a, setA] = useState(false);
+    const [b, setB] = useState(false);
+    return (
+      <>
+        {row && <button onClick={() => setA(true)}>Row</button>}
+        <button>Page</button>
+        <Modal isOpen={a} onClose={() => setA(false)} title="Panel">
+          <button onClick={() => setB(true)}>Delete</button>
+        </Modal>
+        <Modal isOpen={b} onClose={() => setB(false)} title="Confirm">
+          <button
+            onClick={() => {
+              setRow(false);
+              setA(false);
+              setB(false);
+            }}
+          >
+            Yes
+          </button>
+        </Modal>
+      </>
+    );
+  }
+
+  it('leaves focus on <body> once the exit ends, though a button elsewhere on the page is still connected', () => {
+    vi.useFakeTimers();
+    render(<Rows />);
+    const row = screen.getByText('Row');
+    const page = screen.getByText('Page');
+    open(row);
+    open(screen.getByText('Delete'));
+    expect(screen.getByRole('dialog', { name: 'Confirm' })).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Yes'));
+    settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(row.isConnected).toBe(false);
+    expect(page.isConnected).toBe(true);
+    // #555: no fallback target — a removed opener leaves focus on <body>
+    expect(document.activeElement).toBe(document.body);
+  });
+});

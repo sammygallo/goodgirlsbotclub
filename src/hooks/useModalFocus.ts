@@ -13,11 +13,11 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
  *   (b) moves focus into the surface — the element marked `data-autofocus`,
  *       else the first focusable one, unless focus is already inside (so a body
  *       that uses `autoFocus` keeps the field it asked for);
- *   (c) on close, or on unmount while open, returns focus to the element that
- *       opened the surface — or, when the surface was opened from inside an
- *       outer surface that has already left, to that outer surface's opener
- *       (the hand-off); if that element is no longer connected, focus is left
- *       where it is;
+ *   (c) on close, or on unmount while open, focuses the element that opened
+ *       the surface, when this is the topmost surface and that element is
+ *       still connected; a surface stacked above an outer one that leaves
+ *       first takes over the outer one's opener, under the two conditions
+ *       stated on `Surface.opener`;
  *   (d) closes the TOPMOST surface on Escape.
  *
  * Surfaces stack. Only the top one is interactive, and every surface below it
