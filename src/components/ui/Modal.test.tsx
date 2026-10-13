@@ -69,6 +69,11 @@ function open(opener: HTMLElement) {
   fireEvent.click(opener);
 }
 
+const settle = () =>
+  act(() => {
+    vi.advanceTimersByTime(EXIT_MS + 20);
+  });
+
 describe('semantics', () => {
   it('is a modal dialog named by its title', () => {
     render(<Modal isOpen onClose={() => {}} title="Delete everything?">x</Modal>);
@@ -660,5 +665,59 @@ describe('a nested modal on top of an outer one that unmounts', () => {
     // Inner closed, outer still up: focus is back inside the outer dialog.
     expect(screen.getByRole('dialog', { name: 'Editor' })).toBeTruthy();
     expect(document.activeElement).toBe(transfer);
+  });
+});
+
+describe('a modal whose opener unmounts in the handler that opens it', () => {
+  function Menu() {
+    const [first, setFirst] = useState(false);
+    const [menu, setMenu] = useState(false);
+    const [second, setSecond] = useState(false);
+    return (
+      <>
+        <button onClick={() => setFirst(true)}>H</button>
+        <Modal isOpen={first} onClose={() => setFirst(false)} title="First">
+          a
+        </Modal>
+        <button onClick={() => setMenu(true)}>Menu</button>
+        {menu && (
+          <button
+            onClick={() => {
+              setMenu(false);
+              setSecond(true);
+            }}
+          >
+            Item
+          </button>
+        )}
+        {second && (
+          <Modal isOpen onClose={() => setSecond(false)} title="Second">
+            b
+          </Modal>
+        )}
+      </>
+    );
+  }
+
+  it('leaves focus on <body> when it closes, though an earlier modal restored focus to a button that is still on the page', () => {
+    vi.useFakeTimers();
+    render(<Menu />);
+    const h = screen.getByText('H');
+    open(h);
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(document.activeElement).toBe(h);
+
+    open(screen.getByText('Menu'));
+    open(screen.getByText('Item'));
+    expect(screen.getByRole('dialog', { name: 'Second' })).toBeTruthy();
+    expect(screen.queryByText('Item')).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('Close'));
+    settle();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(h.isConnected).toBe(true);
+    // #555: no fallback target — a removed opener leaves focus on <body>
+    expect(document.activeElement).toBe(document.body);
   });
 });
