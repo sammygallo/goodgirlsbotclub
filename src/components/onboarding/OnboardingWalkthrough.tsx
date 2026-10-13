@@ -5,6 +5,7 @@ import { useSettingsPanelStore } from '../../stores/settingsPanelStore';
 import { useAuthStore } from '../../stores/authStore';
 import { can } from '../../utils/permissions';
 import { Button } from '../ui';
+import { ModalExemptPortal } from '../ui/ModalExemptPortal';
 
 interface StepDef {
   icon: React.ComponentType<{ size?: number; className?: string }>;
@@ -149,26 +150,28 @@ export function OnboardingWalkthrough() {
   // Render floating chip when docked
   if (isDocked) {
     return (
-      <div className="fixed bottom-4 right-4 z-[110] flex items-center gap-2 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-full shadow-2xl pl-4 pr-2 py-2 animate-fade-in-up">
-        <span className="text-xs font-medium text-[var(--color-text-primary)]">
-          Setup · {currentStep + 1}/{TOTAL_STEPS}
-        </span>
-        <button
-          onClick={handleChipReturn}
-          className="flex items-center gap-1 text-xs font-medium text-[var(--color-primary)] hover:opacity-80 transition-opacity px-2 py-1 rounded-full"
-          aria-label="Return to setup walkthrough"
-        >
-          Continue
-          <ArrowRight size={14} />
-        </button>
-        <button
-          onClick={skip}
-          className="p-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors rounded-full"
-          aria-label="Dismiss setup walkthrough"
-        >
-          <X size={14} />
-        </button>
-      </div>
+      <ModalExemptPortal>
+        <div className="fixed bottom-4 right-4 z-[110] flex items-center gap-2 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-full shadow-2xl pl-4 pr-2 py-2 animate-fade-in-up">
+          <span className="text-xs font-medium text-[var(--color-text-primary)]">
+            Setup · {currentStep + 1}/{TOTAL_STEPS}
+          </span>
+          <button
+            onClick={handleChipReturn}
+            className="flex items-center gap-1 text-xs font-medium text-[var(--color-primary)] hover:opacity-80 transition-opacity px-2 py-1 rounded-full"
+            aria-label="Return to setup walkthrough"
+          >
+            Continue
+            <ArrowRight size={14} />
+          </button>
+          <button
+            onClick={skip}
+            className="p-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors rounded-full"
+            aria-label="Dismiss setup walkthrough"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </ModalExemptPortal>
     );
   }
 

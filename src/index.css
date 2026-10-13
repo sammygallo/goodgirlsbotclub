@@ -37,6 +37,18 @@
   /* Follows the theme on purpose — it is an emphasis colour, not a
      status one (the ingest progress bar's fill). */
   --color-accent: var(--color-primary);
+
+  /* Hero scrims and on-scrim text (E6-S2, D-H20). Fixed, NOT themed: a custom
+     theme or a light preset must never make text over a photo unreadable, and
+     the hero looks the same in light and dark. Every hero text block sits where
+     scrim alpha is >= .55 (the first 55% of the width on --scrim-hero-side, the
+     bottom 45% of the height on --scrim-hero), so white text over even a pure
+     white image composites to #737373: 4.74:1, AA for all sizes. Change a stop
+     and that guarantee goes with it. */
+  --scrim-hero: linear-gradient(to top, rgb(0 0 0 / .80) 0%, rgb(0 0 0 / .55) 45%, rgb(0 0 0 / 0) 75%);
+  --scrim-hero-side: linear-gradient(to right, rgb(0 0 0 / .80) 0%, rgb(0 0 0 / .55) 55%, rgb(0 0 0 / .25) 100%);
+  --on-scrim-text: #ffffff;
+  --on-scrim-text-muted: rgb(255 255 255 / .85);
   color-scheme: dark;
 }
 
@@ -70,6 +82,16 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-zinc-500;
+}
+
+/* Focus indicator for controls drawn over imagery (E6-S2, D-H19): a 2px white
+   outline at a 2px offset, flanked by a 2px black ring, so it holds >= 3:1
+   against both a light and a dark photo underneath. Themed focus colours cannot
+   promise that, because the background is whatever the artwork is. */
+.focus-ring-contrast:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px #000000;
 }
 
 /* Safe area support for mobile */

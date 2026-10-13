@@ -31,7 +31,7 @@ import { CharacterInterview } from '../character/interview/CharacterInterview';
 import { CharacterImport } from '../character/CharacterImport';
 import { CharacterPreviewModal } from '../character/CharacterPreviewModal';
 import { CharacterRichText } from '../character/CharacterRichText';
-import { htmlToPlainText } from '../../utils/characterRichText';
+import { firstSentence, htmlToPlainText } from '../../utils/characterRichText';
 import type { CharacterInfo } from '../../api/client';
 import { useCharacterSprites } from '../../hooks/useCharacterSprites';
 import { getDefaultAvatarUrl, type Emotion } from '../../utils/emotions';
@@ -43,16 +43,6 @@ import { useMotionModeStore, resolveMotionMode } from '../../stores/motionModeSt
 interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
-}
-
-// Condensed teaser for list rows / the collapsed portrait blurb. Strips any
-// HTML markup first so notes that opted into rich formatting show clean text
-// here instead of a half-open tag, then clips to the first sentence.
-function firstSentence(text?: string): string {
-  const plain = htmlToPlainText(text);
-  if (!plain) return '';
-  const idx = plain.search(/[.!?]/);
-  return (idx === -1 ? plain : plain.slice(0, idx + 1)).trim();
 }
 
 // Manual drafts nest the name under `formData`, interview drafts under
@@ -196,10 +186,12 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const charListRef = useRef<HTMLDivElement>(null);
   const { pullDistance, isRefreshing } = usePullToRefresh(charListRef, fetchCharacters);
 
-  // When a character is selected, hide the list (show portrait)
+  // When a character is selected, hide the list (show portrait) and end group
+  // selection, as the cancel button and startGroupChat do
   useEffect(() => {
     if (selectedCharacter) {
       setShowCharacterList(false);
+      setIsGroupSelectMode(false);
       setFailedExpressions(new Set());
       setDescExpanded(false);
     }
@@ -650,7 +642,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             </div>
 
             {/* Character List */}
-            <div ref={charListRef} className="flex-1 overflow-y-auto">
+            <div ref={charListRef} id="character-list" tabIndex={-1} className="flex-1 overflow-y-auto focus:outline-none">
               {/* Pull-to-refresh indicator */}
               {(pullDistance > 0 || isRefreshing) && (
                 <div

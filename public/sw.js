@@ -27,7 +27,8 @@ self.addEventListener('fetch', (e) => {
     url.pathname.startsWith('/api') ||
     url.pathname.startsWith('/thumbnail') ||
     url.pathname.startsWith('/characters') ||
-    url.pathname.startsWith('/csrf-token')
+    url.pathname.startsWith('/csrf-token') ||
+    url.pathname.startsWith('/hero/')
   ) {
     return;
   }

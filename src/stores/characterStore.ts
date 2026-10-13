@@ -117,6 +117,8 @@ interface CharacterState {
    * it rather than inheriting the previous account's.
    */
   charactersLoaded: boolean;
+  /** True after fetchCharacters fails, until a later fetch succeeds or resetUser runs. */
+  charactersFetchFailed: boolean;
   selectedCharacter: CharacterInfo | null;
   // Group chat support
   groupChatCharacters: CharacterInfo[];
@@ -249,6 +251,7 @@ interface CharacterState {
 export const useCharacterStore = create<CharacterState>((set, get) => ({
   characters: [],
   charactersLoaded: false,
+  charactersFetchFailed: false,
   selectedCharacter: null,
   groupChatCharacters: [],
   isGroupChatMode: false,
@@ -280,10 +283,11 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
       // charactersLoaded rises only here, in the SUCCESS branch — a failed
       // fetch leaves it false, so a network hiccup at login never looks like
       // "this account has no characters" to anything reading it as evidence.
-      set({ characters, isLoading: false, charactersLoaded: true });
+      set({ characters, isLoading: false, charactersLoaded: true, charactersFetchFailed: false });
     } catch (error) {
       set({
         isLoading: false,
+        charactersFetchFailed: true,
         error: error instanceof Error ? error.message : 'Failed to fetch characters',
       });
     }
@@ -1035,6 +1039,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => ({
     set({
       characters: [],
       charactersLoaded: false,
+      charactersFetchFailed: false,
       selectedCharacter: null,
       isGroupChatMode: false,
       groupChatCharacters: [],

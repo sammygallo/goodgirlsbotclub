@@ -264,15 +264,15 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>25 Sep 2026</b><br>
-      main <b>1e6a555f</b><br>
-      active <b>none — E3-S1 merged 4 Oct</b>
+      <b>13 Oct 2026</b><br>
+      main <b>f0098a81</b><br>
+      active <b>E6-S2 — hero banner, review converged, at the §8 gate</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">5</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
@@ -319,8 +319,14 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E6">
+          <div class="id">E6-S2</div>
+          <div class="t">Hero banner</div>
+          <div class="m">13 Oct · <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/553">#553</a> at <code>feb2ff8d</code>, at the &sect;8 gate. Re-scoped by Sammy 12 Oct (no recency route until <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>; featured characters from <code>public/hero/feature-slides.json</code>). <b>7 trigger-tier rounds, ~7.3M; round 7 zero.</b> Rounds 2&ndash;4 kept re-breaking two mechanisms fix rounds had added; Sammy chose to descope both (13 Oct) and the pre-existing focus-return cases went to #555; #554 filed at round 1. <b>QA: AC2/3/4 pass, AC1 pass on internals</b> &mdash; seven frame-vs-spec deltas need Sammy's sign-off; axe fails on the light&middot;amber welcome panel (the D-T4 token pair, scheduled for E6-S3). Gates 131 / 2770, build 0, eslint 0/18; CI green. Frontend-only, no migration.</div>
+          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate hot">&sect;8: Sammy merges</span><span class="gate">#554 #555 filed</span></div>
+        </article>
       </div>
     </section>
 
@@ -392,7 +398,7 @@
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S2</div><div class="t">Lore scope + explainer</div><div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate">← E4-S1</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S1</div><div class="t">Optimization diagnostics</div><div class="gates"><span class="gate">← E2-S4</span><span class="gate free">E2-S5 ✓</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S2</div><div class="t">Suggestions + batch apply</div><div class="gates"><span class="gate">← E5-S1</span></div></article>
-        <article class="card s-warn" data-epic="E6"><div class="id">E6-S2 · S3 · S4</div><div class="t">Hero · sidebar · chat layout</div><div class="gates"><span class="gate free">E6-S1 ✓</span></div></article>
+        <article class="card s-warn" data-epic="E6"><div class="id">E6-S3 · S4</div><div class="t">Sidebar · chat layout</div><div class="gates"><span class="gate free">E6-S1 ✓</span></div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S1</div><div class="t">Wizard P1 — Creator Notes editor</div><div class="m">Scheduled 11.1, independent of Arch v2.</div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S2</div><div class="t">Wizard P2 — advanced settings</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate hot">← E8 gate</span></div></article>
         <article class="card s-warn" data-epic="E8"><div class="id">E8-S2</div><div class="t">Probe battery + blind scoring</div><div class="gates"><span class="gate">← E8-S1</span></div></article>
@@ -499,7 +505,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 25 Sep 2026 (E3-S1 in review, #545).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Oct 2026 (E6-S2 in review, #553).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 

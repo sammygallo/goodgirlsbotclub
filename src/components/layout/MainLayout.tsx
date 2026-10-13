@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/authStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useSwipeSidebar } from '../../hooks/useSwipeSidebar';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
+import type { LayoutOutletContext } from './layoutContext';
 import { SettingsPanel } from '../settings/SettingsPanel';
 import { GuidesPanel } from '../guides/GuidesPanel';
 import { WorksPanel } from '../works/WorksPanel';
@@ -15,6 +16,9 @@ export function MainLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+  // Stable identity: a fresh object each render would re-render the routed
+  // ChatView on every sidebar toggle, which it did not do before.
+  const outletContext = useMemo<LayoutOutletContext>(() => ({ openSidebar }), [openSidebar]);
   const swipeRef = useSwipeSidebar(sidebarOpen, openSidebar, closeSidebar);
   const { isAuthenticated, isLoading } = useAuthStore();
   const { fetchSettings, fetchSecrets, fetchGlobalSecrets } = useSettingsStore();
@@ -74,7 +78,7 @@ export function MainLayout() {
         <Header onMenuClick={() => setSidebarOpen(true)} />
 
         <main className="flex-1 overflow-hidden">
-          <Outlet />
+          <Outlet context={outletContext} />
         </main>
       </div>
 
