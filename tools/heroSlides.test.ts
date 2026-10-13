@@ -262,7 +262,7 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
   const BLOCK_REM = {
     title: 2 * TEXT_XL_LINE_REM, // h3: line-clamp-2
     body: 3 * TEXT_BASE_LINE_REM, // p: line-clamp-3
-    cta: 2.5, // CTA_BASE: min-h-10
+    cta: Math.max(2.5 /* min-h-10 */, 2 * 0.625 /* py-2.5 */ + 1.25 /* text-sm line */),
     ctaMargin: 0.25, // the CTA row: mt-1
     gaps: 2 * 0.5, // the text column: gap-2, twice
     bottom: 1, // the text container: pb-4
