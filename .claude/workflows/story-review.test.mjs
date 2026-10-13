@@ -1313,9 +1313,12 @@ const validate = (schema, v) => {
 //       "overridden" flag read a verbatim copy as an override)
 //  24e  a diff-mode target whose `branch` is not a commit sha is logged as a
 //       WARNING naming it, and a sha (full or abbreviated) is not — including a
-//       ref name that CONTAINS an 8-hex run, which an unanchored regex accepts
-//       (round-3 C10), and a ref name in the SECOND target, which a loop over
-//       the first target alone misses (round-3 C11)
+//       ref name whose 8-hex run is at the END and one whose run is at the
+//       START, so dropping either anchor goes red (round-3 C10, round-4 C3); a
+//       41-hex string, so dropping the upper bound goes red; a ref name in the
+//       SECOND target and TWO ref-name targets, so a loop over the first target
+//       or the first offender alone goes red (round-3 C11, round-4 C4); and a
+//       target with NO branch, so a falsy-skip guard goes red (round-4 C5)
 {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
   const slice = (r) => ({ story: r.story, context: r.context, lensRoster: r.lensRoster,
@@ -1414,6 +1417,23 @@ const validate = (schema, v) => {
     const short = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f3af797c')]) })
     await short.run()
     check('24e: an abbreviated sha branch logs no such WARNING', warned(short).length === 0, `logs=${JSON.stringify(short.calls.logs)}`)
+    const lead = makeHarness({ findingsPerLens: {}, args: diffArgs([T('e11b1883-fixup')]) })
+    await lead.run()
+    check('24e: a ref name whose 8-hex run is at the START still logs the WARNING (the end anchor holds)',
+          warned(lead).length === 1, `logs=${JSON.stringify(lead.calls.logs)}`)
+    const long = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f'.repeat(41))]) })
+    await long.run()
+    check('24e: a 41-hex string is not a sha and logs the WARNING (the upper bound holds)',
+          warned(long).length === 1, `logs=${JSON.stringify(long.calls.logs)}`)
+    const none = makeHarness({ findingsPerLens: {}, args: diffArgs([{ repo: 'r', path: '/p', base: 'origin/main' }]) })
+    await none.run()
+    check('24e: a target with no branch at all logs the WARNING naming branch=undefined',
+          warned(none).length === 1 && /target r branch=undefined/.test(warned(none)[0]), `logs=${JSON.stringify(none.calls.logs)}`)
+    const both = makeHarness({ findingsPerLens: {}, args: diffArgs([T('claude/x', 'fe'), T('claude/y', 'be')]) })
+    await both.run()
+    check('24e: two ref-name targets log two WARNINGs, one naming each',
+          warned(both).length === 2 && warned(both).some((l) => /target fe branch=claude\/x/.test(l)) && warned(both).some((l) => /target be branch=claude\/y/.test(l)),
+          `logs=${JSON.stringify(both.calls.logs)}`)
     const second = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f3af797c', 'fe'), T('claude/x', 'be')]) })
     await second.run()
     check('24e: a ref name in the SECOND target is warned about, and the sha first target is not',
