@@ -23,7 +23,7 @@ interface SlideFrameProps {
  * - < 640px: the bottom scrim, text stacked at the bottom.
  *   The scrim layer is at least 28.75rem tall (anchored to the bottom, clipped by
  *   the hero), so on a short viewport the >= .55 band — 45% of the layer —
- *   still covers the tallest text block rather than shrinking with the hero.
+ *   still covers the text block rather than shrinking with the hero.
  *
  * The art is unblurred and `object-fit: cover`, anchored to the top because
  * faces usually are.

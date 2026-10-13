@@ -220,6 +220,7 @@ describe('index.css hero colours (D-H20)', () => {
 describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H20)', () => {
   const frame = read('src/components/hero/SlideFrame.tsx');
   const featureSlide = read('src/components/hero/FeatureSlide.tsx');
+  const characterSlide = read('src/components/hero/CharacterSlide.tsx');
 
   const PINS: [string, string, string][] = [
     ['SlideFrame: the clipping frame', frame, 'className="relative h-full w-full overflow-hidden bg-[var(--color-bg-tertiary)]"'],
@@ -255,11 +256,17 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     ['FeatureSlide: the CTA row', featureSlide, 'className="mt-1 flex flex-wrap gap-3 sm:mt-2"'],
     ['FeatureSlide: the CTA button', featureSlide, 'className={`${PRIMARY_CTA} max-w-full`}'],
     ['FeatureSlide: the CTA label', featureSlide, '<span className="truncate">{config.cta.label}</span>'],
+    ['CharacterSlide: the name', characterSlide, 'className="truncate text-xl font-bold sm:text-2xl"'],
+    ['CharacterSlide: the creator', characterSlide, 'className="truncate text-sm"'],
+    ['CharacterSlide: the blurb', characterSlide, 'className="line-clamp-2 text-base"'],
+    ['CharacterSlide: the CTA row', characterSlide, 'className="mt-1 flex flex-wrap gap-3 sm:mt-2"'],
+    ['CharacterSlide: the Chat button', characterSlide, 'className={PRIMARY_CTA}'],
+    ['CharacterSlide: the About button', characterSlide, 'className={SECONDARY_CTA}'],
   ];
 
   const TEXT_XL_LINE_REM = 1.75;
   const TEXT_BASE_LINE_REM = 1.5;
-  const BLOCK_REM = {
+  const FEATURE_BLOCK_REM = {
     title: 2 * TEXT_XL_LINE_REM, // h3: line-clamp-2
     body: 3 * TEXT_BASE_LINE_REM, // p: line-clamp-3
     cta: Math.max(2.5 /* min-h-10 */, 2 * 0.625 /* py-2.5 */ + 1.25 /* text-sm line */),
@@ -267,8 +274,25 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     gaps: 2 * 0.5, // the text column: gap-2, twice
     bottom: 1, // the text container: pb-4
   };
-  const blockRem = Object.values(BLOCK_REM).reduce((sum, rem) => sum + rem, 0);
+  const CHARACTER_BLOCK_REM = {
+    name: TEXT_XL_LINE_REM, // h3: truncate
+    creator: 1.25, // p: truncate text-sm
+    blurb: 2 * TEXT_BASE_LINE_REM, // p: line-clamp-2
+    cta: Math.max(
+      2.5 /* min-h-10 */,
+      2 * 0.625 /* py-2.5 */ + 1.25 /* text-sm line */ + 2 * 0.0625 /* SECONDARY_CTA border: 1px each side */,
+    ),
+    ctaMargin: 0.25, // the CTA row: mt-1
+    gaps: 3 * 0.5, // the text column: gap-2, three times
+    bottom: 1, // the text container: pb-4
+  };
+  const sumRem = (rows: Record<string, number>) => Object.values(rows).reduce((sum, rem) => sum + rem, 0);
   const ROOTS = [16, 20];
+  const BLOCKS: [string, number][] = [
+    ['feature', sumRem(FEATURE_BLOCK_REM)],
+    ['character', sumRem(CHARACTER_BLOCK_REM)],
+  ];
+  const BLOCKS_AT_ROOTS = BLOCKS.flatMap(([slide, rem]) => ROOTS.map((root): [string, number, number] => [slide, root, rem]));
 
   /** The scrim layer's minimum height at a root font size: a rem minimum scales with it, a px one does not. */
   const layerMinPx = (source: string, root: number) => {
@@ -282,8 +306,8 @@ describe('the phone text block sits inside the bottom scrim\'s >= .55 band (D-H2
     expect(countOf(source, literal)).toBe(1);
   });
 
-  it.each(ROOTS)('has a scrim layer tall enough that the >= .55 band covers the feature slide\'s block at a %ipx root', (root) => {
-    expect(blockRem * root).toBeLessThanOrEqual(bandPx(layerMinPx(frame, root)));
+  it.each(BLOCKS_AT_ROOTS)('has a scrim layer tall enough that the >= .55 band covers the %s slide\'s block at a %ipx root', (_slide, root, rem) => {
+    expect(rem * root).toBeLessThanOrEqual(bandPx(layerMinPx(frame, root)));
   });
 
   it('reads the layer minimum in rem as scaling with the root, and in px as not', () => {
