@@ -13,8 +13,10 @@ export const meta = {
 //   story: 'E1-S1',
 //   mode: 'diff' | 'design',
 //   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<head sha>' }]   (diff mode)
-//     `branch` is the COMMIT the lenses are to read, not a ref name: the record
+//     `branch` is the COMMIT the diff is taken against, not a ref name: the record
 //     carries it verbatim (run-story §5, ADEQUACY) and a ref binds it to nothing.
+//     Surrounding files and skeptic verification still read the working tree at
+//     `path` (#560).
 //     A value that is not sha-SHAPED (7–40 hex) is accepted but logged as a WARNING —
 //     a shape test, which a hex-named ref passes: pass the full sha.
 //   docPath: '/abs/path/to/design.md'                                                            (design mode)
@@ -117,7 +119,7 @@ if (mode !== 'design') {
   for (const t of args.targets || []) {
     if (!/^[0-9a-f]{7,40}$/.test(String(t.branch))) {
       log(`WARNING: target ${t.repo} branch=${t.branch} is not a commit sha — the record binds to a mutable ref, ` +
-          `not to what the lenses read (run-story §5, ADEQUACY: pass the head sha)`)
+          `not to the commit the diff was taken against (run-story §5, ADEQUACY: pass the head sha)`)
     }
   }
 }
