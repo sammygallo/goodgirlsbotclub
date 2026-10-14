@@ -1298,7 +1298,8 @@ const validate = (schema, v) => {
 //       args — each a long string with surrounding whitespace and a tail
 //       clause, so a slice, trim or first-word cut goes red (round-1 C10,
 //       round-3 C12) — plus the subject: `targets` verbatim in diff mode,
-//       `docPath` in design mode, never both; and no second roster carrier
+//       `docPath` in design mode, never both — keyed on the mode, not on which
+//       arg is present (round-9 C6) — and no second roster carrier
 //  24b  in BOTH modes, a held run and an all-lenses-died run carry the same
 //       record slice as a completed run with the same args — deep-compared,
 //       `story`, the subject and `deadLenses` included (round-1 C11/C12,
@@ -1356,6 +1357,12 @@ const validate = (schema, v) => {
     const noMode = await makeHarness({ findingsPerLens: {}, args: { story: 'T', context: 't', lenses: LENSES, targets: SENTINEL_TARGETS } }).run()
     check('24a: with `mode` omitted the run is diff mode and the record carries targets, no docPath',
           noMode.mode === 'diff' && same(noMode.targets, SENTINEL_TARGETS) && !('docPath' in noMode), `mode=${noMode.mode} keys=${Object.keys(noMode).join(',')}`)
+    const staleDoc = await makeHarness({ findingsPerLens: {}, args: baseArgs({ mode: 'diff', docPath: '/tmp/stale.md', targets: SENTINEL_TARGETS, lenses: LENSES }) }).run()
+    check('24a: a diff-mode run with a stale docPath beside targets records targets and no docPath (the subject is keyed on mode)',
+          same(staleDoc.targets, SENTINEL_TARGETS) && !('docPath' in staleDoc), `keys=${Object.keys(staleDoc).join(',')}`)
+    const leftover = await makeHarness({ findingsPerLens: {}, args: baseArgs({ lenses: LENSES, targets: SENTINEL_TARGETS }) }).run()
+    check('24a: a design-mode run with leftover targets records docPath and no targets',
+          leftover.docPath === '/tmp/doc.md' && !('targets' in leftover), `keys=${Object.keys(leftover).join(',')}`)
   }
   // 24a — design mode: the subject is `docPath`
   {
