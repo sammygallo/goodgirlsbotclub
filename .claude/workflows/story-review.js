@@ -12,7 +12,13 @@ export const meta = {
 // args: {
 //   story: 'E1-S1',
 //   mode: 'diff' | 'design',
-//   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<branch>' }]   (diff mode)
+//   targets: [{ repo: '<name>', path: '/abs/path', base: 'origin/main', branch: '<head sha>' }]   (diff mode)
+//     `branch` is the COMMIT the diff is taken against, not a ref name: the record
+//     carries it verbatim (run-story §5, ADEQUACY) and a ref binds it to nothing.
+//     Surrounding files and skeptic verification still read the working tree at
+//     `path` (#560).
+//     A value that is not sha-SHAPED (7–40 hex) is accepted but logged as a WARNING —
+//     a shape test, which a hex-named ref passes: pass the full sha.
 //   docPath: '/abs/path/to/design.md'                                                            (design mode)
 //   context: 'PM-written brief excerpt: what this change is, safety invariants, known constraints'
 //   classBudgetTokens: optional number — the story's roadmap §5 class-row budget. When set, the run
@@ -92,6 +98,31 @@ const CLUSTER_SCHEMA = {
 
 const mode = args.mode || 'diff'
 const lenses = args.lenses || (mode === 'design' ? DEFAULT_DESIGN_LENSES : DEFAULT_DIFF_LENSES)
+// The exit-round conditions run-story §5 reads (its ADEQUACY sub-bullet) —
+// the subject, the roster and the PM's free text — are recorded VERBATIM on
+// every return, the held and all-lenses-died ones included, so a round's own
+// record says what it hunted and under which instruction (`story` is already
+// on every return). Before this the return carried none of them and the PM
+// certified an exit round from notes (E2-S3's adequacy-sweep red-team, pass
+// 2, 2026-09-13). `lensRoster` is what was LAUNCHED, key and focus verbatim —
+// CONTENT, so a shipped-keys roster with an edited focus and a verbatim copy
+// of the defaults passed through `args.lenses` each read as what they are
+// (PR #559 rounds 2 and 3; a keys-only field and an "overridden" flag both
+// misread one of those) — and `deadLenses` (set below, on every return) says
+// which of those returned nothing.
+const record = {
+  context: args.context,
+  lensRoster: lenses.map(l => ({ key: l.key, focus: l.focus })),
+  ...(mode === 'design' ? { docPath: args.docPath } : { targets: args.targets }),
+}
+if (mode !== 'design') {
+  for (const t of args.targets || []) {
+    if (!/^[0-9a-f]{7,40}$/.test(String(t.branch))) {
+      log(`WARNING: target ${t.repo} branch=${t.branch} is not a commit sha — the record binds to a mutable ref, ` +
+          `not to the commit the diff was taken against (run-story §5, ADEQUACY: pass the head sha)`)
+    }
+  }
+}
 // `subject` reaches EVERY lens and EVERY skeptic verbatim, so it is
 // script-authored prose with the same reach as the stance. The test suite
 // renders both templates (sentinels only for the `args.*` values) and compares
@@ -175,13 +206,13 @@ const deadLenses = lenses.filter((_, i) => !lensResults[i]).map(l => l.key)
 log(`lenses: ${lenses.length - deadLenses.length}/${lenses.length} returned` +
     (deadLenses.length ? ` — DIED: ${deadLenses.join(', ')} (this round hunted with fewer lenses)` : ''))
 // Every lens dead is NOT a clean round. Without this the run returns empty verdict arrays byte-identical
-// to a genuinely converged pass, and §8 checklist item 3 keys on exactly that shape. Same remedy as the
+// to a genuinely converged pass. Same remedy as the
 // budget hold below: null the four verdict keys so a downstream count throws instead of reading zero.
 if (lenses.length && deadLenses.length === lenses.length) {
   log(`ALL ${lenses.length} lenses died — NOT A REVIEW ROUND, nothing was hunted.`)
   return { story: args.story, mode, status: 'all_lenses_died',
-           confirmed: null, plausible: null, refuted: null, unverified: null,
-           deadLenses, lensCount: lenses.length }
+           confirmed: null, plausible: null, refuted: null, unverified: null, singleVote: null,
+           deadLenses, lensCount: lenses.length, ...record }
 }
 const seen = new Set()
 const exact = all.filter(f => {
@@ -388,13 +419,13 @@ if (gateArmed && cumulativeTokens > classBudgetTokens && args.confirmOverBudget 
   return {
     story: args.story, mode, status: 'held_over_budget',
     // Explicitly null, not absent and not []: a held run verified nothing, and
-    // must not satisfy §8 item 3 or §5's zero-confirmed predicate by omission.
-    confirmed: null, plausible: null, refuted: null, unverified: null,
+    // must not satisfy §8 item 3 or §5's exit-round predicate by omission.
+    confirmed: null, plausible: null, refuted: null, unverified: null, singleVote: null,
     projectedAgents, projectedTokens, spentTokens, cumulativeTokens,
     classBudgetTokens, gateArmed,
     rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
     clusterOutcome, skepticBatchSize,
-    lensCount: lenses.length, unverifiedFindings: deduped,
+    lensCount: lenses.length, deadLenses, unverifiedFindings: deduped, ...record,
   }
 }
 
@@ -493,7 +524,11 @@ if (unverified.length) log(`WARNING: ${unverified.length} finding(s) got no surv
 const singleVote = results.filter(f => f.skepticVotes === 1)
 if (singleVote.length) log(`WARNING: ${singleVote.length} finding(s) got only ONE surviving skeptic vote — ` +
   `verified once, not twice: ${singleVote.map(f => f.title.slice(0, 40)).join(' · ')}`)
-return { story: args.story, mode, confirmed, plausible, refuted, unverified, lensCount: lenses.length, deadLenses,
+// Named on the return as well as in the log: run-story §5's exit round reads
+// `singleVote` off the record, because a lone refuting survivor scores
+// `refuted` exactly like two (PR #559 round-5 C2) and the log is not the record.
+return { story: args.story, mode, confirmed, plausible, refuted, unverified, singleVote: singleVote.map(f => f.title),
+         lensCount: lenses.length, deadLenses,
          gateArmed, classBudgetTokens, spentTokens, projectedAgents, projectedTokens, cumulativeTokens,
          rawFindings: all.length, exactDedupedFindings: exact.length, dedupedFindings: deduped.length,
-         clusterOutcome, skepticBatchSize }
+         clusterOutcome, skepticBatchSize, ...record }

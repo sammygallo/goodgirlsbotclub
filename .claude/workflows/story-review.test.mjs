@@ -35,8 +35,9 @@
 //                                 NOT [], so a downstream count throws rather
 //                                 than reading zero. This is the gate's own
 //                                 first red-team finding: without it a budget
-//                                 hold satisfies §8 checklist item 3 ("the
-//                                 final review round confirmed zero findings")
+//                                 hold satisfied §8 checklist item 3 (then "the
+//                                 final review round confirmed zero findings",
+//                                 now the exit-round read-off)
 //                                 off a pass that verified nothing, laundering
 //                                 an unverified trigger-tier diff into a
 //                                 mergeable one. Lens output is named
@@ -61,9 +62,10 @@
 //                                 asserted, because deleting them left the
 //                                 suite green when they were the deliverable
 //
-// Cases 14-23 cover clustering, skeptic batching, slicing, stance parity, the
+// Cases 14-24 cover clustering, skeptic batching, slicing, stance parity, the
 // #528 red-team regressions, the PR #546 m6 finding fields, its round-2
-// design-mode `tests` lens and its round-3 whole-prompt allow-sets; they carry their own list at the point they are defined rather than extending
+// design-mode `tests` lens, its round-3 whole-prompt allow-sets, and the
+// exit-round record (24); they carry their own list at the point they are defined rather than extending
 // this one, because this list is about the COST GATE and they are not.
 //
 // Keep this list in step with the cases below. It went stale once already, in
@@ -1282,6 +1284,257 @@ const validate = (schema, v) => {
   const tests = h.calls.lensPrompts.find((p) => p.includes('Your lens: tests — '))
   check('the design-mode tests lens names the cheapest wrong implementation and stops on no tests',
         !!tests && tests.includes('cheapest wrong implementation') && tests.includes('carries no tests, say so and stop'))
+}
+
+// --- 24: the exit-round record (governance release pass 1, P-A fold) -------
+// run-story §5's ADEQUACY sub-bullet reads an exit round's conditions — a
+// whole-deliverable subject, the default roster, PM free text that neither
+// widened nor narrowed, no dead lens — off the workflow's OWN return, never off
+// the PM's notes. The adequacy-sweep red-team (E2-S3 P-A, pass 2, 2026-09-13)
+// found the return carried none of them, so the exit round was PM-certified.
+// PR #559's red-team rounds mutation-tested this block round after round.
+//
+//  24a  a completed run returns `story` and `context` byte-identical to the
+//       args — each a long string with surrounding whitespace and a tail
+//       clause, so a slice, trim or first-word cut goes red (round-1 C10,
+//       round-3 C12) — plus the subject: `targets` verbatim in diff mode,
+//       `docPath` in design mode, never both — keyed on the mode, not on which
+//       arg is present (round-9 C6) — and no second roster carrier
+//  24b  in BOTH modes, a held run and an all-lenses-died run carry the same
+//       record slice as a completed run with the same args — deep-compared,
+//       `story`, the subject and `deadLenses` included (round-1 C11/C12,
+//       round-2 C9)
+//  24c  `lensRoster` lists what was LAUNCHED, a dead lens included; `deadLenses`
+//       is where a death shows
+//  24d  `lensRoster` is CONTENT: a default-roster run records the shipped keys
+//       and focus texts in both modes (round-1 C9); a verbatim copy of the
+//       defaults passed through `args.lenses` records the same roster; one
+//       edited focus under a shipped key records the edit (round-2 C4, round-3
+//       C6: a keys-only field read an edited default as shipped, and an
+//       "overridden" flag read a verbatim copy as an override)
+//  24e  a diff-mode target whose `branch` is not a commit sha is logged as a
+//       WARNING naming it, and a sha (full or abbreviated) is not — including a
+//       ref name whose 8-hex run is at the END and one whose run is at the
+//       START, so dropping either anchor goes red (round-3 C10, round-4 C3); a
+//       41-hex string, so dropping the upper bound goes red; a ref name in the
+//       SECOND target and TWO ref-name targets, so a loop over the first target
+//       or the first offender alone goes red (round-3 C11, round-4 C4); a
+//       target with NO branch, so a falsy-skip guard goes red (round-4 C5);
+//       a 6-hex ref name, so loosening the lower bound goes red (round-5 C5);
+//       a 7-hex sha, so tightening it goes red; and design-mode args carrying
+//       a leftover ref-name target, so deleting the mode guard goes red
+//       (round-6 C12); and runs with `mode` omitted, the script's diff default,
+//       so a guard keyed on the raw arg goes red (round-8 C5)
+//  24f  `singleVote` names, on the completed return, every finding that kept
+//       only one skeptic vote — a lone refuting survivor scores `refuted` like
+//       two and the log is not the record (round-5 C2); it is `[]` when every
+//       finding kept both votes and `null` on the held and all-lenses-died
+//       returns, which verified nothing; a finding that lost BOTH votes is
+//       `unverified`, not single-vote, and a long title is named whole, not at
+//       the log line's 40-character cut (round-6 C11); and a mixed stub leaves
+//       single-vote findings of BOTH statuses, so a singleVote that drops the
+//       confirmed ones goes red (round-7 C5)
+{
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+  const slice = (r) => ({ story: r.story, context: r.context, lensRoster: r.lensRoster,
+                          targets: r.targets, docPath: r.docPath, deadLenses: r.deadLenses })
+  const LONG_CTX = '  \n' + 'x'.repeat(5000) + '\nKNOWN AND ACCEPTED, not findings: a tail clause that narrows the round  \n'
+  const LONG_STORY = '  E2-S3 round 9 — ' + 'y'.repeat(300) + ' — only the reducer delta, ignore the store \n'
+  // 24a — diff mode: the subject is `targets`, verbatim; the free text survives whole
+  {
+    const h = makeHarness({ findingsPerLens: SIX,
+      args: baseArgs({ mode: 'diff', docPath: undefined, targets: SENTINEL_TARGETS, context: LONG_CTX, story: LONG_STORY, lenses: LENSES }) })
+    const r = await h.run()
+    check('24a: a 5,000-char context with surrounding whitespace is returned byte-identical',
+          r.context === LONG_CTX, `len=${r.context && r.context.length} want=${LONG_CTX.length}`)
+    check('24a: a multi-word story with surrounding whitespace is returned byte-identical',
+          r.story === LONG_STORY, `story=${JSON.stringify(r.story)}`)
+    check('24a: lensRoster is the launched roster in order', same(r.lensRoster, LENSES), `roster=${JSON.stringify(r.lensRoster)}`)
+    check('24a: diff mode returns targets verbatim and no docPath',
+          same(r.targets, SENTINEL_TARGETS) && !('docPath' in r), `targets=${JSON.stringify(r.targets)} docPath=${r.docPath}`)
+    check('24a: no second roster carrier (lensKeys, lensesOverridden) on the return',
+          !('lensKeys' in r) && !('lensesOverridden' in r), `keys=${Object.keys(r).join(',')}`)
+    const noMode = await makeHarness({ findingsPerLens: {}, args: { story: 'T', context: 't', lenses: LENSES, targets: SENTINEL_TARGETS } }).run()
+    check('24a: with `mode` omitted the run is diff mode and the record carries targets, no docPath',
+          noMode.mode === 'diff' && same(noMode.targets, SENTINEL_TARGETS) && !('docPath' in noMode), `mode=${noMode.mode} keys=${Object.keys(noMode).join(',')}`)
+    const staleDoc = await makeHarness({ findingsPerLens: {}, args: baseArgs({ mode: 'diff', docPath: '/tmp/stale.md', targets: SENTINEL_TARGETS, lenses: LENSES }) }).run()
+    check('24a: a diff-mode run with a stale docPath beside targets records targets and no docPath (the subject is keyed on mode)',
+          same(staleDoc.targets, SENTINEL_TARGETS) && !('docPath' in staleDoc), `keys=${Object.keys(staleDoc).join(',')}`)
+    const leftover = await makeHarness({ findingsPerLens: {}, args: baseArgs({ lenses: LENSES, targets: SENTINEL_TARGETS }) }).run()
+    check('24a: a design-mode run with leftover targets records docPath and no targets',
+          leftover.docPath === '/tmp/doc.md' && !('targets' in leftover), `keys=${Object.keys(leftover).join(',')}`)
+  }
+  // 24a — design mode: the subject is `docPath`
+  {
+    const r = await makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES, context: LONG_CTX, story: LONG_STORY }) }).run()
+    check('24a: design mode returns docPath and no targets',
+          r.docPath === '/tmp/doc.md' && !('targets' in r), `docPath=${r.docPath} targets=${JSON.stringify(r.targets)}`)
+    check('24a: design-mode story and context are byte-identical too', r.context === LONG_CTX && r.story === LONG_STORY)
+  }
+  // 24b — both modes: held and all-lenses-died returns carry the completed
+  //       run's record slice, value for value; the held return names its dead lens
+  {
+    const THREE = [{ key: 'a', focus: 'a' }, { key: 'b', focus: 'b' }, { key: 'c', focus: 'c' }]
+    for (const m of ['design', 'diff']) {
+      const subj = m === 'design' ? {} : { mode: 'diff', docPath: undefined, targets: SENTINEL_TARGETS }
+      const A = (extra) => baseArgs({ context: LONG_CTX, story: LONG_STORY, lenses: THREE, ...subj, ...extra })
+      const rc = await makeHarness({ findingsPerLens: SIX, args: A({}) }).run()
+      check(`24b: the completed ${m}-mode run carries its subject and no other`,
+            m === 'design' ? (rc.docPath === '/tmp/doc.md' && !('targets' in rc)) : (same(rc.targets, SENTINEL_TARGETS) && !('docPath' in rc)))
+      // lens a dies; SIX holds three findings for lens b, which project to 9
+      // agents (3 lenses + 6 skeptics at batch size 1), above a 100k budget, so
+      // the run holds before any skeptic runs — pinned below, not just stated.
+      const held = makeHarness({ findingsPerLens: SIX, deadLenses: ['a'], args: A({ classBudgetTokens: 100_000 }) })
+      const rh = await held.run()
+      check(`24b: the ${m}-mode held run holds (precondition)`,
+            rh.status === 'held_over_budget' && held.calls.skeptic === 0 && rh.projectedAgents === 9, `status=${rh.status} agents=${rh.projectedAgents}`)
+      check(`24b: the ${m}-mode held return carries the completed run's record slice, value for value, and names its dead lens`,
+            same({ ...slice(rh), deadLenses: [] }, slice(rc)) && same(rh.deadLenses, ['a']),
+            `held=${JSON.stringify(slice(rh)).slice(0, 200)}`)
+      const rd = await makeHarness({ findingsPerLens: {}, deadLenses: ['a', 'b', 'c'], args: A({}) }).run()
+      check(`24b: the ${m}-mode all-lenses-died return carries the same record slice`,
+            rd.status === 'all_lenses_died' && same({ ...slice(rd), deadLenses: [] }, slice(rc)) && same(rd.deadLenses, ['a', 'b', 'c']),
+            `dead=${JSON.stringify(slice(rd)).slice(0, 200)}`)
+    }
+  }
+  // 24c — a dead lens stays in lensRoster; deadLenses is the only place it shows
+  {
+    const THREE = [{ key: 'a', focus: 'a' }, { key: 'b', focus: 'b' }, { key: 'c', focus: 'c' }]
+    const r = await makeHarness({ findingsPerLens: { b: [finding('from-b')], c: [finding('from-c')] }, deadLenses: ['a'], args: baseArgs({ lenses: THREE }) }).run()
+    check('24c: lensRoster lists the launched roster, dead lens included',
+          same(r.lensRoster, THREE) && same(r.deadLenses, ['a']),
+          `roster=${JSON.stringify(r.lensRoster)} deadLenses=${JSON.stringify(r.deadLenses)}`)
+  }
+  // 24d — lensRoster is content, in both modes
+  {
+    for (const m of ['design', 'diff']) {
+      const subj = m === 'design' ? { docPath: '/tmp/d.md' } : { targets: SENTINEL_TARGETS }
+      const want = DEFAULT_LENSES_ALLOWED[m].map(([key, focus]) => ({ key, focus }))
+      const rd = await makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: m, context: 't', ...subj } }).run()
+      check(`24d: a ${m}-mode default-roster run records the shipped keys AND focus texts`,
+            same(rd.lensRoster, want), `roster=${JSON.stringify(rd.lensRoster)}`)
+      const copy = await makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: m, context: 't', lenses: want.map((l) => ({ ...l })), ...subj } }).run()
+      check(`24d: a verbatim copy of the ${m} defaults passed through args.lenses records the same roster`,
+            same(copy.lensRoster, want), `roster=${JSON.stringify(copy.lensRoster)}`)
+      const edited = want.map((l, i) => (i === 0 ? { ...l, focus: 'only the most recent commit' } : l))
+      const re = await makeHarness({ findingsPerLens: {}, args: { story: 'T', mode: m, context: 't', lenses: edited, ...subj } }).run()
+      check(`24d: one edited focus under a shipped ${m} key is recorded as the edit`,
+            same(re.lensRoster, edited) && !same(re.lensRoster, want), `roster=${JSON.stringify(re.lensRoster)}`)
+    }
+  }
+  // 24e — a non-sha `branch` is logged as a WARNING; a sha is not
+  {
+    const diffArgs = (targets) => baseArgs({ mode: 'diff', docPath: undefined, lenses: LENSES, targets })
+    const T = (branch, repo = 'r') => ({ repo, path: '/p', base: 'origin/main', branch })
+    const warned = (h) => h.calls.logs.filter((l) => /WARNING: target .* is not a commit sha/.test(l))
+    const named = makeHarness({ findingsPerLens: {}, args: diffArgs([T('claude/some-branch')]) })
+    await named.run()
+    check('24e: a ref-name branch logs one WARNING naming the target',
+          warned(named).length === 1 && /branch=claude\/some-branch/.test(warned(named)[0]), `logs=${JSON.stringify(named.calls.logs)}`)
+    const hexy = makeHarness({ findingsPerLens: {}, args: diffArgs([T('claude/release-20261013')]) })
+    await hexy.run()
+    check('24e: a ref name holding an 8-hex run still logs the WARNING (the match is anchored)',
+          warned(hexy).length === 1, `logs=${JSON.stringify(hexy.calls.logs)}`)
+    const sha = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f3af797c'.padEnd(40, '0'))]) })
+    await sha.run()
+    check('24e: a 40-hex sha branch logs no such WARNING', warned(sha).length === 0, `logs=${JSON.stringify(sha.calls.logs)}`)
+    const short = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f3af797c')]) })
+    await short.run()
+    check('24e: an abbreviated sha branch logs no such WARNING', warned(short).length === 0, `logs=${JSON.stringify(short.calls.logs)}`)
+    const lead = makeHarness({ findingsPerLens: {}, args: diffArgs([T('e11b1883-fixup')]) })
+    await lead.run()
+    check('24e: a ref name whose 8-hex run is at the START still logs the WARNING (the end anchor holds)',
+          warned(lead).length === 1, `logs=${JSON.stringify(lead.calls.logs)}`)
+    const long = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f'.repeat(41))]) })
+    await long.run()
+    check('24e: a 41-hex string is not a sha and logs the WARNING (the upper bound holds)',
+          warned(long).length === 1, `logs=${JSON.stringify(long.calls.logs)}`)
+    const none = makeHarness({ findingsPerLens: {}, args: diffArgs([{ repo: 'r', path: '/p', base: 'origin/main' }]) })
+    await none.run()
+    check('24e: a target with no branch at all logs the WARNING naming branch=undefined',
+          warned(none).length === 1 && /target r branch=undefined/.test(warned(none)[0]), `logs=${JSON.stringify(none.calls.logs)}`)
+    const both = makeHarness({ findingsPerLens: {}, args: diffArgs([T('claude/x', 'fe'), T('claude/y', 'be')]) })
+    await both.run()
+    check('24e: two ref-name targets log two WARNINGs, one naming each',
+          warned(both).length === 2 && warned(both).some((l) => /target fe branch=claude\/x/.test(l)) && warned(both).some((l) => /target be branch=claude\/y/.test(l)),
+          `logs=${JSON.stringify(both.calls.logs)}`)
+    const second = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f3af797c', 'fe'), T('claude/x', 'be')]) })
+    await second.run()
+    check('24e: a ref name in the SECOND target is warned about, and the sha first target is not',
+          warned(second).length === 1 && /target be branch=claude\/x/.test(warned(second)[0]), `logs=${JSON.stringify(second.calls.logs)}`)
+    const design = makeHarness({ findingsPerLens: {}, args: baseArgs({ lenses: LENSES }) })
+    await design.run()
+    check('24e: design mode (no targets) logs no such WARNING', warned(design).length === 0)
+    const shortHex = makeHarness({ findingsPerLens: {}, args: diffArgs([T('decade')]) })
+    await shortHex.run()
+    check('24e: a 6-hex ref name is below the sha floor and logs the WARNING (the lower bound holds)',
+          warned(shortHex).length === 1, `logs=${JSON.stringify(shortHex.calls.logs)}`)
+    const seven = makeHarness({ findingsPerLens: {}, args: diffArgs([T('f3af797')]) })
+    await seven.run()
+    check('24e: a 7-hex abbreviated sha logs no WARNING (the floor is not tightened)', warned(seven).length === 0, `logs=${JSON.stringify(seven.calls.logs)}`)
+    const designLeftover = makeHarness({ findingsPerLens: {}, args: baseArgs({ lenses: LENSES, targets: [T('claude/x')] }) })
+    await designLeftover.run()
+    check('24e: design mode ignores a leftover ref-name target (the mode guard holds)', warned(designLeftover).length === 0, `logs=${JSON.stringify(designLeftover.calls.logs)}`)
+    const noMode = makeHarness({ findingsPerLens: {}, args: { story: 'T', context: 't', lenses: LENSES, targets: [T('claude/x')] } })
+    await noMode.run()
+    check('24e: with `mode` omitted (diff by default) a ref-name target is warned about', warned(noMode).length === 1, `logs=${JSON.stringify(noMode.calls.logs)}`)
+  }
+  // 24f — singleVote names every finding verified once, and is null where nothing was verified
+  {
+    const oneDead = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: ({ call, indices }) => (call === 1 ? null : indices.map((i) => ({ index: i, refuted: true, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const r1 = await oneDead.run()
+    const once = [...r1.confirmed, ...r1.plausible, ...r1.refuted].filter((f) => f.skepticVotes === 1).map((f) => f.title)
+    check('24f: one dead skeptic batch leaves single-vote findings, and singleVote names exactly them',
+          once.length > 0 && same([...r1.singleVote].sort(), [...once].sort()),
+          `singleVote=${JSON.stringify(r1.singleVote)} once=${JSON.stringify(once)}`)
+    check('24f: a lone refuting survivor still scores refuted, which is why singleVote must be read',
+          r1.refuted.some((f) => f.skepticVotes === 1), `refuted votes=${r1.refuted.map((f) => f.skepticVotes).join(',')}`)
+    const allAlive = await makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }) }).run()
+    check('24f: with both votes on every finding, singleVote is an empty array', same(allAlive.singleVote, []), `singleVote=${JSON.stringify(allAlive.singleVote)}`)
+    const held = await makeHarness({ findingsPerLens: SIX, args: baseArgs({ lenses: LENSES, classBudgetTokens: PROJECTED_TOKENS - 1 }) }).run()
+    check('24f: a held run carries singleVote null, like its verdict keys', held.status === 'held_over_budget' && held.singleVote === null && 'singleVote' in held)
+    const dead = await makeHarness({ findingsPerLens: {}, deadLenses: ['a', 'b'], args: baseArgs({ lenses: LENSES }) }).run()
+    check('24f: an all-lenses-died run carries singleVote null', dead.status === 'all_lenses_died' && dead.singleVote === null && 'singleVote' in dead)
+    // both batches covering finding 0 die: zero votes is `unverified`, never single-vote
+    const zero = makeHarness({
+      findingsPerLens: { a: [finding('zero-votes')], b: [finding('two-votes')] },
+      skeptic: ({ indices }) => (indices.includes(0) ? null : indices.map((i) => ({ index: i, refuted: false, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 1, clusterMinFindings: 999 }),
+    })
+    const rz = await zero.run()
+    check('24f: a finding that lost BOTH votes is unverified and absent from singleVote',
+          same(rz.singleVote, []) && rz.unverified.length === 1 && rz.unverified[0].title === 'zero-votes',
+          `singleVote=${JSON.stringify(rz.singleVote)} unverified=${JSON.stringify(rz.unverified.map((f) => f.title))}`)
+    const LONGT = 'a finding title that runs well past the forty-character cut the log line makes'
+    const longFix = { a: [finding(LONGT), finding('two'), finding('three')], b: [finding('four'), finding('five'), finding('six')] }
+    const oneDeadLong = makeHarness({
+      findingsPerLens: longFix,
+      skeptic: ({ call, indices }) => (call === 1 ? null : indices.map((i) => ({ index: i, refuted: true, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const rl = await oneDeadLong.run()
+    check('24f: a single-vote finding with a long title is named byte-identical, not at the log cut',
+          rl.singleVote.includes(LONGT), `singleVote=${JSON.stringify(rl.singleVote)}`)
+    // one dead batch, survivors split by index parity: single-vote findings of both statuses
+    const mixed = makeHarness({
+      findingsPerLens: SIX,
+      skeptic: ({ call, indices }) => (call === 1 ? null : indices.map((i) => ({ index: i, refuted: i % 2 === 0, reason: 'r' }))),
+      args: baseArgs({ lenses: LENSES, skepticBatchSize: 3, clusterMinFindings: 999 }),
+    })
+    const rm = await mixed.run()
+    const all = [...rm.confirmed, ...rm.plausible, ...rm.refuted, ...rm.unverified]
+    const onceAll = all.filter((f) => f.skepticVotes === 1)
+    check('24f: the mixed stub leaves single-vote findings of both statuses (precondition)',
+          onceAll.some((f) => f.status === 'confirmed') && onceAll.some((f) => f.status === 'refuted'),
+          `once=${JSON.stringify(onceAll.map((f) => [f.title, f.status]))}`)
+    check('24f: singleVote names every single-vote finding, confirmed ones included',
+          same([...rm.singleVote].sort(), onceAll.map((f) => f.title).sort()),
+          `singleVote=${JSON.stringify(rm.singleVote)} once=${JSON.stringify(onceAll.map((f) => f.title))}`)
+  }
 }
 
 console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`)
