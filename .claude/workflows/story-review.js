@@ -206,7 +206,7 @@ const deadLenses = lenses.filter((_, i) => !lensResults[i]).map(l => l.key)
 log(`lenses: ${lenses.length - deadLenses.length}/${lenses.length} returned` +
     (deadLenses.length ? ` — DIED: ${deadLenses.join(', ')} (this round hunted with fewer lenses)` : ''))
 // Every lens dead is NOT a clean round. Without this the run returns empty verdict arrays byte-identical
-// to a genuinely converged pass, and §8 checklist item 3 keys on exactly that shape. Same remedy as the
+// to a genuinely converged pass. Same remedy as the
 // budget hold below: null the four verdict keys so a downstream count throws instead of reading zero.
 if (lenses.length && deadLenses.length === lenses.length) {
   log(`ALL ${lenses.length} lenses died — NOT A REVIEW ROUND, nothing was hunted.`)
@@ -419,7 +419,7 @@ if (gateArmed && cumulativeTokens > classBudgetTokens && args.confirmOverBudget 
   return {
     story: args.story, mode, status: 'held_over_budget',
     // Explicitly null, not absent and not []: a held run verified nothing, and
-    // must not satisfy §8 item 3 or §5's zero-confirmed predicate by omission.
+    // must not satisfy §8 item 3 or §5's exit-round predicate by omission.
     confirmed: null, plausible: null, refuted: null, unverified: null, singleVote: null,
     projectedAgents, projectedTokens, spentTokens, cumulativeTokens,
     classBudgetTokens, gateArmed,

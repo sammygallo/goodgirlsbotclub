@@ -35,8 +35,9 @@
 //                                 NOT [], so a downstream count throws rather
 //                                 than reading zero. This is the gate's own
 //                                 first red-team finding: without it a budget
-//                                 hold satisfies §8 checklist item 3 ("the
-//                                 final review round confirmed zero findings")
+//                                 hold satisfied §8 checklist item 3 (then "the
+//                                 final review round confirmed zero findings",
+//                                 now the exit-round read-off)
 //                                 off a pass that verified nothing, laundering
 //                                 an unverified trigger-tier diff into a
 //                                 mergeable one. Lens output is named
@@ -1321,7 +1322,8 @@ const validate = (schema, v) => {
 //       a 6-hex ref name, so loosening the lower bound goes red (round-5 C5);
 //       a 7-hex sha, so tightening it goes red; and design-mode args carrying
 //       a leftover ref-name target, so deleting the mode guard goes red
-//       (round-6 C12)
+//       (round-6 C12); and runs with `mode` omitted, the script's diff default,
+//       so a guard keyed on the raw arg goes red (round-8 C5)
 //  24f  `singleVote` names, on the completed return, every finding that kept
 //       only one skeptic vote — a lone refuting survivor scores `refuted` like
 //       two and the log is not the record (round-5 C2); it is `[]` when every
@@ -1351,6 +1353,9 @@ const validate = (schema, v) => {
           same(r.targets, SENTINEL_TARGETS) && !('docPath' in r), `targets=${JSON.stringify(r.targets)} docPath=${r.docPath}`)
     check('24a: no second roster carrier (lensKeys, lensesOverridden) on the return',
           !('lensKeys' in r) && !('lensesOverridden' in r), `keys=${Object.keys(r).join(',')}`)
+    const noMode = await makeHarness({ findingsPerLens: {}, args: { story: 'T', context: 't', lenses: LENSES, targets: SENTINEL_TARGETS } }).run()
+    check('24a: with `mode` omitted the run is diff mode and the record carries targets, no docPath',
+          noMode.mode === 'diff' && same(noMode.targets, SENTINEL_TARGETS) && !('docPath' in noMode), `mode=${noMode.mode} keys=${Object.keys(noMode).join(',')}`)
   }
   // 24a — design mode: the subject is `docPath`
   {
@@ -1463,6 +1468,9 @@ const validate = (schema, v) => {
     const designLeftover = makeHarness({ findingsPerLens: {}, args: baseArgs({ lenses: LENSES, targets: [T('claude/x')] }) })
     await designLeftover.run()
     check('24e: design mode ignores a leftover ref-name target (the mode guard holds)', warned(designLeftover).length === 0, `logs=${JSON.stringify(designLeftover.calls.logs)}`)
+    const noMode = makeHarness({ findingsPerLens: {}, args: { story: 'T', context: 't', lenses: LENSES, targets: [T('claude/x')] } })
+    await noMode.run()
+    check('24e: with `mode` omitted (diff by default) a ref-name target is warned about', warned(noMode).length === 1, `logs=${JSON.stringify(noMode.calls.logs)}`)
   }
   // 24f — singleVote names every finding verified once, and is null where nothing was verified
   {
