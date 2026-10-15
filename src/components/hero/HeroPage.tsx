@@ -18,14 +18,11 @@ import { useFeatureSlides } from './useFeatureSlides';
 
 interface HeroPageProps {
   /**
-   * Opens the sidebar drawer. Only needed below 1024px, where the character
-   * list lives in the drawer; from 1024px the sidebar is already a column.
+   * Opens the sidebar drawer, which holds the character list at every width
+   * (E6-S3, A1): there is no sidebar column to focus into.
    */
   onOpenSidebar?: () => void;
 }
-
-/** The sidebar becomes a permanent column at Tailwind's `lg`. */
-const SIDEBAR_COLUMN_MIN_WIDTH = 1024;
 
 interface FeatureModalState {
   heading: string;
@@ -46,9 +43,8 @@ export function HeroPage({ onOpenSidebar }: HeroPageProps) {
   const { settled, slides } = useFeatureSlides();
 
   // The hero READS the character and Works lists; it does not fetch them. The
-  // sidebar does (fetchCharacters on mount, fetchProjects with project:view), so
-  // E6-S3 must keep those calls when it rebuilds the sidebar, or the hero would
-  // sit on its loading placeholder for good.
+  // drawer does (fetchCharacters on mount, fetchProjects with project:view), and
+  // it is mounted while closed too, so those calls still happen on first load.
   const characters = useCharacterStore((s) => s.characters);
   const charactersLoaded = useCharacterStore((s) => s.charactersLoaded);
   // A failed fetch leaves charactersLoaded false forever, so "failed" has to be
@@ -101,14 +97,15 @@ export function HeroPage({ onOpenSidebar }: HeroPageProps) {
   }, []);
 
   /**
-   * Browse and See all act on today's sidebar (E6-S3 replaces it). Below 1024px
-   * the list is in the drawer, so open that first; from 1024px it is a column
-   * already and focus is all there is to do. Focus lands a tick later so the
-   * drawer has rendered open.
+   * Browse and See all reveal the character list, which lives in the drawer at
+   * every width (D-H11, A1): open the drawer, then focus the search box or the
+   * list. Focus lands a tick later, after the drawer is shown and its focus trap
+   * has put focus on its first control. If the target sits in a collapsed
+   * section the focus call does nothing, and focus stays where the trap put it.
    */
   const revealSidebar = useCallback(
     (targetId: 'character-search' | 'character-list') => {
-      if (window.innerWidth < SIDEBAR_COLUMN_MIN_WIDTH) onOpenSidebar?.();
+      onOpenSidebar?.();
       window.setTimeout(() => {
         document.getElementById(targetId)?.focus({ preventScroll: true });
       }, 0);

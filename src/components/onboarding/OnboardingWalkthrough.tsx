@@ -151,7 +151,7 @@ export function OnboardingWalkthrough() {
   if (isDocked) {
     return (
       <ModalExemptPortal>
-        <div className="fixed bottom-4 right-4 z-[110] flex items-center gap-2 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-full shadow-2xl pl-4 pr-2 py-2 animate-fade-in-up">
+        <div className="fixed bottom-4 right-4 z-[1200] flex items-center gap-2 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-full shadow-2xl pl-4 pr-2 py-2 animate-fade-in-up">
           <span className="text-xs font-medium text-[var(--color-text-primary)]">
             Setup · {currentStep + 1}/{TOTAL_STEPS}
           </span>
@@ -183,7 +183,7 @@ export function OnboardingWalkthrough() {
   const isLast = currentStep === TOTAL_STEPS - 1;
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center p-6" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[1200] flex items-center justify-center p-6" role="dialog" aria-modal="true">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
 

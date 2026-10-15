@@ -3,11 +3,10 @@ import { useOutletContext } from 'react-router-dom';
 /**
  * What MainLayout hands to the routed page through `<Outlet context>`.
  *
- * `openSidebar` exists for the hero's Browse / See all (E6-S2): below 1024px
- * the character list lives in the sidebar DRAWER, whose open state is local
- * state in MainLayout, so a routed page can only ask for it to open through
- * this. (E6-S3 turns the sidebar into a drawer at every width; this is the
- * seam it keeps.)
+ * `openSidebar` exists for the hero's Browse / See all (E6-S2): the character
+ * list lives in the sidebar DRAWER, at every width (E6-S3, A1), and the drawer's
+ * open state is local state in MainLayout, so a routed page can only ask for it
+ * to open through this.
  */
 export interface LayoutOutletContext {
   openSidebar: () => void;

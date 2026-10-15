@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/authStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { useSwipeSidebar } from '../../hooks/useSwipeSidebar';
+import { drawerOpenBlocked, useSwipeSidebar } from '../../hooks/useSwipeSidebar';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import type { LayoutOutletContext } from './layoutContext';
@@ -14,7 +14,13 @@ import { useOnboardingStore } from '../../stores/onboardingStore';
 
 export function MainLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const openSidebar = useCallback(() => setSidebarOpen(true), []);
+  // D-S14: the menu button and the hero's Browse stay operable behind a right
+  // panel (focus returns to the button when the drawer closes to open one), so
+  // the drawer refuses to open over it.
+  const openSidebar = useCallback(() => {
+    if (drawerOpenBlocked()) return;
+    setSidebarOpen(true);
+  }, []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   // Stable identity: a fresh object each render would re-render the routed
   // ChatView on every sidebar toggle, which it did not do before.
@@ -69,13 +75,16 @@ export function MainLayout() {
   }
 
   return (
-    <div ref={swipeRef} className="flex bg-[var(--color-bg-primary)] overflow-hidden" style={{ height: '100dvh' }}>
-      {/* Sidebar */}
-      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    <div ref={swipeRef} className="bg-[var(--color-bg-primary)] overflow-hidden" style={{ height: '100dvh' }}>
+      {/* Navigation drawer (E6-S3, A1): closed on load at every width, so there
+          is no sidebar column and the content below spans the viewport from
+          first paint. A direct child of this root, so the drawer's focus trap
+          reaches the header, <main> and the panels as its siblings. */}
+      <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0 h-full">
-        <Header onMenuClick={() => setSidebarOpen(true)} />
+      <div className="flex flex-col min-w-0 h-full">
+        <Header onMenuClick={openSidebar} menuOpen={sidebarOpen} />
 
         <main className="flex-1 overflow-hidden">
           <Outlet context={outletContext} />

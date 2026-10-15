@@ -264,15 +264,15 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>13 Oct 2026</b><br>
-      main <b>23d64024</b><br>
-      active <b>none — deployed 13 Oct (E6-S2 · E2-S3 · E2-S4)</b>
+      <b>15 Oct 2026</b><br>
+      main <b>5ae608d9</b><br>
+      active <b>E6-S3 · Sidebar drawer — in review (PR #561)</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
@@ -319,8 +319,14 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E6">
+          <div class="id">E6-S3</div>
+          <div class="t">Sidebar &mdash; hidden drawer at every width (A1)</div>
+          <div class="m"><a href="https://github.com/sammygallo/goodgirlsbotclub/pull/561">#561</a> ready for Sammy&rsquo;s &sect;8 decision &middot; head <code>a5158fb1</code>. Drawer at z 1000, closed on every load, no layout shift; Personal section absorbs the header&rsquo;s account items; D-T4 (closes #556); swipe binding (closes #557). <b>Review: 6 full-roster + 4 confirmation rounds, 7.62M</b> &mdash; two §5 stops on the ChatView seam (reset, then consume branch), descoped by Sammy; ChatView ships byte-identical to <code>main</code>. R5-C1 (swipe over the open interview wizard flashes the drawer) accepted with reason. QA: AC1&ndash;3 pass; the drawer&rsquo;s axe failures (pre-existing pairs) fixed on Sammy&rsquo;s call and re-verified at 0 violations in 24 runs. Filed #562 #563 #564 #565. The D-H3 &ldquo;Recent chat&rdquo; sort item is deferred until <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>. Gates 145 / 3020, build 0, eslint 0/18.</div>
+          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate free">E6-S2 ✓</span><span class="gate hot">§8: did-not-converge · waived R5-C1 · deferred D-H3</span></div>
+        </article>
       </div>
     </section>
 
@@ -362,7 +368,7 @@
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S2</div><div class="t">Lore scope + explainer</div><div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate">← E4-S1</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S1</div><div class="t">Optimization diagnostics</div><div class="gates"><span class="gate">← E2-S4</span><span class="gate free">E2-S5 ✓</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S2</div><div class="t">Suggestions + batch apply</div><div class="gates"><span class="gate">← E5-S1</span></div></article>
-        <article class="card s-warn" data-epic="E6"><div class="id">E6-S3 · S4</div><div class="t">Sidebar · chat layout</div><div class="gates"><span class="gate free">E6-S1 ✓</span></div></article>
+        <article class="card s-warn" data-epic="E6"><div class="id">E6-S4</div><div class="t">Desktop chat layout</div><div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate">← E6-S3</span></div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S1</div><div class="t">Wizard P1 — Creator Notes editor</div><div class="m">Scheduled 11.1, independent of Arch v2.</div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S2</div><div class="t">Wizard P2 — advanced settings</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate hot">← E8 gate</span></div></article>
         <article class="card s-warn" data-epic="E8"><div class="id">E8-S2</div><div class="t">Probe battery + blind scoring</div><div class="gates"><span class="gate">← E8-S1</span></div></article>
@@ -455,23 +461,23 @@
   </div>
 
   <section class="focus">
-    <h2>E3-S1 &mdash; Cascade semantics design, merged 4 Oct</h2>
-    <p class="sub">One documented precedence rule &mdash; global &rarr; character &rarr; chat &mdash; enforced by one resolution function, over an enumerated setting inventory. The spec has to name the fourth level the audit found (on eligible solo chats the server activation engine replaces the client scan and the user&rsquo;s scan depth is never sent), decide whether worlds are settings containers in v1, and say whether lore-book composition stays a separate resolution path. E3-S2/S3/S4 implement it; E7-S2 builds its wizard pages on the rails it specifies.</p>
+    <h2>E6-S3 &mdash; Sidebar drawer, in review (PR #561)</h2>
+    <p class="sub">The existing <code>Sidebar.tsx</code> becomes a hidden 320px drawer at every width (spec A1): My Characters with a nested Group chats subsection, Works, and a pinned Personal section that absorbs the header&rsquo;s account items. Focus is contained by the house <code>useModalFocus</code> hook; the drawer is the top app layer at z 1000 over a z 999 scrim; Toast and Onboarding move above it. The chat&rsquo;s desktop portrait arrives with E6-S4.</p>
 
     <div class="steps">
-      <div class="step done"><div class="sn">Intake</div><div class="sv">no story ID; Ready for dev empty; Sammy picked E3-S1; premise holds</div></div>
-      <div class="step done"><div class="sn">Brief</div><div class="sv">AC verbatim + E7-S2/E4-S2 reading of AC3; N = 1</div></div>
-      <div class="step done"><div class="sn">Research</div><div class="sv">3 Opus lenses, 1.27M</div></div>
-      <div class="step done"><div class="sn">Draft</div><div class="sv">Fable + Plan agent (15 disagreements folded)</div></div>
-      <div class="step done"><div class="sn">Red-team</div><div class="sv">7 rounds; descoped at round 2 by Sammy</div></div>
-      <div class="step done"><div class="sn">QA</div><div class="sv">3/3 AC pass; 2415 tests</div></div>
-      <div class="step done"><div class="sn">PR</div><div class="sv">#545; absorption + 5 issues filed</div></div>
-      <div class="step now"><div class="sn">Sign-off</div><div class="sv">Sammy&rsquo;s design gate; deploy n/a</div></div>
+      <div class="step done"><div class="sn">Intake</div><div class="sv">spec approved, E6-S2 deployed; D-H3 sort item deferred (ggbc-backend#84)</div></div>
+      <div class="step done"><div class="sn">Brief</div><div class="sv">card AC + spec &sect;8 block; 4 PM defaults recorded</div></div>
+      <div class="step done"><div class="sn">Plan</div><div class="sv">Sonnet planner; N = 1 task-PR</div></div>
+      <div class="step done"><div class="sn">Build</div><div class="sv">Sonnet + Haiku; 144 files / 3010 tests</div></div>
+      <div class="step done"><div class="sn">Review</div><div class="sv">6 full-roster + 4 confirmation rounds, 7.62M; 3 §5 stops</div></div>
+      <div class="step done"><div class="sn">QA</div><div class="sv">Opus; AC1–3 pass; axe fixed and re-verified (0 in 24 runs); E1 → #565, E3 → D-E6S3-6</div></div>
+      <div class="step done"><div class="sn">PR</div><div class="sv">#561 evidence bundle</div></div>
+      <div class="step now"><div class="sn">Merge</div><div class="sv">&sect;8 fired &mdash; Sammy&rsquo;s call; deploy on his go</div></div>
     </div>
 
     <div class="note" style="margin-bottom:18px">
-      <h3>What the spec must not do</h3>
-      Invent a second override mechanism. The card&rsquo;s own success criterion says &ldquo;no parallel override mechanisms&rdquo; is already false on the day the spec is written &mdash; <code>resolveEffectiveBooks()</code> plus five call-site unions already resolve lore scope &mdash; so the rule is bounded to the inventory the spec enumerates, and the spec states in terms whether v1 absorbs lore composition or leaves it alone.
+      <h3>What the build must not do</h3>
+      Add a dependency (node_modules is committed), change <code>useModalFocus</code>, touch chatStore&rsquo;s group identity, or weaken an acceptance criterion to pass it. A drawer item that opens a Modal closes the drawer first &mdash; the Modal stays at z 100 under the drawer by Sammy&rsquo;s confirmed table.
     </div>
   </section>
 
@@ -505,7 +511,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 13 Oct 2026 (deployed: E6-S2 &middot; E2-S3 &middot; E2-S4; frontend image f136073e).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 15 Oct 2026 (deployed: E6-S2 &middot; E2-S3 &middot; E2-S4; frontend image f136073e; E6-S3 in review, PR #561).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 

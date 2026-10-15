@@ -4,7 +4,7 @@
  * The toast container against an open Modal. useModalFocus makes everything in
  * #root inert while a Modal is open, and the HTML spec hit-tests an inert node
  * as if it had pointer-events: none, so a click on a toast painted ABOVE the
- * modal (z-200 over its z-100) would land on the modal's backdrop or buttons
+ * modal (z-1100 over its z-100) would land on the modal's backdrop or buttons
  * beneath it. The container therefore lives outside the app root, in its own
  * `data-modal-exempt` container that the inert walk skips.
  *
@@ -61,11 +61,11 @@ describe('the toast container', () => {
     expect(container.contains(holder)).toBe(false);
   });
 
-  it('keeps its position and layer (fixed, z-200)', () => {
+  it('keeps its position and layer (fixed, z-1100)', () => {
     mount();
     const stack = screen.getByText('Saved').parentElement!;
     expect(stack.className).toContain('fixed');
-    expect(stack.className).toContain('z-[200]');
+    expect(stack.className).toContain('z-[1100]');
   });
 
   it('stays operable above an open Modal while the page behind it goes inert', () => {

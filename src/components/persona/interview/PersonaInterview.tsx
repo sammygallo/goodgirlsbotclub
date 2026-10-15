@@ -160,12 +160,7 @@ export function PersonaInterview({ isOpen, onClose, onCreated, onUseSimpleForm }
   const { provider, model } = getProviderAndModel();
   const weakModel = isWeakModel(model);
 
-  // Portal to document.body — this wizard is mounted inside the app header,
-  // which is `position: sticky; z-index: 20` and therefore its own stacking
-  // context; a bare `fixed inset-0 z-[100]` would be trapped beneath it (the
-  // sidebar paints over it). The character wizard sidesteps this only because
-  // it mounts in the sidebar, not the header. Matches Modal/HelpTip, which
-  // portal for the same reason.
+  // Portal to document.body. Matches Modal/HelpTip.
   return createPortal(
     <div className="fixed inset-0 z-[100] flex flex-col bg-[var(--color-bg-primary)]">
       {/* Header */}
