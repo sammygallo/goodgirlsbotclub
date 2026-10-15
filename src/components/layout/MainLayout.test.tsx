@@ -5,6 +5,7 @@
  * drawer is closed in the first render at any width (D-S2, D-S3), opens and
  * closes by every route the spec lists (D-S12), makes the page behind it inert
  * and gives it back (D-G5), ignores the edge swipe over a right panel (D-S14),
+ * does not open from the menu button or the `openSidebar` seam while one is up,
  * binds that swipe even on a fresh load that began at the auth spinner (#557),
  * and keeps the `openSidebar` seam the hero uses.
  *
@@ -299,5 +300,34 @@ describe('the edge swipe (#557, D-S14)', () => {
 
     swipe(layoutRoot(), [10, 100], [140, 100]);
     expect(isOpen()).toBe(false);
+  });
+});
+
+describe('the menu button and the context opener with a right panel open (D-S14)', () => {
+  it('leaves the drawer shut when the menu button is pressed again after the Settings row closed it', async () => {
+    const user = userEvent.setup();
+    mountLayout();
+    await user.click(menuButton());
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+
+    expect(useSettingsPanelStore.getState().isOpen).toBe(true);
+    await waitFor(() => expect(drawerRoot().hasAttribute('hidden')).toBe(true));
+    expect(document.activeElement).toBe(menuButton());
+
+    await user.click(menuButton());
+    expect(drawerRoot().hasAttribute('hidden')).toBe(true);
+    expect(menuButton().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('leaves the drawer shut when a routed child asks through the layout context', async () => {
+    const user = userEvent.setup();
+    mountLayout();
+    act(() => {
+      useSettingsPanelStore.setState({ isOpen: true });
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Probe opens the drawer' }));
+    expect(isOpen()).toBe(false);
+    expect(drawerRoot().hasAttribute('hidden')).toBe(true);
   });
 });

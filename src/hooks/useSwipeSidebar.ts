@@ -11,12 +11,11 @@ export const EDGE_ZONE = 30;     // px from left edge to start open gesture
 export const SWIPE_THRESHOLD = 50; // minimum px to trigger open/close
 
 /**
- * D-S14: the drawer and a right panel are never open together. Items inside the
- * drawer close it before opening a panel; this is the other half, an edge swipe
+ * D-S14: the drawer and a right panel are never open together. An edge swipe
  * must not open the drawer over a panel that is already up. Read live from the
  * stores at gesture time, so a panel that closed a moment ago no longer blocks.
  */
-function rightPanelOpen(): boolean {
+export function rightPanelOpen(): boolean {
   return (
     useSettingsPanelStore.getState().isOpen ||
     useGuidesPanelStore.getState().isOpen ||

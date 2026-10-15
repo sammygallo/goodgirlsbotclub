@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/authStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { useSwipeSidebar } from '../../hooks/useSwipeSidebar';
+import { rightPanelOpen, useSwipeSidebar } from '../../hooks/useSwipeSidebar';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import type { LayoutOutletContext } from './layoutContext';
@@ -14,7 +14,13 @@ import { useOnboardingStore } from '../../stores/onboardingStore';
 
 export function MainLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const openSidebar = useCallback(() => setSidebarOpen(true), []);
+  // D-S14: the menu button and the hero's Browse stay operable behind a right
+  // panel (focus returns to the button when the drawer closes to open one), so
+  // the drawer refuses to open over it.
+  const openSidebar = useCallback(() => {
+    if (rightPanelOpen()) return;
+    setSidebarOpen(true);
+  }, []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   // Stable identity: a fresh object each render would re-render the routed
   // ChatView on every sidebar toggle, which it did not do before.
