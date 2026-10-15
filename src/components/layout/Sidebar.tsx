@@ -889,9 +889,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         onImported={handleCharacterImported}
       />
 
-      {/* Character Preview Modal — read-only details view shown before
-          committing to opening a chat. Triggered by the per-row info button
-          and the current-chat card's About. */}
+      {/* Character Preview Modal — read-only details view. Triggered by the
+          per-row info button and the current-chat card's About. */}
       <CharacterPreviewModal
         isOpen={previewCharacter !== null}
         character={previewCharacter}
