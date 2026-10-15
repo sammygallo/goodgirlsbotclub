@@ -2,17 +2,19 @@
  * @vitest-environment jsdom
  *
  * MainLayout with the real Header and drawer around a routed child (E6-S3): the
- * drawer is closed in the first render at any width (D-S2, D-S3), opens and
- * closes by every route the spec lists (D-S12), makes the page behind it inert
- * and gives it back (D-G5), ignores the edge swipe over a right panel (D-S14),
- * does not open from the menu button or the `openSidebar` seam while one is up,
- * binds that swipe even on a fresh load that began at the auth spinner (#557),
- * and keeps the `openSidebar` seam the hero uses.
+ * drawer is closed in the first render with no class token that offsets the
+ * content (D-S2, D-S3), opens and closes by every route the spec lists (D-S12),
+ * makes the page behind it inert and gives it back (D-G5), ignores the edge
+ * swipe over a right panel (D-S14), does not open from the menu button or the
+ * `openSidebar` seam while one is up, binds that swipe even on a fresh load that
+ * began at the auth spinner (#557), and keeps the `openSidebar` seam the hero
+ * uses.
  *
  * The three right panels and the onboarding walkthrough are marker stubs; Help
  * and the character editor are stubbed out of the header. jsdom ignores `inert`,
  * so containment is asserted on the attribute: an `inert` ancestor, or none.
- * The real Tab walk, the slide and the stacking are QA's, in a browser.
+ * The real Tab walk, the slide, the stacking and the computed width of the
+ * content are QA's, in a browser.
  *
  * `localStorage` is replaced before any app module loads: the onboarding store
  * reads it at import, and under Node 25 the global is Node's experimental one,
@@ -104,9 +106,6 @@ const swipe = (el: Element, from: [number, number], to: [number, number]) => {
   touch(el, 'touchend', ...to);
 };
 
-const setWidth = (width: number) =>
-  Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: width });
-
 const menuButton = () => screen.getByRole('button', { name: 'Open menu' });
 const drawerRoot = () => document.getElementById('app-drawer') as HTMLElement;
 const scrim = () => document.querySelector('[class~="z-[999]"]') as HTMLElement;
@@ -116,7 +115,6 @@ const isOpen = () => menuButton().getAttribute('aria-expanded') === 'true';
 
 beforeEach(() => {
   localStorage.clear();
-  setWidth(1280);
   useAuthStore.setState({
     isAuthenticated: true,
     isLoading: false,
@@ -157,8 +155,7 @@ afterEach(() => {
 });
 
 describe('first render (D-S2, D-S3)', () => {
-  it.each([1100, 1400])('has the drawer closed and the content beside it, not in a column, at %i px', (width) => {
-    setWidth(width);
+  it('has the drawer closed, with the header and <main> inside the content wrapper beside it', () => {
     mountLayout();
 
     const root = drawerRoot();
@@ -169,8 +166,33 @@ describe('first render (D-S2, D-S3)', () => {
     const content = root.nextElementSibling as HTMLElement;
     expect(content.contains(document.querySelector('header'))).toBe(true);
     expect(content.contains(document.querySelector('main'))).toBe(true);
-    expect(layoutRoot().classList.contains('flex')).toBe(false);
-    expect(layoutRoot().outerHTML).not.toContain('lg:');
+  });
+
+  // jsdom applies no Tailwind CSS, so this reads class tokens in the markup and
+  // nothing else; the computed width of the content at 1100 and 1400 px is a
+  // check in a browser.
+  it('has no row layout, offset or width class token on the content wrapper or the layout root, and no breakpoint prefix in the shell', () => {
+    mountLayout();
+
+    const root = layoutRoot();
+    const content = drawerRoot().nextElementSibling as HTMLElement;
+    const chain: HTMLElement[] = [];
+    for (let el: HTMLElement | null = content; el; el = el === root ? null : el.parentElement) {
+      chain.push(el);
+    }
+    expect(chain[0]).toBe(content);
+    expect(chain[chain.length - 1]).toBe(root);
+
+    expect(root.classList.contains('flex')).toBe(false);
+
+    const OFFSET_OR_WIDTH = ['pl-', 'ml-', 'px-', 'mx-', 'w-[', 'max-w-', 'left-'];
+    const offenders = chain.flatMap((el) =>
+      el.className.split(/\s+/).filter((token) => OFFSET_OR_WIDTH.some((prefix) => token.startsWith(prefix))),
+    );
+    expect(offenders).toEqual([]);
+
+    const BREAKPOINTS = ['sm:', 'md:', 'lg:', 'xl:', '2xl:', 'min-[', 'max-['];
+    expect(BREAKPOINTS.filter((prefix) => root.outerHTML.includes(prefix))).toEqual([]);
   });
 
   it('stays closed whatever the browser has stored', () => {
@@ -182,8 +204,7 @@ describe('first render (D-S2, D-S3)', () => {
     expect(menuButton().getAttribute('aria-expanded')).toBe('false');
   });
 
-  it.each([1100, 1400])('shows the menu button, unhidden, at %i px', (width) => {
-    setWidth(width);
+  it('has the menu button unhidden: no hiding class token on it, no hidden ancestor', () => {
     mountLayout();
 
     const tokens = menuButton().className.split(/\s+/);
