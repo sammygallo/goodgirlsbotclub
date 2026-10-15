@@ -8,16 +8,14 @@ import { useLivePortraitStore, type EmotionClips } from '../stores/livePortraitS
  * ran generation.
  *
  * This used to live as an inline effect in ChatView only. That meant the
- * desktop layout (where the portrait renders in the Sidebar, not ChatView's
- * `lg:hidden` panel) had no way to recover an empty cache on its own, and a
+ * desktop layout had no way to recover an empty cache on its own, and a
  * single transient `/blobs` failure was swallowed silently with no retry —
  * leaving the static avatar showing until some unrelated re-render happened to
  * re-fire the fetch. Both ChatView and Sidebar now call this hook, so whichever
  * layout is active drives discovery.
  *
- * - De-duped across consumers: ChatView and Sidebar are both always mounted, so
- *   a module-level in-flight set ensures only one `/blobs` fetch per avatar runs
- *   at a time.
+ * - De-duped across consumers: a module-level in-flight set ensures only one
+ *   `/blobs` fetch per avatar runs at a time.
  * - Retries once on failure (transient auth/session/network), then logs instead
  *   of failing silently.
  * - Exposes `loading` so callers can avoid committing to the static fallback

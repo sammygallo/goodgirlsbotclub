@@ -125,7 +125,7 @@ dedicated image backend below it.
 
 ## How do I import a character card?
 
-Sidebar → **Import** button at the bottom. Accepts PNG character cards
+Menu (top left) → **My Characters** → **Import**. Accepts PNG character cards
 (v2/v3 spec — the open community format used across the character-chat
 ecosystem), JSON exports, and Tavern AI cards.
 
