@@ -69,7 +69,8 @@ function SingleCard({ character, onAbout }: { character: CharacterInfo; onAbout:
   return (
     <section aria-label="Current chat" className="flex-shrink-0 border-b border-[var(--color-border)] px-4 py-3">
       <div className="flex items-center gap-3">
-        <Avatar src={thumbnailUrl(character.avatar)} alt={character.name} size="md" className="flex-shrink-0" />
+        {/* Decorative: the name beside it already names the card. */}
+        <Avatar src={thumbnailUrl(character.avatar)} alt="" size="md" className="flex-shrink-0" />
         <p className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--color-text-primary)]">
           {character.name}
         </p>

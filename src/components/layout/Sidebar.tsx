@@ -461,11 +461,15 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     aria-pressed={showFavoritesOnly}
                     className={`flex min-h-8 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${FOCUS_RING} ${
                       showFavoritesOnly
-                        ? 'bg-yellow-500/20 text-yellow-400'
+                        ? 'bg-yellow-500/20 text-[var(--color-text-primary)] font-semibold'
                         : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'
                     }`}
                   >
-                    <Star size={12} fill={showFavoritesOnly ? 'currentColor' : 'none'} />
+                    <Star
+                      size={12}
+                      fill={showFavoritesOnly ? 'currentColor' : 'none'}
+                      className={showFavoritesOnly ? 'text-yellow-500' : undefined}
+                    />
                     Favorites
                   </button>
                   <button
@@ -475,14 +479,14 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     aria-expanded={showFilters}
                     className={`flex min-h-8 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${FOCUS_RING} ${
                       showFilters || selectedTags.size > 0
-                        ? 'bg-[var(--color-primary)]/20 text-[var(--color-primary)]'
+                        ? 'bg-[var(--color-primary)]/20 text-[var(--color-text-primary)] font-semibold'
                         : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'
                     }`}
                   >
                     <Filter size={12} />
                     Tags
                     {selectedTags.size > 0 && (
-                      <span className="rounded bg-[var(--color-primary)] px-1 text-[10px] text-white">
+                      <span className="rounded bg-[var(--color-primary)]/30 px-1 text-[10px] text-[var(--color-text-primary)]">
                         {selectedTags.size}
                       </span>
                     )}
@@ -529,7 +533,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                           aria-pressed={isSelected}
                           className={`rounded-full px-2 py-1 text-xs transition-colors ${FOCUS_RING} ${
                             isSelected
-                              ? 'bg-[var(--color-primary)] text-white'
+                              ? 'bg-[var(--color-primary)]/20 text-[var(--color-text-primary)] font-semibold ring-1 ring-inset ring-[var(--color-primary)]'
                               : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-primary)]'
                           }`}
                         >
@@ -643,7 +647,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                                   {isInGroup && <Check size={14} className="text-white" />}
                                 </div>
                               )}
-                              <Avatar src={getThumbnailUrl(character.avatar)} alt={character.name} size="md" />
+                              {/* Decorative: the name beside it already names the row. */}
+                              <Avatar src={getThumbnailUrl(character.avatar)} alt="" size="md" />
                               <div className="min-w-0 flex-1">
                                 <p
                                   className={`truncate text-sm text-[var(--color-text-primary)] ${

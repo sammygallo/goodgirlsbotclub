@@ -97,12 +97,20 @@ describe('single chat', () => {
   it('is a region named "Current chat" with a 40px avatar, the name, About and a 32px picker toggle', () => {
     render(<CurrentChatCard onAbout={vi.fn()} />);
 
-    const avatar = within(card()).getByRole('img', { name: 'Ivy' });
+    const avatar = card().querySelector('img') as HTMLImageElement;
     expect(avatar.classList.contains('w-10') && avatar.classList.contains('h-10')).toBe(true);
     expect(within(card()).getByText('Ivy')).toBeTruthy();
     expect(within(card()).getByRole('button', { name: 'About Ivy' })).toBeTruthy();
     const toggle = within(card()).getByRole('button', { name: 'Avatar motion' });
     expect(toggle.classList.contains('h-8') && toggle.classList.contains('w-8')).toBe(true);
+  });
+
+  it('renders its avatar with an empty alt, since the name beside it already names the card', () => {
+    render(<CurrentChatCard onAbout={vi.fn()} />);
+
+    const avatar = card().querySelector('img');
+    expect(avatar).not.toBeNull();
+    expect(avatar?.getAttribute('alt')).toBe('');
   });
 
   it('has no portrait, expanded notes or character switcher of its own', () => {

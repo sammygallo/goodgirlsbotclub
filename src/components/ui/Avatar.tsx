@@ -7,6 +7,7 @@ interface AvatarProps {
   fallbackSrc?: string;
   /** Called when `src` fails and we switch to `fallbackSrc`. */
   onFallback?: () => void;
+  /** Pass "" to mark the image decorative (its name is the text beside it); leave it out to get "Avatar". */
   alt?: string;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   /** Phase 7.3: avatar shape — circle (default), square, or rounded square. */
@@ -63,7 +64,7 @@ export function Avatar({ src, fallbackSrc, onFallback, alt, size = 'md', shape =
   return (
     <img
       src={activeSrc}
-      alt={alt || 'Avatar'}
+      alt={alt ?? 'Avatar'}
       className={`${sizes[size]} ${shapeClass} object-cover ${className}`}
       onError={() => {
         if (errorStage === 'none') {

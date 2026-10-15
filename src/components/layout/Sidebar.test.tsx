@@ -971,6 +971,83 @@ describe('row controls (D1 to D6)', () => {
   });
 });
 
+describe('state cues and the row avatar', () => {
+  /** Opens the tag filter and picks "cozy", leaving the toggle, its count badge and one chip in their active state. */
+  function selectCozy() {
+    renderDrawer();
+    const tags = toggle('Filter by tags');
+    fireEvent.click(tags);
+    fireEvent.click(screen.getByRole('button', { name: 'cozy' }));
+    return { tags, badge: within(tags).getByText('1'), chip: screen.getByRole('button', { name: 'cozy' }) };
+  }
+
+  it('renders each row avatar with an empty alt, since the name beside it already names the row', () => {
+    renderDrawer();
+    const rows = rowPrimaries();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.querySelector('img')?.getAttribute('alt')).toBe('');
+    }
+  });
+
+  it('marks the favorites-only toggle with primary text, a semibold weight and a yellow star while it is on', () => {
+    renderDrawer();
+    const favorites = toggle('Show favorites only');
+    const star = () => favorites.querySelector('svg') as SVGElement;
+    expect(favorites.classList.contains('font-semibold')).toBe(false);
+    expect(star().classList.contains('text-yellow-500')).toBe(false);
+
+    fireEvent.click(favorites);
+    expect(favorites.getAttribute('aria-pressed')).toBe('true');
+    expect(favorites.classList.contains('text-[var(--color-text-primary)]')).toBe(true);
+    expect(favorites.classList.contains('font-semibold')).toBe(true);
+    expect(favorites.classList.contains('text-yellow-400')).toBe(false);
+    expect(star().classList.contains('text-yellow-500')).toBe(true);
+  });
+
+  it('marks the open tag filter with primary text and a semibold weight, not the primary colour', () => {
+    renderDrawer();
+    const tags = toggle('Filter by tags');
+    expect(tags.classList.contains('font-semibold')).toBe(false);
+
+    fireEvent.click(tags);
+    expect(tags.classList.contains('text-[var(--color-text-primary)]')).toBe(true);
+    expect(tags.classList.contains('font-semibold')).toBe(true);
+    expect(tags.classList.contains('text-[var(--color-primary)]')).toBe(false);
+  });
+
+  it('keeps the tag toggle on primary text with a selected tag, and draws the count as primary text on a tinted fill', () => {
+    const { tags, badge } = selectCozy();
+    expect(tags.classList.contains('text-[var(--color-text-primary)]')).toBe(true);
+    expect(tags.classList.contains('text-[var(--color-primary)]')).toBe(false);
+    expect(badge.classList.contains('bg-[var(--color-primary)]/30')).toBe(true);
+    expect(badge.classList.contains('text-[var(--color-text-primary)]')).toBe(true);
+    expect(badge.classList.contains('text-white')).toBe(false);
+    expect(badge.classList.contains('bg-[var(--color-primary)]')).toBe(false);
+  });
+
+  it('draws a selected tag chip as primary text, semibold, on a tinted fill with an inset ring, not white on primary', () => {
+    const { chip } = selectCozy();
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+    expect(chip.classList.contains('bg-[var(--color-primary)]/20')).toBe(true);
+    expect(chip.classList.contains('text-[var(--color-text-primary)]')).toBe(true);
+    expect(chip.classList.contains('font-semibold')).toBe(true);
+    expect(chip.classList.contains('ring-inset')).toBe(true);
+    expect(chip.classList.contains('text-white')).toBe(false);
+    expect(chip.classList.contains('bg-[var(--color-primary)]')).toBe(false);
+  });
+
+  it('leaves an unselected tag chip on the tertiary fill and secondary text', () => {
+    selectCozy();
+    const chip = screen.getByRole('button', { name: 'dark' });
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+    expect(chip.classList.contains('bg-[var(--color-bg-tertiary)]')).toBe(true);
+    expect(chip.classList.contains('text-[var(--color-text-secondary)]')).toBe(true);
+    expect(chip.classList.contains('font-semibold')).toBe(false);
+    expect(chip.classList.contains('ring-inset')).toBe(false);
+  });
+});
+
 describe('keyboard (K1 to K3)', () => {
   it('moves focus between row buttons with ArrowDown and ArrowUp, and stops at either end', () => {
     useCharacterStore.setState({ characters: [ivy, lily, rose] });
