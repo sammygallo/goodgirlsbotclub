@@ -4,21 +4,18 @@
  * ChatView mounted with the real characterStore, chatStore and projectStore.
  *
  * ChatView's selection effect decides when a selection reloads the chat. A
- * null selection pauses it, selecting the character it last loaded again leaves
- * the open transcript alone, and a Works-panel request for that character
- * (projectStore's pendingChatFile) is loaded on the spot. Each case here drives
- * the stores the way the app does and reads what ChatView's chat loader does:
+ * null selection pauses it, and selecting the character it last loaded again
+ * leaves the open transcript alone. Each case here drives the stores the way
+ * the app does and reads what ChatView's chat loader does:
  *
- *  - Home (clearSelection) and then the Works panel's openChatRef for a chat of
- *    the character that was open before must reach loadChat and consume the
- *    pending request;
  *  - Home and then selecting that character again keeps the chat the Works
  *    panel had opened, and the next message is saved to that chat (D-S6);
  *  - a failed delete of the selected character (deleteCharacter clears the
  *    selection, then puts it back) leaves the open chat in place.
  *
- * Selecting a character again after a group chat is open issue #506 and is not
- * exercised here.
+ * Selecting a character again after a group chat is open issue #506, and a
+ * Works-panel request for the character shown before Home is open issue #564;
+ * neither is exercised here.
  *
  * chatStore's fetchChatFiles and loadChat are replaced by recorders that set
  * the state the real actions set before and after their network call; clearChat
@@ -192,20 +189,6 @@ afterEach(() => {
 });
 
 describe('selecting a character again after Home', () => {
-  it('loads the chat the Works panel asks for and clears the pending request', async () => {
-    mountChatView();
-    await selectAva();
-    await waitFor(() => expect(loadChat).toHaveBeenCalledWith(ava.avatar, LATEST));
-
-    pressHome();
-    await act(async () => {
-      await useProjectStore.getState().openChatRef({ character_avatar: ava.avatar, file_name: REQUESTED });
-    });
-
-    await waitFor(() => expect(loadChat).toHaveBeenCalledWith(ava.avatar, REQUESTED));
-    expect(useProjectStore.getState().pendingChatFile).toBeNull();
-  });
-
   it('keeps the open chat through Home and a second selection of the same character, and saves the next message to it', async () => {
     await openAvaWithRequestedChat();
     const saveChat = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 6 });

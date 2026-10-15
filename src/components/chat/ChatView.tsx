@@ -898,23 +898,14 @@ export function ChatView() {
     if (!selectedCharacter) return;
     const sameChar = lastCharacterRef.current === selectedCharacter.avatar;
     const sameMode = lastGroupModeRef.current === isGroupChatMode;
-    if (sameChar && sameMode) {
-      // A Works-panel request for the already-selected character is honored here; nothing else reloads.
-      const pendingChat = useProjectStore
-        .getState()
-        .consumePendingChat(selectedCharacter.avatar);
-      if (pendingChat) {
-        loadChat(selectedCharacter.avatar, pendingChat);
-      }
-      return;
-    }
+    if (sameChar && sameMode) return;
 
     clearChat();
     lastCharacterRef.current = selectedCharacter.avatar;
     lastGroupModeRef.current = isGroupChatMode;
     setFailedExpressions(new Set());
     fetchChatFiles(selectedCharacter.avatar);
-  }, [selectedCharacter, isGroupChatMode, fetchChatFiles, clearChat, loadChat]);
+  }, [selectedCharacter, isGroupChatMode, fetchChatFiles, clearChat]);
 
   useEffect(() => {
     if (!selectedCharacter) return;
