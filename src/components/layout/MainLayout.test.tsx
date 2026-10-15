@@ -183,11 +183,16 @@ describe('first render (D-S2, D-S3)', () => {
     expect(chain[0]).toBe(content);
     expect(chain[chain.length - 1]).toBe(root);
 
-    expect(root.classList.contains('flex')).toBe(false);
+    const ROW_LAYOUT_TOKENS = ['flex', 'grid'];
+    expect(ROW_LAYOUT_TOKENS.filter((token) => root.classList.contains(token))).toEqual([]);
 
-    const OFFSET_OR_WIDTH = ['pl-', 'ml-', 'px-', 'mx-', 'w-[', 'max-w-', 'left-'];
+    const OFFSET_OR_WIDTH_FAMILIES = [
+      'w-', 'max-w-', 'basis-', 'grid-cols-',
+      'ml-', 'ms-', 'mx-', 'pl-', 'ps-', 'px-',
+      'left-', 'start-', 'inset-', 'translate-x-',
+    ];
     const offenders = chain.flatMap((el) =>
-      el.className.split(/\s+/).filter((token) => OFFSET_OR_WIDTH.some((prefix) => token.startsWith(prefix))),
+      el.className.split(/\s+/).filter((token) => OFFSET_OR_WIDTH_FAMILIES.some((prefix) => token.startsWith(prefix))),
     );
     expect(offenders).toEqual([]);
 
