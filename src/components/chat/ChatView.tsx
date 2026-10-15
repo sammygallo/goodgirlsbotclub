@@ -895,7 +895,14 @@ export function ChatView() {
   }, [currentChatFile]);
 
   useEffect(() => {
-    if (!selectedCharacter) return;
+    if (!selectedCharacter) {
+      // Nothing selected (the hero, or a group chat) is a fresh start: forget
+      // the last character so the next selection, even of the same one,
+      // clears the open transcript and reloads the chat files.
+      lastCharacterRef.current = null;
+      lastGroupModeRef.current = false;
+      return;
+    }
     const sameChar = lastCharacterRef.current === selectedCharacter.avatar;
     const sameMode = lastGroupModeRef.current === isGroupChatMode;
     if (sameChar && sameMode) return;
