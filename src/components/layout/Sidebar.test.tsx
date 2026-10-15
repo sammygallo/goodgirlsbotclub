@@ -51,6 +51,7 @@ const ivy = {
   creator_notes: 'Ivy keeps the shop. She is kind.',
 } as CharacterInfo;
 const rose = { name: 'Rose', avatar: 'rose.png', first_mes: 'hello', tags: ['dark'] } as CharacterInfo;
+const lily = { name: 'Lily', avatar: 'lily.png', first_mes: 'hey' } as CharacterInfo;
 
 const groupChat = (fileName: string, names = ['Ivy', 'Rose']) =>
   ({
@@ -954,24 +955,33 @@ describe('row controls (D1 to D6)', () => {
 
 describe('keyboard (K1 to K3)', () => {
   it('moves focus between row buttons with ArrowDown and ArrowUp, and stops at either end', () => {
+    useCharacterStore.setState({ characters: [ivy, lily, rose] });
     renderDrawer();
+    expect(rowNames()).toEqual(['Ivy', 'Lily', 'Rose']);
     const ivyRow = rowPrimary('Ivy');
+    const lilyRow = rowPrimary('Lily');
     const roseRow = rowPrimary('Rose');
     ivyRow.focus();
 
     fireEvent.keyDown(ivyRow, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(lilyRow);
+    fireEvent.keyDown(lilyRow, { key: 'ArrowDown' });
     expect(document.activeElement).toBe(roseRow);
     fireEvent.keyDown(roseRow, { key: 'ArrowDown' });
     expect(document.activeElement).toBe(roseRow);
 
     fireEvent.keyDown(roseRow, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(lilyRow);
+    fireEvent.keyDown(lilyRow, { key: 'ArrowUp' });
     expect(document.activeElement).toBe(ivyRow);
     fireEvent.keyDown(ivyRow, { key: 'ArrowUp' });
     expect(document.activeElement).toBe(ivyRow);
   });
 
   it('jumps to the first and last row with Home and End', () => {
+    useCharacterStore.setState({ characters: [ivy, lily, rose] });
     renderDrawer();
+    expect(rowNames()).toEqual(['Ivy', 'Lily', 'Rose']);
     const ivyRow = rowPrimary('Ivy');
     const roseRow = rowPrimary('Rose');
     ivyRow.focus();
