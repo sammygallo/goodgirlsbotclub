@@ -7,14 +7,12 @@
  * hook then moves the surface's return focus from the drawer's own button,
  * which is about to be hidden, to the drawer's opener, the menu button.
  *
- * The host is a menu button next to a real Sidebar, with the real Modals. The
- * cases that matter are the two timings a Modal can have: About and Resume draft
+ * The host is a menu button next to a real Sidebar, with the real Modals. A Modal
+ * has one of two timings, and each gets its own cases: About and Resume draft
  * mount theirs already open (Resume draft remounts its form to re-seed it), so
  * it pushes in the same commit as the click; Import's Modal is already mounted
- * and flips `isOpen`, so it pushes a commit later. Closing in the click handler
- * breaks the first; closing in the same commit as the launch breaks the second.
- * Every case ends with Escape on the Modal and asks where focus is and whether
- * anything is still inert.
+ * and flips `isOpen`, so it pushes a commit later. Every case ends with Escape on
+ * the Modal and asks where focus is and whether anything is still inert.
  *
  * The interviews are not Modals and never enter the stack: nothing pushes, so
  * the drawer's own cleanup returns focus to the menu button. jsdom ignores
