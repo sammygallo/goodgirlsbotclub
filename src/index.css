@@ -563,8 +563,7 @@ body {
 /* --- Navigation drawer slide and scrim fade (E6-S3, D-S4) ----------------
    `hidden` is display:none, so a transition cannot run on entry: the open and
    close are keyframes, the same pattern as the Modal block above. 200 ms,
-   ease-in-out, 0 ms under reduced motion (Sidebar.tsx unmounts the exit
-   state immediately in that case). */
+   ease-in-out, 0 ms under reduced motion. */
 @keyframes drawer-in {
   from { transform: translateX(-100%); }
   to   { transform: translateX(0); }
