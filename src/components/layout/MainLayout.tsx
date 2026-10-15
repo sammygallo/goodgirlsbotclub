@@ -69,13 +69,16 @@ export function MainLayout() {
   }
 
   return (
-    <div ref={swipeRef} className="flex bg-[var(--color-bg-primary)] overflow-hidden" style={{ height: '100dvh' }}>
-      {/* Sidebar */}
-      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    <div ref={swipeRef} className="bg-[var(--color-bg-primary)] overflow-hidden" style={{ height: '100dvh' }}>
+      {/* Navigation drawer (E6-S3, A1): closed on load at every width, so there
+          is no sidebar column and the content below spans the viewport from
+          first paint. A direct child of this root, so the drawer's focus trap
+          reaches the header, <main> and the panels as its siblings. */}
+      <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0 h-full">
-        <Header onMenuClick={() => setSidebarOpen(true)} />
+      <div className="flex flex-col min-w-0 h-full">
+        <Header onMenuClick={openSidebar} menuOpen={sidebarOpen} />
 
         <main className="flex-1 overflow-hidden">
           <Outlet context={outletContext} />

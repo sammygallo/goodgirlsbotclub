@@ -1,12 +1,14 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { usePullToRefresh } from '../../hooks/usePullToRefresh';
+import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
+import { useModalFocus } from '../../hooks/useModalFocus';
 import {
   X,
   Search,
   Plus,
   MessageSquare,
   Users,
-  ChevronLeft,
   UserPlus,
   Check,
   Trash2,
@@ -30,20 +32,21 @@ import { CharacterCreation, type ManualDraftFormData, type ManualDraftAdvanced }
 import { CharacterInterview } from '../character/interview/CharacterInterview';
 import { CharacterImport } from '../character/CharacterImport';
 import { CharacterPreviewModal } from '../character/CharacterPreviewModal';
-import { CharacterRichText } from '../character/CharacterRichText';
-import { firstSentence, htmlToPlainText } from '../../utils/characterRichText';
+import { firstSentence } from '../../utils/characterRichText';
 import type { CharacterInfo } from '../../api/client';
-import { useCharacterSprites } from '../../hooks/useCharacterSprites';
-import { getDefaultAvatarUrl, type Emotion } from '../../utils/emotions';
-import { LivePortraitVideo } from '../chat/LivePortraitVideo';
-import { useLivePortraitDiscovery } from '../../hooks/useLivePortraitDiscovery';
-import { MotionModePicker } from '../character/MotionModePicker';
-import { useMotionModeStore, resolveMotionMode } from '../../stores/motionModeStore';
+import { CurrentChatCard } from './drawer/CurrentChatCard';
+import { PersonalSection } from './drawer/PersonalSection';
+import { SidebarSection } from './drawer/SidebarSection';
+import { FOCUS_RING } from './drawer/drawerStyles';
+import { useSidebarSections } from './drawer/sidebarSections';
 
 interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
 }
+
+/** The slide-out lasts this long (D-S4); the root stays shown until it is over. */
+const DRAWER_EXIT_MS = 200;
 
 // Manual drafts nest the name under `formData`, interview drafts under
 // `draft` (the interview's in-progress character card) — check both.
@@ -55,24 +58,38 @@ function draftPreviewName(payload: Record<string, unknown>): string {
   return 'Untitled character';
 }
 
+// Thumbnail URL for small avatars in list. ST's /thumbnail is gone in B1;
+// browsers down-scale the full PNG client-side.
+const getThumbnailUrl = (avatar: string) => `/blobs/character/${encodeURIComponent(avatar)}`;
+
+/** Row actions are hidden until hover on hover-capable devices, and always shown for keyboard focus (WCAG 2.4.7). */
+const ROW_ACTION_VISIBILITY =
+  'opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100';
+
+/**
+ * The app's navigation drawer (E6-S3, A1): hidden at every width, opened from the
+ * header's menu button or an edge swipe, closed on load. Top to bottom: the Home
+ * and Close buttons, the current-chat card, the scroller (My Characters with its
+ * nested Group chats, then Works), and the Personal block pinned beneath.
+ */
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
-  const { currentUser } = useAuthStore();
+  const navigate = useNavigate();
+  const currentUser = useAuthStore((s) => s.currentUser);
   const userRole = currentUser?.role;
   const canCreateCharacters = can(userRole, 'character:create');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showInterviewModal, setShowInterviewModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
-  const [showCharacterList, setShowCharacterList] = useState(false);
-  const [failedExpressions, setFailedExpressions] = useState<Set<string>>(new Set());
-  const [descExpanded, setDescExpanded] = useState(false);
   const [isGroupSelectMode, setIsGroupSelectMode] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [previewCharacter, setPreviewCharacter] = useState<CharacterInfo | null>(null);
+  const [personaSurfaceOpen, setPersonaSurfaceOpen] = useState(false);
   const {
     selectedCharacter,
     isLoading,
     fetchCharacters,
     selectCharacter,
+    clearSelection,
     groupChatCharacters,
     toggleGroupChatCharacter,
     startGroupChat,
@@ -111,14 +128,19 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   // it otherwise stays mounted across opens/closes so a plain Cancel
   // doesn't lose whatever the user was mid-typing.
   const [manualResumeKey, setManualResumeKey] = useState(0);
-  const { messages, startNewGroupChat, groupChats, loadGroupChat, deleteGroupChat } = useChatStore();
-  const [showGroupChats, setShowGroupChats] = useState(false);
+  // Selectors, not the whole store: the whole-store form would re-render the
+  // drawer on every streamed token while it sits closed.
+  const startNewGroupChat = useChatStore((s) => s.startNewGroupChat);
+  const groupChats = useChatStore((s) => s.groupChats);
+  const loadGroupChat = useChatStore((s) => s.loadGroupChat);
+  const deleteGroupChat = useChatStore((s) => s.deleteGroupChat);
+  const busy = useChatStore((s) => s.isSending || s.isStreaming);
   const canViewWorks = hasPermission(currentUser, 'project:view');
   const canManageWorks = hasPermission(currentUser, 'project:manage');
   const works = useProjectStore((s) => s.items);
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
   const openWorksPanel = useProjectStore((s) => s.openPanel);
-  const [showWorks, setShowWorks] = useState(false);
+  const { sections, toggle: toggleSection } = useSidebarSections();
 
   useEffect(() => {
     if (canViewWorks) fetchProjects();
@@ -151,68 +173,75 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const activeFilterCount =
     selectedTags.size + (showFavoritesOnly ? 1 : 0) + (searchQuery.trim() ? 1 : 0);
 
-  // Fetch actual sprite paths from API (hook extracts character name from avatar filename)
-  const { getSpritePath, availableEmotions } = useCharacterSprites(selectedCharacter?.avatar);
-
-  // Get the latest character message's emotion for the portrait
-  const latestEmotion = useMemo(() => {
-    const characterMessages = messages.filter((m) => !m.isUser && !m.isSystem);
-    if (characterMessages.length === 0) return null;
-    return (characterMessages[characterMessages.length - 1] as { emotion?: Emotion | null }).emotion ?? null;
-  }, [messages]);
-
-  const {
-    clips: livePortraitClips,
-    hasClips: hasLivePortraitClips,
-    loading: livePortraitLoading,
-  } = useLivePortraitDiscovery(selectedCharacter?.avatar);
-  const hasExpressionSprites = availableEmotions.length > 0;
-  const motionMode = useMotionModeStore((s) =>
-    selectedCharacter ? s.modesByAvatar[selectedCharacter.avatar] ?? 'auto' : 'auto',
-  );
-  const resolvedMotionMode = resolveMotionMode(
-    motionMode,
-    hasLivePortraitClips,
-    hasExpressionSprites,
-  );
-  const hasLivePortrait = resolvedMotionMode === 'liveportrait';
-  const portraitEmotion = resolvedMotionMode === 'expressions' ? latestEmotion : null;
-
   useEffect(() => {
     fetchCharacters();
   }, [fetchCharacters]);
 
-  // Phase 6.3: Pull-to-refresh on character list
-  const charListRef = useRef<HTMLDivElement>(null);
-  const { pullDistance, isRefreshing } = usePullToRefresh(charListRef, fetchCharacters);
+  // Phase 6.3: Pull-to-refresh on the scroller (the element that actually scrolls)
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const { pullDistance, isRefreshing } = usePullToRefresh(scrollerRef, fetchCharacters);
 
-  // When a character is selected, hide the list (show portrait) and end group
-  // selection, as the cancel button and startGroupChat do
+  // A character selected from outside the drawer (the hero's Chat button) ends
+  // group selection, as the cancel button and startGroupChat do. Otherwise a
+  // row click would go on toggling membership instead of choosing a character.
   useEffect(() => {
-    if (selectedCharacter) {
-      setShowCharacterList(false);
-      setIsGroupSelectMode(false);
-      setFailedExpressions(new Set());
-      setDescExpanded(false);
-    }
+    if (selectedCharacter) setIsGroupSelectMode(false);
   }, [selectedCharacter]);
 
+  // --- The drawer shell (D-S4, D-S12, D-S15) -----------------------------------
+  const reducedMotion = usePrefersReducedMotion();
+  const rootRef = useRef<HTMLDivElement>(null);
+  // `hidden` is display:none, so the slide-out needs the root to stay shown for
+  // DRAWER_EXIT_MS after `isOpen` goes false. Opening is derived while rendering,
+  // not set from an effect: the drawer is shown in the very commit that carries
+  // `isOpen`, so a caller that focuses something inside it a tick later (the
+  // hero's Browse) finds it there.
+  const [displayed, setDisplayed] = useState(isOpen);
+  if (isOpen && !displayed) setDisplayed(true);
+  useEffect(() => {
+    if (isOpen || !displayed) return;
+    const t = window.setTimeout(() => setDisplayed(false), reducedMotion ? 0 : DRAWER_EXIT_MS);
+    return () => window.clearTimeout(t);
+  }, [isOpen, displayed, reducedMotion]);
+  const exiting = displayed && !isOpen;
+  // Active while OPEN, not while shown: the page behind is live, and focus is
+  // back on the menu button, from the moment the user closes it.
+  useModalFocus({ active: isOpen, rootRef, onEscape: onClose });
+
+  // --- D-E6S3-1: a surface launched from the drawer closes the drawer ----------
+  // Layering puts Modal (z 100) beneath the drawer (z 1000), so the drawer has to
+  // leave. It must leave AFTER the surface has pushed onto useModalFocus's stack:
+  // the hook then moves the surface's return focus from the soon-hidden drawer
+  // button to the drawer's own opener, the menu button. React runs every effect
+  // cleanup in a commit before any setup, so closing in the click handler (or in
+  // the same commit as a Modal that mounts one commit after `isOpen`) pops the
+  // drawer first and the Modal captures a dead opener. Hop 1 lands one render
+  // after the launch; hop 2 closes the drawer in the render after that, when the
+  // Modal has pushed whether it activates at once (About) or a commit later (Import).
+  const launchedOpen =
+    showCreateModal || showInterviewModal || showImportModal || previewCharacter !== null || personaSurfaceOpen;
+  const [launchedSeen, setLaunchedSeen] = useState(false);
+  useEffect(() => {
+    setLaunchedSeen(launchedOpen);
+  }, [launchedOpen]);
+  useEffect(() => {
+    if (isOpen && launchedSeen) onClose();
+  }, [isOpen, launchedSeen, onClose]);
+
+  // --- Actions -------------------------------------------------------------------
   const handleCharacterCreated = (avatarUrl: string) => {
     selectCharacter(avatarUrl);
-    setShowCharacterList(false);
     onClose();
   };
 
   const handleCharacterImported = (avatarUrl: string) => {
     selectCharacter(avatarUrl);
-    setShowCharacterList(false);
     onClose();
   };
 
   const handleCharacterSelect = (avatar: string) => {
     haptic();
     selectCharacter(avatar);
-    setShowCharacterList(false);
     onClose();
   };
 
@@ -220,785 +249,613 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     // Set up group chat mode with the characters from the saved group chat
     await setGroupChatCharacters(groupChat.characterAvatars);
     loadGroupChat(groupChat);
-    setShowGroupChats(false);
-    setShowCharacterList(false);
     onClose();
   };
 
-  const handleDeleteGroupChat = (e: React.MouseEvent, fileName: string) => {
-    e.stopPropagation();
+  const handleDeleteGroupChat = (fileName: string) => {
     if (confirm('Delete this group chat?')) {
       deleteGroupChat(fileName);
     }
   };
 
-  // Thumbnail URL for small avatars in list. ST's /thumbnail is gone in B1;
-  // browsers down-scale the full PNG client-side.
-  const getThumbnailUrl = (avatar: string) => `/blobs/character/${encodeURIComponent(avatar)}`;
+  // D-S6. Group mode ends BEFORE the selection is cleared: a group chat's
+  // identity is its roster, and the roster is read from this state.
+  const handleHome = () => {
+    if (busy) return;
+    haptic();
+    if (isGroupChatMode) exitGroupChat();
+    clearSelection();
+    navigate('/');
+    onClose();
+  };
 
-  // Full-size image URL for portrait view (with expression support)
-  const getFullImageUrl = useCallback(
-    (avatar: string, emotion?: Emotion | null) => {
-      const expressionKey = `${avatar}-${emotion}`;
-
-      // Check if this expression previously failed
-      if (emotion && failedExpressions.has(expressionKey)) {
-        const fallback = getDefaultAvatarUrl(avatar);
-        console.log('[Sidebar Expression] Using fallback:', { emotion, fallback });
-        return fallback;
-      }
-
-      // Try to use actual sprite path from API
-      if (emotion) {
-        const spritePath = getSpritePath(emotion);
-        if (spritePath) {
-          console.log('[Sidebar Expression] Using API sprite path:', { emotion, path: spritePath });
-          return spritePath;
-        }
-      }
-
-      // Fall back to default avatar
-      const fallback = getDefaultAvatarUrl(avatar);
-      console.log('[Sidebar Expression] No sprite found, using default:', { avatar, emotion, fallback });
-      return fallback;
-    },
-    [getSpritePath, failedExpressions]
-  );
-
-  // Determine what to show: character portrait or character list
-  const showPortrait = selectedCharacter && !showCharacterList;
-
-  // Active group chat has no single `selectedCharacter`, so it fell through
-  // to the full character-list view. Show the most recent speaker's portrait
-  // instead so it's clear at a glance who's currently active (#408).
-  const lastGroupSpeaker = useMemo(() => {
-    if (!isGroupChatMode) return null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.isUser || m.isSystem || !m.characterAvatar) continue;
-      const member = groupChatCharacters.find((c) => c.avatar === m.characterAvatar);
-      return { avatar: m.characterAvatar, name: member?.name ?? m.name };
+  // D-S13: ArrowUp / ArrowDown move between rows' primary buttons, Home / End go
+  // to the first and last. An accelerator only: every button stays in Tab order.
+  const handleListKeyDown = (e: React.KeyboardEvent<HTMLUListElement>) => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const target = e.target as HTMLElement;
+    if (!target.matches('[data-row-primary]')) return;
+    const rows = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-row-primary]'));
+    const at = rows.indexOf(target);
+    let next: number;
+    switch (e.key) {
+      case 'ArrowDown':
+        next = Math.min(at + 1, rows.length - 1);
+        break;
+      case 'ArrowUp':
+        next = Math.max(at - 1, 0);
+        break;
+      case 'Home':
+        next = 0;
+        break;
+      case 'End':
+        next = rows.length - 1;
+        break;
+      default:
+        return;
     }
-    return groupChatCharacters[0] ? { avatar: groupChatCharacters[0].avatar, name: groupChatCharacters[0].name } : null;
-  }, [isGroupChatMode, messages, groupChatCharacters]);
-  const showGroupPortrait = isGroupChatMode && !showCharacterList && !!lastGroupSpeaker;
+    e.preventDefault();
+    rows[next]?.focus();
+  };
+
+  const characterActions = (
+    <div className="flex flex-shrink-0 items-center gap-0.5">
+      {isGroupSelectMode ? (
+        <button
+          type="button"
+          onClick={() => {
+            setIsGroupSelectMode(false);
+            exitGroupChat();
+          }}
+          aria-label="Cancel group selection"
+          className={`flex h-8 w-8 items-center justify-center rounded-lg text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)] ${FOCUS_RING}`}
+        >
+          <X size={16} />
+        </button>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => setIsGroupSelectMode(true)}
+            aria-label="Start group chat"
+            title="Group Chat"
+            className={`flex h-8 w-8 items-center justify-center rounded-lg text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)] ${FOCUS_RING}`}
+          >
+            <UserPlus size={16} />
+          </button>
+          {canCreateCharacters && (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowImportModal(true)}
+                aria-label="Import character"
+                className={`flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)] ${FOCUS_RING}`}
+              >
+                <Upload size={14} />
+                Import
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowInterviewModal(true)}
+                aria-label="New character"
+                className={`flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)] ${FOCUS_RING}`}
+              >
+                <Plus size={14} />
+                New
+              </button>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
 
   return (
     <>
-      {/* Overlay (Mobile) */}
-      {isOpen && (
+      {/*
+        The root is the dialog AND the useModalFocus surface, so the inert walk
+        takes in the page around it. It has NO class of its own on purpose: a
+        static box holding only fixed children creates no stacking context, so the
+        scrim and the panel compete with Modal (z 100) and the toasts in the root
+        context, which is what the z-index table in D-S14 assumes. The scrim lives
+        inside the root because everything outside it is inert and would ignore
+        the click.
+      */}
+      <div ref={rootRef} id="app-drawer" role="dialog" aria-modal="true" aria-label="Menu" hidden={!displayed}>
         <div
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+          aria-hidden="true"
           onClick={onClose}
+          className={`fixed inset-0 z-[999] bg-black/50 ${exiting ? 'animate-drawer-scrim-out pointer-events-none' : 'animate-drawer-scrim-in'}`}
         />
-      )}
+        <nav
+          aria-label="Main"
+          className={`fixed inset-y-0 left-0 z-[1000] flex w-80 max-w-full flex-col border-r border-[var(--color-border)] bg-[var(--color-bg-secondary)] ${
+            exiting ? 'animate-drawer-out pointer-events-none' : 'animate-drawer-in'
+          }`}
+        >
+          {/* 1. Top bar */}
+          <div className="flex h-14 flex-shrink-0 items-center justify-between border-b border-[var(--color-border)] px-3 safe-top">
+            <button
+              type="button"
+              onClick={handleHome}
+              aria-label="Home"
+              aria-disabled={busy}
+              title={busy ? 'Wait for the reply to finish' : undefined}
+              className={`rounded-lg px-1 py-1 ${busy ? 'cursor-not-allowed opacity-50' : 'hover:bg-[var(--color-bg-tertiary)]'} ${FOCUS_RING}`}
+            >
+              <img src="/logo.png" alt="" className="h-8 w-auto" />
+            </button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="p-2"
+              aria-label="Close menu"
+              aria-expanded="true"
+              aria-controls="app-drawer"
+            >
+              <X size={20} />
+            </Button>
+          </div>
 
-      {/* Sidebar */}
-      <aside
-        className={`
-          fixed lg:static inset-y-0 left-0 z-50
-          w-72 bg-[var(--color-bg-secondary)]
-          border-r border-[var(--color-border)]
-          flex flex-col
-          transform transition-transform duration-200 ease-in-out
-          ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-        `}
-      >
-        {showPortrait ? (
-          /* Character Portrait View */
-          <>
-            {/* Header with switch button */}
-            <div className="h-14 flex items-center justify-between px-4 border-b border-[var(--color-border)] safe-top">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowCharacterList(true)}
-                className="p-2 -ml-2"
-                aria-label="Switch character"
+          {/* 2. Current chat (nothing while the hero is showing) */}
+          <CurrentChatCard onAbout={setPreviewCharacter} />
+
+          {/* 3. Sections */}
+          <div id="app-drawer-scroll" ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto scroll-py-2">
+            {/* Pull-to-refresh indicator */}
+            {(pullDistance > 0 || isRefreshing) && (
+              <div
+                className="flex items-center justify-center overflow-hidden transition-all"
+                style={{ height: isRefreshing ? 40 : pullDistance }}
               >
-                <Users size={20} />
-              </Button>
-              <h2 className="font-semibold text-[var(--color-text-primary)] truncate flex-1 text-center px-2">
-                {selectedCharacter.name}
-              </h2>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onClose}
-                className="lg:hidden p-2 -mr-2"
-                aria-label="Close sidebar"
-              >
-                <X size={20} />
-              </Button>
-            </div>
-
-            {/* Full Character Portrait */}
-            <div className="flex-1 flex flex-col items-center justify-center p-4 overflow-hidden">
-              <div className="relative w-full max-w-[240px] aspect-[2/3] rounded-xl overflow-hidden shadow-lg border border-[var(--color-border)]">
-                {hasLivePortrait ? (
-                  <LivePortraitVideo
-                    clips={livePortraitClips!}
-                    emotion={latestEmotion}
-                    fill
-                    shape="square"
-                  />
-                ) : (
-                  <img
-                    key={`${selectedCharacter.avatar}-${portraitEmotion ?? 'neutral'}`}
-                    src={getFullImageUrl(selectedCharacter.avatar, portraitEmotion)}
-                    alt={selectedCharacter.name}
-                    className="w-full h-full object-cover transition-opacity duration-300"
-                    onLoad={(e) => {
-                      console.log('[Sidebar Expression] Image loaded:', e.currentTarget.src);
-                    }}
-                    onError={(e) => {
-                      console.log('[Sidebar Expression] Image FAILED:', e.currentTarget.src);
-                      if (latestEmotion) {
-                        const expressionKey = `${selectedCharacter.avatar}-${latestEmotion}`;
-                        setFailedExpressions((prev) => new Set(prev).add(expressionKey));
-                      }
-                    }}
-                  />
-                )}
-                {livePortraitLoading && !hasLivePortrait && (
-                  <div className="absolute bottom-2 right-2 rounded-full bg-black/40 p-1.5 backdrop-blur-sm">
-                    <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                  </div>
-                )}
-              </div>
-
-              {/* Motion mode picker */}
-              <div className="mt-3 w-full px-2">
-                <MotionModePicker
-                  avatar={selectedCharacter.avatar}
-                  hasLivePortraitClips={hasLivePortraitClips}
-                  hasExpressionSprites={hasExpressionSprites}
-                />
-              </div>
-
-              {/* Character Info */}
-              <div className="mt-3 text-center w-full px-2">
-                <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">
-                  {selectedCharacter.name}
-                </h3>
-                {latestEmotion && (
-                  <span className="inline-block mt-1 text-xs px-2 py-0.5 rounded-full bg-[var(--color-primary)]/20 text-[var(--color-primary)] capitalize">
-                    {latestEmotion}
-                  </span>
-                )}
-                {firstSentence(selectedCharacter.creator_notes) && (
-                  <div className="mt-2 text-left w-full">
-                    {descExpanded ? (
-                      // Full notes: render any creator HTML/CSS (sanitised +
-                      // style-isolated inside .character-rich).
-                      <CharacterRichText
-                        content={selectedCharacter.creator_notes ?? ''}
-                      />
-                    ) : (
-                      <p className="text-sm text-[var(--color-text-secondary)] line-clamp-3">
-                        {firstSentence(selectedCharacter.creator_notes)}
-                      </p>
-                    )}
-                    {htmlToPlainText(selectedCharacter.creator_notes).length > 150 && (
-                      <button
-                        onClick={() => setDescExpanded(!descExpanded)}
-                        className="text-xs text-[var(--color-primary)] hover:underline mt-1"
-                      >
-                        {descExpanded ? 'Show less' : 'Show more'}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Switch Character Button */}
-            <div className="p-3 pb-4 border-t border-[var(--color-border)] input-safe-bottom">
-              <Button
-                variant="secondary"
-                className="w-full"
-                onClick={() => setShowCharacterList(true)}
-              >
-                <Users size={18} className="mr-2" />
-                Switch Character
-              </Button>
-            </div>
-          </>
-        ) : showGroupPortrait && lastGroupSpeaker ? (
-          /* Group Chat Portrait View — shows whoever spoke most recently (#408) */
-          <>
-            <div className="h-14 flex items-center justify-between px-4 border-b border-[var(--color-border)] safe-top">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowCharacterList(true)}
-                className="p-2 -ml-2"
-                aria-label="View group members"
-              >
-                <Users size={20} />
-              </Button>
-              <h2 className="font-semibold text-[var(--color-text-primary)] truncate flex-1 text-center px-2">
-                Group Chat
-              </h2>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onClose}
-                className="lg:hidden p-2 -mr-2"
-                aria-label="Close sidebar"
-              >
-                <X size={20} />
-              </Button>
-            </div>
-
-            <div className="flex-1 flex flex-col items-center justify-center p-4 overflow-hidden">
-              <div className="relative w-full max-w-[240px] aspect-[2/3] rounded-xl overflow-hidden shadow-lg border border-[var(--color-border)]">
-                <img
-                  key={lastGroupSpeaker.avatar}
-                  src={getFullImageUrl(lastGroupSpeaker.avatar, null)}
-                  alt={lastGroupSpeaker.name}
-                  className="w-full h-full object-cover transition-opacity duration-300"
-                />
-              </div>
-              <div className="mt-3 text-center w-full px-2">
-                <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">
-                  {lastGroupSpeaker.name}
-                </h3>
-                <span className="inline-block mt-1 text-xs px-2 py-0.5 rounded-full bg-[var(--color-primary)]/20 text-[var(--color-primary)]">
-                  Last to speak
-                </span>
-              </div>
-            </div>
-
-            <div className="p-3 pb-4 border-t border-[var(--color-border)] input-safe-bottom">
-              <Button
-                variant="secondary"
-                className="w-full"
-                onClick={() => setShowCharacterList(true)}
-              >
-                <Users size={18} className="mr-2" />
-                View Members
-              </Button>
-            </div>
-          </>
-        ) : (
-          /* Character List View */
-          <>
-            {/* Sidebar Header */}
-            <div className="h-14 flex items-center justify-between px-4 border-b border-[var(--color-border)] safe-top">
-              {(selectedCharacter || isGroupChatMode) && !isGroupSelectMode ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowCharacterList(false)}
-                  className="p-2 -ml-2"
-                  aria-label="Back to character"
-                >
-                  <ChevronLeft size={20} />
-                </Button>
-              ) : isGroupSelectMode ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setIsGroupSelectMode(false);
-                    exitGroupChat();
-                  }}
-                  className="p-2 -ml-2"
-                  aria-label="Cancel group selection"
-                >
-                  <X size={20} />
-                </Button>
-              ) : (
-                <div className="w-9" />
-              )}
-              <h2 className="font-semibold text-[var(--color-text-primary)]">
-                {isGroupSelectMode ? `Group Chat (${groupChatCharacters.length})` : 'Characters'}
-              </h2>
-              <div className="flex items-center gap-1">
-                {!isGroupSelectMode && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsGroupSelectMode(true)}
-                    className="p-2"
-                    aria-label="Start group chat"
-                    title="Group Chat"
-                  >
-                    <UserPlus size={20} />
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={onClose}
-                  className="lg:hidden p-2 -mr-2"
-                  aria-label="Close sidebar"
-                >
-                  <X size={20} />
-                </Button>
-              </div>
-            </div>
-
-            {/* Search & Filters */}
-            <div className="p-3 border-b border-[var(--color-border)] space-y-2">
-              <div className="relative">
-                <Search
+                <Loader2
                   size={18}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)]"
+                  className={`text-[var(--color-primary)] ${isRefreshing ? 'animate-spin' : ''}`}
+                  style={{ opacity: Math.min(1, pullDistance / 60) }}
                 />
-                <Input
-                  type="search"
-                  id="character-search"
-                  name="character-search"
-                  autoComplete="off"
-                  placeholder="Search characters..."
-                  className="pl-10"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-              </div>
-
-              {/* Filter controls */}
-              <div className="flex flex-wrap items-center gap-1">
-                <button
-                  onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
-                  className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-colors ${
-                    showFavoritesOnly
-                      ? 'bg-yellow-500/20 text-yellow-400'
-                      : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'
-                  }`}
-                  title="Show favorites only"
-                >
-                  <Star size={12} fill={showFavoritesOnly ? 'currentColor' : 'none'} />
-                  <span className="hidden sm:inline">Favorites</span>
-                </button>
-                <button
-                  onClick={() => setShowFilters(!showFilters)}
-                  className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-colors ${
-                    showFilters || selectedTags.size > 0
-                      ? 'bg-[var(--color-primary)]/20 text-[var(--color-primary)]'
-                      : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'
-                  }`}
-                  title="Tag filters"
-                >
-                  <Filter size={12} />
-                  <span className="hidden sm:inline">Tags</span>
-                  {selectedTags.size > 0 && (
-                    <span className="bg-[var(--color-primary)] text-white px-1 rounded text-[10px]">
-                      {selectedTags.size}
-                    </span>
-                  )}
-                </button>
-                <span className="flex items-center">
-                  <select
-                    value={sortMode}
-                    onChange={(e) => setSortMode(e.target.value as never)}
-                    className="flex items-center gap-1 px-2 py-1 text-xs rounded-md text-[var(--color-text-secondary)] bg-transparent hover:bg-[var(--color-bg-tertiary)] cursor-pointer appearance-none focus:outline-none"
-                    title="Sort mode"
-                  >
-                    <option value="name">Name</option>
-                    <option value="date_added">Recently added</option>
-                    <option value="date_last_chat">Recent chat</option>
-                  </select>
-                  <ArrowUpDown size={12} className="text-[var(--color-text-secondary)] -ml-1" />
-                </span>
-                {activeFilterCount > 0 && (
-                  <button
-                    onClick={() => {
-                      clearTagFilters();
-                      setShowFavoritesOnly(false);
-                      setSearchQuery('');
-                    }}
-                    className="ml-auto text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] underline"
-                    title="Clear all filters"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-
-              {/* Tag filter chips */}
-              {showFilters && allTags.length > 0 && (
-                <div className="flex flex-wrap gap-1 pt-1">
-                  {allTags.map((tag) => {
-                    const isSelected = selectedTags.has(tag);
-                    return (
-                      <button
-                        key={tag}
-                        onClick={() => toggleTagFilter(tag)}
-                        className={`text-xs px-2 py-1 rounded-full transition-colors ${
-                          isSelected
-                            ? 'bg-[var(--color-primary)] text-white'
-                            : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-primary)]'
-                        }`}
-                      >
-                        {tag}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* Character List */}
-            <div ref={charListRef} id="character-list" tabIndex={-1} className="flex-1 overflow-y-auto focus:outline-none">
-              {/* Pull-to-refresh indicator */}
-              {(pullDistance > 0 || isRefreshing) && (
-                <div
-                  className="flex items-center justify-center overflow-hidden transition-all"
-                  style={{ height: isRefreshing ? 40 : pullDistance }}
-                >
-                  <Loader2
-                    size={18}
-                    className={`text-[var(--color-primary)] ${isRefreshing ? 'animate-spin' : ''}`}
-                    style={{ opacity: Math.min(1, pullDistance / 60) }}
-                  />
-                </div>
-              )}
-              {isLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-[var(--color-primary)]" />
-                </div>
-              ) : filteredCharacters.length === 0 ? (
-                <div className="text-center py-8 px-4">
-                  <MessageSquare size={32} className="mx-auto text-[var(--color-text-secondary)] mb-2" />
-                  <p className="text-sm text-[var(--color-text-secondary)]">
-                    {activeFilterCount > 0
-                      ? 'No characters match your filters'
-                      : 'No characters found'}
-                  </p>
-                </div>
-              ) : (
-                <ul className="py-2">
-                  {filteredCharacters.map((character) => {
-                    const isInGroup = isCharacterInGroup(character.avatar);
-                    const isFav = favorites.has(character.avatar);
-                    return (
-                      <li key={character.avatar} className="group">
-                        <div
-                          className={`
-                            relative flex items-center
-                            ${
-                              isGroupSelectMode && isInGroup
-                                ? 'bg-[var(--color-primary)]/20 border-l-2 border-[var(--color-primary)]'
-                                : selectedCharacter?.avatar === character.avatar && !isGroupSelectMode
-                                  ? 'bg-[var(--color-primary)]/20 border-l-2 border-[var(--color-primary)]'
-                                  : 'hover:bg-[var(--color-bg-tertiary)]'
-                            }
-                          `}
-                        >
-                          <button
-                            onClick={() => {
-                              if (isGroupSelectMode) {
-                                toggleGroupChatCharacter(character.avatar);
-                              } else {
-                                handleCharacterSelect(character.avatar);
-                              }
-                            }}
-                            className="flex-1 flex items-center gap-3 px-4 py-3 text-left transition-colors min-w-0"
-                          >
-                            {/* Checkbox for group select mode */}
-                            {isGroupSelectMode && (
-                              <div
-                                className={`
-                                  w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0
-                                  ${
-                                    isInGroup
-                                      ? 'bg-[var(--color-primary)] border-[var(--color-primary)]'
-                                      : 'border-[var(--color-text-secondary)]'
-                                  }
-                                `}
-                              >
-                                {isInGroup && <Check size={14} className="text-white" />}
-                              </div>
-                            )}
-                            <Avatar
-                              src={getThumbnailUrl(character.avatar)}
-                              alt={character.name}
-                              size="md"
-                            />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
-                                {character.name}
-                              </p>
-                              {firstSentence(character.creator_notes) && (
-                                <p className="text-xs text-[var(--color-text-secondary)] truncate">
-                                  {firstSentence(character.creator_notes)}
-                                </p>
-                              )}
-                              {(() => {
-                                const tags = character.tags || character.data?.tags || [];
-                                if (tags.length === 0) return null;
-                                return (
-                                  <div className="flex flex-wrap gap-1 mt-0.5">
-                                    {tags.slice(0, 3).map((tag) => (
-                                      <span
-                                        key={tag}
-                                        className="text-[10px] px-1.5 py-0 leading-4 bg-[var(--color-bg-primary)] text-[var(--color-text-secondary)] rounded-full border border-[var(--color-border)]"
-                                      >
-                                        {tag}
-                                      </span>
-                                    ))}
-                                    {tags.length > 3 && (
-                                      <span className="text-[10px] text-[var(--color-text-secondary)] leading-4">
-                                        +{tags.length - 3}
-                                      </span>
-                                    )}
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          </button>
-                          {!isGroupSelectMode && (
-                            <>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  haptic();
-                                  setPreviewCharacter(character);
-                                }}
-                                className="p-2 rounded-lg text-[var(--color-text-secondary)] opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 hover:text-[var(--color-primary)] transition-opacity"
-                                title={`Preview ${character.name}`}
-                                aria-label={`Preview ${character.name}`}
-                              >
-                                <Info size={16} />
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleFavorite(character.avatar);
-                                }}
-                                className={`p-2 mr-2 rounded-lg transition-opacity ${
-                                  isFav
-                                    ? 'text-yellow-400 opacity-100'
-                                    : 'text-[var(--color-text-secondary)] opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 hover:text-yellow-400'
-                                }`}
-                                title={isFav ? 'Unfavorite' : 'Favorite'}
-                              >
-                                <Star size={16} fill={isFav ? 'currentColor' : 'none'} />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-
-            {/* Works Section — the project container above chats */}
-            {canViewWorks && !isGroupSelectMode && (
-              <div className="border-t border-[var(--color-border)]">
-                <button
-                  onClick={() => setShowWorks(!showWorks)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]"
-                >
-                  <span className="flex items-center gap-2">
-                    <Library size={16} />
-                    Works ({works.length})
-                  </span>
-                  <ChevronLeft
-                    size={16}
-                    className={`transform transition-transform ${showWorks ? '-rotate-90' : ''}`}
-                  />
-                </button>
-                {showWorks && (
-                  <ul className="pb-2">
-                    {works.map((work) => (
-                      <li key={work.id}>
-                        <button
-                          onClick={() => {
-                            haptic();
-                            openWorksPanel(work.id);
-                            onClose();
-                          }}
-                          className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[var(--color-bg-tertiary)]"
-                        >
-                          <div className="w-10 h-10 rounded-full bg-[var(--color-primary)]/20 flex items-center justify-center flex-shrink-0">
-                            <Library size={18} className="text-[var(--color-primary)]" />
-                          </div>
-                          <div className="flex-1 min-w-0 text-left">
-                            <p className={`text-sm font-medium truncate ${work.status === 'archived' ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-primary)]'}`}>
-                              {work.name}
-                            </p>
-                            <p className="text-xs text-[var(--color-text-secondary)] truncate">
-                              {work.chat_count} chat{work.chat_count === 1 ? '' : 's'} ·{' '}
-                              {work.character_count} character{work.character_count === 1 ? '' : 's'}
-                              {work.status === 'archived' ? ' · archived' : ''}
-                            </p>
-                          </div>
-                        </button>
-                      </li>
-                    ))}
-                    {canManageWorks && (
-                      <li>
-                        <button
-                          onClick={() => {
-                            openWorksPanel();
-                            onClose();
-                          }}
-                          className="w-full flex items-center gap-3 px-4 py-2 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]"
-                        >
-                          <div className="w-10 h-10 rounded-full border border-dashed border-[var(--color-border)] flex items-center justify-center flex-shrink-0">
-                            <Plus size={16} />
-                          </div>
-                          {works.length === 0 ? 'Start your first work' : 'New work'}
-                        </button>
-                      </li>
-                    )}
-                  </ul>
-                )}
               </div>
             )}
 
-            {/* Group Chats Section */}
-            {groupChats.length > 0 && !isGroupSelectMode && (
-              <div className="border-t border-[var(--color-border)]">
-                <button
-                  onClick={() => setShowGroupChats(!showGroupChats)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]"
-                >
-                  <span className="flex items-center gap-2">
-                    <Users size={16} />
-                    Group Chats ({groupChats.length})
-                  </span>
-                  <ChevronLeft
-                    size={16}
-                    className={`transform transition-transform ${showGroupChats ? '-rotate-90' : ''}`}
+            <SidebarSection
+              id="characters"
+              label="My Characters"
+              level={2}
+              open={sections.characters}
+              onToggle={() => toggleSection('characters')}
+              actions={characterActions}
+            >
+              {/* Search & Filters */}
+              <div className="space-y-2 border-b border-[var(--color-border)] p-3">
+                <div className="relative">
+                  <Search
+                    size={18}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)]"
                   />
-                </button>
-                {showGroupChats && (
+                  <Input
+                    type="search"
+                    id="character-search"
+                    name="character-search"
+                    autoComplete="off"
+                    placeholder="Search characters..."
+                    aria-label="Search characters"
+                    className="pl-10"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+
+                {/* Filter controls */}
+                <div className="flex flex-wrap items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                    aria-label="Show favorites only"
+                    aria-pressed={showFavoritesOnly}
+                    className={`flex min-h-8 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${FOCUS_RING} ${
+                      showFavoritesOnly
+                        ? 'bg-yellow-500/20 text-yellow-400'
+                        : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'
+                    }`}
+                  >
+                    <Star size={12} fill={showFavoritesOnly ? 'currentColor' : 'none'} />
+                    Favorites
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowFilters(!showFilters)}
+                    aria-label="Filter by tags"
+                    aria-expanded={showFilters}
+                    className={`flex min-h-8 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${FOCUS_RING} ${
+                      showFilters || selectedTags.size > 0
+                        ? 'bg-[var(--color-primary)]/20 text-[var(--color-primary)]'
+                        : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'
+                    }`}
+                  >
+                    <Filter size={12} />
+                    Tags
+                    {selectedTags.size > 0 && (
+                      <span className="rounded bg-[var(--color-primary)] px-1 text-[10px] text-white">
+                        {selectedTags.size}
+                      </span>
+                    )}
+                  </button>
+                  <span className="flex items-center">
+                    <select
+                      value={sortMode}
+                      onChange={(e) => setSortMode(e.target.value as never)}
+                      aria-label="Sort characters"
+                      className="flex min-h-8 cursor-pointer appearance-none items-center gap-1 rounded-md bg-transparent px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
+                    >
+                      <option value="name">Name</option>
+                      <option value="date_added">Recently added</option>
+                      <option value="date_last_chat">Recent chat</option>
+                    </select>
+                    <ArrowUpDown size={12} className="-ml-1 text-[var(--color-text-secondary)]" />
+                  </span>
+                  {activeFilterCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearTagFilters();
+                        setShowFavoritesOnly(false);
+                        setSearchQuery('');
+                      }}
+                      aria-label="Clear all filters"
+                      className={`ml-auto min-h-8 rounded-md px-2 text-xs text-[var(--color-text-secondary)] underline hover:text-[var(--color-text-primary)] ${FOCUS_RING}`}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                {/* Tag filter chips */}
+                {showFilters && allTags.length > 0 && (
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {allTags.map((tag) => {
+                      const isSelected = selectedTags.has(tag);
+                      return (
+                        <button
+                          type="button"
+                          key={tag}
+                          onClick={() => toggleTagFilter(tag)}
+                          aria-pressed={isSelected}
+                          className={`rounded-full px-2 py-1 text-xs transition-colors ${FOCUS_RING} ${
+                            isSelected
+                              ? 'bg-[var(--color-primary)] text-white'
+                              : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-primary)]'
+                          }`}
+                        >
+                          {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Drafts strip */}
+              {canCreateCharacters && !isGroupSelectMode && (interviewDraft || manualDraft) && (
+                <div className="flex flex-col gap-1.5 border-b border-[var(--color-border)] p-3">
+                  {interviewDraft && (
+                    <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={handleResumeInterviewDraft}
+                        className={`min-w-0 flex-1 truncate rounded text-left text-xs text-[var(--color-text-secondary)] ${FOCUS_RING}`}
+                      >
+                        Resume interview:{' '}
+                        <span className="font-medium text-[var(--color-text-primary)]">
+                          {draftPreviewName(interviewDraft.payload)}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => discardInterviewDraft()}
+                        className={`flex-shrink-0 rounded text-xs text-[var(--color-text-secondary)] hover:text-red-400 ${FOCUS_RING}`}
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  )}
+                  {manualDraft && (
+                    <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={handleResumeManualDraft}
+                        className={`min-w-0 flex-1 truncate rounded text-left text-xs text-[var(--color-text-secondary)] ${FOCUS_RING}`}
+                      >
+                        Resume draft:{' '}
+                        <span className="font-medium text-[var(--color-text-primary)]">
+                          {draftPreviewName(manualDraft.payload)}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => discardManualDraft()}
+                        className={`flex-shrink-0 rounded text-xs text-[var(--color-text-secondary)] hover:text-red-400 ${FOCUS_RING}`}
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Character List */}
+              <div id="character-list" tabIndex={-1} className="focus:outline-none">
+                {isLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="h-6 w-6 animate-spin rounded-full border-b-2 border-[var(--color-primary)]" />
+                  </div>
+                ) : filteredCharacters.length === 0 ? (
+                  <div className="px-4 py-8 text-center">
+                    <MessageSquare size={32} className="mx-auto mb-2 text-[var(--color-text-secondary)]" />
+                    <p className="text-sm text-[var(--color-text-secondary)]">
+                      {activeFilterCount > 0 ? 'No characters match your filters' : 'No characters found'}
+                    </p>
+                  </div>
+                ) : (
+                  <ul className="py-2" onKeyDown={handleListKeyDown}>
+                    {filteredCharacters.map((character) => {
+                      const isInGroup = isCharacterInGroup(character.avatar);
+                      const isFav = favorites.has(character.avatar);
+                      const isActive = selectedCharacter?.avatar === character.avatar && !isGroupSelectMode;
+                      return (
+                        <li key={character.avatar} className="group">
+                          <div
+                            className={`relative flex items-center ${
+                              (isGroupSelectMode && isInGroup) || isActive
+                                ? 'border-l-2 border-[var(--color-primary)] bg-[var(--color-primary)]/20'
+                                : 'hover:bg-[var(--color-bg-tertiary)]'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              data-row-primary
+                              aria-current={isActive ? 'true' : undefined}
+                              aria-pressed={isGroupSelectMode ? isInGroup : undefined}
+                              onClick={() => {
+                                if (isGroupSelectMode) {
+                                  toggleGroupChatCharacter(character.avatar);
+                                } else {
+                                  handleCharacterSelect(character.avatar);
+                                }
+                              }}
+                              className={`flex min-h-11 min-w-0 flex-1 items-center gap-3 px-4 py-2 text-left transition-colors ${FOCUS_RING}`}
+                            >
+                              {/* Checkbox for group select mode */}
+                              {isGroupSelectMode && (
+                                <div
+                                  className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border-2 ${
+                                    isInGroup
+                                      ? 'border-[var(--color-primary)] bg-[var(--color-primary)]'
+                                      : 'border-[var(--color-text-secondary)]'
+                                  }`}
+                                >
+                                  {isInGroup && <Check size={14} className="text-white" />}
+                                </div>
+                              )}
+                              <Avatar src={getThumbnailUrl(character.avatar)} alt={character.name} size="md" />
+                              <div className="min-w-0 flex-1">
+                                <p
+                                  className={`truncate text-sm text-[var(--color-text-primary)] ${
+                                    isActive ? 'font-semibold' : 'font-medium'
+                                  }`}
+                                >
+                                  {character.name}
+                                </p>
+                                {firstSentence(character.creator_notes) && (
+                                  <p className="truncate text-xs text-[var(--color-text-secondary)]">
+                                    {firstSentence(character.creator_notes)}
+                                  </p>
+                                )}
+                                {(() => {
+                                  const tags = character.tags || character.data?.tags || [];
+                                  if (tags.length === 0) return null;
+                                  return (
+                                    <div className="mt-0.5 flex flex-wrap gap-1">
+                                      {tags.slice(0, 3).map((tag) => (
+                                        <span
+                                          key={tag}
+                                          className="rounded-full border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-1.5 py-0 text-[10px] leading-4 text-[var(--color-text-secondary)]"
+                                        >
+                                          {tag}
+                                        </span>
+                                      ))}
+                                      {tags.length > 3 && (
+                                        <span className="text-[10px] leading-4 text-[var(--color-text-secondary)]">
+                                          +{tags.length - 3}
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            </button>
+                            {!isGroupSelectMode && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    haptic();
+                                    setPreviewCharacter(character);
+                                  }}
+                                  className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-[var(--color-text-secondary)] transition-opacity hover:text-[var(--color-primary)] ${ROW_ACTION_VISIBILITY} ${FOCUS_RING}`}
+                                  title={`About ${character.name}`}
+                                  aria-label={`About ${character.name}`}
+                                >
+                                  <Info size={16} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleFavorite(character.avatar)}
+                                  className={`mr-2 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg transition-opacity ${FOCUS_RING} ${
+                                    isFav
+                                      ? 'text-yellow-400 opacity-100'
+                                      : `text-[var(--color-text-secondary)] hover:text-yellow-400 ${ROW_ACTION_VISIBILITY}`
+                                  }`}
+                                  title={isFav ? 'Unfavorite' : 'Favorite'}
+                                  aria-label={`Favorite ${character.name}`}
+                                  aria-pressed={isFav}
+                                >
+                                  <Star size={16} fill={isFav ? 'currentColor' : 'none'} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+
+              {/* Group Chats, nested under My Characters (D-S7) */}
+              {groupChats.length > 0 && !isGroupSelectMode && (
+                <SidebarSection
+                  id="groups"
+                  label="Group chats"
+                  level={3}
+                  count={groupChats.length}
+                  open={sections.groups}
+                  onToggle={() => toggleSection('groups')}
+                >
                   <ul className="pb-2">
                     {groupChats.map((groupChat) => (
-                      <li key={groupChat.fileName}>
-                        <button
-                          onClick={() => handleGroupChatSelect(groupChat)}
-                          className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[var(--color-bg-tertiary)] group"
-                        >
-                          <div className="w-10 h-10 rounded-full bg-[var(--color-primary)]/20 flex items-center justify-center flex-shrink-0">
-                            <Users size={18} className="text-[var(--color-primary)]" />
-                          </div>
-                          <div className="flex-1 min-w-0 text-left">
-                            <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
-                              {groupChat.characterNames.join(', ')}
-                            </p>
-                            <p className="text-xs text-[var(--color-text-secondary)] truncate">
-                              {groupChat.lastMessage || 'No messages yet'}
-                            </p>
-                          </div>
+                      <li key={groupChat.fileName} className="group">
+                        <div className="flex items-center hover:bg-[var(--color-bg-tertiary)]">
                           <button
-                            onClick={(e) => handleDeleteGroupChat(e, groupChat.fileName)}
-                            className="p-1.5 text-[var(--color-text-secondary)] hover:text-red-400 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 transition-opacity"
+                            type="button"
+                            onClick={() => handleGroupChatSelect(groupChat)}
+                            className={`flex min-h-11 min-w-0 flex-1 items-center gap-3 py-2 pl-8 pr-2 text-left ${FOCUS_RING}`}
+                          >
+                            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)]/20">
+                              <Users size={18} className="text-[var(--color-primary)]" />
+                            </div>
+                            <div className="min-w-0 flex-1 text-left">
+                              <p className="truncate text-sm font-medium text-[var(--color-text-primary)]">
+                                {groupChat.characterNames.join(', ')}
+                              </p>
+                              <p className="truncate text-xs text-[var(--color-text-secondary)]">
+                                {groupChat.lastMessage || 'No messages yet'}
+                              </p>
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteGroupChat(groupChat.fileName)}
+                            className={`mr-2 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-[var(--color-text-secondary)] transition-opacity hover:text-red-400 ${ROW_ACTION_VISIBILITY} ${FOCUS_RING}`}
+                            aria-label="Delete group chat"
                             title="Delete group chat"
                           >
                             <Trash2 size={14} />
                           </button>
-                        </button>
+                        </div>
                       </li>
                     ))}
                   </ul>
-                )}
-              </div>
-            )}
+                </SidebarSection>
+              )}
+            </SidebarSection>
 
-            {/* Footer Buttons */}
-            <div className="p-3 pb-4 border-t border-[var(--color-border)] input-safe-bottom">
-              {isGroupSelectMode ? (
-                <Button
-                  variant="primary"
-                  className="w-full"
-                  onClick={() => {
-                    if (groupChatCharacters.length >= 2) {
-                      startGroupChat();
-                      startNewGroupChat(groupChatCharacters);
-                      setIsGroupSelectMode(false);
-                      // Drop out of the browse list so the group-chat portrait
-                      // view engages. startGroupChat() nulls selectedCharacter,
-                      // so the selectedCharacter-keyed effect never runs to
-                      // clear this — matching handleGroupChatSelect (line 232).
-                      setShowCharacterList(false);
-                      onClose();
-                    }
-                  }}
-                  disabled={groupChatCharacters.length < 2}
-                >
-                  <Users size={18} className="mr-2" />
-                  Start Group Chat ({groupChatCharacters.length}/2+)
-                </Button>
-              ) : canCreateCharacters ? (
-                <div className="flex flex-col gap-2">
-                  {(interviewDraft || manualDraft) && (
-                    <div className="flex flex-col gap-1.5">
-                      {interviewDraft && (
-                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
-                          <button
-                            type="button"
-                            onClick={handleResumeInterviewDraft}
-                            className="flex-1 min-w-0 text-left text-xs text-[var(--color-text-secondary)] truncate"
-                          >
-                            Resume interview:{' '}
-                            <span className="text-[var(--color-text-primary)] font-medium">
-                              {draftPreviewName(interviewDraft.payload)}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => discardInterviewDraft()}
-                            className="flex-shrink-0 text-xs text-[var(--color-text-secondary)] hover:text-red-400"
-                          >
-                            Discard
-                          </button>
+            {/* Works — the project container above chats */}
+            {canViewWorks && !isGroupSelectMode && (
+              <SidebarSection
+                id="works"
+                label="Works"
+                level={2}
+                count={works.length}
+                open={sections.works}
+                onToggle={() => toggleSection('works')}
+              >
+                <ul className="pb-2">
+                  {works.map((work) => (
+                    <li key={work.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          haptic();
+                          onClose();
+                          openWorksPanel(work.id);
+                        }}
+                        className={`flex min-h-11 w-full items-center gap-3 px-4 py-2 hover:bg-[var(--color-bg-tertiary)] ${FOCUS_RING}`}
+                      >
+                        <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)]/20">
+                          <Library size={18} className="text-[var(--color-primary)]" />
                         </div>
-                      )}
-                      {manualDraft && (
-                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
-                          <button
-                            type="button"
-                            onClick={handleResumeManualDraft}
-                            className="flex-1 min-w-0 text-left text-xs text-[var(--color-text-secondary)] truncate"
+                        <div className="min-w-0 flex-1 text-left">
+                          <p
+                            className={`truncate text-sm font-medium ${
+                              work.status === 'archived'
+                                ? 'text-[var(--color-text-secondary)]'
+                                : 'text-[var(--color-text-primary)]'
+                            }`}
                           >
-                            Resume draft:{' '}
-                            <span className="text-[var(--color-text-primary)] font-medium">
-                              {draftPreviewName(manualDraft.payload)}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => discardManualDraft()}
-                            className="flex-shrink-0 text-xs text-[var(--color-text-secondary)] hover:text-red-400"
-                          >
-                            Discard
-                          </button>
+                            {work.name}
+                          </p>
+                          <p className="truncate text-xs text-[var(--color-text-secondary)]">
+                            {work.chat_count} chat{work.chat_count === 1 ? '' : 's'} ·{' '}
+                            {work.character_count} character{work.character_count === 1 ? '' : 's'}
+                            {work.status === 'archived' ? ' · archived' : ''}
+                          </p>
                         </div>
-                      )}
-                    </div>
+                      </button>
+                    </li>
+                  ))}
+                  {canManageWorks && (
+                    <li>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          openWorksPanel();
+                        }}
+                        className={`flex min-h-11 w-full items-center gap-3 px-4 py-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)] ${FOCUS_RING}`}
+                      >
+                        <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border border-dashed border-[var(--color-border)]">
+                          <Plus size={16} />
+                        </div>
+                        {works.length === 0 ? 'Start your first work' : 'New work'}
+                      </button>
+                    </li>
                   )}
-                  <div className="flex gap-2">
-                    <Button
-                      variant="secondary"
-                      className="flex-1"
-                      onClick={() => setShowImportModal(true)}
-                    >
-                      <Upload size={18} className="mr-2" />
-                      Import
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      className="flex-1"
-                      onClick={() => setShowInterviewModal(true)}
-                    >
-                      <Plus size={18} className="mr-2" />
-                      New
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
+                </ul>
+              </SidebarSection>
+            )}
+          </div>
+
+          {/* Group selection's action bar: a sibling of the scroller, never over it */}
+          {isGroupSelectMode && (
+            <div className="flex-shrink-0 border-t border-[var(--color-border)] p-3">
+              <Button
+                variant="primary"
+                className="w-full"
+                onClick={() => {
+                  if (groupChatCharacters.length >= 2) {
+                    startGroupChat();
+                    startNewGroupChat(groupChatCharacters);
+                    setIsGroupSelectMode(false);
+                    onClose();
+                  }
+                }}
+                disabled={groupChatCharacters.length < 2}
+              >
+                <Users size={18} className="mr-2" />
+                Start Group Chat ({groupChatCharacters.length}/2+)
+              </Button>
             </div>
-          </>
-        )}
-      </aside>
+          )}
+
+          {/* 4. Personal, pinned */}
+          <PersonalSection
+            open={sections.personal}
+            onToggle={() => toggleSection('personal')}
+            onClose={onClose}
+            onPersonaSurfaceChange={setPersonaSurfaceOpen}
+          />
+        </nav>
+      </div>
 
       {/* Character Creation Modal — plain form, reached via the interview
           wizard's "Use the simple form instead" escape hatch, or the
@@ -1033,7 +890,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       />
 
       {/* Character Preview Modal — read-only details view shown before
-          committing to opening a chat. Triggered by the per-row info button. */}
+          committing to opening a chat. Triggered by the per-row info button
+          and the current-chat card's About. */}
       <CharacterPreviewModal
         isOpen={previewCharacter !== null}
         character={previewCharacter}

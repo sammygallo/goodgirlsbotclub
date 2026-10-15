@@ -560,6 +560,40 @@ body {
   animation: modal-backdrop-out 0.18s ease-in forwards;
 }
 
+/* --- Navigation drawer slide and scrim fade (E6-S3, D-S4) ----------------
+   `hidden` is display:none, so a transition cannot run on entry: the open and
+   close are keyframes, the same pattern as the Modal block above. 200 ms,
+   ease-in-out, 0 ms under reduced motion (Sidebar.tsx unmounts the exit
+   state immediately in that case). */
+@keyframes drawer-in {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+@keyframes drawer-out {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-100%); }
+}
+@keyframes drawer-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes drawer-scrim-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+.animate-drawer-in {
+  animation: drawer-in 200ms ease-in-out;
+}
+.animate-drawer-out {
+  animation: drawer-out 200ms ease-in-out forwards;
+}
+.animate-drawer-scrim-in {
+  animation: drawer-scrim-in 200ms ease-in-out;
+}
+.animate-drawer-scrim-out {
+  animation: drawer-scrim-out 200ms ease-in-out forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-guide-fade-in,
   .animate-guide-drawer-in,
@@ -567,7 +601,11 @@ body {
   .animate-modal-in,
   .animate-modal-out,
   .animate-modal-backdrop-in,
-  .animate-modal-backdrop-out {
+  .animate-modal-backdrop-out,
+  .animate-drawer-in,
+  .animate-drawer-out,
+  .animate-drawer-scrim-in,
+  .animate-drawer-scrim-out {
     animation: none;
   }
 }
