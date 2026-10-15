@@ -900,7 +900,6 @@ export function ChatView() {
       // the last character so the next selection, even of the same one,
       // clears the open transcript and reloads the chat files.
       lastCharacterRef.current = null;
-      lastGroupModeRef.current = false;
       return;
     }
     const sameChar = lastCharacterRef.current === selectedCharacter.avatar;
