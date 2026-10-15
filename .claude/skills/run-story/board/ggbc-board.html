@@ -265,15 +265,15 @@
     </div>
     <div class="stamp">
       <b>15 Oct 2026</b><br>
-      main <b>5ae608d9</b><br>
-      active <b>E6-S3 · Sidebar drawer — in review (PR #561)</b>
+      main <b>24244bb2</b><br>
+      active <b>none — E6-S3 merged, awaiting deploy</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile is-live"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">15</div><div class="k">Gated</div></div>
@@ -319,20 +319,20 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E6">
-          <div class="id">E6-S3</div>
-          <div class="t">Sidebar &mdash; hidden drawer at every width (A1)</div>
-          <div class="m"><a href="https://github.com/sammygallo/goodgirlsbotclub/pull/561">#561</a> ready for Sammy&rsquo;s &sect;8 decision &middot; head <code>a5158fb1</code>. Drawer at z 1000, closed on every load, no layout shift; Personal section absorbs the header&rsquo;s account items; D-T4 (closes #556); swipe binding (closes #557). <b>Review: 6 full-roster + 4 confirmation rounds, 7.62M</b> &mdash; two §5 stops on the ChatView seam (reset, then consume branch), descoped by Sammy; ChatView ships byte-identical to <code>main</code>. R5-C1 (swipe over the open interview wizard flashes the drawer) accepted with reason. QA: AC1&ndash;3 pass; the drawer&rsquo;s axe failures (pre-existing pairs) fixed on Sammy&rsquo;s call and re-verified at 0 violations in 24 runs. Filed #562 #563 #564 #565. The D-H3 &ldquo;Recent chat&rdquo; sort item is deferred until <a href="https://github.com/sammygallo/ggbc-backend/issues/84">ggbc-backend#84</a>. Gates 145 / 3020, build 0, eslint 0/18.</div>
-          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate free">E6-S2 ✓</span><span class="gate hot">§8: did-not-converge · waived R5-C1 · deferred D-H3</span></div>
-        </article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E6">
+          <div class="id">E6-S3</div>
+          <div class="t">Sidebar &mdash; hidden drawer at every width (A1)</div>
+          <div class="m">15 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/561">#561</a> &rarr; <code>24244bb2</code>, merged by Sammy at the &sect;8 gate (did-not-converge, waived standards, the D-H3 deferral), undeployed. Frontend-only, no migration. Drawer at z 1000, closed on every load; Personal absorbs the header&rsquo;s account items; D-T4 (closes #556); swipe binding (closes #557); filter states axe-clean. <b>Review 6 full-roster + 4 confirmation rounds, 7.62M; three &sect;5 stops</b> &mdash; ChatView descoped and shipped byte-identical to <code>main</code>. QA: AC1&ndash;3 pass; axe 0 in 24 runs after the fix. Filed #562 #563 #564 #565. Gates 145 / 3020, build 0, eslint 0/18.</div>
+          <div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate free">E6-S2 ✓</span><span class="gate">deploy: Sammy&rsquo;s go</span><span class="gate">D-H3 sort ← ggbc-backend#84</span></div>
+        </article>
       </div>
     </section>
 
@@ -461,7 +461,7 @@
   </div>
 
   <section class="focus">
-    <h2>E6-S3 &mdash; Sidebar drawer, in review (PR #561)</h2>
+    <h2>E6-S3 &mdash; Sidebar drawer, merged 15 Oct (awaiting deploy)</h2>
     <p class="sub">The existing <code>Sidebar.tsx</code> becomes a hidden 320px drawer at every width (spec A1): My Characters with a nested Group chats subsection, Works, and a pinned Personal section that absorbs the header&rsquo;s account items. Focus is contained by the house <code>useModalFocus</code> hook; the drawer is the top app layer at z 1000 over a z 999 scrim; Toast and Onboarding move above it. The chat&rsquo;s desktop portrait arrives with E6-S4.</p>
 
     <div class="steps">
@@ -472,7 +472,8 @@
       <div class="step done"><div class="sn">Review</div><div class="sv">6 full-roster + 4 confirmation rounds, 7.62M; 3 §5 stops</div></div>
       <div class="step done"><div class="sn">QA</div><div class="sv">Opus; AC1–3 pass; axe fixed and re-verified (0 in 24 runs); E1 → #565, E3 → D-E6S3-6</div></div>
       <div class="step done"><div class="sn">PR</div><div class="sv">#561 evidence bundle</div></div>
-      <div class="step now"><div class="sn">Merge</div><div class="sv">&sect;8 fired &mdash; Sammy&rsquo;s call; deploy on his go</div></div>
+      <div class="step done"><div class="sn">Merge</div><div class="sv">Sammy, 15 Oct &rarr; <code>24244bb2</code></div></div>
+      <div class="step now"><div class="sn">Deploy</div><div class="sv">awaiting Sammy&rsquo;s go</div></div>
     </div>
 
     <div class="note" style="margin-bottom:18px">
@@ -511,7 +512,7 @@
   </section>
 
   <footer>
-    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 15 Oct 2026 (deployed: E6-S2 &middot; E2-S3 &middot; E2-S4; frontend image f136073e; E6-S3 in review, PR #561).</span>
+    <span>Source: <code>docs/product-roadmap-10.2-12.md</code> §7 — reconciled against <code>git</code> and <code>gh</code>, 15 Oct 2026 (deployed: E6-S2 &middot; E2-S3 &middot; E2-S4; frontend image f136073e; E6-S3 merged 24244bb2, undeployed).</span>
     <span>Counts exclude cards closed as already-shipped.</span>
   </footer>
 
