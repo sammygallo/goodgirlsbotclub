@@ -1046,8 +1046,8 @@ describe('state cues and the row avatar', () => {
     expect(chip.classList.contains('bg-[var(--color-bg-tertiary)]')).toBe(true);
     expect(chip.classList.contains('text-[var(--color-text-secondary)]')).toBe(true);
     expect(chip.classList.contains('font-semibold')).toBe(false);
-    expect(chip.classList.contains('ring-1')).toBe(false);
-    expect(chip.classList.contains('ring-inset')).toBe(false);
+    // No ring utility of any width or colour; FOCUS_RING's classes carry a focus-visible: prefix and do not start with 'ring'.
+    expect([...chip.classList].filter((c) => /^ring(-|$)/.test(c))).toEqual([]);
   });
 });
 
