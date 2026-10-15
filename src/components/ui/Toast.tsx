@@ -65,7 +65,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {/* Toast container */}
       {toasts.length > 0 && (
         <ModalExemptPortal>
-          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2 pointer-events-none max-w-sm w-full px-4">
+          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[1100] flex flex-col gap-2 pointer-events-none max-w-sm w-full px-4">
             {toasts.map(t => (
               <div
                 key={t.id}

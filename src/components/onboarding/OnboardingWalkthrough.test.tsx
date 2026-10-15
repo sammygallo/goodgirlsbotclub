@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  *
  * The docked onboarding chip against an open Modal. The chip floats above the
- * page (z-110 over a Modal's z-100) so the user can carry on setting things up
+ * page (z-1200 over a Modal's z-100) so the user can carry on setting things up
  * in the Settings panel; useModalFocus makes everything in #root inert while a
  * Modal is open, and a click on an inert control lands on the modal's backdrop
  * beneath it. So the chip is drawn through a `data-modal-exempt` container on
@@ -74,12 +74,18 @@ describe('the docked chip', () => {
     expect(container.contains(holder)).toBe(false);
   });
 
-  it('keeps its position and layer (fixed, z-110)', () => {
+  it('keeps its position and layer (fixed, z-1200)', () => {
     dock();
     render(<OnboardingWalkthrough />);
     const chip = chipButton().parentElement!;
     expect(chip.className).toContain('fixed');
-    expect(chip.className).toContain('z-[110]');
+    expect(chip.className).toContain('z-[1200]');
+  });
+
+  it('the full dialog keeps its layer (z-1200)', () => {
+    useOnboardingStore.setState({ isOpen: true, isDocked: false, currentStep: 0 });
+    render(<OnboardingWalkthrough />);
+    expect(screen.getByRole('dialog').className).toContain('z-[1200]');
   });
 
   it('stays operable above an open Modal while the page behind it goes inert', () => {
