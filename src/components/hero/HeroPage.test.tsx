@@ -4,7 +4,7 @@
  * HeroPage is where the story's acceptance criteria meet: the fetched config
  * becomes slides ("slide config editable without code changes"), the rows omit
  * themselves when empty, a character slide shows creator_notes and never
- * description, and Browse / See all reach today's sidebar.
+ * description, and Browse / See all open the drawer and reach its list.
  *
  * Everything runs on fake timers. The fetch is a stub that resolves on the next
  * microtask, so `settle()` flushes it without relying on RTL's `waitFor`, which
@@ -718,7 +718,7 @@ describe('category rows (D-H21)', () => {
   });
 });
 
-describe('Browse and See all act on today\'s sidebar (D-H11)', () => {
+describe('Browse and See all open the drawer at every width (D-H11, A1)', () => {
   function Sidebar() {
     return (
       <>
@@ -741,36 +741,19 @@ describe('Browse and See all act on today\'s sidebar (D-H11)', () => {
     advance(0);
   }
 
-  it('below 1024px Browse opens the drawer, then focuses the search box', async () => {
-    setWidth(800);
+  it.each([320, 800, 1023, 1024, 1280, 1920])('Browse opens the drawer, then focuses the search box, at %i px', async (width) => {
+    setWidth(width);
     const open = vi.fn();
     await mountWithSidebar(open);
     fireEvent.click(screen.getByRole('button', { name: 'Browse characters' }));
     expect(open).toHaveBeenCalledTimes(1);
+    expect(document.activeElement?.id).not.toBe('character-search');
     advance(0);
     expect(document.activeElement?.id).toBe('character-search');
   });
 
-  it('from 1024px the sidebar is already a column: Browse only focuses, and does not open a drawer', async () => {
-    setWidth(1024);
-    const open = vi.fn();
-    await mountWithSidebar(open);
-    fireEvent.click(screen.getByRole('button', { name: 'Browse characters' }));
-    expect(open).not.toHaveBeenCalled();
-    advance(0);
-    expect(document.activeElement?.id).toBe('character-search');
-  });
-
-  it('draws the 1023px / 1024px line exactly where the sidebar does', async () => {
-    const open = vi.fn();
-    await mountWithSidebar(open);
-    setWidth(1023);
-    fireEvent.click(screen.getByRole('button', { name: 'Browse characters' }));
-    expect(open).toHaveBeenCalledTimes(1);
-  });
-
-  it('a character row\'s See all focuses the character list (below 1024 it opens the drawer first)', async () => {
-    setWidth(600);
+  it.each([600, 1280])('a character row\'s See all opens the drawer, then focuses the character list, at %i px', async (width) => {
+    setWidth(width);
     const open = vi.fn();
     await mountWithSidebar(open, [character('Ivy', { create_date: naive(1) })]);
     fireEvent.click(screen.getByRole('button', { name: 'See all New this week' }));
