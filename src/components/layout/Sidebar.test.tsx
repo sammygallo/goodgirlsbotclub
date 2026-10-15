@@ -815,3 +815,194 @@ describe('Works', () => {
     expect(calls).toEqual(['close', 'panel:undefined']);
   });
 });
+
+describe('anatomy (A1 to A3)', () => {
+  it('stacks the top bar, the current-chat card, the scroller and Personal, in that order', () => {
+    useCharacterStore.setState({ selectedCharacter: ivy });
+    renderDrawer();
+
+    const topBar = toggle('Home').parentElement as HTMLElement;
+    const card = screen.getByRole('region', { name: 'Current chat' });
+    const scroller = document.getElementById('app-drawer-scroll') as HTMLElement;
+    const personal = document.getElementById('app-drawer-personal') as HTMLElement;
+    const children = Array.from(panel().children);
+    expect(children).toHaveLength(4);
+    expect(children[0]).toBe(topBar);
+    expect(children[1]).toBe(card);
+    expect(children[2]).toBe(scroller);
+    expect(children[3]).toBe(personal);
+  });
+
+  it('keeps Personal and the group-select bar outside the scroller, with no absolute, sticky or fixed positioning', () => {
+    renderDrawer();
+    const scroller = document.getElementById('app-drawer-scroll') as HTMLElement;
+    const personal = document.getElementById('app-drawer-personal') as HTMLElement;
+    expect(scroller.contains(personal)).toBe(false);
+    expect(personal.parentElement).toBe(panel());
+    for (const token of ['absolute', 'sticky', 'fixed']) {
+      expect(personal.classList.contains(token)).toBe(false);
+    }
+
+    fireEvent.click(toggle('Start group chat'));
+    const bar = screen.getByRole('button', { name: /^Start Group Chat/ }).parentElement as HTMLElement;
+    expect(scroller.contains(bar)).toBe(false);
+    expect(bar.parentElement).toBe(panel());
+    for (const token of ['absolute', 'sticky', 'fixed']) {
+      expect(bar.classList.contains(token)).toBe(false);
+    }
+  });
+
+  it('pads the top bar for the notch and Personal for the home indicator', () => {
+    renderDrawer();
+    const topBar = toggle('Home').parentElement as HTMLElement;
+    const personal = document.getElementById('app-drawer-personal') as HTMLElement;
+    expect(topBar.classList.contains('safe-top')).toBe(true);
+    expect(personal.classList.contains('input-safe-bottom')).toBe(true);
+  });
+
+  it('gives the scroller the classes that let it scroll and shrink inside the column', () => {
+    renderDrawer();
+    const scroller = document.getElementById('app-drawer-scroll') as HTMLElement;
+    for (const token of ['overflow-y-auto', 'min-h-0', 'flex-1', 'scroll-py-2']) {
+      expect(scroller.classList.contains(token)).toBe(true);
+    }
+  });
+});
+
+describe('row controls (D1 to D6)', () => {
+  /** Opens the drawer with a saved group chat, so Group chats is expanded and its Delete control is mounted. */
+  function renderWithGroups() {
+    useChatStore.setState({ groupChats: [groupChat('g1')] });
+    const utils = renderDrawer();
+    fireEvent.click(toggle(/^Group chats/));
+    return utils;
+  }
+
+  /** Ivy's About and Favorite buttons, and the group chat's Delete button. */
+  function ivyControls() {
+    const list = rowPrimary('Ivy').closest('ul') as HTMLElement;
+    return {
+      about: within(list).getByRole('button', { name: 'About Ivy' }),
+      favorite: within(list).getByRole('button', { name: 'Favorite Ivy' }),
+      remove: screen.getByRole('button', { name: 'Delete group chat' }),
+    };
+  }
+
+  it('keeps About, Favorite and Delete visible on keyboard focus, not only on hover', () => {
+    renderWithGroups();
+    const { about, favorite, remove } = ivyControls();
+    for (const control of [about, favorite, remove]) {
+      expect(control.classList.contains('focus-visible:opacity-100')).toBe(true);
+      expect(control.classList.contains('group-focus-within:opacity-100')).toBe(true);
+    }
+  });
+
+  it('names each favorite button for its character, and reports whether it is a favorite', () => {
+    useCharacterStore.setState({ favorites: new Set(['rose.png']) });
+    renderDrawer();
+    expect(toggle('Favorite Ivy').getAttribute('aria-pressed')).toBe('false');
+    expect(toggle('Favorite Rose').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('gives the favorites toggle, tags toggle, sort select and Clear accessible names, and no tooltip', () => {
+    useCharacterStore.setState({ searchQuery: 'iv' });
+    renderDrawer();
+    const controls = [
+      toggle('Show favorites only'),
+      toggle('Filter by tags'),
+      screen.getByRole('combobox', { name: 'Sort characters' }),
+      toggle('Clear all filters'),
+    ];
+    for (const control of controls) {
+      expect(control.hasAttribute('title')).toBe(false);
+    }
+  });
+
+  it('keeps no button inside another button, with Group chats expanded', () => {
+    renderWithGroups();
+    expect(screen.getByRole('button', { name: /Ivy, Rose/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete group chat' })).toBeTruthy();
+    expect(document.querySelectorAll('button button')).toHaveLength(0);
+  });
+
+  it('marks the active row with aria-current, a semibold name and a left rule, and leaves the other rows plain', () => {
+    useCharacterStore.setState({ selectedCharacter: ivy });
+    renderDrawer();
+    const nameOf = (row: HTMLElement) => row.querySelector('p') as HTMLElement;
+    const active = rowPrimary('Ivy');
+    const other = rowPrimary('Rose');
+
+    expect(active.getAttribute('aria-current')).toBe('true');
+    expect(nameOf(active).classList.contains('font-semibold')).toBe(true);
+    expect(active.parentElement?.classList.contains('border-l-2')).toBe(true);
+
+    expect(other.hasAttribute('aria-current')).toBe(false);
+    expect(nameOf(other).classList.contains('font-semibold')).toBe(false);
+    expect(other.parentElement?.classList.contains('border-l-2')).toBe(false);
+  });
+
+  it('sizes each row as a 44 px target and each row action as a 32 px square', () => {
+    renderWithGroups();
+    expect(rowPrimary('Ivy').classList.contains('min-h-11')).toBe(true);
+    const { about, favorite, remove } = ivyControls();
+    for (const control of [about, favorite, remove]) {
+      expect(control.classList.contains('h-8')).toBe(true);
+      expect(control.classList.contains('w-8')).toBe(true);
+    }
+  });
+});
+
+describe('keyboard (K1 to K3)', () => {
+  it('moves focus between row buttons with ArrowDown and ArrowUp, and stops at either end', () => {
+    renderDrawer();
+    const ivyRow = rowPrimary('Ivy');
+    const roseRow = rowPrimary('Rose');
+    ivyRow.focus();
+
+    fireEvent.keyDown(ivyRow, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(roseRow);
+    fireEvent.keyDown(roseRow, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(roseRow);
+
+    fireEvent.keyDown(roseRow, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(ivyRow);
+    fireEvent.keyDown(ivyRow, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(ivyRow);
+  });
+
+  it('jumps to the first and last row with Home and End', () => {
+    renderDrawer();
+    const ivyRow = rowPrimary('Ivy');
+    const roseRow = rowPrimary('Rose');
+    ivyRow.focus();
+
+    fireEvent.keyDown(ivyRow, { key: 'End' });
+    expect(document.activeElement).toBe(roseRow);
+    fireEvent.keyDown(roseRow, { key: 'Home' });
+    expect(document.activeElement).toBe(ivyRow);
+  });
+
+  it('leaves the arrow keys to About and Favorite, and keeps Tab moving through each row control', async () => {
+    const user = userEvent.setup();
+    renderDrawer();
+    const list = rowPrimary('Ivy').closest('ul') as HTMLElement;
+    const about = within(list).getByRole('button', { name: 'About Ivy' });
+    const favorite = within(list).getByRole('button', { name: 'Favorite Ivy' });
+
+    about.focus();
+    expect(fireEvent.keyDown(about, { key: 'ArrowDown' })).toBe(true);
+    expect(document.activeElement).toBe(about);
+
+    favorite.focus();
+    expect(fireEvent.keyDown(favorite, { key: 'ArrowUp' })).toBe(true);
+    expect(document.activeElement).toBe(favorite);
+
+    expect(list.querySelectorAll('[tabindex="-1"]')).toHaveLength(0);
+
+    rowPrimary('Ivy').focus();
+    await user.tab();
+    expect(document.activeElement).toBe(about);
+    await user.tab();
+    expect(document.activeElement).toBe(favorite);
+  });
+});
