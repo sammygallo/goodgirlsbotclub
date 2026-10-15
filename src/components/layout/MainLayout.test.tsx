@@ -330,6 +330,12 @@ describe('the edge swipe (#557, D-S14)', () => {
 });
 
 describe('the menu button and the context opener with a right panel open (D-S14)', () => {
+  const PANELS = [
+    ['Settings', () => useSettingsPanelStore.getState().open()],
+    ['Guides', () => useGuidesPanelStore.getState().open()],
+    ['Works', () => useProjectStore.getState().openPanel()],
+  ] as const;
+
   it('leaves the drawer shut when the menu button is pressed again after the Settings row closed it', async () => {
     const user = userEvent.setup();
     mountLayout();
@@ -345,11 +351,23 @@ describe('the menu button and the context opener with a right panel open (D-S14)
     expect(menuButton().getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('leaves the drawer shut when a routed child asks through the layout context', async () => {
+  it.each(PANELS)('leaves the drawer shut when the menu button is pressed with the %s panel open', async (_name, openPanel) => {
     const user = userEvent.setup();
     mountLayout();
     act(() => {
-      useSettingsPanelStore.setState({ isOpen: true });
+      openPanel();
+    });
+
+    await user.click(menuButton());
+    expect(isOpen()).toBe(false);
+    expect(drawerRoot().hasAttribute('hidden')).toBe(true);
+  });
+
+  it.each(PANELS)('leaves the drawer shut when a routed child asks through the layout context with the %s panel open', async (_name, openPanel) => {
+    const user = userEvent.setup();
+    mountLayout();
+    act(() => {
+      openPanel();
     });
 
     await user.click(screen.getByRole('button', { name: 'Probe opens the drawer' }));
