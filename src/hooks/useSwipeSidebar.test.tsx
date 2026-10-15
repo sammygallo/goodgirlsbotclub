@@ -5,8 +5,9 @@
  * MainLayout: an edge swipe opens the drawer, a leftward swipe closes it, a
  * swipe is not taken while a right panel is up (D-S14), the listeners bind
  * when the layout root mounts, even when that is after the first render (#557),
- * and each touchstart and touchend handler it binds is removed again, with the
- * same function, when the root unmounts or isOpen swaps the handlers.
+ * each touchstart and touchend handler it binds is removed again, with the same
+ * function and the same capture flag, when the root unmounts or isOpen swaps
+ * the handlers, and an unmounted root takes no swipe.
  *
  * The three panel stores are the real ones, flipped through setState; haptics
  * are mocked so "no buzz for a swipe that does nothing" can be asserted.
@@ -65,20 +66,29 @@ function mount(props: Partial<HarnessProps> = {}) {
 const root = () => document.querySelector('[data-testid="root"]') as HTMLElement;
 
 type CallLog = { mock: { calls: unknown[][]; contexts: unknown[] } };
-type Binding = [type: unknown, handler: unknown];
+type Binding = [type: unknown, handler: unknown, capture: boolean];
 
-/** The touchstart and touchend calls `log` recorded on `el`, as [type, handler]. */
+/** The capture flag the DOM matches a listener on: a boolean option as given, an options object's `capture`, otherwise false. */
+function captureOf(options: unknown): boolean {
+  if (typeof options === 'boolean') return options;
+  if (typeof options === 'object' && options !== null) return !!(options as EventListenerOptions).capture;
+  return false;
+}
+
+/** The touchstart and touchend calls `log` recorded on `el`, as [type, handler, capture]. */
 function touchCalls(log: CallLog, el: Element): Binding[] {
   return log.mock.calls
-    .map((args, i): [unknown, Binding] => [log.mock.contexts[i], [args[0], args[1]]])
+    .map((args, i): [unknown, Binding] => [log.mock.contexts[i], [args[0], args[1], captureOf(args[2])]])
     .filter(([target, [type]]) => target === el && (type === 'touchstart' || type === 'touchend'))
     .map(([, binding]) => binding);
 }
 
-/** The bindings added to `el` that no removeEventListener undid with the same type and the same handler function. */
+/** The bindings added to `el` that no removeEventListener undid with the same type, the same handler function and the same capture flag. */
 function stillBound(add: CallLog, remove: CallLog, el: Element): Binding[] {
   const removed = touchCalls(remove, el);
-  return touchCalls(add, el).filter(([type, handler]) => !removed.some(([t, h]) => t === type && h === handler));
+  return touchCalls(add, el).filter(
+    ([type, handler, capture]) => !removed.some(([t, h, c]) => t === type && h === handler && c === capture),
+  );
 }
 
 beforeEach(() => {
@@ -178,6 +188,15 @@ describe('removing the listeners it bound', () => {
     expect(added.length).toBeGreaterThan(2);
     expect(stillBound(add, remove, el)).toEqual(added.slice(-2));
     expect(stillBound(add, remove, el).map(([type]) => type).sort()).toEqual(['touchend', 'touchstart']);
+  });
+
+  it('ignores an edge swipe dispatched on the root after it has unmounted', () => {
+    const { onOpen, unmount } = mount();
+    const el = root();
+    unmount();
+
+    swipe(el, [10, 100], [120, 100]);
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });
 
