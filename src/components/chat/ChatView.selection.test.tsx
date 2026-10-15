@@ -3,28 +3,36 @@
  *
  * ChatView mounted with the real characterStore, chatStore and projectStore.
  *
- * The drawer's Home control clears the selection and leaves ChatView mounted,
- * showing the hero. Each case here runs the store calls Home makes
- * (exitGroupChat when a group is open, then clearSelection), selects a
- * character again through the store, and reads what ChatView's chat loader
- * does about it:
+ * ChatView's selection effect decides when a selection reloads the chat. A
+ * null selection pauses it, selecting the character it last loaded again leaves
+ * the open transcript alone, and a Works-panel request for that character
+ * (projectStore's pendingChatFile) is loaded on the spot. Each case here drives
+ * the stores the way the app does and reads what ChatView's chat loader does:
  *
- *  - the Works panel's openChatRef for a chat of the character that was open
- *    before Home must reach loadChat and consume the pending request;
- *  - selecting the same character again after a group chat and Home must
- *    clear the open transcript and fetch that character's chat files.
+ *  - Home (clearSelection) and then the Works panel's openChatRef for a chat of
+ *    the character that was open before must reach loadChat and consume the
+ *    pending request;
+ *  - Home and then selecting that character again keeps the chat the Works
+ *    panel had opened, and the next message is saved to that chat (D-S6);
+ *  - a failed delete of the selected character (deleteCharacter clears the
+ *    selection, then puts it back) leaves the open chat in place.
+ *
+ * Selecting a character again after a group chat is open issue #506 and is not
+ * exercised here.
  *
  * chatStore's fetchChatFiles and loadChat are replaced by recorders that set
  * the state the real actions set before and after their network call; clearChat
- * is the real action wrapped in a spy. Nothing else in the three stores is
- * stubbed and no child component is mocked. `fetch` is refused, `localStorage`
- * is an in-memory stub (under Node 25 the global is Node's experimental one,
- * which has no methods), and jsdom gets matchMedia and scrollIntoView.
+ * is the real action wrapped in a spy. The api layer is spied at the network
+ * edge where a case needs it (saveChat, deleteCharacter). Nothing else in the
+ * three stores is stubbed and no child component is mocked. `fetch` is refused,
+ * `localStorage` is an in-memory stub (under Node 25 the global is Node's
+ * experimental one, which has no methods), and jsdom gets matchMedia and
+ * scrollIntoView.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import type { CharacterInfo } from '../../api/client';
+import { api, type CharacterInfo } from '../../api/client';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useProjectStore } from '../../stores/projectStore';
@@ -127,6 +135,27 @@ async function selectAva() {
   });
 }
 
+/** Lets queued microtasks, and the renders and effects they cause, finish. */
+async function flush() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/** Ava selected with her newest chat loaded, then the Works panel opens her older chat while she is selected. */
+async function openAvaWithRequestedChat() {
+  mountChatView();
+  await selectAva();
+  await waitFor(() => expect(loadChat).toHaveBeenCalledWith(ava.avatar, LATEST));
+  await act(async () => {
+    await useProjectStore.getState().openChatRef({ character_avatar: ava.avatar, file_name: REQUESTED });
+  });
+  expect(useChatStore.getState().currentChatFile).toBe(REQUESTED);
+  clearChat.mockClear();
+  fetchChatFiles.mockClear();
+  loadChat.mockClear();
+}
+
 beforeEach(() => {
   localStorage.clear();
   fetchChatFiles = makeFetchChatFiles();
@@ -155,6 +184,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  useChatStore.getState().stopGeneration();
+  vi.restoreAllMocks();
   useCharacterStore.setState(initial.character, true);
   useChatStore.setState(initial.chat, true);
   useProjectStore.setState(initial.project, true);
@@ -175,30 +206,58 @@ describe('selecting a character again after Home', () => {
     expect(useProjectStore.getState().pendingChatFile).toBeNull();
   });
 
-  it('clears the open group transcript and fetches the chat files again after a group chat and Home', async () => {
-    mountChatView();
-    await selectAva();
-    await waitFor(() => expect(loadChat).toHaveBeenCalledWith(ava.avatar, LATEST));
+  it('keeps the open chat through Home and a second selection of the same character, and saves the next message to it', async () => {
+    await openAvaWithRequestedChat();
+    const saveChat = vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 6 });
 
-    await act(async () => {
-      await useCharacterStore.getState().toggleGroupChatCharacter(ava.avatar);
-      await useCharacterStore.getState().toggleGroupChatCharacter(bea.avatar);
-    });
-    act(() => useCharacterStore.getState().startGroupChat());
-    await act(async () => {
-      await useChatStore.getState().startNewGroupChat(useCharacterStore.getState().groupChatCharacters);
-    });
-    const groupFile = useChatStore.getState().currentChatFile;
-    expect(useCharacterStore.getState().isGroupChatMode).toBe(true);
-    expect(useChatStore.getState().groupChats.some((g) => g.fileName === groupFile)).toBe(true);
-
-    clearChat.mockClear();
-    fetchChatFiles.mockClear();
     pressHome();
     await selectAva();
+    await flush();
 
-    await waitFor(() => expect(fetchChatFiles).toHaveBeenCalledWith(ava.avatar));
-    expect(clearChat).toHaveBeenCalled();
-    expect(useChatStore.getState().currentChatFile).not.toBe(groupFile);
+    expect(useChatStore.getState().currentChatFile).toBe(REQUESTED);
+    expect(clearChat).not.toHaveBeenCalled();
+    expect(fetchChatFiles).not.toHaveBeenCalled();
+    expect(loadChat).not.toHaveBeenCalled();
+
+    // sendMessage returns once the refused fetch has failed the generation.
+    await act(async () => {
+      await useChatStore.getState().sendMessage('hello again', ava);
+    });
+    expect(saveChat).toHaveBeenCalled();
+    expect(saveChat.mock.calls[0][0]).toBe(ava.avatar);
+    expect(saveChat.mock.calls[0][1]).toBe(REQUESTED);
+    expect(saveChat.mock.calls.every((call) => call[1] === REQUESTED)).toBe(true);
+  });
+});
+
+describe('a failed delete of the selected character', () => {
+  it('does not reload the open chat when the selection is put back', async () => {
+    await openAvaWithRequestedChat();
+    let rejectDelete: (error: Error) => void = () => {};
+    vi.spyOn(api, 'deleteCharacter').mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        rejectDelete = reject;
+      }),
+    );
+
+    // The optimistic clear is flushed to ChatView before the delete is rejected.
+    let deletion!: Promise<boolean>;
+    act(() => {
+      deletion = useCharacterStore.getState().deleteCharacter(ava.avatar);
+    });
+    expect(useCharacterStore.getState().selectedCharacter).toBeNull();
+
+    await act(async () => {
+      rejectDelete(new Error('delete refused'));
+      await deletion;
+    });
+    await flush();
+
+    expect(await deletion).toBe(false);
+    expect(useCharacterStore.getState().selectedCharacter).toBe(ava);
+    expect(clearChat).not.toHaveBeenCalled();
+    expect(fetchChatFiles).not.toHaveBeenCalled();
+    expect(loadChat).not.toHaveBeenCalled();
+    expect(useChatStore.getState().currentChatFile).toBe(REQUESTED);
   });
 });

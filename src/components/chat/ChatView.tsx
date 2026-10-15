@@ -895,23 +895,26 @@ export function ChatView() {
   }, [currentChatFile]);
 
   useEffect(() => {
-    if (!selectedCharacter) {
-      // Nothing selected (the hero, or a group chat) is a fresh start: forget
-      // the last character so the next selection, even of the same one,
-      // clears the open transcript and reloads the chat files.
-      lastCharacterRef.current = null;
-      return;
-    }
+    if (!selectedCharacter) return;
     const sameChar = lastCharacterRef.current === selectedCharacter.avatar;
     const sameMode = lastGroupModeRef.current === isGroupChatMode;
-    if (sameChar && sameMode) return;
+    if (sameChar && sameMode) {
+      // A Works-panel request for the already-selected character is honored here; nothing else reloads.
+      const pendingChat = useProjectStore
+        .getState()
+        .consumePendingChat(selectedCharacter.avatar);
+      if (pendingChat) {
+        loadChat(selectedCharacter.avatar, pendingChat);
+      }
+      return;
+    }
 
     clearChat();
     lastCharacterRef.current = selectedCharacter.avatar;
     lastGroupModeRef.current = isGroupChatMode;
     setFailedExpressions(new Set());
     fetchChatFiles(selectedCharacter.avatar);
-  }, [selectedCharacter, isGroupChatMode, fetchChatFiles, clearChat]);
+  }, [selectedCharacter, isGroupChatMode, fetchChatFiles, clearChat, loadChat]);
 
   useEffect(() => {
     if (!selectedCharacter) return;
