@@ -179,7 +179,7 @@ describe('first render (D-S2, D-S3)', () => {
     expect(content.parentElement).toBe(root);
 
     // Exact strings, not a ban list: a column, an offset or a width restored
-    // under any spelling changes one of these two literals.
+    // changes one of these two literals.
     expect(content.className).toBe('flex flex-col min-w-0 h-full');
     expect(root.className).toBe('bg-[var(--color-bg-primary)] overflow-hidden');
 
