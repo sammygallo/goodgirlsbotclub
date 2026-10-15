@@ -18,6 +18,23 @@ import { useSwipeSidebar } from '../../hooks/useSwipeSidebar';
 import type { HeroSlide } from '../../utils/hero/heroModel';
 import { HeroCarousel } from './HeroCarousel';
 
+// The global `localStorage` is an inert object under this runner, even in jsdom,
+// and the onboarding store (imported by the code under test) reads it as it
+// loads: a working one has to exist before the imports above are evaluated.
+vi.hoisted(() => {
+  const data = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => (data.has(key) ? (data.get(key) as string) : null),
+    setItem: (key: string, value: string) => {
+      data.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      data.delete(key);
+    },
+    clear: () => data.clear(),
+  });
+});
+
 const SLIDE_MS = 6000;
 
 function character(name: string, extra: Partial<CharacterInfo> = {}): CharacterInfo {

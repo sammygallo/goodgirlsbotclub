@@ -25,6 +25,7 @@ import { useCharacterInterviewStore } from '../../stores/characterInterviewStore
 import { useChatStore, type GroupChatInfo } from '../../stores/chatStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useProjectStore } from '../../stores/projectStore';
+import { useOnboardingStore } from '../../stores/onboardingStore';
 import { can, hasPermission } from '../../utils/permissions';
 import { haptic } from '../../utils/haptics';
 import { Avatar, Button, Input } from '../ui';
@@ -227,6 +228,12 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   useEffect(() => {
     if (isOpen && launchedSeen) onClose();
   }, [isOpen, launchedSeen, onClose]);
+
+  // The drawer and the onboarding dialog are never open together.
+  const onboardingOpen = useOnboardingStore((s) => s.isOpen);
+  useEffect(() => {
+    if (isOpen && onboardingOpen) onClose();
+  }, [isOpen, onboardingOpen, onClose]);
 
   // --- Actions -------------------------------------------------------------------
   const handleCharacterCreated = (avatarUrl: string) => {

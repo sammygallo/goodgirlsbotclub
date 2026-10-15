@@ -3,28 +3,49 @@
  *
  * useSwipeSidebar driven through a small component that stands in for
  * MainLayout: an edge swipe opens the drawer, a leftward swipe closes it, a
- * swipe is not taken while a right panel is up (D-S14), the listeners bind
- * when the layout root mounts, even when that is after the first render (#557),
- * each touchstart and touchend handler it binds is removed again, with the same
- * function and the same capture flag, when the root unmounts or isOpen swaps
- * the handlers, and an unmounted root takes no swipe.
+ * swipe is not taken while a right panel is up or the onboarding dialog is open
+ * (D-S14), the listeners bind when the layout root mounts, even when that is
+ * after the first render (#557), each touchstart and touchend handler it binds
+ * is removed again, with the same function and the same capture flag, when the
+ * root unmounts or isOpen swaps the handlers, and an unmounted root takes no
+ * swipe.
  *
- * The three panel stores are the real ones, flipped through setState; haptics
- * are mocked so "no buzz for a swipe that does nothing" can be asserted.
+ * The three panel stores and the onboarding store are the real ones, flipped
+ * through setState; haptics are mocked so "no buzz for a swipe that does
+ * nothing" can be asserted.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
 import { useGuidesPanelStore } from '../stores/guidesPanelStore';
+import { useOnboardingStore } from '../stores/onboardingStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useSettingsPanelStore } from '../stores/settingsPanelStore';
 import { hapticMedium } from '../utils/haptics';
 import { EDGE_ZONE, SWIPE_THRESHOLD, useSwipeSidebar } from './useSwipeSidebar';
+
+// The global `localStorage` is an inert object under this runner, even in jsdom,
+// and the onboarding store (imported by the code under test) reads it as it
+// loads: a working one has to exist before the imports above are evaluated.
+vi.hoisted(() => {
+  const data = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => (data.has(key) ? (data.get(key) as string) : null),
+    setItem: (key: string, value: string) => {
+      data.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      data.delete(key);
+    },
+    clear: () => data.clear(),
+  });
+});
 
 vi.mock('../utils/haptics');
 
 const initial = {
   settings: useSettingsPanelStore.getState(),
   guides: useGuidesPanelStore.getState(),
+  onboarding: useOnboardingStore.getState(),
   project: useProjectStore.getState(),
 };
 
@@ -99,6 +120,7 @@ afterEach(() => {
   cleanup();
   useSettingsPanelStore.setState(initial.settings, true);
   useGuidesPanelStore.setState(initial.guides, true);
+  useOnboardingStore.setState(initial.onboarding, true);
   useProjectStore.setState(initial.project, true);
 });
 
@@ -227,6 +249,44 @@ describe('mutual exclusion with the right panels (D-S14)', () => {
     act(() => {
       useSettingsPanelStore.setState({ isOpen: false });
     });
+    swipe(root(), [10, 100], [120, 100]);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('mutual exclusion with the onboarding dialog (D-S14)', () => {
+  it('ignores an edge swipe while the dialog is open, with no haptic', () => {
+    const { onOpen } = mount();
+    act(() => {
+      useOnboardingStore.setState({ isOpen: true });
+    });
+
+    swipe(root(), [10, 100], [120, 100]);
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(hapticMedium).not.toHaveBeenCalled();
+  });
+
+  it('opens again once the dialog has closed', () => {
+    const { onOpen } = mount();
+    act(() => {
+      useOnboardingStore.setState({ isOpen: true });
+    });
+    swipe(root(), [10, 100], [120, 100]);
+    expect(onOpen).not.toHaveBeenCalled();
+
+    act(() => {
+      useOnboardingStore.setState({ isOpen: false });
+    });
+    swipe(root(), [10, 100], [120, 100]);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens while the walkthrough is docked as a chip', () => {
+    const { onOpen } = mount();
+    act(() => {
+      useOnboardingStore.setState({ isOpen: false, isDocked: true });
+    });
+
     swipe(root(), [10, 100], [120, 100]);
     expect(onOpen).toHaveBeenCalledTimes(1);
   });

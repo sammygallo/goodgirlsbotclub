@@ -6,15 +6,16 @@
  * content (D-S2, D-S3), opens and closes by every route the spec lists (D-S12),
  * makes the page behind it inert and gives it back (D-G5), ignores the edge
  * swipe over a right panel (D-S14), does not open from the menu button or the
- * `openSidebar` seam while one is up, binds that swipe even on a fresh load that
- * began at the auth spinner (#557), and keeps the `openSidebar` seam the hero
- * uses.
+ * `openSidebar` seam while one is up, is never open together with the onboarding
+ * dialog (it refuses to open under the dialog, and closes when the walkthrough
+ * starts or returns), binds that swipe even on a fresh load that began at the
+ * auth spinner (#557), and keeps the `openSidebar` seam the hero uses.
  *
- * The three right panels and the onboarding walkthrough are marker stubs; Help
- * and the character editor are stubbed out of the header. jsdom ignores `inert`,
- * so containment is asserted on the attribute: an `inert` ancestor, or none.
- * The real Tab walk, the slide, the stacking and the computed width of the
- * content are QA's, in a browser.
+ * The three right panels are marker stubs, and the onboarding walkthrough is the
+ * real component beside a marker; Help and the character editor are stubbed out
+ * of the header. jsdom ignores `inert`, so containment is asserted on the
+ * attribute: an `inert` ancestor, or none. The real Tab walk, the slide, the
+ * stacking and the computed width of the content are QA's, in a browser.
  *
  * `localStorage` is replaced before any app module loads: the onboarding store
  * reads it at import, and under Node 25 the global is Node's experimental one,
@@ -56,7 +57,17 @@ vi.hoisted(() => {
 vi.mock('../settings/SettingsPanel', () => ({ SettingsPanel: () => <div data-testid="settings-panel" /> }));
 vi.mock('../guides/GuidesPanel', () => ({ GuidesPanel: () => <div data-testid="guides-panel" /> }));
 vi.mock('../works/WorksPanel', () => ({ WorksPanel: () => <div data-testid="works-panel" /> }));
-vi.mock('../onboarding/OnboardingWalkthrough', () => ({ OnboardingWalkthrough: () => <div data-testid="onboarding" /> }));
+vi.mock('../onboarding/OnboardingWalkthrough', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../onboarding/OnboardingWalkthrough')>();
+  return {
+    OnboardingWalkthrough: () => (
+      <>
+        <div data-testid="onboarding" />
+        <actual.OnboardingWalkthrough />
+      </>
+    ),
+  };
+});
 vi.mock('../help/HelpChat', () => ({ HelpChat: () => null }));
 vi.mock('../character/CharacterEdit', () => ({ CharacterEdit: () => null }));
 
@@ -359,5 +370,96 @@ describe('the menu button and the context opener with a right panel open (D-S14)
     await user.click(screen.getByRole('button', { name: 'Probe opens the drawer' }));
     expect(isOpen()).toBe(false);
     expect(drawerRoot().hasAttribute('hidden')).toBe(true);
+  });
+});
+
+describe('the onboarding dialog and the drawer (D-S14)', () => {
+  const ONBOARDING_DONE_KEY = 'sillytavern_onboarding_completed';
+  const onboardingDialog = () => {
+    const dialog = screen.getByRole('button', { name: 'Next' }).closest<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    return dialog as HTMLElement;
+  };
+  const chip = () => screen.getByRole('button', { name: 'Return to setup walkthrough' });
+  const dock = () => useOnboardingStore.setState({ isOpen: false, isDocked: true, currentStep: 3 });
+
+  const OPENERS: [string, (user: ReturnType<typeof userEvent.setup>) => Promise<void> | void][] = [
+    ['the menu button', (user) => user.click(menuButton())],
+    ['a routed child through the layout context', (user) => user.click(screen.getByRole('button', { name: 'Probe opens the drawer' }))],
+    ['an edge swipe', () => swipe(layoutRoot(), [10, 100], [140, 100])],
+  ];
+
+  it.each(OPENERS)('leaves the drawer shut, and the dialog live, when %s asks for it with the dialog open', async (_name, open) => {
+    const user = userEvent.setup();
+    mountLayout();
+    act(() => {
+      useOnboardingStore.getState().start();
+    });
+
+    await open(user);
+    expect(isOpen()).toBe(false);
+    expect(drawerRoot().hasAttribute('hidden')).toBe(true);
+    expect(inertAncestor(onboardingDialog())).toBeNull();
+  });
+
+  it('opens the drawer while the walkthrough is docked as a chip, and leaves the chip live', async () => {
+    const user = userEvent.setup();
+    dock();
+    mountLayout();
+
+    await user.click(menuButton());
+    expect(isOpen()).toBe(true);
+    expect(inertAncestor(chip())).toBeNull();
+  });
+
+  it('closes an open drawer when the walkthrough starts, and leaves the dialog live', async () => {
+    const user = userEvent.setup();
+    mountLayout();
+    await user.click(menuButton());
+    expect(isOpen()).toBe(true);
+
+    act(() => {
+      useOnboardingStore.getState().start();
+    });
+
+    expect(isOpen()).toBe(false);
+    await waitFor(() => expect(drawerRoot().hasAttribute('hidden')).toBe(true));
+    expect(inertAncestor(onboardingDialog())).toBeNull();
+  });
+
+  it('closes an open drawer when the chip returns to the walkthrough, and leaves the dialog live', async () => {
+    const user = userEvent.setup();
+    dock();
+    mountLayout();
+    await user.click(menuButton());
+    expect(isOpen()).toBe(true);
+
+    await user.click(chip());
+
+    expect(isOpen()).toBe(false);
+    await waitFor(() => expect(drawerRoot().hasAttribute('hidden')).toBe(true));
+    expect(inertAncestor(onboardingDialog())).toBeNull();
+  });
+
+  it('lets one Escape close the drawer without skipping the walkthrough', async () => {
+    const user = userEvent.setup();
+    mountLayout();
+    await user.click(menuButton());
+
+    await user.keyboard('{Escape}');
+    expect(isOpen()).toBe(false);
+    expect(localStorage.getItem(ONBOARDING_DONE_KEY)).toBeNull();
+  });
+
+  it('does the same with the walkthrough docked, and leaves the chip in place', async () => {
+    const user = userEvent.setup();
+    dock();
+    mountLayout();
+    await user.click(menuButton());
+
+    await user.keyboard('{Escape}');
+    expect(isOpen()).toBe(false);
+    expect(localStorage.getItem(ONBOARDING_DONE_KEY)).toBeNull();
+    expect(chip()).toBeTruthy();
   });
 });

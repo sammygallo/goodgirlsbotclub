@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/authStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { rightPanelOpen, useSwipeSidebar } from '../../hooks/useSwipeSidebar';
+import { drawerOpenBlocked, useSwipeSidebar } from '../../hooks/useSwipeSidebar';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import type { LayoutOutletContext } from './layoutContext';
@@ -18,7 +18,7 @@ export function MainLayout() {
   // panel (focus returns to the button when the drawer closes to open one), so
   // the drawer refuses to open over it.
   const openSidebar = useCallback(() => {
-    if (rightPanelOpen()) return;
+    if (drawerOpenBlocked()) return;
     setSidebarOpen(true);
   }, []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);

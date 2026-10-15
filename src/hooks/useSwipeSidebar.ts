@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { hapticMedium } from '../utils/haptics';
 import { useGuidesPanelStore } from '../stores/guidesPanelStore';
+import { useOnboardingStore } from '../stores/onboardingStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useSettingsPanelStore } from '../stores/settingsPanelStore';
 
@@ -21,6 +22,11 @@ export function rightPanelOpen(): boolean {
     useGuidesPanelStore.getState().isOpen ||
     useProjectStore.getState().isOpen
   );
+}
+
+// The drawer and the onboarding dialog are never open together.
+export function drawerOpenBlocked(): boolean {
+  return rightPanelOpen() || useOnboardingStore.getState().isOpen;
 }
 
 /**
@@ -72,7 +78,7 @@ export function useSwipeSidebar(
 
     if (!isOpen && state.startX < EDGE_ZONE && deltaX > SWIPE_THRESHOLD) {
       // Before the haptic: a swipe that does nothing must not buzz.
-      if (rightPanelOpen()) return;
+      if (drawerOpenBlocked()) return;
       hapticMedium();
       onOpen();
     } else if (isOpen && deltaX < -SWIPE_THRESHOLD) {
