@@ -3,13 +3,15 @@
  *
  * useSwipeSidebar driven through a small component that stands in for
  * MainLayout: an edge swipe opens the drawer, a leftward swipe closes it, a
- * swipe is not taken while a right panel is up (D-S14), and the listeners bind
- * when the layout root mounts, even when that is after the first render (#557).
+ * swipe is not taken while a right panel is up (D-S14), the listeners bind
+ * when the layout root mounts, even when that is after the first render (#557),
+ * and each touchstart and touchend handler it binds is removed again, with the
+ * same function, when the root unmounts or isOpen swaps the handlers.
  *
  * The three panel stores are the real ones, flipped through setState; haptics
  * are mocked so "no buzz for a swipe that does nothing" can be asserted.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
 import { useGuidesPanelStore } from '../stores/guidesPanelStore';
 import { useProjectStore } from '../stores/projectStore';
@@ -61,6 +63,23 @@ function mount(props: Partial<HarnessProps> = {}) {
 }
 
 const root = () => document.querySelector('[data-testid="root"]') as HTMLElement;
+
+type CallLog = { mock: { calls: unknown[][]; contexts: unknown[] } };
+type Binding = [type: unknown, handler: unknown];
+
+/** The touchstart and touchend calls `log` recorded on `el`, as [type, handler]. */
+function touchCalls(log: CallLog, el: Element): Binding[] {
+  return log.mock.calls
+    .map((args, i): [unknown, Binding] => [log.mock.contexts[i], [args[0], args[1]]])
+    .filter(([target, [type]]) => target === el && (type === 'touchstart' || type === 'touchend'))
+    .map(([, binding]) => binding);
+}
+
+/** The bindings added to `el` that no removeEventListener undid with the same type and the same handler function. */
+function stillBound(add: CallLog, remove: CallLog, el: Element): Binding[] {
+  const removed = touchCalls(remove, el);
+  return touchCalls(add, el).filter(([type, handler]) => !removed.some(([t, h]) => t === type && h === handler));
+}
 
 beforeEach(() => {
   vi.mocked(hapticMedium).mockClear();
@@ -124,14 +143,41 @@ describe('binding when the layout root mounts (#557)', () => {
     swipe(root(), [10, 100], [120, 100]);
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
+});
 
-  it('removes both listeners when the root unmounts', () => {
-    const { onOpen, unmount } = mount();
+describe('removing the listeners it bound', () => {
+  let add: MockInstance<HTMLElement['addEventListener']>;
+  let remove: MockInstance<HTMLElement['removeEventListener']>;
+
+  beforeEach(() => {
+    add = vi.spyOn(HTMLElement.prototype, 'addEventListener');
+    remove = vi.spyOn(HTMLElement.prototype, 'removeEventListener');
+  });
+
+  afterEach(() => {
+    add.mockRestore();
+    remove.mockRestore();
+  });
+
+  it('removes each touchstart and touchend handler it added once the root unmounts', () => {
+    const { unmount } = mount();
     const el = root();
-    unmount();
+    expect(touchCalls(add, el).map(([type]) => type).sort()).toEqual(['touchend', 'touchstart']);
 
-    swipe(el, [10, 100], [120, 100]);
-    expect(onOpen).not.toHaveBeenCalled();
+    unmount();
+    expect(stillBound(add, remove, el)).toEqual([]);
+  });
+
+  it('removes the handlers it replaces when isOpen changes, leaving only the newest pair bound', () => {
+    const { rerender, onOpen, onClose } = mount();
+    const el = root();
+    rerender(<Harness onOpen={onOpen} onClose={onClose} isOpen />);
+    rerender(<Harness onOpen={onOpen} onClose={onClose} />);
+
+    const added = touchCalls(add, el);
+    expect(added.length).toBeGreaterThan(2);
+    expect(stillBound(add, remove, el)).toEqual(added.slice(-2));
+    expect(stillBound(add, remove, el).map(([type]) => type).sort()).toEqual(['touchend', 'touchstart']);
   });
 });
 
