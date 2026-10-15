@@ -156,7 +156,7 @@ describe('single chat', () => {
     expect(radio('Live Portrait').disabled).toBe(false);
   });
 
-  it('closes only the popover on Escape, and lets a later Escape through to the document', async () => {
+  it('closes only the popover on Escape from a radio inside it, returns focus to the toggle, and lets a later Escape through to the document', async () => {
     const user = userEvent.setup();
     const atDocument = vi.fn();
     document.addEventListener('keydown', atDocument);
@@ -164,6 +164,9 @@ describe('single chat', () => {
       render(<CurrentChatCard onAbout={vi.fn()} />);
       const toggle = screen.getByRole('button', { name: 'Avatar motion' });
       await user.click(toggle);
+      const radio = within(screen.getByRole('radiogroup', { name: 'Avatar motion mode' })).getByRole('radio', { name: 'None' });
+      radio.focus();
+      expect(document.activeElement).toBe(radio);
       await user.keyboard('{Escape}');
 
       expect(toggle.getAttribute('aria-expanded')).toBe('false');

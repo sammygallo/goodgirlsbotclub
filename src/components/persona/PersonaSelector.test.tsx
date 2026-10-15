@@ -95,13 +95,16 @@ describe('variants', () => {
 });
 
 describe('Escape on the row', () => {
-  it('closes the open list, returns focus to the trigger, and does not reach a document-level handler', async () => {
+  it('closes the open list from a control inside it, returns focus to the trigger, and does not reach a document-level handler', async () => {
     const user = userEvent.setup();
     const atDocument = vi.fn();
     document.addEventListener('keydown', atDocument);
     try {
       render(<PersonaSelector variant="row" />);
       await user.click(rowTrigger());
+      const manage = screen.getByRole('button', { name: 'Manage Personas' });
+      manage.focus();
+      expect(document.activeElement).toBe(manage);
       await user.keyboard('{Escape}');
 
       expect(rowTrigger().getAttribute('aria-expanded')).toBe('false');

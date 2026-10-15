@@ -207,6 +207,7 @@ describe('a Modal that mounts already open (About, Resume draft)', () => {
     expect(menu.getAttribute('aria-expanded')).toBe('false');
     expect(document.activeElement).toBe(menu);
     expect(closes).toBe(closesAfterLaunch);
+    expect(anythingInert()).toBeNull();
   });
 
   it('Resume draft: closes the drawer, and Escape on the Modal returns focus to the menu button', async () => {

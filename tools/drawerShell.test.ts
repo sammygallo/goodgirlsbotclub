@@ -37,6 +37,19 @@ function blockOf(opener: string): string {
   return '';
 }
 
+/** The text between the outer braces of the block that begins with `opener`, whitespace collapsed. */
+function blockBody(opener: string): string {
+  const block = blockOf(opener);
+  return block.slice(block.indexOf('{') + 1, block.lastIndexOf('}')).replace(/\s+/g, ' ').trim();
+}
+
+const drawerKeyframes: Array<[string, string]> = [
+  ['drawer-in', 'from { transform: translateX(-100%); } to { transform: translateX(0); }'],
+  ['drawer-out', 'from { transform: translateX(0); } to { transform: translateX(-100%); }'],
+  ['drawer-scrim-in', 'from { opacity: 0; } to { opacity: 1; }'],
+  ['drawer-scrim-out', 'from { opacity: 1; } to { opacity: 0; }'],
+];
+
 const drawerClasses: Array<[string, string]> = [
   ['.animate-drawer-in', 'animation: drawer-in 200ms ease-in-out;'],
   ['.animate-drawer-out', 'animation: drawer-out 200ms ease-in-out forwards;'],
@@ -45,8 +58,8 @@ const drawerClasses: Array<[string, string]> = [
 ];
 
 describe('navigation drawer motion (E6-S3, D-S4)', () => {
-  it.each(['drawer-in', 'drawer-out', 'drawer-scrim-in', 'drawer-scrim-out'])('defines the @keyframes %s', (name) => {
-    expect(css).toContain(`@keyframes ${name} {`);
+  it.each(drawerKeyframes)('defines @keyframes %s with its from and to values', (name, body) => {
+    expect(blockBody(`@keyframes ${name} {`)).toBe(body);
   });
 
   it.each(drawerClasses)('gives %s the 200 ms ease-in-out animation it names', (selector, body) => {

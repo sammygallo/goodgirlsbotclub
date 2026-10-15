@@ -770,6 +770,7 @@ describe('group chats', () => {
     const user = userEvent.setup();
     const calls: string[] = [];
     const setGroupChatCharacters = vi.fn(async (avatars: string[]) => {
+      await Promise.resolve();
       calls.push(`roster:${avatars.join(',')}`);
     });
     const loadGroupChat = vi.fn(async (g: GroupChatInfo) => {
