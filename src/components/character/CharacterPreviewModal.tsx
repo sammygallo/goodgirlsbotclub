@@ -11,8 +11,7 @@ interface CharacterPreviewModalProps {
 }
 
 /**
- * Read-only preview of a character — surfaced before the user commits to
- * opening a chat. Shows the avatar, tags, and the creator's notes (the
+ * Read-only preview of a character. Shows the avatar, tags, and the creator's notes (the
  * author-written, user-facing blurb) only — deliberately NOT the prompt
  * internals (description, personality, scenario, first message), which are
  * model-facing and not meant as preview reading.

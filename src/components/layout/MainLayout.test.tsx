@@ -171,30 +171,17 @@ describe('first render (D-S2, D-S3)', () => {
   // jsdom applies no Tailwind CSS, so this reads class tokens in the markup and
   // nothing else; the computed width of the content at 1100 and 1400 px is a
   // check in a browser.
-  it('has no row layout, offset or width class token on the content wrapper or the layout root, and no breakpoint prefix in the shell', () => {
+  it('gives the content wrapper and the layout root exactly their expected classes, with no breakpoint prefix in the shell', () => {
     mountLayout();
 
     const root = layoutRoot();
     const content = drawerRoot().nextElementSibling as HTMLElement;
-    const chain: HTMLElement[] = [];
-    for (let el: HTMLElement | null = content; el; el = el === root ? null : el.parentElement) {
-      chain.push(el);
-    }
-    expect(chain[0]).toBe(content);
-    expect(chain[chain.length - 1]).toBe(root);
+    expect(content.parentElement).toBe(root);
 
-    const ROW_LAYOUT_TOKENS = ['flex', 'grid'];
-    expect(ROW_LAYOUT_TOKENS.filter((token) => root.classList.contains(token))).toEqual([]);
-
-    const OFFSET_OR_WIDTH_FAMILIES = [
-      'w-', 'max-w-', 'basis-', 'grid-cols-',
-      'ml-', 'ms-', 'mx-', 'pl-', 'ps-', 'px-',
-      'left-', 'start-', 'inset-', 'translate-x-',
-    ];
-    const offenders = chain.flatMap((el) =>
-      el.className.split(/\s+/).filter((token) => OFFSET_OR_WIDTH_FAMILIES.some((prefix) => token.startsWith(prefix))),
-    );
-    expect(offenders).toEqual([]);
+    // Exact strings, not a ban list: a column, an offset or a width restored
+    // under any spelling changes one of these two literals.
+    expect(content.className).toBe('flex flex-col min-w-0 h-full');
+    expect(root.className).toBe('bg-[var(--color-bg-primary)] overflow-hidden');
 
     const BREAKPOINTS = ['sm:', 'md:', 'lg:', 'xl:', '2xl:', 'min-[', 'max-['];
     expect(BREAKPOINTS.filter((prefix) => root.outerHTML.includes(prefix))).toEqual([]);
