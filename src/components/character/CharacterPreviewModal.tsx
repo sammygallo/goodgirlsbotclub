@@ -16,9 +16,6 @@ interface CharacterPreviewModalProps {
  * author-written, user-facing blurb) only — deliberately NOT the prompt
  * internals (description, personality, scenario, first message), which are
  * model-facing and not meant as preview reading.
- *
- * Triggered from the character list (sidebar) by the per-row info button;
- * not used from any flow that already has the character loaded.
  */
 export function CharacterPreviewModal({
   isOpen,
