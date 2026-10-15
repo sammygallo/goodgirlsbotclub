@@ -205,6 +205,7 @@ describe('what Home does', () => {
     expect(exitGroupChat).toHaveBeenCalledTimes(1);
     expect(clearSelection).toHaveBeenCalledTimes(1);
     expect(navigateSpy).toHaveBeenCalledWith('/');
+    expect(navigateSpy).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
 
     const order = (fn: ReturnType<typeof vi.fn>) => fn.mock.invocationCallOrder[0];
