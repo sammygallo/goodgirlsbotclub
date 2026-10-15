@@ -373,7 +373,7 @@ describe('the menu button and the context opener with a right panel open (D-S14)
   });
 });
 
-describe('the onboarding dialog and the drawer (D-S14)', () => {
+describe('the onboarding dialog and the drawer', () => {
   const ONBOARDING_DONE_KEY = 'sillytavern_onboarding_completed';
   const onboardingDialog = () => {
     const dialog = screen.getByRole('button', { name: 'Next' }).closest<HTMLElement>('[role="dialog"]');

@@ -210,6 +210,7 @@ describe('what Home does', () => {
     const order = (fn: ReturnType<typeof vi.fn>) => fn.mock.invocationCallOrder[0];
     expect(order(exitGroupChat)).toBeLessThan(order(clearSelection));
     expect(order(clearSelection)).toBeLessThan(order(navigateSpy));
+    expect(order(navigateSpy)).toBeLessThan(onClose.mock.invocationCallOrder[0]);
     expect(location()).toBe('/');
   });
 

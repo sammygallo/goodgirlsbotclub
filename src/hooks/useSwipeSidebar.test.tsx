@@ -3,8 +3,8 @@
  *
  * useSwipeSidebar driven through a small component that stands in for
  * MainLayout: an edge swipe opens the drawer, a leftward swipe closes it, a
- * swipe is not taken while a right panel is up or the onboarding dialog is open
- * (D-S14), the listeners bind when the layout root mounts, even when that is
+ * swipe is not taken while a right panel is up or the onboarding dialog is open,
+ * the listeners bind when the layout root mounts, even when that is
  * after the first render (#557), each touchstart and touchend handler it binds
  * is removed again, with the same function and the same capture flag, when the
  * root unmounts or isOpen swaps the handlers, and an unmounted root takes no
@@ -254,7 +254,7 @@ describe('mutual exclusion with the right panels (D-S14)', () => {
   });
 });
 
-describe('mutual exclusion with the onboarding dialog (D-S14)', () => {
+describe('mutual exclusion with the onboarding dialog', () => {
   it('ignores an edge swipe while the dialog is open, with no haptic', () => {
     const { onOpen } = mount();
     act(() => {
