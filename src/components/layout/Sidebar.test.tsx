@@ -1032,7 +1032,9 @@ describe('state cues and the row avatar', () => {
     expect(chip.classList.contains('bg-[var(--color-primary)]/20')).toBe(true);
     expect(chip.classList.contains('text-[var(--color-text-primary)]')).toBe(true);
     expect(chip.classList.contains('font-semibold')).toBe(true);
+    expect(chip.classList.contains('ring-1')).toBe(true);
     expect(chip.classList.contains('ring-inset')).toBe(true);
+    expect(chip.classList.contains('ring-[var(--color-primary)]')).toBe(true);
     expect(chip.classList.contains('text-white')).toBe(false);
     expect(chip.classList.contains('bg-[var(--color-primary)]')).toBe(false);
   });
@@ -1044,6 +1046,7 @@ describe('state cues and the row avatar', () => {
     expect(chip.classList.contains('bg-[var(--color-bg-tertiary)]')).toBe(true);
     expect(chip.classList.contains('text-[var(--color-text-secondary)]')).toBe(true);
     expect(chip.classList.contains('font-semibold')).toBe(false);
+    expect(chip.classList.contains('ring-1')).toBe(false);
     expect(chip.classList.contains('ring-inset')).toBe(false);
   });
 });
