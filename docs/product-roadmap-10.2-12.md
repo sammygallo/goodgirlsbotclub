@@ -534,6 +534,8 @@ App-shell change: My Characters / Works / Personal sections, a hidden drawer at 
 #### E6-S4 · Desktop chat layout — **Kanban: Backlog** · Size M
 1/3 full-bleed avatar (viewport-height scaled) + 2/3 chat on desktop; existing single-column on mobile/portrait. Sonnet — CSS grid work with breakpoint tests. **Acceptance:** no regression in chat interactions (swipe, edit, branch UI) · avatar never distorts · clean behavior at tablet widths.
 
+**Carry-forward from E6-S3 (postmortem, 2026-10-15).** The spec's E6-S4 checklist asks axe for 0 violations on the panel in each D-T1 cell, and the panel reuses what `main` already ships (the motion picker, and below 1024px the existing portrait panel). E6-S2 and E6-S3 each first ran their axe item at QA, and both failed on colour pairs that already fail on `main` — E6-S3's only in states reached by interacting (a filter turned on, a tag chip selected). E6-S3 found its pairs after the review loop had closed, and fixing them took a further fix round, a full-roster round, two confirmation rounds and a QA re-run (~1.46M). Run the same in-browser axe matrix on `main` before BUILD, in the panel's interactive states as well as its resting one, and put what fails into the plan.
+
 ---
 
 ### E7 · Character Wizard — Advanced Settings
