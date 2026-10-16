@@ -52,8 +52,10 @@ const env = vi.hoisted(() => {
   vi.stubGlobal('fetch', () => Promise.reject(new Error('fetch refused')));
   return {
     reducedMotion: false,
-    /** avatar → emotion → sprite path. */
+    /** sprite folder (the costume, else the avatar) → emotion → sprite path. */
     sprites: {} as Record<string, Record<string, string>>,
+    /** Every costume the sprite hook was asked for. */
+    costumesAsked: [] as (string | null | undefined)[],
   };
 });
 
@@ -62,8 +64,10 @@ vi.mock('../../../api/livePortraitGen', async (importOriginal) => ({
   fetchExistingClips: vi.fn(async () => ({})),
 }));
 vi.mock('../../../hooks/useCharacterSprites', () => ({
-  useCharacterSprites: (avatar: string | undefined) => {
-    const map = avatar ? env.sprites[avatar] ?? {} : {};
+  useCharacterSprites: (avatar: string | undefined, costume?: string | null) => {
+    env.costumesAsked.push(costume);
+    const folder = costume || avatar;
+    const map = folder ? env.sprites[folder] ?? {} : {};
     return {
       availableEmotions: Object.keys(map),
       getSpritePath: (e: string | null) => (e ? map[e] ?? null : null),
@@ -154,6 +158,7 @@ beforeEach(() => {
   vi.mocked(fetchExistingClips).mockClear();
   useLivePortraitStore.setState({ clipsByAvatar: {}, enabled: true });
   env.sprites = {};
+  env.costumesAsked = [];
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
   useMotionModeStore.setState({ modesByAvatar: {} });
@@ -267,6 +272,23 @@ describe('Live Portrait clips come from the cache only (D-E6S4-5)', () => {
     act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'a.png')] }));
     expect(screen.getByRole('complementary', { name: 'Group portrait: Ava' })).toBeTruthy();
     expect(fetchExistingClips).not.toHaveBeenCalled();
+  });
+
+  it('clips cached while Live Portrait is disabled are not played: the sprite shows, with no Pause', () => {
+    useLivePortraitStore.setState({ enabled: false });
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    const { container } = renderSolo();
+    expect(container.querySelector('video')).toBeNull();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/sprites/a/joy.png');
+    expect(screen.queryByRole('button', { name: 'Pause animation' })).toBeNull();
+  });
+
+  it('cached clips without an idle clip are not played', () => {
+    cacheClips('a.png', { joy: '/clips/a/joy.mp4' });
+    const { container } = renderSolo();
+    expect(container.querySelector('video')).toBeNull();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
   });
 
   it('group: clips cached for the focused member play Live Portrait', () => {
@@ -479,6 +501,18 @@ describe('framing mode (D-C8)', () => {
     expect(position()).toBe('45% 0%');
     expect(stored()).toEqual({ x: 45, y: 0 });
     expect(usePortraitPositionStore.getState().positionsByAvatar).toBe(mobileBefore);
+  });
+
+  it('arrows clamp at 100 too', () => {
+    usePortraitPositionStore.setState({ desktopPositionsByAvatar: { 'a.png': { x: 98, y: 99 } } });
+    renderSolo();
+    const { surface } = enterFraming();
+    fireEvent.keyDown(surface, { key: 'ArrowLeft' });
+    expect(position()).toBe('100% 99%');
+    fireEvent.keyDown(surface, { key: 'ArrowUp', shiftKey: true });
+    fireEvent.keyDown(surface, { key: 'ArrowUp', shiftKey: true });
+    expect(position()).toBe('100% 100%');
+    expect(stored()).toEqual({ x: 100, y: 100 });
   });
 
   it('arrow keys do nothing outside framing mode', () => {
@@ -768,6 +802,42 @@ describe('group mode (D-C7)', () => {
       .filter((b) => b.getAttribute('aria-pressed') === 'true');
     expect(pressed).toHaveLength(1);
     expect(pressed[0].querySelector('img')?.getAttribute('src')).toBe('/blobs/character/c.png');
+  });
+
+  it('expressions mode: a sprite 404 falls back to the default avatar, whose own failure shows the placeholder', () => {
+    env.sprites['b.png'] = { joy: '/sprites/b/joy.png' };
+    const reported: string[] = [];
+    renderWithFailedSet({ kind: 'group', members: [ava, bea, cat] }, reported);
+    const img = () => screen.getByRole('img', { name: 'Bea' });
+    expect(img().getAttribute('src')).toBe('/sprites/b/joy.png');
+
+    fireEvent.error(img());
+    expect(reported).toEqual(['b.png-joy']);
+    expect(img().getAttribute('src')).toBe('/blobs/character/b.png');
+
+    fireEvent.error(img());
+    expect(reported).toEqual(['b.png-joy']);
+    expect(img().tagName).toBe('DIV');
+    expect(img().textContent).toBe('B');
+  });
+
+  it('expressions mode: when the latest emotion has no sprite, a default-avatar failure shows the placeholder at once', () => {
+    env.sprites['b.png'] = { sad: '/sprites/b/sad.png' };
+    const reported: string[] = [];
+    renderWithFailedSet({ kind: 'group', members: [ava, bea, cat] }, reported);
+    expect(screen.getByRole('img', { name: 'Bea' }).getAttribute('src')).toBe('/blobs/character/b.png');
+    fireEvent.error(screen.getByRole('img', { name: 'Bea' }));
+    expect(reported).toEqual([]);
+    expect(screen.getByRole('img', { name: 'Bea' }).tagName).toBe('DIV');
+  });
+
+  it('a solo costume never reaches a group member\'s sprites', () => {
+    env.sprites['Ava_swim'] = { joy: '/sprites/Ava_swim/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'joy', 'a.png')] });
+    renderGroup({ costume: 'Ava_swim' });
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
+    expect(env.costumesAsked.length).toBeGreaterThan(0);
+    expect(env.costumesAsked).not.toContain('Ava_swim');
   });
 
   it('with "no fallback" on, the walk-back never attributes an unattributed message to the focused member', () => {
