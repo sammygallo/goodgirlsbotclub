@@ -114,6 +114,22 @@ describe('useGroupFocus', () => {
     expect(result.current.focusedAvatar).toBe('b.png');
   });
 
+  it('mid-send, focuses the in-flight placeholder by avatar while currentSpeakerName names a same-name member (K14)', () => {
+    // a.png and c.png share the name "Twin"; c.png is the one speaking.
+    const twin = (id: string, avatar: string): ChatMessage => ({ ...ai(id, avatar), name: 'Twin' });
+    const { result } = renderHook(() => useGroupFocus(roster));
+    act(() =>
+      useChatStore.setState({
+        messages: [twin('1', 'a.png'), user('2'), twin('3', 'c.png')],
+        isStreaming: true,
+        currentSpeakerName: 'Twin',
+      }),
+    );
+    expect(result.current.focusedAvatar).toBe('c.png');
+    setMessages([twin('1', 'a.png'), user('2'), { ...twin('3', 'c.png'), content: 'tokens' }], true);
+    expect(result.current.focusedAvatar).toBe('c.png');
+  });
+
   it('only reads: pinning leaves both stores\' state objects untouched', () => {
     const chatBefore = useChatStore.getState();
     const characterBefore = useCharacterStore.getState();

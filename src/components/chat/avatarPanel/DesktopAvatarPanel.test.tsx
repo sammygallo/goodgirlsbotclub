@@ -22,6 +22,7 @@ import type { CharacterInfo } from '../../../api/client';
 // characterStore before chatStore: the reverse order trips a module cycle.
 import { useCharacterStore } from '../../../stores/characterStore';
 import { useChatStore, type ChatMessage } from '../../../stores/chatStore';
+import { useExpressionsStore } from '../../../stores/expressionsStore';
 import { useMotionModeStore } from '../../../stores/motionModeStore';
 import { usePortraitPositionStore } from '../../../stores/portraitPositionStore';
 import { DesktopAvatarPanel } from './DesktopAvatarPanel';
@@ -124,6 +125,7 @@ beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
   useMotionModeStore.setState({ modesByAvatar: {} });
   usePortraitPositionStore.setState({ positionsByAvatar: {}, desktopPositionsByAvatar: {} });
+  useExpressionsStore.setState({ noFallback: false });
   useChatStore.setState({ messages: [ai('1', 'joy')], isStreaming: false, currentChatFile: 'chat-1' });
 });
 
@@ -167,6 +169,14 @@ describe('source resolution (D-C5)', () => {
     const placeholder = screen.getByRole('img', { name: 'Ava' });
     expect(placeholder.tagName).toBe('DIV');
     expect(placeholder.textContent).toBe('A');
+  });
+
+  it('with "no fallback" on, a latest emotion without a sprite walks back to the previous valid sprite', () => {
+    useExpressionsStore.setState({ noFallback: true });
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'joy'), ai('2', 'anger')] });
+    renderSolo();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/sprites/a/joy.png');
   });
 
   it('a sprite 404 reports the failed key, and the shared failed set falls back to the default avatar', () => {
@@ -363,6 +373,31 @@ describe('framing mode (D-C8)', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
+  /** Gives the framing surface a 200×400 box and jsdom the pointer-capture API it lacks. */
+  function stubSurface(surface: HTMLElement) {
+    surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 400, width: 200, height: 400, toJSON: () => ({}) });
+    surface.setPointerCapture = () => {};
+    surface.hasPointerCapture = () => false;
+    surface.releasePointerCapture = () => {};
+  }
+
+  it('a drag repositions and, on release, saves to the desktop map only', () => {
+    usePortraitPositionStore.setState({ positionsByAvatar: { 'a.png': { x: 10, y: 90 } } });
+    const mobileBefore = usePortraitPositionStore.getState().positionsByAvatar;
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    // 20px left of 200 wide = +10% x; 40px up of 400 tall = +10% y.
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(position()).toBe('60% 10%');
+    expect(stored()).toBeUndefined();
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(stored()).toEqual({ x: 60, y: 10 });
+    expect(usePortraitPositionStore.getState().positionsByAvatar).toBe(mobileBefore);
+  });
+
   it('Escape exits framing without reaching document listeners', () => {
     renderSolo();
     const { toggle, surface } = enterFraming();
@@ -424,10 +459,18 @@ describe('group mode (D-C7)', () => {
     expect(screen.getByRole('complementary', { name: 'Group portrait: Cat' })).toBeTruthy();
   });
 
-  it('cross-fades speaker changes over 200ms, and 0ms under reduced motion', () => {
+  it('cross-fades speaker changes over 200ms, and 0ms under reduced motion', async () => {
     renderGroup();
     fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
-    expect(screen.getByTestId('portrait-layer').style.transition).toBe('opacity 200ms ease-out');
+    const incoming = screen.getByTestId('portrait-layer');
+    expect(incoming.style.transition).toBe('opacity 200ms ease-out');
+    // The incoming layer commits at 0, then fades to 1 — a snap would start at 1.
+    expect(incoming.style.opacity).toBe('0');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(screen.getByTestId('portrait-layer')).toBe(incoming);
+    expect(incoming.style.opacity).toBe('1');
     cleanup();
 
     env.reducedMotion = true;

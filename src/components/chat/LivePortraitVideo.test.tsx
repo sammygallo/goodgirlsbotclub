@@ -65,11 +65,16 @@ describe('LivePortraitVideo playback', () => {
 });
 
 describe('LivePortraitVideo shape', () => {
-  it('rect has no radius; the default square keeps 8px', () => {
+  it('rect has no radius; square keeps 8px', () => {
     const rect = render(<LivePortraitVideo clips={clips} fill shape="rect" />);
     expect((rect.container.firstChild as HTMLElement).style.borderRadius).toBe('0px');
     cleanup();
     const square = render(<LivePortraitVideo clips={clips} fill shape="square" />);
     expect((square.container.firstChild as HTMLElement).style.borderRadius).toBe('8px');
+  });
+
+  it('with no shape, keeps the pre-story default circle', () => {
+    const { container } = render(<LivePortraitVideo clips={clips} fill />);
+    expect((container.firstChild as HTMLElement).style.borderRadius).toBe('50%');
   });
 });
