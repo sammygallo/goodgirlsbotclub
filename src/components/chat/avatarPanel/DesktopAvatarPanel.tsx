@@ -37,7 +37,7 @@ interface DesktopAvatarPanelProps {
  * member — through Live Portrait, a sprite or the static avatar.
  *
  * It only reads chat state. It never writes to or derives chat identity
- * (#458); the one store it writes is the desktop framing map.
+ * (#458).
  */
 export function DesktopAvatarPanel({
   kind,

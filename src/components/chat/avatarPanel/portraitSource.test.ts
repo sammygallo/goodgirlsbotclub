@@ -1,8 +1,7 @@
 /**
  * The desktop avatar panel's source resolution (D-C5, D-C6) and its copies of
  * ChatView's sprite lookups. The parity cases restate what ChatView's
- * `getFullImageUrl` / `findPreviousValidSpritePath` return for the same input,
- * so a change to one side that is not made to the other shows up here.
+ * `getFullImageUrl` / `findPreviousValidSpritePath` return for the same input.
  */
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../../../stores/chatStore';
