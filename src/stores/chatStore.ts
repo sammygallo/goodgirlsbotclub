@@ -2400,13 +2400,15 @@ export function buildGroupConversationContext(
   cardMode: GroupCardMode = DEFAULT_GROUP_CARD_MODE,
   wiTimerOut?: WiScanOut,
   /**
-   * E9-S6 review-fix: whether THIS build's caller will hand the same image
-   * attachments to `api.generateMessage`. It is one half of the test for whether
+   * E9-S6 review-fix: whether THIS build's caller will fold image attachments
+   * into the build's history — `generateGroupTurn` passes true only when it
+   * hands images to `api.generateMessage` AND the newest history turn is the
+   * user's (#421: otherwise it appends a user-role speaker instruction, and the
+   * fold lands on that). It is one half of the test for whether
    * a blank user turn that exists ONLY to carry an attachment is worth keeping —
    * the turn also has to be the one the fold lands on, see the history loop
    * below. Defaults to `true`, the historical group behavior and what
-   * solo can always assume, so existing callers and tests are unaffected;
-   * `generateGroupTurn` passes the real value for the turn it is building.
+   * solo can always assume, so existing callers and tests are unaffected.
    */
   attachmentsFolded: boolean = true,
   /**
@@ -3103,12 +3105,9 @@ CONTENT RULES:
     // user turn, attaching it to the wrong message. And when the last user turn
     // is itself dropped here (blank with nothing to carry), every user turn that
     // remains is non-blank, so the misplaced fold still produces a valid request.
-    // KNOWN GAP, out of this story's scope and filed separately: a group author's
-    // note configured with role 'user' is pushed at its own depth, which for a
-    // build whose newest message is not the user's (forceGroupMemberTalk on a
-    // history ending in an assistant turn) can land AFTER the kept turn and take
-    // the fold instead. Same outcome on main and pre-fix — this narrows the
-    // window rather than closing that one.
+    // A build whose newest message is not the user's gets `attachmentsFolded`
+    // false from `generateGroupTurn` (#421), so no blank turn is kept there for
+    // a later user-role entry to take the fold from.
     const keepForAttachment =
       hasImages && attachmentsFolded && i === lastUserIndexInRecent;
     const skipBlankUserTurn =
@@ -3315,10 +3314,19 @@ CONTENT RULES:
   return context;
 }
 
+// #421: the user-role instruction a group turn's payload ends on when its
+// history ends on an assistant turn — SillyTavern's default group nudge
+// wording, with {{char}} filled from the speaker's name.
+function groupSpeakerInstruction(name: string): string {
+  return `[Write the next reply only as ${name}.]`;
+}
+
 // Phase 5.2: shared helper that runs a single group-chat turn (build context,
 // call API, stream, finalize). Both `sendGroupMessage` and `forceGroupMemberTalk`
 // delegate to this to avoid drift in the streaming + parsing path. Returns
 // `false` if the turn was aborted or never produced a stream, `true` otherwise.
+// Throws when the stream carried an upstream error frame (#421), after
+// removing the speaker's placeholder if it stayed blank.
 async function generateGroupTurn(
   character: CharacterInfo,
   characters: CharacterInfo[],
@@ -3382,9 +3390,23 @@ async function generateGroupTurn(
     // api.generateMessage below, so only this turn can have an attachment
     // folded into it. Callers that withhold images for a later speaker in the
     // round must not leave a blank user turn behind to carry nothing.
-    Boolean(images && images.length > 0),
+    // #421: and only when the newest history turn is the user's. After an
+    // assistant turn the speaker instruction below is appended, and the fold
+    // lands on that (the last user-role entry), not on a blank history turn.
+    Boolean(images && images.length > 0) &&
+      groupHistoryWindow(updatedMessages).at(-1)?.isUser === true,
     breakdown
   );
+  // #421: a payload whose last conversational turn is an assistant one is an
+  // assistant prefill, which some providers reject with a 400 ("The
+  // conversation must end with a user message"). Same remedy as solo
+  // continue/impersonate: a user-role instruction appended at the call site.
+  // Trailing system entries are skipped when deciding, not treated as a turn.
+  const lastTurn = [...context].reverse().find((m) => m.role !== 'system');
+  if (lastTurn?.role === 'assistant') {
+    context.push({ role: 'user', content: groupSpeakerInstruction(character.name) });
+    recordCallSiteTurn(breakdown, 'group_nudge', context[context.length - 1].content);
+  }
   recordAttachments(breakdown, images);
   useGenerationStore.getState().setLastPromptBreakdown(breakdown);
 
@@ -3445,7 +3467,8 @@ async function generateGroupTurn(
   if (capture) useGenerationStore.getState().tagLastPromptCaptureMessage(capture.id, aiMessageId, 0);
 
   let responseText = '';
-  for await (const token of parseSSEStream(stream)) {
+  const sseMeta: SSEStreamMeta = { finishReason: null };
+  for await (const token of parseSSEStream(stream, sseMeta)) {
     if (!get().isSending) break;
     responseText += token;
     if (!get().isStreaming) set({ isStreaming: true });
@@ -3471,6 +3494,9 @@ async function generateGroupTurn(
     set((state) => ({
       messages: state.messages.filter((msg) => msg.id !== aiMessageId),
     }));
+    // #421: an upstream error frame is not a blank completion. Throwing ends
+    // the round; the caller's catch sets `error`.
+    if (sseMeta.upstreamError) throw new Error(sseMeta.upstreamError);
     return get().isSending;
   }
 
@@ -3493,6 +3519,10 @@ async function generateGroupTurn(
   // Advance the timed-effect clock only for a turn that actually produced
   // text — same gating as the solo paths.
   saveWiTimers(groupChatFile || '', wiTimerActivated, currentTurn);
+
+  // #421: an error after partial text keeps the partial reply above and still
+  // surfaces the error, ending the round.
+  if (sseMeta.upstreamError) throw new Error(sseMeta.upstreamError);
 
   return get().isSending;
 }
