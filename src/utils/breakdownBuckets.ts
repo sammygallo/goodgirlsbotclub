@@ -27,6 +27,7 @@
 
 import type {
   BreakdownSlice,
+  CallSiteTurn,
   GroupSlotId,
   PromptBreakdown,
   SectionKind,
@@ -311,7 +312,7 @@ export interface WiSummary {
 }
 
 export interface CallSiteLine {
-  turn: 'continue' | 'impersonate';
+  turn: CallSiteTurn;
   label: string;
   tokens: number;
   note: string;
@@ -338,7 +339,7 @@ export interface BreakdownViewModel {
    *  client counts image cost) — badged "not counted anywhere" by the
    *  renderer, not by this module. */
   attachments: { count: number; bytes: number } | null;
-  /** Empty when no continue/impersonate turn was recorded. */
+  /** Empty when no call-site turn was recorded. */
   callSite: CallSiteLine[];
   /** Set iff mode is solo and `totals.stageA === 0` (every pre-history
    *  section disabled) — the app still sends an empty system message
@@ -439,9 +440,10 @@ function buildWiSummary(breakdown: PromptBreakdown): WiSummary {
   return { ...base, budget: breakdown.wi.budget, evictedCount: breakdown.wi.droppedIds.length };
 }
 
-const CALL_SITE_LABELS: Record<'continue' | 'impersonate', string> = {
+const CALL_SITE_LABELS: Record<CallSiteTurn, string> = {
   continue: 'Continue instruction',
   impersonate: 'Impersonate instruction',
+  group_nudge: 'Next-speaker instruction',
 };
 
 // ---------------------------------------------------------------------------

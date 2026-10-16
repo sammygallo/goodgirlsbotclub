@@ -977,6 +977,15 @@ describe('breakdown view — attachments and call-site lines', () => {
     expect(view.callSite[0].turn).toBe('impersonate');
     expect(view.callSite[0].label).toBe('Impersonate instruction');
   });
+
+  it("group's next-speaker instruction gets its own label", () => {
+    const breakdown = runGroup('swap');
+    recordCallSiteTurn(breakdown, 'group_nudge', '[Write the next reply only as Seraphina.]');
+    const view = computeBreakdownView(breakdown);
+    expect(view.callSite).toHaveLength(1);
+    expect(view.callSite[0].turn).toBe('group_nudge');
+    expect(view.callSite[0].label).toBe('Next-speaker instruction');
+  });
 });
 
 // ---------------------------------------------------------------------------

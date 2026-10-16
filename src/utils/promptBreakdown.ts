@@ -6,14 +6,14 @@
  * in as they assemble. Same house pattern as `WiScanOut` (chatStore.ts:950) —
  * and for the same reason: the numbers are only knowable *inside* the builder
  * (per-section costs cannot be recovered from the returned `context`, because
- * Stage A joins fourteen sections into one system message), but three of the
- * buckets are only knowable *outside* it. The continue/impersonate instruction
- * turns are pushed by the call site after the builder returns
- * (chatStore.ts:4175-4178 / :4296-4299), and image attachments never pass
+ * Stage A joins fourteen sections into one system message), but some of the
+ * buckets are only knowable *outside* it. The call-site instruction turns
+ * (continue, impersonate, group's next-speaker instruction) are pushed by the
+ * call site after the builder returns, and image attachments never pass
  * through the builder at all — they are resolved separately and folded into
  * the request by `api.generateMessage` (client.ts:1483-1508). So the object
  * has to outlive the call and stay amendable: `recordCallSiteTurn` and
- * `recordAttachments` are how those three arrive.
+ * `recordAttachments` are how those arrive.
  *
  * MEASUREMENT POINT: assembly time, per emitted piece — the roadmap's AC 1.
  * What E2-S3 shows is the POST-transform payload (after instruct-mode collapse
@@ -88,6 +88,9 @@ export type StageBClass =
   | 'wi_at_depth'
   | 'ext_at_depth';
 
+/** The instruction turns a call site pushes after the builder returned. */
+export type CallSiteTurn = 'continue' | 'impersonate' | 'group_nudge';
+
 export type SectionKind =
   | { stage: 'A'; id: BreakdownSectionId }
   | {
@@ -121,7 +124,7 @@ export type SectionKind =
       extensionId?: string;
     }
   | { stage: 'C'; id: BreakdownSectionId }
-  | { stage: 'callSite'; turn: 'continue' | 'impersonate' }
+  | { stage: 'callSite'; turn: CallSiteTurn }
   | { stage: 'attachments' };
 
 export interface BreakdownSlice {
@@ -374,8 +377,8 @@ export interface PromptBreakdown {
      * how E2-S2 task 4 reconciles that without this task changing either.
      */
     assembledTotal: number;
-    /** Call-site instruction turns (continue / impersonate). Pushed after the
-     *  builder returned, so outside both totals above. */
+    /** Call-site instruction turns (continue / impersonate / group_nudge).
+     *  Pushed after the builder returned, so outside both totals above. */
     callSite: number;
   };
 
@@ -706,8 +709,8 @@ export function addSlice(
 }
 
 /**
- * The continue / impersonate instruction turn, pushed onto `context` by the
- * call site after the builder returned (chatStore.ts:4175-4178, :4296-4299).
+ * A call-site instruction turn (continue / impersonate / group_nudge), pushed
+ * onto `context` by the call site after the builder returned.
  *
  * It is a real user-role turn the model is charged for, and no total inside
  * the builder can see it — `assembledTotal` was computed before it existed.
@@ -717,7 +720,7 @@ export function addSlice(
  */
 export function recordCallSiteTurn(
   out: PromptBreakdown | undefined,
-  turn: 'continue' | 'impersonate',
+  turn: CallSiteTurn,
   content: string
 ): void {
   if (!out) return;
