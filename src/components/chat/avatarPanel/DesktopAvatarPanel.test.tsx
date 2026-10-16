@@ -543,6 +543,35 @@ describe('group mode (D-C7)', () => {
     expect(map['c.png']).toBeUndefined();
   });
 
+  it('mid-send, shows the streaming placeholder\'s member by avatar while currentSpeakerName names a same-name member (K14)', () => {
+    const twinA = { name: 'Twin', avatar: 'a.png' } as CharacterInfo;
+    const twinC = { name: 'Twin', avatar: 'c.png' } as CharacterInfo;
+    const twin = (id: string, avatar: string): ChatMessage => ({ ...ai(id, null, avatar), name: 'Twin' });
+    useChatStore.setState({
+      messages: [twin('1', 'a.png'), { ...twin('2', 'c.png'), content: '' }],
+      isStreaming: true,
+      currentSpeakerName: 'Twin',
+    });
+    renderGroup({ members: [twinA, bea, twinC] });
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Twin' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Twin' }).getAttribute('src')).toBe('/blobs/character/c.png');
+    const pressed = within(screen.getByRole('list', { name: 'Group members' }))
+      .getAllByRole('button')
+      .filter((b) => b.getAttribute('aria-pressed') === 'true');
+    expect(pressed).toHaveLength(1);
+    expect(pressed[0].querySelector('img')?.getAttribute('src')).toBe('/blobs/character/c.png');
+  });
+
+  it('with "no fallback" on, the walk-back never attributes an unattributed message to the focused member', () => {
+    useExpressionsStore.setState({ noFallback: true });
+    env.sprites['b.png'] = { joy: '/sprites/b/joy.png' };
+    // A legacy message with no characterAvatar, then Bea's newest, whose emotion has no sprite.
+    useChatStore.setState({ messages: [ai('1', 'joy'), ai('2', 'anger', 'b.png')] });
+    renderGroup();
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Bea' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Bea' }).getAttribute('src')).toBe('/blobs/character/b.png');
+  });
+
   it('only reads chat state: thumbnails and arrow keys leave both stores untouched', () => {
     const chatBefore = useChatStore.getState();
     const characterBefore = useCharacterStore.getState();
