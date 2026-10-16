@@ -593,6 +593,20 @@ describe('framing mode (D-C8)', () => {
     expect(stored()).toBeUndefined();
   });
 
+  it('Reset framing is in the toolbar, and the dashed outline is drawn, only while framing (frame C5)', () => {
+    const { container } = renderSolo();
+    const outline = () => container.querySelector('[data-testid="framing-outline"]');
+    expect(screen.queryByRole('button', { name: 'Reset framing' })).toBeNull();
+    expect(outline()).toBeNull();
+    enterFraming();
+    expect(within(toolbar()).getByRole('button', { name: 'Reset framing' })).toBeTruthy();
+    expect(outline()?.className).toContain('border-dashed');
+    expect(outline()?.className).toContain('pointer-events-none');
+    fireEvent.click(within(toolbar()).getByRole('button', { name: 'Adjust framing' }));
+    expect(screen.queryByRole('button', { name: 'Reset framing' })).toBeNull();
+    expect(outline()).toBeNull();
+  });
+
   it('Enter exits framing and refocuses Adjust framing', () => {
     renderSolo();
     const { toggle, surface } = enterFraming();

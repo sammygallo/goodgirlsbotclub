@@ -12,6 +12,7 @@ interface PanelToolbarProps {
   onTogglePaused: () => void;
   framing: boolean;
   onToggleFraming: () => void;
+  onResetFraming: () => void;
   onHide: () => void;
   framingButtonRef: Ref<HTMLButtonElement>;
   hideButtonRef: Ref<HTMLButtonElement>;
@@ -24,8 +25,9 @@ const BUTTON =
 
 /**
  * The panel's top-right controls (§5.3), always visible so touch and keyboard
- * users can find them, in this order: Motion mode, Adjust framing,
- * Pause/Play animation (only while Live Portrait plays, D-C6), Hide portrait.
+ * users can find them, in this order: Motion mode, Adjust framing, Reset
+ * framing (only while framing), Pause/Play animation (only while Live
+ * Portrait plays, D-C6), Hide portrait.
  */
 export function PanelToolbar({
   avatar,
@@ -36,6 +38,7 @@ export function PanelToolbar({
   onTogglePaused,
   framing,
   onToggleFraming,
+  onResetFraming,
   onHide,
   framingButtonRef,
   hideButtonRef,
@@ -116,6 +119,15 @@ export function PanelToolbar({
       >
         <Move size={16} />
       </button>
+      {framing && (
+        <button
+          type="button"
+          onClick={onResetFraming}
+          className="flex h-8 items-center justify-center whitespace-nowrap rounded-md px-2 text-xs font-medium text-white hover:bg-white/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
+        >
+          Reset framing
+        </button>
+      )}
       {livePortraitPlaying && (
         <button
           type="button"

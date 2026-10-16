@@ -88,4 +88,19 @@ describe('GroupThumbnailStrip', () => {
     render(<GroupThumbnailStrip members={members} focusedAvatar="a.png" onPin={() => {}} />);
     expect(screen.getByRole('list', { name: 'Group members' }).className).toContain('overflow-x-auto');
   });
+
+  it('a member whose avatar fails shows their initial; the button and the others are unchanged', () => {
+    render(<GroupThumbnailStrip members={members} focusedAvatar="b.png" onPin={() => {}} />);
+    const imgOf = (button: HTMLElement) => button.querySelector('img');
+    fireEvent.error(imgOf(buttons()[1]) as HTMLImageElement);
+    const [a, b, c] = buttons();
+    expect(imgOf(b)).toBeNull();
+    expect(b.textContent).toBe('B');
+    expect(b.getAttribute('aria-label')).toBe('Show Bea');
+    expect(b.getAttribute('aria-pressed')).toBe('true');
+    expect(b.className).toContain('ring-2');
+    expect(b.tabIndex).toBe(0);
+    expect(imgOf(a)?.getAttribute('src')).toBe('/blobs/character/a.png');
+    expect(imgOf(c)?.getAttribute('src')).toBe('/blobs/character/c.png');
+  });
 });

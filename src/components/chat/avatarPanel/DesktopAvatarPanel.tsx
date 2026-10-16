@@ -157,6 +157,16 @@ export function DesktopAvatarPanel({
         />
       </div>
 
+      {/* The framing outline: a border on an overlay, so the aside's
+          overflow-hidden cannot clip it, and it never takes the pointer. */}
+      {framing.framing && (
+        <div
+          data-testid="framing-outline"
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 border-2 border-dashed border-white"
+        />
+      )}
+
       <PanelToolbar
         avatar={avatar}
         hasLivePortraitClips={source.hasClips}
@@ -166,6 +176,7 @@ export function DesktopAvatarPanel({
         onTogglePaused={() => setPaused((p) => !p)}
         framing={framing.framing}
         onToggleFraming={() => framing.setFraming(!framing.framing)}
+        onResetFraming={framing.reset}
         onHide={onHide}
         framingButtonRef={framingButtonRef}
         hideButtonRef={hideButtonRef}
@@ -180,14 +191,6 @@ export function DesktopAvatarPanel({
           >
             Drag or use arrow keys to reposition
           </p>
-          <button
-            type="button"
-            onClick={framing.reset}
-            className="rounded-full px-3 py-1.5 text-xs font-medium text-[color:var(--on-scrim-text)] hover:bg-black/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
-            style={{ backgroundColor: 'rgb(0 0 0 / .7)' }}
-          >
-            Reset framing
-          </button>
         </div>
       )}
 

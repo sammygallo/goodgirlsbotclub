@@ -1288,11 +1288,10 @@ export function ChatView() {
       onClick={handleShowAvatarPanel}
       aria-expanded="false"
       aria-controls={AVATAR_PANEL_ID}
-      aria-label="Show portrait"
-      title="Show portrait"
-      className={`hidden lg:inline-flex items-center justify-center p-1.5 transition-colors ${isGroupChatMode ? 'rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]' : 'rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'}`}
+      className="hidden lg:inline-flex flex-none items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--color-border)] px-2.5 py-1 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]"
     >
-      <PanelLeftOpen size={18} />
+      <PanelLeftOpen size={16} aria-hidden="true" />
+      Show portrait
     </button>
   ) : null;
 

@@ -230,6 +230,9 @@ describe('render conditions (D-C2, D-C9)', () => {
     const show = screen.getByRole('button', { name: 'Show portrait' });
     expect(show.getAttribute('aria-expanded')).toBe('false');
     expect(show.getAttribute('aria-controls')).toBe('chat-avatar-panel');
+    // Frame C4: a bordered text button, not an icon.
+    expect(show.textContent).toBe('Show portrait');
+    expect(show.className).toContain('border');
   });
 
   it('VN mode: no panel, no Show button, and the VN sprite layer still renders', async () => {

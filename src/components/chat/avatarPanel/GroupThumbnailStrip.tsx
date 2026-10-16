@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { CharacterInfo } from '../../../api/client';
 
 interface GroupThumbnailStripProps {
@@ -15,10 +15,12 @@ const thumbnailUrl = (avatar: string) => `/blobs/character/${encodeURIComponent(
  * buttons in stable roster order; the focused member has a 2px white ring and
  * `aria-pressed`. One Tab stop (the pressed button, else the first) enters the
  * strip; ArrowLeft/ArrowRight and Home/End move between members; Enter or
- * Space pins one. The strip scrolls sideways when it overflows.
+ * Space pins one. The strip scrolls sideways when it overflows. A member whose
+ * avatar fails to load shows their initial instead (D-C5's placeholder).
  */
 export function GroupThumbnailStrip({ members, focusedAvatar, onPin }: GroupThumbnailStripProps) {
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [brokenAvatars, setBrokenAvatars] = useState<ReadonlySet<string>>(() => new Set());
   const pressedIndex = members.findIndex((m) => m.avatar === focusedAvatar);
   const tabStop = pressedIndex >= 0 ? pressedIndex : 0;
 
@@ -57,7 +59,22 @@ export function GroupThumbnailStrip({ members, focusedAvatar, onPin }: GroupThum
               }`}
             >
               {/* Decorative: the button's label names the member. */}
-              <img src={thumbnailUrl(member.avatar)} alt="" draggable={false} className="h-full w-full object-cover" />
+              {brokenAvatars.has(member.avatar) ? (
+                <span
+                  aria-hidden="true"
+                  className="flex h-full w-full items-center justify-center bg-[var(--color-bg-tertiary)] text-lg font-semibold text-[var(--color-text-secondary)]"
+                >
+                  {(member.name.trim()[0] ?? '?').toUpperCase()}
+                </span>
+              ) : (
+                <img
+                  src={thumbnailUrl(member.avatar)}
+                  alt=""
+                  draggable={false}
+                  className="h-full w-full object-cover"
+                  onError={() => setBrokenAvatars((prev) => new Set(prev).add(member.avatar))}
+                />
+              )}
             </button>
           </li>
         );
