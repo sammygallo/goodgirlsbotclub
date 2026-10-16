@@ -40,8 +40,10 @@ export function PortraitMedia(props: PortraitMediaProps) {
   const painted = useRef(props);
   useLayoutEffect(() => {
     const previous = painted.current;
-    painted.current = props;
     if (previous.avatar !== avatar) setOutgoing(reducedMotion ? null : previous);
+  }, [avatar, reducedMotion]);
+  useLayoutEffect(() => {
+    painted.current = props;
   });
   useEffect(() => {
     if (!outgoing) return;
