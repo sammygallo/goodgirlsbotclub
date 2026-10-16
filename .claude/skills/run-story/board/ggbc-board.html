@@ -264,19 +264,19 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>15 Oct 2026</b><br>
-      main <b>24244bb2</b><br>
-      active <b>none — deployed 15 Oct (E6-S3)</b>
+      <b>16 Oct 2026</b><br>
+      main <b>bd702ebf</b><br>
+      active <b>E6-S4 — build</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
     <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
-    <div class="tile is-warn"><div class="n">15</div><div class="k">Gated</div></div>
+    <div class="tile is-warn"><div class="n">14</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
     <div class="tile is-ok"><div class="n">17</div><div class="k">Deployed</div></div>
     <div class="tile is-warn"><div class="n">24</div><div class="k">Open issues</div></div>
@@ -313,8 +313,9 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E6"><div class="id">E6-S4</div><div class="t">Desktop chat layout</div><div class="m">Started 16 Oct. Branch <code>claude/e6-s4-desktop-chat-layout</code>. Plan: N = 1 task-PR; Opus planner and builder. Trigger-tier review, contained-seam row. Persist bump on <code>portrait-position</code> (v1&rarr;v2) &mdash; Sammy merges (&sect;8 hard to reverse).</div><div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate free">E6-S3 ✓</span></div></article>
       </div>
     </section>
 
@@ -353,7 +354,7 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Gated</h2><span class="ct">15</span></div>
+      <div class="colhead"><h2>Gated</h2><span class="ct">14</span></div>
       <div class="stack">
         <article class="card s-warn" data-epic="E9"><div class="id">E9-S9</div><div class="t">Group recall identity is positional</div><div class="m"><b>Parked 3 Sep</b> by Sammy at review round 6. Branch <code>claude/e9-s9-group-recall-identity</code> @ <code>f892d731</code>, no PR. The frozen <code>identityAvatar</code> core is sound and covered; the deleted-while-open handling the review pulled in could not converge client-side (five fix-introduced defects in one function, rooted in a pre-existing ChatView mode-tracking bug).</div><div class="gates"><span class="gate hot">← ggbc-backend#84</span></div></article>
         <article class="card s-warn" data-epic="E3"><div class="id">E3-S2 · S3</div><div class="t">Defaults clarity · character overrides</div><div class="gates"><span class="gate">← E3-S1</span></div></article>
@@ -362,7 +363,6 @@
         <article class="card s-warn" data-epic="E4"><div class="id">E4-S2</div><div class="t">Lore scope + explainer</div><div class="gates"><span class="gate free">E2-S2 ✓</span><span class="gate">← E4-S1</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S1</div><div class="t">Optimization diagnostics</div><div class="gates"><span class="gate">← E2-S4</span><span class="gate free">E2-S5 ✓</span><span class="gate free">E4-S0 ✓</span></div></article>
         <article class="card s-warn" data-epic="E5"><div class="id">E5-S2</div><div class="t">Suggestions + batch apply</div><div class="gates"><span class="gate">← E5-S1</span></div></article>
-        <article class="card s-warn" data-epic="E6"><div class="id">E6-S4</div><div class="t">Desktop chat layout</div><div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate">← E6-S3</span></div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S1</div><div class="t">Wizard P1 — Creator Notes editor</div><div class="m">Scheduled 11.1, independent of Arch v2.</div></article>
         <article class="card s-warn" data-epic="E7"><div class="id">E7-S2</div><div class="t">Wizard P2 — advanced settings</div><div class="gates"><span class="gate">← E3-S3</span><span class="gate hot">← E8 gate</span></div></article>
         <article class="card s-warn" data-epic="E8"><div class="id">E8-S2</div><div class="t">Probe battery + blind scoring</div><div class="gates"><span class="gate">← E8-S1</span></div></article>
