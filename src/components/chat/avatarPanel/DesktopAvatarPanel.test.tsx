@@ -432,6 +432,29 @@ describe('framing mode (D-C8)', () => {
     expect(usePortraitPositionStore.getState().positionsByAvatar).toBe(mobileBefore);
   });
 
+  it('a touch drag that starts in the drawer\'s edge zone is left to the drawer; outside it, or by mouse, it frames', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+    const drag = (pointerType: string, fromX: number) => {
+      fireEvent.pointerDown(surface, { pointerId: 1, pointerType, clientX: fromX, clientY: 100 });
+      fireEvent.pointerMove(surface, { pointerId: 1, pointerType, clientX: fromX + 20, clientY: 100 });
+      fireEvent.pointerUp(surface, { pointerId: 1, pointerType, clientX: fromX + 20, clientY: 100 });
+    };
+
+    drag('touch', 10);
+    expect(position()).toBe('50% 0%');
+    expect(stored()).toBeUndefined();
+
+    // 20px right of 200 wide = -10% x.
+    drag('touch', 60);
+    expect(stored()).toEqual({ x: 40, y: 0 });
+
+    drag('mouse', 10);
+    expect(stored()).toEqual({ x: 30, y: 0 });
+    expect(position()).toBe('30% 0%');
+  });
+
   it('opening Motion mode exits framing, so nothing paints over the picker', () => {
     renderSolo();
     const { toggle } = enterFraming();
@@ -542,6 +565,34 @@ describe('group mode (D-C7)', () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
     expect(screen.getAllByTestId('portrait-layer')).toEqual([incoming]);
+  });
+
+  it('the outgoing speaker keeps its own media element through the fade, still or Live Portrait', () => {
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    const { container } = renderGroup();
+    const beaImg = screen.getByRole('img', { name: 'Bea' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    const [outgoing] = screen.getAllByTestId('portrait-layer');
+    expect(beaImg.isConnected).toBe(true);
+    expect(outgoing.contains(beaImg)).toBe(true);
+
+    const avaVideo = container.querySelector('video') as HTMLVideoElement;
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    expect(avaVideo.isConnected).toBe(true);
+    expect(screen.getAllByTestId('portrait-layer').filter((l) => l.contains(avaVideo))).toHaveLength(1);
+    expect(avaVideo.closest('[data-testid="portrait-layer"]')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('switching back to the outgoing speaker mid-fade leaves one layer per avatar', () => {
+    renderGroup();
+    const beaImg = screen.getByRole('img', { name: 'Bea' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show Bea' }));
+    const layers = screen.getAllByTestId('portrait-layer');
+    expect(layers).toHaveLength(2);
+    // Bea is incoming again, on the element she never lost.
+    expect(layers[1].contains(beaImg)).toBe(true);
+    expect(within(layers[0]).getByRole('img', { hidden: true }).getAttribute('alt')).toBe('Cat');
   });
 
   it('under reduced motion a speaker change swaps instantly: one layer, no transition', () => {

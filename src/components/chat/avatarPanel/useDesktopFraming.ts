@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { EDGE_ZONE } from '../../../hooks/useSwipeSidebar';
 import { DEFAULT_POSITION, usePortraitPositionStore } from '../../../stores/portraitPositionStore';
 
 /** Arrow-key steps for framing mode, in object-position percent (D-C8). */
@@ -60,6 +61,8 @@ export function useDesktopFraming(avatar: string | null, onExit: () => void) {
   const onPointerDown = (e: React.PointerEvent<HTMLElement>) => {
     if (!framing || !avatar) return;
     if ((e.target as HTMLElement).closest('button')) return;
+    // A touch that starts inside the edge zone belongs to the drawer (E6-S2).
+    if (e.pointerType === 'touch' && e.clientX < EDGE_ZONE) return;
     dragState.current = {
       avatar,
       startX: e.clientX,

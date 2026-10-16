@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { EmotionClips } from '../../../stores/livePortraitStore';
 import type { ResolvedMotionMode } from '../../../stores/motionModeStore';
 import { LivePortraitVideo } from '../LivePortraitVideo';
@@ -37,30 +37,35 @@ export function PortraitMedia(props: PortraitMediaProps) {
   if (!speakerChanged && avatar !== mountAvatar) setSpeakerChanged(true);
 
   const [outgoing, setOutgoing] = useState<PortraitMediaProps | null>(null);
-  const painted = useRef(props);
-  useLayoutEffect(() => {
-    const previous = painted.current;
+  // The previous render's props, adjusted during render so the render that
+  // brings a new speaker in already keeps the previous speaker's layer.
+  const [previous, setPrevious] = useState(props);
+  if (previous !== props) {
     if (previous.avatar !== avatar) setOutgoing(reducedMotion ? null : previous);
-  }, [avatar, reducedMotion]);
-  useLayoutEffect(() => {
-    painted.current = props;
-  });
+    setPrevious(props);
+  }
   useEffect(() => {
     if (!outgoing) return;
     const timer = setTimeout(() => setOutgoing(null), SPEAKER_FADE_MS);
     return () => clearTimeout(timer);
   }, [outgoing]);
 
+  // One key per avatar for both roles, so the outgoing speaker's layer is the
+  // same element it was while incoming — its media keeps playing as it fades.
+  const layers = outgoing && outgoing.avatar !== avatar ? [outgoing, props] : [props];
+
   return (
     <>
-      {outgoing && outgoing.avatar !== avatar && (
-        <div key={`out-${outgoing.avatar}`} data-testid="portrait-layer" aria-hidden="true" className="absolute inset-0">
-          <MediaContent {...outgoing} />
-        </div>
-      )}
-      <FadeLayer key={`in-${avatar}`} fadeIn={speakerChanged} durationMs={reducedMotion ? 0 : SPEAKER_FADE_MS}>
-        <MediaContent {...props} />
-      </FadeLayer>
+      {layers.map((media) => (
+        <FadeLayer
+          key={`layer-${media.avatar}`}
+          outgoing={media !== props}
+          fadeIn={speakerChanged}
+          durationMs={reducedMotion ? 0 : SPEAKER_FADE_MS}
+        >
+          <MediaContent {...media} />
+        </FadeLayer>
+      ))}
     </>
   );
 }
@@ -126,7 +131,17 @@ function MediaContent({
   );
 }
 
-function FadeLayer({ fadeIn, durationMs, children }: { fadeIn: boolean; durationMs: number; children: ReactNode }) {
+function FadeLayer({
+  outgoing,
+  fadeIn,
+  durationMs,
+  children,
+}: {
+  outgoing: boolean;
+  fadeIn: boolean;
+  durationMs: number;
+  children: ReactNode;
+}) {
   const [shown, setShown] = useState(!fadeIn || durationMs === 0);
   useEffect(() => {
     if (shown) return;
@@ -144,8 +159,9 @@ function FadeLayer({ fadeIn, durationMs, children }: { fadeIn: boolean; duration
   return (
     <div
       data-testid="portrait-layer"
+      aria-hidden={outgoing ? 'true' : undefined}
       className="absolute inset-0"
-      style={{ opacity: shown ? 1 : 0, transition: `opacity ${durationMs}ms ease-out` }}
+      style={outgoing ? undefined : { opacity: shown ? 1 : 0, transition: `opacity ${durationMs}ms ease-out` }}
     >
       {children}
     </div>
