@@ -8,8 +8,7 @@ import { getDefaultAvatarUrl, mapEmotionToAvailable, type Emotion } from '../../
  * The sprite lookups below are deliberate copies of ChatView's
  * `getFullImageUrl` and `findPreviousValidSpritePath`, kept line-for-line so
  * the panel and the mobile portrait pick the same image for the same chat.
- * ChatView is not refactored onto them (E6-S4 keeps ChatView edits to wiring);
- * portraitSource.test.ts pins the parity.
+ * ChatView is not refactored onto them (E6-S4 keeps ChatView edits to wiring).
  */
 
 /**

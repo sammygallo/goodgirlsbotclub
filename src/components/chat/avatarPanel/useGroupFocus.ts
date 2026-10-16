@@ -14,8 +14,7 @@ interface Pin {
  *
  * Read-only: it subscribes to chatStore and never writes to it or to
  * characterStore, and it never reads `currentSpeakerName` (K14, #458). The
- * selectors return primitives, so a streamed token re-renders the panel only
- * when the focus itself changes.
+ * selectors return primitives.
  *
  * A pin holds until the next AI message is appended — the newest AI id is one
  * the chat did not have at pin time. Tokens streaming into an existing message,

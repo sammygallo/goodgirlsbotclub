@@ -77,7 +77,7 @@ describe('latestEmotionFor', () => {
     msg('3', { isUser: true, emotion: 'sadness' }),
   ];
 
-  it('solo: the newest AI message\'s emotion, as ChatView latestEmotion', () => {
+  it('solo: the newest AI message\'s emotion', () => {
     expect(latestEmotionFor(messages, false, 'a.png')).toBe('anger');
     expect(latestEmotionFor([msg('1', { emotion: null })], false, 'a.png')).toBeNull();
     expect(latestEmotionFor([], false, 'a.png')).toBeNull();

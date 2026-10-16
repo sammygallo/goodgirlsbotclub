@@ -1,7 +1,6 @@
 /**
  * The desktop avatar panel's source resolution (D-C5, D-C6) and its copies of
- * ChatView's sprite lookups. The parity cases restate what ChatView's
- * `getFullImageUrl` / `findPreviousValidSpritePath` return for the same input.
+ * ChatView's sprite lookups.
  */
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../../../stores/chatStore';
@@ -68,7 +67,7 @@ describe('resolvePanelMotionMode — D-C6 reduced motion', () => {
   });
 });
 
-describe('resolvePortraitImageUrl (parity with ChatView getFullImageUrl)', () => {
+describe('resolvePortraitImageUrl', () => {
   const base = { failedExpressions: new Set<string>(), getSpritePath, noFallback: false, previousValidSpritePath: null };
 
   it('returns the sprite for the emotion', () => {
@@ -83,9 +82,9 @@ describe('resolvePortraitImageUrl (parity with ChatView getFullImageUrl)', () =>
     expect(resolvePortraitImageUrl('a.png', 'anger', base)).toBe('/blobs/character/a.png');
     expect(resolvePortraitImageUrl('a.png', null, base)).toBe('/blobs/character/a.png');
   });
-  it('does not alias-map the emotion (ChatView getFullImageUrl does not either)', () => {
+  it('does not alias-map the emotion', () => {
     // "happy" maps to "joy" through mapEmotionToAvailable, but the full-image
-    // path looks the raw label up, exactly as ChatView does.
+    // path looks the raw label up.
     expect(resolvePortraitImageUrl('a.png', 'happy', base)).toBe('/blobs/character/a.png');
   });
   it('uses the walk-back sprite only with no-fallback on', () => {
@@ -105,7 +104,7 @@ describe('resolvePortraitImageUrl (parity with ChatView getFullImageUrl)', () =>
   });
 });
 
-describe('findPreviousValidSpritePath (parity with ChatView)', () => {
+describe('findPreviousValidSpritePath', () => {
   it('solo: the newest emotion whose sprite resolves, skipping user turns and failed keys', () => {
     const messages = [ai('1', 'sadness'), user('2'), ai('3', 'joy'), ai('4', 'anger')];
     expect(findPreviousValidSpritePath(messages, 'a.png', false, 'a.png', lookup())).toBe('/sprites/a/joy.png');
@@ -114,7 +113,7 @@ describe('findPreviousValidSpritePath (parity with ChatView)', () => {
     );
   });
 
-  it('alias-maps the walked-back emotion, as ChatView does', () => {
+  it('alias-maps the walked-back emotion', () => {
     expect(findPreviousValidSpritePath([ai('1', 'happy')], 'a.png', false, 'a.png', lookup())).toBe(
       '/sprites/a/joy.png',
     );
