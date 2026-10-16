@@ -1,0 +1,1031 @@
+/**
+ * @vitest-environment jsdom
+ *
+ * The desktop avatar panel (§5) mounted against the real chat, motion-mode,
+ * expressions, Live Portrait and portrait-position stores. The sprite hook is
+ * replaced and each case caches its own clips, so each case states which clips
+ * and sprites exist:
+ *
+ *  - source resolution (D-C5), reduced motion and Pause/Play (D-C6);
+ *  - image fit (D-C4) and the 404 → default avatar → placeholder fallbacks;
+ *  - toolbar order and labels, the motion-mode popover (§5.3);
+ *  - framing mode (D-C8): keys, Reset, Enter/Escape, separate desktop map;
+ *  - a11y labels (D-C11–D-C14) and group focus without writes (D-C7, #458);
+ *  - no Live Portrait discovery of its own (D-E6S4-5): `fetchExistingClips` is
+ *    a recorder that no case may trigger.
+ *
+ * `localStorage` is an in-memory stub (under Node 25 the global is Node's
+ * experimental one, which has no methods), `fetch` is refused, jsdom gets a
+ * matchMedia whose reduced-motion answer each case sets, and media playback is
+ * spied on the prototype.
+ */
+import { useState } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { CharacterInfo } from '../../../api/client';
+// characterStore before chatStore: the reverse order trips a module cycle.
+import { useCharacterStore } from '../../../stores/characterStore';
+import { useChatStore, type ChatMessage } from '../../../stores/chatStore';
+import { fetchExistingClips } from '../../../api/livePortraitGen';
+import { useExpressionsStore } from '../../../stores/expressionsStore';
+import { useLivePortraitStore } from '../../../stores/livePortraitStore';
+import { useMotionModeStore } from '../../../stores/motionModeStore';
+import { usePortraitPositionStore } from '../../../stores/portraitPositionStore';
+import { DesktopAvatarPanel } from './DesktopAvatarPanel';
+
+const env = vi.hoisted(() => {
+  const data = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => (data.has(key) ? (data.get(key) as string) : null),
+    setItem: (key: string, value: string) => {
+      data.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      data.delete(key);
+    },
+    clear: () => data.clear(),
+    key: (index: number) => Array.from(data.keys())[index] ?? null,
+    get length() {
+      return data.size;
+    },
+  });
+  vi.stubGlobal('fetch', () => Promise.reject(new Error('fetch refused')));
+  return {
+    reducedMotion: false,
+    /** sprite folder (the costume, else the avatar) → emotion → sprite path. */
+    sprites: {} as Record<string, Record<string, string>>,
+    /** Every costume the sprite hook was asked for. */
+    costumesAsked: [] as (string | null | undefined)[],
+  };
+});
+
+vi.mock('../../../api/livePortraitGen', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../api/livePortraitGen')>()),
+  fetchExistingClips: vi.fn(async () => ({})),
+}));
+vi.mock('../../../hooks/useCharacterSprites', () => ({
+  useCharacterSprites: (avatar: string | undefined, costume?: string | null) => {
+    env.costumesAsked.push(costume);
+    const folder = costume || avatar;
+    const map = folder ? env.sprites[folder] ?? {} : {};
+    return {
+      availableEmotions: Object.keys(map),
+      getSpritePath: (e: string | null) => (e ? map[e] ?? null : null),
+    };
+  },
+}));
+
+window.matchMedia = ((query: string) => ({
+  matches: query.includes('prefers-reduced-motion') ? env.reducedMotion : false,
+  media: query,
+  onchange: null,
+  addListener: () => {},
+  removeListener: () => {},
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  dispatchEvent: () => false,
+})) as unknown as typeof window.matchMedia;
+
+const initialChat = useChatStore.getState();
+const ava = { name: 'Ava', avatar: 'a.png' } as CharacterInfo;
+const bea = { name: 'Bea', avatar: 'b.png' } as CharacterInfo;
+const cat = { name: 'Cat', avatar: 'c.png' } as CharacterInfo;
+
+function ai(id: string, emotion: string | null, characterAvatar?: string): ChatMessage {
+  return { id, name: 'x', isUser: false, isSystem: false, content: 'x', timestamp: 0, emotion, characterAvatar, swipes: ['x'], swipeId: 0 };
+}
+
+function renderSolo(over: Partial<React.ComponentProps<typeof DesktopAvatarPanel>> = {}) {
+  const props = {
+    kind: 'solo' as const,
+    character: ava,
+    failedExpressions: new Set<string>(),
+    onExpressionFailed: vi.fn(),
+    onHide: vi.fn(),
+    ...over,
+  };
+  const view = render(<DesktopAvatarPanel {...props} />);
+  return { ...view, props };
+}
+
+function renderGroup(over: Partial<React.ComponentProps<typeof DesktopAvatarPanel>> = {}) {
+  return render(
+    <DesktopAvatarPanel
+      kind="group"
+      members={[ava, bea, cat]}
+      failedExpressions={new Set()}
+      onExpressionFailed={() => {}}
+      onHide={() => {}}
+      {...over}
+    />,
+  );
+}
+
+/**
+ * The panel under a parent that owns the failed set, as ChatView does: a
+ * reported key is added and the panel re-renders with it. `reported` records
+ * each key in order.
+ */
+function renderWithFailedSet(
+  props: Pick<React.ComponentProps<typeof DesktopAvatarPanel>, 'kind' | 'character' | 'members'>,
+  reported: string[],
+) {
+  function Owner() {
+    const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
+    return (
+      <DesktopAvatarPanel
+        {...props}
+        failedExpressions={failed}
+        onExpressionFailed={(key) => {
+          reported.push(key);
+          setFailed((prev) => new Set(prev).add(key));
+        }}
+        onHide={() => {}}
+      />
+    );
+  }
+  return render(<Owner />);
+}
+
+/** Clips already in the Live Portrait cache — the only clips the panel sees. */
+const cacheClips = (avatar: string, clips: Record<string, string>) =>
+  useLivePortraitStore.getState().setClips(avatar, clips);
+
+const toolbar = () => screen.getByRole('group', { name: 'Portrait controls' });
+
+beforeEach(() => {
+  env.reducedMotion = false;
+  vi.mocked(fetchExistingClips).mockClear();
+  useLivePortraitStore.setState({ clipsByAvatar: {}, enabled: true });
+  env.sprites = {};
+  env.costumesAsked = [];
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  useMotionModeStore.setState({ modesByAvatar: {} });
+  usePortraitPositionStore.setState({ positionsByAvatar: {}, desktopPositionsByAvatar: {} });
+  useExpressionsStore.setState({ noFallback: false });
+  useChatStore.setState({ messages: [ai('1', 'joy')], isStreaming: false, currentChatFile: 'chat-1' });
+});
+
+afterEach(() => {
+  // D-E6S4-5, for every case: the panel never runs a clip discovery of its own.
+  try {
+    expect(fetchExistingClips).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    vi.restoreAllMocks();
+    useChatStore.setState(initialChat, true);
+  }
+});
+
+describe('source resolution (D-C5)', () => {
+  it('explicit Live Portrait without clips shows the static avatar', () => {
+    useMotionModeStore.setState({ modesByAvatar: { 'a.png': 'liveportrait' } });
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    const { container } = renderSolo();
+    expect(container.querySelector('video')).toBeNull();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
+  });
+
+  it('auto with sprites shows the latest emotion\'s sprite and the emotion chip', () => {
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    renderSolo();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/sprites/a/joy.png');
+    const chip = screen.getByText('joy');
+    expect(chip.closest('[aria-live]')).toBeNull();
+  });
+
+  it('auto with clips plays Live Portrait, aria-hidden, filling the panel with cover', () => {
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    const { container } = renderSolo();
+    const video = container.querySelector('video') as HTMLVideoElement;
+    expect(video).not.toBeNull();
+    expect(video.style.objectFit).toBe('cover');
+    expect(video.closest('[aria-hidden="true"]')).not.toBeNull();
+    // No emotion chip outside expressions mode.
+    expect(screen.queryByText('joy')).toBeNull();
+  });
+
+  it('Live Portrait fills the panel square-cornered, at the stored desktop framing, playing the latest emotion', () => {
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4', joy: '/clips/a/joy.mp4' });
+    usePortraitPositionStore.setState({ desktopPositionsByAvatar: { 'a.png': { x: 30, y: 40 } } });
+    const { container } = renderSolo();
+    const videos = Array.from(container.querySelectorAll('video'));
+    expect(videos.map((v) => v.getAttribute('src'))).toEqual(['/clips/a/idle.mp4', '/clips/a/joy.mp4']);
+    for (const v of videos) expect(v.style.objectPosition).toBe('30% 40%');
+    expect((videos[0].parentElement as HTMLElement).style.borderRadius).toBe('0px');
+  });
+
+  it('a static avatar that fails shows the placeholder initial', () => {
+    renderSolo();
+    fireEvent.error(screen.getByRole('img', { name: 'Ava' }));
+    const placeholder = screen.getByRole('img', { name: 'Ava' });
+    expect(placeholder.tagName).toBe('DIV');
+    expect(placeholder.textContent).toBe('A');
+  });
+
+  it('with "no fallback" on, a latest emotion without a sprite walks back to the previous valid sprite', () => {
+    useExpressionsStore.setState({ noFallback: true });
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'joy'), ai('2', 'anger')] });
+    renderSolo();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/sprites/a/joy.png');
+  });
+
+  it('a sprite 404 reports the failed key, and the shared failed set falls back to the default avatar', () => {
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    const onExpressionFailed = vi.fn();
+    const { rerender, props } = renderSolo({ onExpressionFailed });
+    fireEvent.error(screen.getByRole('img', { name: 'Ava' }));
+    expect(onExpressionFailed).toHaveBeenCalledWith('a.png-joy');
+
+    rerender(<DesktopAvatarPanel {...props} failedExpressions={new Set(['a.png-joy'])} />);
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
+  });
+
+  it('with "no fallback" on, a 404 on the walk-back sprite fails that sprite\'s emotion, then the default avatar, then the placeholder', () => {
+    useExpressionsStore.setState({ noFallback: true });
+    env.sprites['a.png'] = { sad: '/sprites/a/sad.png' };
+    useChatStore.setState({ messages: [ai('1', 'sad'), ai('2', 'joy')] });
+    const reported: string[] = [];
+    renderWithFailedSet({ kind: 'solo', character: ava }, reported);
+    const img = () => screen.getByRole('img', { name: 'Ava' });
+    expect(img().getAttribute('src')).toBe('/sprites/a/sad.png');
+
+    fireEvent.error(img());
+    expect(reported).toEqual(['a.png-sad']);
+    expect(img().getAttribute('src')).toBe('/blobs/character/a.png');
+
+    fireEvent.error(img());
+    expect(img().tagName).toBe('DIV');
+    expect(img().textContent).toBe('A');
+  });
+
+  it('with "no fallback" on, after the latest sprite 404s, a 404 on the walk-back sprite fails the walk-back\'s emotion, then shows the default avatar', () => {
+    useExpressionsStore.setState({ noFallback: true });
+    env.sprites['a.png'] = { sad: '/sprites/a/sad.png', joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'sad'), ai('2', 'joy')] });
+    const reported: string[] = [];
+    renderWithFailedSet({ kind: 'solo', character: ava }, reported);
+    const img = () => screen.getByRole('img', { name: 'Ava' });
+    expect(img().getAttribute('src')).toBe('/sprites/a/joy.png');
+
+    fireEvent.error(img());
+    expect(img().getAttribute('src')).toBe('/sprites/a/sad.png');
+    // joy has a sprite but it failed: the sprite on screen is sad's.
+    fireEvent.error(img());
+    expect(reported).toEqual(['a.png-joy', 'a.png-sad']);
+    expect(img().tagName).toBe('IMG');
+    expect(img().getAttribute('src')).toBe('/blobs/character/a.png');
+  });
+
+  it('a placeholder gives way to the next image: a new emotion\'s sprite shows again', () => {
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'anger')] });
+    renderSolo();
+    fireEvent.error(screen.getByRole('img', { name: 'Ava' }));
+    expect(screen.getByRole('img', { name: 'Ava' }).tagName).toBe('DIV');
+
+    act(() => useChatStore.setState({ messages: [ai('1', 'anger'), ai('2', 'joy')] }));
+    const img = screen.getByRole('img', { name: 'Ava' });
+    expect(img.tagName).toBe('IMG');
+    expect(img.getAttribute('src')).toBe('/sprites/a/joy.png');
+  });
+
+  it('the placeholder initial is upper-cased', () => {
+    renderSolo({ character: { name: 'zed', avatar: 'z.png' } as CharacterInfo });
+    fireEvent.error(screen.getByRole('img', { name: 'zed' }));
+    expect(screen.getByRole('img', { name: 'zed' }).textContent).toBe('Z');
+  });
+
+  it('expressions mode with no emotion on the latest message shows no chip', () => {
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', null)] });
+    const { container } = renderSolo();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
+    expect(container.querySelector('span.capitalize')).toBeNull();
+  });
+});
+
+describe('Live Portrait clips come from the cache only (D-E6S4-5)', () => {
+  it('solo: mounting with nothing cached fetches no clips', () => {
+    const { container } = renderSolo();
+    expect(fetchExistingClips).not.toHaveBeenCalled();
+    expect(container.querySelector('video')).toBeNull();
+  });
+
+  it('group: moving focus across members fetches no clips', () => {
+    useChatStore.setState({ messages: [ai('1', 'joy', 'b.png')] });
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'a.png')] }));
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Ava' })).toBeTruthy();
+    expect(fetchExistingClips).not.toHaveBeenCalled();
+  });
+
+  it('clips cached while Live Portrait is disabled are not played: the sprite shows, with no Pause', () => {
+    useLivePortraitStore.setState({ enabled: false });
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    const { container } = renderSolo();
+    expect(container.querySelector('video')).toBeNull();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/sprites/a/joy.png');
+    expect(screen.queryByRole('button', { name: 'Pause animation' })).toBeNull();
+  });
+
+  it('cached clips without an idle clip are not played', () => {
+    cacheClips('a.png', { joy: '/clips/a/joy.mp4' });
+    const { container } = renderSolo();
+    expect(container.querySelector('video')).toBeNull();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
+  });
+
+  it('group: clips cached for the focused member play Live Portrait', () => {
+    useChatStore.setState({ messages: [ai('1', 'joy', 'b.png')] });
+    cacheClips('c.png', { idle: '/clips/c/idle.mp4' });
+    const { container } = renderGroup();
+    expect(container.querySelector('video')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    expect(container.querySelector('video')?.getAttribute('src')).toBe('/clips/c/idle.mp4');
+    expect(fetchExistingClips).not.toHaveBeenCalled();
+  });
+});
+
+describe('reduced motion and Pause/Play (D-C6)', () => {
+  it('Pause shows only while Live Portrait plays, flips its label, and pauses the video', () => {
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause');
+    renderSolo();
+    const button = screen.getByRole('button', { name: 'Pause animation' });
+    fireEvent.click(button);
+    expect(screen.getByRole('button', { name: 'Play animation' })).toBe(button);
+    expect(pause).toHaveBeenCalled();
+    fireEvent.click(button);
+    expect(screen.getByRole('button', { name: 'Pause animation' })).toBe(button);
+  });
+
+  it('no Pause button when the panel shows a still', () => {
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    renderSolo();
+    expect(screen.queryByRole('button', { name: /animation/ })).toBeNull();
+  });
+
+  it('under reduced motion, auto skips Live Portrait for the sprite', () => {
+    env.reducedMotion = true;
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    const { container } = renderSolo();
+    expect(container.querySelector('video')).toBeNull();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/sprites/a/joy.png');
+  });
+
+  it('under reduced motion, an explicit Live Portrait still plays with its Pause button', () => {
+    env.reducedMotion = true;
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    useMotionModeStore.setState({ modesByAvatar: { 'a.png': 'liveportrait' } });
+    const { container } = renderSolo();
+    expect(container.querySelector('video')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Pause animation' })).toBeTruthy();
+  });
+});
+
+describe('toolbar (§5.3)', () => {
+  it('has the four controls in order, 32×32, with explicit labels', () => {
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    renderSolo();
+    const buttons = within(toolbar()).getAllByRole('button').filter((b) => !b.closest('[hidden]'));
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Motion mode',
+      'Adjust framing',
+      'Pause animation',
+      'Hide portrait',
+    ]);
+    for (const b of buttons) {
+      expect(b.className).toContain('h-8');
+      expect(b.className).toContain('w-8');
+    }
+  });
+
+  it('Motion mode opens the picker popover; Escape closes it, refocuses the toggle and stops there', () => {
+    renderSolo();
+    const toggle = screen.getByRole('button', { name: 'Motion mode' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const popover = document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    expect(popover.hidden).toBe(false);
+    // D-E6S4-4: the popover sits on a fixed dark surface, so the picker uses
+    // its overlay variant, not the panel variant's themed surface.
+    const pickerClasses = within(popover).getByRole('radiogroup', { name: 'Avatar motion mode' }).className.split(/\s+/);
+    expect(pickerClasses).toContain('bg-black/40');
+    expect(pickerClasses).not.toContain('bg-[var(--color-bg-tertiary)]');
+
+    const documentEscape = vi.fn();
+    document.addEventListener('keydown', documentEscape);
+    fireEvent.keyDown(within(popover).getByRole('radio', { name: 'Auto' }), { key: 'Escape' });
+    document.removeEventListener('keydown', documentEscape);
+    expect(documentEscape).not.toHaveBeenCalled();
+    expect(popover.hidden).toBe(true);
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it('with the popover closed, Escape on Motion mode still reaches document listeners', () => {
+    renderSolo();
+    const documentEscape = vi.fn();
+    document.addEventListener('keydown', documentEscape);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Motion mode' }), { key: 'Escape' });
+    document.removeEventListener('keydown', documentEscape);
+    expect(documentEscape).toHaveBeenCalledTimes(1);
+  });
+
+  it('the popover\'s options follow the focused member\'s clips and sprites', () => {
+    const openPicker = () => {
+      const toggle = screen.getByRole('button', { name: 'Motion mode' });
+      fireEvent.click(toggle);
+      return document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    };
+    const disabled = (popover: HTMLElement, name: string) =>
+      (within(popover).getByRole('radio', { name }) as HTMLButtonElement).disabled;
+
+    const bare = renderSolo();
+    let popover = openPicker();
+    expect(disabled(popover, 'Live Portrait')).toBe(true);
+    expect(disabled(popover, 'Expressions')).toBe(true);
+    bare.unmount();
+
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    renderSolo();
+    popover = openPicker();
+    expect(disabled(popover, 'Live Portrait')).toBe(false);
+    expect(disabled(popover, 'Expressions')).toBe(false);
+  });
+
+  it('choosing a mode in the popover writes it for the focused member only', () => {
+    useChatStore.setState({ messages: [ai('1', 'joy', 'b.png')] });
+    renderGroup();
+    const toggle = screen.getByRole('button', { name: 'Motion mode' });
+    fireEvent.click(toggle);
+    const popover = document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    fireEvent.click(within(popover).getByRole('radio', { name: 'None' }));
+    expect(useMotionModeStore.getState().modesByAvatar).toEqual({ 'b.png': 'none' });
+  });
+
+  it('a mousedown outside the popover closes it; one inside does not', () => {
+    renderSolo();
+    const toggle = screen.getByRole('button', { name: 'Motion mode' });
+    fireEvent.click(toggle);
+    const popover = document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    fireEvent.mouseDown(within(popover).getByRole('radio', { name: 'Auto' }));
+    expect(popover.hidden).toBe(false);
+    fireEvent.mouseDown(document.body);
+    expect(popover.hidden).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('the popover anchors to the toolbar\'s right edge and is capped to the panel width', () => {
+    renderSolo();
+    const toggle = screen.getByRole('button', { name: 'Motion mode' });
+    const popover = document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    // Its offset parent is the toolbar group (the wrapper is unpositioned)...
+    expect((popover.parentElement as HTMLElement).className).not.toMatch(/\b(relative|absolute|fixed|sticky)\b/);
+    expect(popover.className.split(/\s+/)).toEqual(expect.arrayContaining(['absolute', 'right-0', 'w-72', 'max-w-[calc(100cqw-1.5rem)]']));
+    // ...and 100cqw resolves against the aside, a named size container.
+    expect(screen.getByRole('complementary').className.split(/\s+/)).toContain('@container/panel');
+  });
+
+  it('Hide portrait calls onHide', () => {
+    const { props } = renderSolo();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide portrait' }));
+    expect(props.onHide).toHaveBeenCalledTimes(1);
+  });
+
+  it('focusHideOnMount puts focus on Hide portrait', () => {
+    renderSolo({ focusHideOnMount: true });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Hide portrait' }));
+  });
+});
+
+describe('image fit (D-C4)', () => {
+  it('the still covers the panel at the stored desktop framing, with no intrinsic size', () => {
+    usePortraitPositionStore.setState({
+      positionsByAvatar: { 'a.png': { x: 10, y: 90 } },
+      desktopPositionsByAvatar: { 'a.png': { x: 30, y: 40 } },
+    });
+    renderSolo();
+    const img = screen.getByRole('img', { name: 'Ava' });
+    expect(img.className).toContain('object-cover');
+    expect(img.className).toContain('w-full');
+    expect(img.className).toContain('h-full');
+    expect(img.hasAttribute('width')).toBe(false);
+    expect(img.hasAttribute('height')).toBe(false);
+    expect(img.style.objectPosition).toBe('30% 40%');
+    expect(img.style.transition).toBe('');
+  });
+
+  it('defaults to 50% 0% framing', () => {
+    renderSolo();
+    expect(screen.getByRole('img', { name: 'Ava' }).style.objectPosition).toBe('50% 0%');
+  });
+});
+
+describe('framing mode (D-C8)', () => {
+  function enterFraming() {
+    const toggle = screen.getByRole('button', { name: 'Adjust framing' });
+    fireEvent.click(toggle);
+    return { toggle, surface: screen.getByRole('group', { name: 'Portrait framing' }) };
+  }
+  const position = () => screen.getByRole('img', { name: 'Ava' }).style.objectPosition;
+  const stored = () => usePortraitPositionStore.getState().desktopPositionsByAvatar['a.png'];
+
+  it('toggles aria-pressed, shows the instruction and focuses the framing surface', () => {
+    renderSolo();
+    const { toggle, surface } = enterFraming();
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('Drag or use arrow keys to reposition')).toBeTruthy();
+    expect(document.activeElement).toBe(surface);
+    const describedBy = surface.getAttribute('aria-describedby') as string;
+    expect(document.getElementById(describedBy)?.textContent).toBe('Drag or use arrow keys to reposition');
+  });
+
+  it('arrows move 5%, Shift+arrow 1%, clamped to 0–100, into the desktop map only', () => {
+    usePortraitPositionStore.setState({ positionsByAvatar: { 'a.png': { x: 10, y: 90 } } });
+    const mobileBefore = usePortraitPositionStore.getState().positionsByAvatar;
+    renderSolo();
+    const { surface } = enterFraming();
+
+    fireEvent.keyDown(surface, { key: 'ArrowLeft' });
+    expect(position()).toBe('55% 0%');
+    fireEvent.keyDown(surface, { key: 'ArrowRight' });
+    fireEvent.keyDown(surface, { key: 'ArrowRight' });
+    expect(position()).toBe('45% 0%');
+    fireEvent.keyDown(surface, { key: 'ArrowUp', shiftKey: true });
+    expect(position()).toBe('45% 1%');
+    fireEvent.keyDown(surface, { key: 'ArrowDown' });
+    expect(position()).toBe('45% 0%');
+    expect(stored()).toEqual({ x: 45, y: 0 });
+    expect(usePortraitPositionStore.getState().positionsByAvatar).toBe(mobileBefore);
+  });
+
+  it('arrows clamp at 100 too', () => {
+    usePortraitPositionStore.setState({ desktopPositionsByAvatar: { 'a.png': { x: 98, y: 99 } } });
+    renderSolo();
+    const { surface } = enterFraming();
+    fireEvent.keyDown(surface, { key: 'ArrowLeft' });
+    expect(position()).toBe('100% 99%');
+    fireEvent.keyDown(surface, { key: 'ArrowUp', shiftKey: true });
+    fireEvent.keyDown(surface, { key: 'ArrowUp', shiftKey: true });
+    expect(position()).toBe('100% 100%');
+    expect(stored()).toEqual({ x: 100, y: 100 });
+  });
+
+  it('arrow keys do nothing outside framing mode', () => {
+    renderSolo();
+    const img = screen.getByRole('img', { name: 'Ava' });
+    fireEvent.keyDown(img.parentElement as HTMLElement, { key: 'ArrowLeft' });
+    expect(position()).toBe('50% 0%');
+    expect(stored()).toBeUndefined();
+  });
+
+  it('Reset framing restores 50% 0% and clears the stored entry', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    fireEvent.keyDown(surface, { key: 'ArrowLeft' });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset framing' }));
+    expect(position()).toBe('50% 0%');
+    expect(stored()).toBeUndefined();
+  });
+
+  it('Reset framing is in the toolbar, and the dashed outline is drawn, only while framing (frame C5)', () => {
+    // Clips cached so Pause shows too, pinning Reset's place in the full order.
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    const { container } = renderSolo();
+    const outline = () => container.querySelector('[data-testid="framing-outline"]');
+    expect(screen.queryByRole('button', { name: 'Reset framing' })).toBeNull();
+    expect(outline()).toBeNull();
+    enterFraming();
+    expect(within(toolbar()).getByRole('button', { name: 'Reset framing' })).toBeTruthy();
+    const names = within(toolbar())
+      .getAllByRole('button')
+      .filter((b) => !b.closest('[hidden]'))
+      .map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim());
+    expect(names).toEqual(['Motion mode', 'Adjust framing', 'Reset framing', 'Pause animation', 'Hide portrait']);
+    expect(outline()?.className).toContain('border-dashed');
+    expect(outline()?.className).toContain('pointer-events-none');
+    fireEvent.click(within(toolbar()).getByRole('button', { name: 'Adjust framing' }));
+    expect(screen.queryByRole('button', { name: 'Reset framing' })).toBeNull();
+    expect(outline()).toBeNull();
+  });
+
+  it('Enter exits framing and refocuses Adjust framing', () => {
+    renderSolo();
+    const { toggle, surface } = enterFraming();
+    fireEvent.keyDown(surface, { key: 'Enter' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByText('Drag or use arrow keys to reposition')).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  /** Gives the framing surface a 200×400 box and jsdom the pointer-capture API it lacks. */
+  function stubSurface(surface: HTMLElement) {
+    surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 400, width: 200, height: 400, toJSON: () => ({}) });
+    surface.setPointerCapture = () => {};
+    surface.hasPointerCapture = () => false;
+    surface.releasePointerCapture = () => {};
+  }
+
+  it('a drag repositions and, on release, saves to the desktop map only', () => {
+    usePortraitPositionStore.setState({ positionsByAvatar: { 'a.png': { x: 10, y: 90 } } });
+    const mobileBefore = usePortraitPositionStore.getState().positionsByAvatar;
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    // 20px left of 200 wide = +10% x; 40px up of 400 tall = +10% y.
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(position()).toBe('60% 10%');
+    expect(stored()).toBeUndefined();
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(stored()).toEqual({ x: 60, y: 10 });
+    expect(usePortraitPositionStore.getState().positionsByAvatar).toBe(mobileBefore);
+  });
+
+  it('a touch drag that starts in the drawer\'s edge zone is left to the drawer; outside it, or by mouse, it frames', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+    const drag = (pointerType: string, fromX: number) => {
+      fireEvent.pointerDown(surface, { pointerId: 1, pointerType, clientX: fromX, clientY: 100 });
+      fireEvent.pointerMove(surface, { pointerId: 1, pointerType, clientX: fromX + 20, clientY: 100 });
+      fireEvent.pointerUp(surface, { pointerId: 1, pointerType, clientX: fromX + 20, clientY: 100 });
+    };
+
+    drag('touch', 10);
+    expect(position()).toBe('50% 0%');
+    expect(stored()).toBeUndefined();
+
+    // 20px right of 200 wide = -10% x.
+    drag('touch', 60);
+    expect(stored()).toEqual({ x: 40, y: 0 });
+
+    drag('mouse', 10);
+    expect(stored()).toEqual({ x: 30, y: 0 });
+    expect(position()).toBe('30% 0%');
+  });
+
+  it('outside framing mode a drag does nothing', () => {
+    renderSolo();
+    const surface = screen.getByTestId('portrait-layer').parentElement as HTMLElement;
+    stubSurface(surface);
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(position()).toBe('50% 0%');
+    expect(stored()).toBeUndefined();
+  });
+
+  it('a drag captures its pointer and releases it on pointerup; later moves do nothing', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+    const captured = new Set<number>();
+    const setCapture = vi.fn((id: number) => void captured.add(id));
+    const releaseCapture = vi.fn((id: number) => void captured.delete(id));
+    surface.setPointerCapture = setCapture;
+    surface.hasPointerCapture = (id: number) => captured.has(id);
+    surface.releasePointerCapture = releaseCapture;
+
+    fireEvent.pointerDown(surface, { pointerId: 7, clientX: 100, clientY: 100 });
+    expect(setCapture).toHaveBeenCalledWith(7);
+    fireEvent.pointerMove(surface, { pointerId: 7, clientX: 80, clientY: 60 });
+    fireEvent.pointerUp(surface, { pointerId: 7, clientX: 80, clientY: 60 });
+    expect(releaseCapture).toHaveBeenCalledWith(7);
+    expect(captured.size).toBe(0);
+    expect(stored()).toEqual({ x: 60, y: 10 });
+
+    fireEvent.pointerMove(surface, { pointerId: 7, clientX: 40, clientY: 20 });
+    expect(position()).toBe('60% 10%');
+  });
+
+  it('a second pointer neither moves nor ends the drag', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 2, clientX: 80, clientY: 60 });
+    expect(position()).toBe('50% 0%');
+    fireEvent.pointerUp(surface, { pointerId: 2, clientX: 80, clientY: 60 });
+    expect(stored()).toBeUndefined();
+
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(position()).toBe('60% 10%');
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(stored()).toEqual({ x: 60, y: 10 });
+  });
+
+  it('a move over a zero-size surface (the panel CSS-hidden mid-drag) leaves the framing alone', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+    surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) });
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(position()).toBe('50% 0%');
+  });
+
+  it('arrow keys are consumed; Tab is not, and writes nothing', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    // fireEvent returns false when the handler called preventDefault.
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+      expect(fireEvent.keyDown(surface, { key })).toBe(false);
+    }
+    usePortraitPositionStore.setState({ desktopPositionsByAvatar: {} });
+    expect(fireEvent.keyDown(surface, { key: 'Tab' })).toBe(true);
+    expect(stored()).toBeUndefined();
+  });
+
+  it('opening Motion mode exits framing, so nothing paints over the picker', () => {
+    renderSolo();
+    const { toggle } = enterFraming();
+    fireEvent.click(screen.getByRole('button', { name: 'Motion mode' }));
+    expect(screen.getByRole('button', { name: 'Motion mode' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.queryByText('Drag or use arrow keys to reposition')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reset framing' })).toBeNull();
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('entering framing closes the Motion mode popover', () => {
+    renderSolo();
+    const picker = screen.getByRole('button', { name: 'Motion mode' });
+    fireEvent.click(picker);
+    const popover = document.getElementById(picker.getAttribute('aria-controls') as string) as HTMLElement;
+    expect(popover.hidden).toBe(false);
+    const { toggle } = enterFraming();
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(picker.getAttribute('aria-expanded')).toBe('false');
+    expect(popover.hidden).toBe(true);
+  });
+
+  it('Escape exits framing without reaching document listeners', () => {
+    renderSolo();
+    const { toggle, surface } = enterFraming();
+    const documentEscape = vi.fn();
+    document.addEventListener('keydown', documentEscape);
+    fireEvent.keyDown(surface, { key: 'Escape' });
+    document.removeEventListener('keydown', documentEscape);
+    expect(documentEscape).not.toHaveBeenCalled();
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(document.activeElement).toBe(toggle);
+  });
+});
+
+describe('a11y labels (D-C11)', () => {
+  it('solo: <aside id="chat-avatar-panel"> named "{name} portrait", image alt is the name', () => {
+    renderSolo();
+    const aside = screen.getByRole('complementary', { name: 'Ava portrait' });
+    expect(aside.id).toBe('chat-avatar-panel');
+    expect(screen.getByRole('img', { name: 'Ava' })).toBeTruthy();
+  });
+
+  it('full-bleed: no padding or radius on the aside; 1/3 wide with a right border', () => {
+    renderSolo();
+    const cls = screen.getByRole('complementary').className.split(/\s+/);
+    expect(cls).toEqual(expect.arrayContaining(['w-1/3', 'flex-none', 'border-r', 'hidden', 'lg:@min-[600px]/main:flex']));
+    expect(cls.some((c) => /^(p|px|py|pt|pb|pl|pr)-/.test(c) || c.startsWith('rounded'))).toBe(false);
+  });
+});
+
+describe('group mode (D-C7)', () => {
+  beforeEach(() => {
+    useChatStore.setState({ messages: [ai('1', 'joy', 'b.png')] });
+  });
+
+  it('labels the aside with the focused member and shows the strip, not the chip', () => {
+    env.sprites['b.png'] = { joy: '/sprites/b/joy.png' };
+    renderGroup();
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Bea' })).toBeTruthy();
+    expect(screen.getByRole('list', { name: 'Group members' })).toBeTruthy();
+    expect(screen.queryByText('joy')).toBeNull();
+    expect(screen.getByRole('img', { name: 'Bea' }).getAttribute('src')).toBe('/sprites/b/joy.png');
+  });
+
+  it('uses the focused member\'s own motion mode', () => {
+    cacheClips('b.png', { idle: '/clips/b/idle.mp4' });
+    cacheClips('c.png', { idle: '/clips/c/idle.mp4' });
+    useMotionModeStore.setState({ modesByAvatar: { 'b.png': 'none' } });
+    const { container } = renderGroup();
+    expect(container.querySelector('video')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    expect(container.querySelector('video')).not.toBeNull();
+  });
+
+  it('a pinned member shows its own newest emotion, not the newest speaker\'s', () => {
+    env.sprites['a.png'] = { sad: '/sprites/a/sad.png', joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'sad', 'a.png'), ai('2', 'joy', 'b.png')] });
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/sprites/a/sad.png');
+  });
+
+  it('pins a member on click and follows the next AI message after', () => {
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Ava' })).toBeTruthy();
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'c.png')] }));
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Cat' })).toBeTruthy();
+  });
+
+  it('the first speaker appears at once, with no fade', () => {
+    renderGroup();
+    const layers = screen.getAllByTestId('portrait-layer');
+    expect(layers).toHaveLength(1);
+    expect(layers[0].style.opacity).toBe('1');
+  });
+
+  it('a speaker change fades the incoming layer 0 → 1 over 200ms above the outgoing one, then drops the outgoing', async () => {
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    const [outgoing, incoming] = screen.getAllByTestId('portrait-layer');
+    expect(screen.getAllByTestId('portrait-layer')).toHaveLength(2);
+    expect(within(outgoing).getByRole('img', { hidden: true }).getAttribute('alt')).toBe('Bea');
+    expect(outgoing.style.opacity).toBe('');
+    expect(within(incoming).getByRole('img', { name: 'Cat' })).toBeTruthy();
+    expect(incoming.style.transition).toBe('opacity 200ms ease-out');
+    // The incoming layer commits at 0, then fades to 1 — a snap would start at 1.
+    expect(incoming.style.opacity).toBe('0');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(incoming.style.opacity).toBe('1');
+    expect(screen.getAllByTestId('portrait-layer')).toHaveLength(2);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(screen.getAllByTestId('portrait-layer')).toEqual([incoming]);
+  });
+
+  it('the outgoing speaker keeps its own media element through the fade, still or Live Portrait', () => {
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    const { container } = renderGroup();
+    const beaImg = screen.getByRole('img', { name: 'Bea' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    const [outgoing] = screen.getAllByTestId('portrait-layer');
+    expect(beaImg.isConnected).toBe(true);
+    expect(outgoing.contains(beaImg)).toBe(true);
+
+    const avaVideo = container.querySelector('video') as HTMLVideoElement;
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    expect(avaVideo.isConnected).toBe(true);
+    expect(screen.getAllByTestId('portrait-layer').filter((l) => l.contains(avaVideo))).toHaveLength(1);
+    expect(avaVideo.closest('[data-testid="portrait-layer"]')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('switching back to the outgoing speaker mid-fade leaves one layer per avatar', () => {
+    renderGroup();
+    const beaImg = screen.getByRole('img', { name: 'Bea' });
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show Bea' }));
+    const layers = screen.getAllByTestId('portrait-layer');
+    expect(layers).toHaveLength(2);
+    // Bea is incoming again, on the element she never lost.
+    expect(layers[1].contains(beaImg)).toBe(true);
+    expect(within(layers[0]).getByRole('img', { hidden: true }).getAttribute('alt')).toBe('Cat');
+  });
+
+  it('under reduced motion a speaker change swaps instantly: one layer, no transition', () => {
+    env.reducedMotion = true;
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    const layers = screen.getAllByTestId('portrait-layer');
+    expect(layers).toHaveLength(1);
+    expect(layers[0].style.transition).toBe('opacity 0ms ease-out');
+    expect(layers[0].style.opacity).toBe('1');
+  });
+
+  it('framing follows the focused member: Ava\'s stored framing, then Cat\'s default', () => {
+    usePortraitPositionStore.setState({ desktopPositionsByAvatar: { 'a.png': { x: 30, y: 40 } } });
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    expect(screen.getByRole('img', { name: 'Ava' }).style.objectPosition).toBe('30% 40%');
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'c.png')] }));
+    expect(screen.getByRole('img', { name: 'Cat' }).style.objectPosition).toBe('50% 0%');
+  });
+
+  it('an unsaved drag on one member does not carry over to the next, even when both store the default', () => {
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Adjust framing' }));
+    const surface = screen.getByRole('group', { name: 'Portrait framing' });
+    surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 400, width: 200, height: 400, toJSON: () => ({}) });
+    surface.setPointerCapture = () => {};
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(screen.getByRole('img', { name: 'Ava' }).style.objectPosition).toBe('60% 10%');
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'c.png')] }));
+    expect(screen.getByRole('img', { name: 'Cat' }).style.objectPosition).toBe('50% 0%');
+  });
+
+  it('a drag that spans a speaker change saves to the member it started on, not the new one', () => {
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Adjust framing' }));
+    const surface = screen.getByRole('group', { name: 'Portrait framing' });
+    surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 400, width: 200, height: 400, toJSON: () => ({}) });
+    surface.setPointerCapture = () => {};
+    surface.hasPointerCapture = () => false;
+    surface.releasePointerCapture = () => {};
+
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    // The next AI message releases the pin: focus moves to Cat mid-drag.
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'c.png')] }));
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Cat' })).toBeTruthy();
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 40, clientY: 20 });
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 40, clientY: 20 });
+
+    const map = usePortraitPositionStore.getState().desktopPositionsByAvatar;
+    expect(map['a.png']).toEqual({ x: 60, y: 10 });
+    expect(map['c.png']).toBeUndefined();
+  });
+
+  it('mid-send, shows the streaming placeholder\'s member by avatar while currentSpeakerName names a same-name member (K14)', () => {
+    const twinA = { name: 'Twin', avatar: 'a.png' } as CharacterInfo;
+    const twinC = { name: 'Twin', avatar: 'c.png' } as CharacterInfo;
+    const twin = (id: string, avatar: string): ChatMessage => ({ ...ai(id, null, avatar), name: 'Twin' });
+    useChatStore.setState({
+      messages: [twin('1', 'a.png'), { ...twin('2', 'c.png'), content: '' }],
+      isStreaming: true,
+      currentSpeakerName: 'Twin',
+    });
+    renderGroup({ members: [twinA, bea, twinC] });
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Twin' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Twin' }).getAttribute('src')).toBe('/blobs/character/c.png');
+    const pressed = within(screen.getByRole('list', { name: 'Group members' }))
+      .getAllByRole('button')
+      .filter((b) => b.getAttribute('aria-pressed') === 'true');
+    expect(pressed).toHaveLength(1);
+    expect(pressed[0].querySelector('img')?.getAttribute('src')).toBe('/blobs/character/c.png');
+  });
+
+  it('expressions mode: a sprite 404 falls back to the default avatar, whose own failure shows the placeholder', () => {
+    env.sprites['b.png'] = { joy: '/sprites/b/joy.png' };
+    const reported: string[] = [];
+    renderWithFailedSet({ kind: 'group', members: [ava, bea, cat] }, reported);
+    const img = () => screen.getByRole('img', { name: 'Bea' });
+    expect(img().getAttribute('src')).toBe('/sprites/b/joy.png');
+
+    fireEvent.error(img());
+    expect(reported).toEqual(['b.png-joy']);
+    expect(img().getAttribute('src')).toBe('/blobs/character/b.png');
+
+    fireEvent.error(img());
+    expect(reported).toEqual(['b.png-joy']);
+    expect(img().tagName).toBe('DIV');
+    expect(img().textContent).toBe('B');
+  });
+
+  it('expressions mode: when the latest emotion has no sprite, a default-avatar failure shows the placeholder at once', () => {
+    env.sprites['b.png'] = { sad: '/sprites/b/sad.png' };
+    const reported: string[] = [];
+    renderWithFailedSet({ kind: 'group', members: [ava, bea, cat] }, reported);
+    expect(screen.getByRole('img', { name: 'Bea' }).getAttribute('src')).toBe('/blobs/character/b.png');
+    fireEvent.error(screen.getByRole('img', { name: 'Bea' }));
+    expect(reported).toEqual([]);
+    expect(screen.getByRole('img', { name: 'Bea' }).tagName).toBe('DIV');
+  });
+
+  it('a solo costume never reaches a group member\'s sprites', () => {
+    env.sprites['Ava_swim'] = { joy: '/sprites/Ava_swim/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'joy', 'a.png')] });
+    renderGroup({ costume: 'Ava_swim' });
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
+    expect(env.costumesAsked.length).toBeGreaterThan(0);
+    expect(env.costumesAsked).not.toContain('Ava_swim');
+  });
+
+  it('with "no fallback" on, the walk-back never attributes an unattributed message to the focused member', () => {
+    useExpressionsStore.setState({ noFallback: true });
+    env.sprites['b.png'] = { joy: '/sprites/b/joy.png' };
+    // A legacy message with no characterAvatar, then Bea's newest, whose emotion has no sprite.
+    useChatStore.setState({ messages: [ai('1', 'joy'), ai('2', 'anger', 'b.png')] });
+    renderGroup();
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Bea' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Bea' }).getAttribute('src')).toBe('/blobs/character/b.png');
+  });
+
+  it('only reads chat state: thumbnails and arrow keys leave both stores untouched', () => {
+    const chatBefore = useChatStore.getState();
+    const characterBefore = useCharacterStore.getState();
+    renderGroup();
+    const strip = screen.getByRole('list', { name: 'Group members' });
+    for (const b of within(strip).getAllByRole('button')) {
+      fireEvent.click(b);
+      fireEvent.keyDown(b, { key: 'ArrowRight' });
+    }
+    expect(useChatStore.getState()).toBe(chatBefore);
+    expect(useCharacterStore.getState()).toBe(characterBefore);
+  });
+});
