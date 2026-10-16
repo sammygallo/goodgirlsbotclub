@@ -197,6 +197,11 @@ describe('first render (D-S2, D-S3)', () => {
     expect(BREAKPOINTS.filter((prefix) => root.outerHTML.includes(prefix))).toEqual([]);
   });
 
+  it('makes <main> the named size container the chat avatar panel queries (D-C3)', () => {
+    mountLayout();
+    expect((document.querySelector('main') as HTMLElement).className.split(/\s+/)).toContain('@container/main');
+  });
+
   it('stays closed whatever the browser has stored', () => {
     localStorage.setItem('stm:sidebar-expanded', 'true');
     localStorage.setItem('stm:sidebar-sections', JSON.stringify({ characters: true, groups: true, works: true, personal: true }));

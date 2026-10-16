@@ -86,7 +86,9 @@ export function MainLayout() {
       <div className="flex flex-col min-w-0 h-full">
         <Header onMenuClick={openSidebar} menuOpen={sidebarOpen} />
 
-        <main className="flex-1 overflow-hidden">
+        {/* A named size container (D-C3): the chat's desktop avatar panel
+            splits off only while <main> is at least 600px wide. */}
+        <main className="@container/main flex-1 overflow-hidden">
           <Outlet context={outletContext} />
         </main>
       </div>
