@@ -13,7 +13,8 @@
  * As in ChatView.selection.test.tsx, chatStore's fetchChatFiles and loadChat
  * are recorders and clearChat is a no-op, so the seeded transcript survives
  * ChatView's selection effect. useLivePortraitDiscovery is replaced so a case
- * can give a character clips. `fetch` is refused, `localStorage` is an
+ * can give a character clips, and useCharacterSprites so a case can give a
+ * sprite folder sprites. `fetch` is refused, `localStorage` is an
  * in-memory stub (under Node 25 the global is Node's experimental one, which
  * has no methods), and jsdom gets matchMedia and scrollIntoView. The viewport
  * width is set before mounting: useIsMobile reads innerWidth at init.
@@ -45,13 +46,28 @@ const env = vi.hoisted(() => {
     },
   });
   vi.stubGlobal('fetch', () => Promise.reject(new Error('fetch refused')));
-  return { clips: {} as Record<string, Record<string, string>> };
+  return {
+    clips: {} as Record<string, Record<string, string>>,
+    /** sprite folder (costume, or the avatar without extension) → emotion → path. */
+    spriteFolders: {} as Record<string, Record<string, string>>,
+  };
 });
 
 vi.mock('../../hooks/useLivePortraitDiscovery', () => ({
   useLivePortraitDiscovery: (avatar: string | null | undefined) => {
     const clips = avatar ? env.clips[avatar] ?? null : null;
     return { clips, hasClips: !!clips?.idle, loading: false };
+  },
+}));
+
+vi.mock('../../hooks/useCharacterSprites', () => ({
+  useCharacterSprites: (avatar: string | undefined, nameOverride?: string | null) => {
+    const folder = nameOverride || avatar?.replace(/\.[^/.]+$/, '');
+    const map = folder ? env.spriteFolders[folder] ?? {} : {};
+    return {
+      availableEmotions: Object.keys(map),
+      getSpritePath: (e: string | null) => (e ? map[e] ?? null : null),
+    };
   },
 }));
 
@@ -127,6 +143,7 @@ const textarea = () => document.querySelector('textarea') as HTMLTextAreaElement
 beforeEach(() => {
   localStorage.clear();
   env.clips = {};
+  env.spriteFolders = {};
   setViewport(1440);
   swipeLeft = vi.fn<(messageId: string) => void>();
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
@@ -339,5 +356,31 @@ describe('chat interactions beside the panel', () => {
     expect(swipeLeft).toHaveBeenCalledWith('a1');
     expect(screen.getByRole('button', { name: /Next response|Generate alternative response/ })).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Message actions' }).length).toBe(2);
+  });
+});
+
+describe('sprites in the panel (ChatView wiring)', () => {
+  const withEmotion = () =>
+    useChatStore.setState({ messages: transcript.map((m) => (m.id === 'a1' ? { ...m, emotion: 'joy' } : m)) });
+  const panelImage = () => within(panel() as HTMLElement).getByRole('img', { name: 'Ava' });
+
+  it('a 404 on the panel\'s sprite falls back to the default avatar through ChatView\'s failed set', async () => {
+    env.spriteFolders['a'] = { joy: '/sprites/a/joy.png' };
+    withEmotion();
+    seedSolo();
+    await mount();
+    expect(panelImage().getAttribute('src')).toBe('/sprites/a/joy.png');
+    fireEvent.error(panelImage());
+    expect(panelImage().getAttribute('src')).toBe('/blobs/character/a.png');
+  });
+
+  it('with an active costume the panel\'s sprite comes from the costume folder', async () => {
+    env.spriteFolders['a'] = { joy: '/sprites/a/joy.png' };
+    env.spriteFolders['Ava_swim'] = { joy: '/sprites/Ava_swim/joy.png' };
+    localStorage.setItem('stm:costume-a.png', 'Ava_swim');
+    withEmotion();
+    seedSolo();
+    await mount();
+    expect(panelImage().getAttribute('src')).toBe('/sprites/Ava_swim/joy.png');
   });
 });

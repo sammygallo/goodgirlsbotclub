@@ -83,6 +83,15 @@ describe('useGroupFocus', () => {
     expect(result.current.focusedAvatar).toBe('a.png');
   });
 
+  it('a pin holds when an AI message that existed at pin time is deleted', () => {
+    setMessages([ai('1', 'b.png'), ai('2', 'c.png')]);
+    const { result } = renderHook(() => useGroupFocus(roster));
+    act(() => result.current.pinMember('a.png'));
+    // Deleting c2 makes b1 the newest AI message — not a new one.
+    setMessages([ai('1', 'b.png')]);
+    expect(result.current.focusedAvatar).toBe('a.png');
+  });
+
   it('the next AI message releases the pin, and it stays released', () => {
     const { result } = renderHook(() => useGroupFocus(roster));
     act(() => result.current.pinMember('a.png'));

@@ -169,6 +169,16 @@ describe('source resolution (D-C5)', () => {
     expect(screen.queryByText('joy')).toBeNull();
   });
 
+  it('Live Portrait fills the panel square-cornered, at the stored desktop framing, playing the latest emotion', () => {
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4', joy: '/clips/a/joy.mp4' });
+    usePortraitPositionStore.setState({ desktopPositionsByAvatar: { 'a.png': { x: 30, y: 40 } } });
+    const { container } = renderSolo();
+    const videos = Array.from(container.querySelectorAll('video'));
+    expect(videos.map((v) => v.getAttribute('src'))).toEqual(['/clips/a/idle.mp4', '/clips/a/joy.mp4']);
+    for (const v of videos) expect(v.style.objectPosition).toBe('30% 40%');
+    expect((videos[0].parentElement as HTMLElement).style.borderRadius).toBe('0px');
+  });
+
   it('a static avatar that fails shows the placeholder initial', () => {
     renderSolo();
     fireEvent.error(screen.getByRole('img', { name: 'Ava' }));
@@ -297,6 +307,51 @@ describe('toolbar (§5.3)', () => {
     expect(documentEscape).not.toHaveBeenCalled();
     expect(popover.hidden).toBe(true);
     expect(document.activeElement).toBe(toggle);
+  });
+
+  it('the popover\'s options follow the focused member\'s clips and sprites', () => {
+    const openPicker = () => {
+      const toggle = screen.getByRole('button', { name: 'Motion mode' });
+      fireEvent.click(toggle);
+      return document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    };
+    const disabled = (popover: HTMLElement, name: string) =>
+      (within(popover).getByRole('radio', { name }) as HTMLButtonElement).disabled;
+
+    const bare = renderSolo();
+    let popover = openPicker();
+    expect(disabled(popover, 'Live Portrait')).toBe(true);
+    expect(disabled(popover, 'Expressions')).toBe(true);
+    bare.unmount();
+
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    renderSolo();
+    popover = openPicker();
+    expect(disabled(popover, 'Live Portrait')).toBe(false);
+    expect(disabled(popover, 'Expressions')).toBe(false);
+  });
+
+  it('choosing a mode in the popover writes it for the focused member only', () => {
+    useChatStore.setState({ messages: [ai('1', 'joy', 'b.png')] });
+    renderGroup();
+    const toggle = screen.getByRole('button', { name: 'Motion mode' });
+    fireEvent.click(toggle);
+    const popover = document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    fireEvent.click(within(popover).getByRole('radio', { name: 'None' }));
+    expect(useMotionModeStore.getState().modesByAvatar).toEqual({ 'b.png': 'none' });
+  });
+
+  it('a mousedown outside the popover closes it; one inside does not', () => {
+    renderSolo();
+    const toggle = screen.getByRole('button', { name: 'Motion mode' });
+    fireEvent.click(toggle);
+    const popover = document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    fireEvent.mouseDown(within(popover).getByRole('radio', { name: 'Auto' }));
+    expect(popover.hidden).toBe(false);
+    fireEvent.mouseDown(document.body);
+    expect(popover.hidden).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('the popover anchors to the toolbar\'s right edge and is capped to the panel width', () => {
@@ -603,6 +658,29 @@ describe('group mode (D-C7)', () => {
     expect(layers).toHaveLength(1);
     expect(layers[0].style.transition).toBe('opacity 0ms ease-out');
     expect(layers[0].style.opacity).toBe('1');
+  });
+
+  it('framing follows the focused member: Ava\'s stored framing, then Cat\'s default', () => {
+    usePortraitPositionStore.setState({ desktopPositionsByAvatar: { 'a.png': { x: 30, y: 40 } } });
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    expect(screen.getByRole('img', { name: 'Ava' }).style.objectPosition).toBe('30% 40%');
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'c.png')] }));
+    expect(screen.getByRole('img', { name: 'Cat' }).style.objectPosition).toBe('50% 0%');
+  });
+
+  it('an unsaved drag on one member does not carry over to the next, even when both store the default', () => {
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Adjust framing' }));
+    const surface = screen.getByRole('group', { name: 'Portrait framing' });
+    surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 400, width: 200, height: 400, toJSON: () => ({}) });
+    surface.setPointerCapture = () => {};
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(screen.getByRole('img', { name: 'Ava' }).style.objectPosition).toBe('60% 10%');
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'c.png')] }));
+    expect(screen.getByRole('img', { name: 'Cat' }).style.objectPosition).toBe('50% 0%');
   });
 
   it('a drag that spans a speaker change saves to the member it started on, not the new one', () => {
