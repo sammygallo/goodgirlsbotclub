@@ -229,11 +229,19 @@ export function ChatView() {
   }, []);
   // E6-S4: desktop avatar panel expanded/collapsed (stm:chat-avatar-panel-expanded).
   // Focus follows the toggle: Hide → "Show portrait", Show → the panel's Hide.
+  // One-shot: the target clears once used, so a later remount (VN mode off,
+  // a chat switch) never steals focus.
   const [panelExpanded, setPanelExpanded] = useAvatarPanelExpanded();
   const [panelFocusTarget, setPanelFocusTarget] = useState<'show' | 'hide' | null>(null);
   const showPortraitButtonRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (panelFocusTarget === 'show' && !panelExpanded) showPortraitButtonRef.current?.focus();
+    if (panelFocusTarget === 'show' && !panelExpanded) {
+      showPortraitButtonRef.current?.focus();
+      setPanelFocusTarget(null);
+    }
+    // The panel's mount effect (a child effect, so it runs first) has already
+    // focused Hide by the time this clears the target.
+    if (panelFocusTarget === 'hide' && panelExpanded) setPanelFocusTarget(null);
   }, [panelFocusTarget, panelExpanded]);
   const handleHideAvatarPanel = useCallback(() => {
     setPanelExpanded(false);

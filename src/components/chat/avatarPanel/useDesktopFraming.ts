@@ -35,11 +35,15 @@ export function useDesktopFraming(avatar: string | null, onExit: () => void) {
 
   const [framing, setFraming] = useState(false);
 
+  // The drag remembers its avatar: if the group panel's focus moves mid-drag,
+  // the drag ends and saves to the avatar it started on, never the new one.
   const dragState = useRef<{
+    avatar: string;
     startX: number;
     startY: number;
     posX: number;
     posY: number;
+    last: { x: number; y: number };
     pointerId: number;
   } | null>(null);
 
@@ -57,32 +61,45 @@ export function useDesktopFraming(avatar: string | null, onExit: () => void) {
     if (!framing || !avatar) return;
     if ((e.target as HTMLElement).closest('button')) return;
     dragState.current = {
+      avatar,
       startX: e.clientX,
       startY: e.clientY,
       posX: position.x,
       posY: position.y,
+      last: position,
       pointerId: e.pointerId,
     };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
+  const endDrag = () => {
+    const drag = dragState.current;
+    if (!drag) return;
+    setDesktopPosition(drag.avatar, drag.last);
+    dragState.current = null;
+  };
+
   const onPointerMove = (e: React.PointerEvent<HTMLElement>) => {
     const drag = dragState.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
+    if (drag.avatar !== avatar) {
+      endDrag();
+      return;
+    }
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
     // object-position decreases visually-rightward content as % grows, so a
     // rightward drag DECREASES x (reveals the left side of the image).
     const dx = -((e.clientX - drag.startX) / rect.width) * 100;
     const dy = -((e.clientY - drag.startY) / rect.height) * 100;
-    setPosition({ x: clamp(drag.posX + dx), y: clamp(drag.posY + dy) });
+    drag.last = { x: clamp(drag.posX + dx), y: clamp(drag.posY + dy) };
+    setPosition(drag.last);
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLElement>) => {
     const drag = dragState.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
-    if (avatar) setDesktopPosition(avatar, position);
-    dragState.current = null;
+    endDrag();
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }

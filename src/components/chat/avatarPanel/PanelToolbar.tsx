@@ -70,7 +70,9 @@ export function PanelToolbar({
       className="absolute right-3 top-3 z-10 flex items-center gap-1 rounded-lg p-1"
       style={{ backgroundColor: 'rgb(0 0 0 / .5)' }}
     >
-      <div ref={wrapperRef} className="relative" onKeyDown={handlePickerKeyDown}>
+      {/* Unpositioned, so the popover anchors to the toolbar's right edge, and
+          capped to the aside's width (@container/panel) so it never clips. */}
+      <div ref={wrapperRef} onKeyDown={handlePickerKeyDown}>
         <button
           ref={toggleRef}
           type="button"
@@ -86,7 +88,7 @@ export function PanelToolbar({
         <div
           id={pickerId}
           hidden={!pickerOpen}
-          className="absolute right-0 top-full mt-2 w-72 rounded-lg p-2 shadow-xl"
+          className="absolute right-0 top-full mt-2 w-72 max-w-[calc(100cqw-1.5rem)] rounded-lg p-2 shadow-xl"
           style={{ backgroundColor: 'rgb(0 0 0 / .85)' }}
         >
           <MotionModePicker

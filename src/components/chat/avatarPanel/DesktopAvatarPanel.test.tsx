@@ -255,6 +255,17 @@ describe('toolbar (§5.3)', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
+  it('the popover anchors to the toolbar\'s right edge and is capped to the panel width', () => {
+    renderSolo();
+    const toggle = screen.getByRole('button', { name: 'Motion mode' });
+    const popover = document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
+    // Its offset parent is the toolbar group (the wrapper is unpositioned)...
+    expect((popover.parentElement as HTMLElement).className).not.toMatch(/\b(relative|absolute|fixed|sticky)\b/);
+    expect(popover.className.split(/\s+/)).toEqual(expect.arrayContaining(['absolute', 'right-0', 'w-72', 'max-w-[calc(100cqw-1.5rem)]']));
+    // ...and 100cqw resolves against the aside, a named size container.
+    expect(screen.getByRole('complementary').className.split(/\s+/)).toContain('@container/panel');
+  });
+
   it('Hide portrait calls onHide', () => {
     const { props } = renderSolo();
     fireEvent.click(screen.getByRole('button', { name: 'Hide portrait' }));
@@ -376,7 +387,7 @@ describe('a11y labels (D-C11)', () => {
   it('full-bleed: no padding or radius on the aside; 1/3 wide with a right border', () => {
     renderSolo();
     const cls = screen.getByRole('complementary').className.split(/\s+/);
-    expect(cls).toEqual(expect.arrayContaining(['w-1/3', 'flex-none', 'border-r', 'hidden', '@min-[600px]/main:flex']));
+    expect(cls).toEqual(expect.arrayContaining(['w-1/3', 'flex-none', 'border-r', 'hidden', 'lg:@min-[600px]/main:flex']));
     expect(cls.some((c) => /^(p|px|py|pt|pb|pl|pr)-/.test(c) || c.startsWith('rounded'))).toBe(false);
   });
 });
@@ -425,6 +436,29 @@ describe('group mode (D-C7)', () => {
     const layer = screen.getByTestId('portrait-layer');
     expect(layer.style.transition).toBe('opacity 0ms ease-out');
     expect(layer.style.opacity).toBe('1');
+  });
+
+  it('a drag that spans a speaker change saves to the member it started on, not the new one', () => {
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Adjust framing' }));
+    const surface = screen.getByRole('group', { name: 'Portrait framing' });
+    surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 400, width: 200, height: 400, toJSON: () => ({}) });
+    surface.setPointerCapture = () => {};
+    surface.hasPointerCapture = () => false;
+    surface.releasePointerCapture = () => {};
+
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    // The next AI message releases the pin: focus moves to Cat mid-drag.
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'c.png')] }));
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Cat' })).toBeTruthy();
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 40, clientY: 20 });
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 40, clientY: 20 });
+
+    const map = usePortraitPositionStore.getState().desktopPositionsByAvatar;
+    expect(map['a.png']).toEqual({ x: 60, y: 10 });
+    expect(map['c.png']).toBeUndefined();
   });
 
   it('only reads chat state: thumbnails and arrow keys leave both stores untouched', () => {

@@ -173,7 +173,7 @@ describe('placement (D-C1)', () => {
     expect(row.firstElementChild).toBe(aside);
 
     const cls = aside.className.split(/\s+/);
-    expect(cls).toEqual(expect.arrayContaining(['w-1/3', 'flex-none', 'border-r', 'hidden', '@min-[600px]/main:flex']));
+    expect(cls).toEqual(expect.arrayContaining(['w-1/3', 'flex-none', 'border-r', 'hidden', 'lg:@min-[600px]/main:flex']));
     expect(cls.some((c) => /^(p|px|py|pt|pb|pl|pr)-/.test(c) || c.startsWith('rounded'))).toBe(false);
 
     const chat = aside.nextElementSibling as HTMLElement;
@@ -284,6 +284,39 @@ describe('Hide / Show portrait (§5.3)', () => {
     );
     expect(textarea()).toBe(input);
     expect(textarea().value).toBe('draft in progress');
+  });
+
+  it('the focus hand-off is one-shot: a later panel remount does not take focus from the input', async () => {
+    seedSolo();
+    await mount();
+    fireEvent.click(within(panel() as HTMLElement).getByRole('button', { name: 'Hide portrait' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show portrait' }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(panel() as HTMLElement).getByRole('button', { name: 'Hide portrait' })),
+    );
+
+    textarea().focus();
+    expect(document.activeElement).toBe(textarea());
+    act(() => useDisplayPreferencesStore.setState({ vnMode: true }));
+    expect(panel()).toBeNull();
+    act(() => useDisplayPreferencesStore.setState({ vnMode: false }));
+    expect(panel()).not.toBeNull();
+    expect(document.activeElement).toBe(textarea());
+  });
+
+  it('when lg does not match, the desktop panel is CSS-hidden and the header Show button with it', async () => {
+    localStorage.setItem(AVATAR_PANEL_EXPANDED_KEY, 'false');
+    seedSolo();
+    await mount();
+    // The panel's display needs lg AND the container rule; the Show button
+    // needs lg. Below lg (in rem) only the mobile portrait, which is lg:hidden, shows.
+    const show = screen.getByRole('button', { name: 'Show portrait' });
+    expect(show.className.split(/\s+/)).toEqual(expect.arrayContaining(['hidden', 'lg:inline-flex']));
+    fireEvent.click(show);
+    const cls = (panel() as HTMLElement).className.split(/\s+/);
+    expect(cls).toContain('hidden');
+    expect(cls).toContain('lg:@min-[600px]/main:flex');
+    expect(cls.filter((c) => c.endsWith(':flex'))).toEqual(['lg:@min-[600px]/main:flex']);
   });
 
   it('a new mount reads the collapsed state back', async () => {

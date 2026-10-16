@@ -114,7 +114,7 @@ export function DesktopAvatarPanel({
     <aside
       id={AVATAR_PANEL_ID}
       aria-label={isGroup ? `Group portrait: ${name}` : `${name} portrait`}
-      className="hidden @min-[600px]/main:flex flex-none w-1/3 relative overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-bg-tertiary)]"
+      className="@container/panel hidden lg:@min-[600px]/main:flex flex-none w-1/3 relative overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-bg-tertiary)]"
     >
       <div
         ref={surfaceRef}
