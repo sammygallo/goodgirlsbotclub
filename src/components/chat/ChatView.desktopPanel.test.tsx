@@ -18,7 +18,7 @@
  * has no methods), and jsdom gets matchMedia and scrollIntoView. The viewport
  * width is set before mounting: useIsMobile reads innerWidth at init.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { CharacterInfo } from '../../api/client';
@@ -93,7 +93,7 @@ const transcript: ChatMessage[] = [
   },
 ];
 
-let swipeLeft: ReturnType<typeof vi.fn>;
+let swipeLeft: Mock<(messageId: string) => void>;
 
 /** Width and height; useOrientation reads landscape as width > height at init. */
 function setViewport(width: number, height = 900) {
@@ -128,7 +128,7 @@ beforeEach(() => {
   localStorage.clear();
   env.clips = {};
   setViewport(1440);
-  swipeLeft = vi.fn();
+  swipeLeft = vi.fn<(messageId: string) => void>();
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
   useCharacterStore.setState({ characters: [ava, bea], charactersLoaded: true, isLoading: false });
