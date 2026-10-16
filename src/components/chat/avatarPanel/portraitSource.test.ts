@@ -107,21 +107,23 @@ describe('resolvePortraitImageUrl', () => {
 describe('findPreviousValidSpritePath', () => {
   it('solo: the newest emotion whose sprite resolves, skipping user turns and failed keys', () => {
     const messages = [ai('1', 'sadness'), user('2'), ai('3', 'joy'), ai('4', 'anger')];
-    expect(findPreviousValidSpritePath(messages, 'a.png', false, 'a.png', lookup())).toBe('/sprites/a/joy.png');
-    expect(findPreviousValidSpritePath(messages, 'a.png', false, 'a.png', lookup(['a.png-joy']))).toBe(
-      '/sprites/a/sadness.png',
-    );
+    expect(findPreviousValidSpritePath(messages, 'a.png', false, 'a.png', lookup())).toEqual({ path: '/sprites/a/joy.png', emotion: 'joy' });
+    expect(findPreviousValidSpritePath(messages, 'a.png', false, 'a.png', lookup(['a.png-joy']))).toEqual({
+      path: '/sprites/a/sadness.png',
+      emotion: 'sadness',
+    });
   });
 
   it('alias-maps the walked-back emotion', () => {
-    expect(findPreviousValidSpritePath([ai('1', 'happy')], 'a.png', false, 'a.png', lookup())).toBe(
-      '/sprites/a/joy.png',
-    );
+    expect(findPreviousValidSpritePath([ai('1', 'happy')], 'a.png', false, 'a.png', lookup())).toEqual({
+      path: '/sprites/a/joy.png',
+      emotion: 'happy',
+    });
   });
 
   it('group: only that member\'s messages count', () => {
     const messages = [ai('1', 'joy', 'a.png'), ai('2', 'sadness', 'b.png')];
-    expect(findPreviousValidSpritePath(messages, 'a.png', true, null, lookup())).toBe('/sprites/a/joy.png');
+    expect(findPreviousValidSpritePath(messages, 'a.png', true, null, lookup())?.path).toBe('/sprites/a/joy.png');
   });
 
   it('group: a message with no characterAvatar is attributed to nobody', () => {

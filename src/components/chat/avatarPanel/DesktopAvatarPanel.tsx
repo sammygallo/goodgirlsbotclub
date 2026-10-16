@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import type { CharacterInfo } from '../../../api/client';
 import { useChatStore } from '../../../stores/chatStore';
 import { getDefaultAvatarUrl } from '../../../utils/emotions';
@@ -59,14 +60,16 @@ export function DesktopAvatarPanel({
 
   const source = usePanelSource(avatar, isGroup ? null : costume);
   const latestEmotion = useChatStore((s) => latestEmotionFor(s.messages, isGroup, avatar));
-  const previousValidSpritePath = useChatStore((s) =>
-    source.noFallback && avatar
-      ? findPreviousValidSpritePath(s.messages, avatar, isGroup, isGroup ? null : avatar, {
-          failedExpressions,
-          availableEmotions: source.availableEmotions,
-          getSpritePath: source.getSpritePath,
-        })
-      : null,
+  const previousValidSprite = useChatStore(
+    useShallow((s) =>
+      source.noFallback && avatar
+        ? findPreviousValidSpritePath(s.messages, avatar, isGroup, isGroup ? null : avatar, {
+            failedExpressions,
+            availableEmotions: source.availableEmotions,
+            getSpritePath: source.getSpritePath,
+          })
+        : null,
+    ),
   );
 
   const [paused, setPaused] = useState(false);
@@ -95,10 +98,20 @@ export function DesktopAvatarPanel({
         failedExpressions,
         getSpritePath: source.getSpritePath,
         noFallback: source.noFallback,
-        previousValidSpritePath,
+        previousValidSpritePath: previousValidSprite?.path ?? null,
       })
     : getDefaultAvatarUrl(avatar);
-  const expressionKey = latestEmotion ? `${avatar}-${latestEmotion}` : null;
+  // A failure is reported against the emotion whose sprite is on screen: the
+  // walk-back's when the latest emotion's own sprite is not the one shown.
+  const latestSpriteShown =
+    !!latestEmotion &&
+    !failedExpressions.has(`${avatar}-${latestEmotion}`) &&
+    !!source.getSpritePath(latestEmotion);
+  const shownEmotion =
+    !latestSpriteShown && previousValidSprite && imageUrl === previousValidSprite.path
+      ? previousValidSprite.emotion
+      : latestEmotion;
+  const expressionKey = shownEmotion ? `${avatar}-${shownEmotion}` : null;
   const failedExpressionKey =
     expressionsActive &&
     expressionKey &&

@@ -19,6 +19,7 @@
  * matchMedia whose reduced-motion answer each case sets, and media playback is
  * spied on the prototype.
  */
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { CharacterInfo } from '../../../api/client';
@@ -116,6 +117,32 @@ function renderGroup(over: Partial<React.ComponentProps<typeof DesktopAvatarPane
   );
 }
 
+/**
+ * The panel under a parent that owns the failed set, as ChatView does: a
+ * reported key is added and the panel re-renders with it. `reported` records
+ * each key in order.
+ */
+function renderWithFailedSet(
+  props: Pick<React.ComponentProps<typeof DesktopAvatarPanel>, 'kind' | 'character' | 'members'>,
+  reported: string[],
+) {
+  function Owner() {
+    const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
+    return (
+      <DesktopAvatarPanel
+        {...props}
+        failedExpressions={failed}
+        onExpressionFailed={(key) => {
+          reported.push(key);
+          setFailed((prev) => new Set(prev).add(key));
+        }}
+        onHide={() => {}}
+      />
+    );
+  }
+  return render(<Owner />);
+}
+
 /** Clips already in the Live Portrait cache — the only clips the panel sees. */
 const cacheClips = (avatar: string, clips: Record<string, string>) =>
   useLivePortraitStore.getState().setClips(avatar, clips);
@@ -204,6 +231,24 @@ describe('source resolution (D-C5)', () => {
 
     rerender(<DesktopAvatarPanel {...props} failedExpressions={new Set(['a.png-joy'])} />);
     expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
+  });
+
+  it('with "no fallback" on, a 404 on the walk-back sprite fails that sprite\'s emotion, then the default avatar, then the placeholder', () => {
+    useExpressionsStore.setState({ noFallback: true });
+    env.sprites['a.png'] = { sad: '/sprites/a/sad.png' };
+    useChatStore.setState({ messages: [ai('1', 'sad'), ai('2', 'joy')] });
+    const reported: string[] = [];
+    renderWithFailedSet({ kind: 'solo', character: ava }, reported);
+    const img = () => screen.getByRole('img', { name: 'Ava' });
+    expect(img().getAttribute('src')).toBe('/sprites/a/sad.png');
+
+    fireEvent.error(img());
+    expect(reported).toEqual(['a.png-sad']);
+    expect(img().getAttribute('src')).toBe('/blobs/character/a.png');
+
+    fireEvent.error(img());
+    expect(img().tagName).toBe('DIV');
+    expect(img().textContent).toBe('A');
   });
 });
 

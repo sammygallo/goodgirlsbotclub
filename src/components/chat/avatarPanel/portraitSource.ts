@@ -6,7 +6,7 @@ import { getDefaultAvatarUrl, mapEmotionToAvailable, type Emotion } from '../../
  * Pure source resolution for the desktop avatar panel (D-C5, D-C6).
  *
  * The sprite lookups below are deliberate copies of ChatView's
- * `getFullImageUrl` and `findPreviousValidSpritePath`, kept line-for-line so
+ * `getFullImageUrl` and `findPreviousValidSpritePath`, kept so
  * the panel and the mobile portrait pick the same image for the same chat.
  * ChatView is not refactored onto them (E6-S4 keeps ChatView edits to wiring).
  */
@@ -52,7 +52,7 @@ export function findPreviousValidSpritePath(
   isGroup: boolean,
   fallbackAvatar: string | null,
   { failedExpressions, availableEmotions, getSpritePath }: SpriteLookup,
-): string | null {
+): { path: string; emotion: string } | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.isUser || m.isSystem || !m.emotion) continue;
@@ -62,7 +62,8 @@ export function findPreviousValidSpritePath(
     if (failedExpressions.has(key)) continue;
     const mapped = mapEmotionToAvailable(m.emotion, availableEmotions);
     const path = getSpritePath(mapped || m.emotion);
-    if (path) return path;
+    // The emotion comes back too: a 404 on this sprite is that emotion's failure.
+    if (path) return { path, emotion: m.emotion };
   }
   return null;
 }
