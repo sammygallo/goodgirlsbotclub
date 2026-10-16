@@ -636,7 +636,10 @@ const generateId = generateMessageId;
 // reason (e.g. "length", "content_filter", "stop") as it's observed in the
 // stream, so callers can tell an over-length cutoff from a content-filter
 // refusal instead of just seeing "empty response" either way.
-type SSEStreamMeta = { finishReason: string | null };
+// `upstreamError` is set from an `{"error": ...}` frame — the shape the
+// generation proxy forwards an upstream failure in, inside a 200 stream. That
+// frame carries no content, so the stream otherwise reads as empty.
+type SSEStreamMeta = { finishReason: string | null; upstreamError?: string };
 
 // Parse SSE stream and extract content tokens
 async function* parseSSEStream(
@@ -654,6 +657,13 @@ async function* parseSSEStream(
       (json.stop_reason as string | undefined) ||
       ((json.delta as Record<string, unknown> | undefined)?.stop_reason as string | undefined);
     if (reason) meta.finishReason = reason;
+  };
+
+  const captureUpstreamError = (json: { error?: unknown } | null) => {
+    if (!meta || !json?.error) return;
+    const err = json.error;
+    const message = typeof err === 'string' ? err : (err as { message?: unknown }).message;
+    meta.upstreamError = typeof message === 'string' && message ? message : 'Generation failed';
   };
 
   try {
@@ -677,6 +687,7 @@ async function* parseSSEStream(
 
           try {
             const json = JSON.parse(data);
+            captureUpstreamError(json);
             const choice = json.choices?.[0];
             captureFinishReason(json, choice);
             const content =
@@ -704,6 +715,7 @@ async function* parseSSEStream(
         if (data && data !== '[DONE]') {
           try {
             const json = JSON.parse(data);
+            captureUpstreamError(json);
             const choice = json.choices?.[0];
             captureFinishReason(json, choice);
             const content = choice?.delta?.content ||
