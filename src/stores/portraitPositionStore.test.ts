@@ -1,9 +1,10 @@
 /**
  * @vitest-environment jsdom
  *
- * portraitPositionStore's persist bump from version 1 to 2 (D-C8): the migrate
- * keeps users' mobile framing and adds an empty desktop map, and the two maps
- * never write into each other.
+ * portraitPositionStore's desktop map (D-C8) is an additive field at persist
+ * version 1 (D-E6S4-1): an old blob hydrates with an empty desktop map, a new
+ * blob stays readable by main's store, and the two maps never write into each
+ * other.
  *
  * `localStorage` is an in-memory stub (under Node 25 the global is Node's
  * experimental one, which has no methods); it is installed before the store
@@ -31,10 +32,9 @@ const data = vi.hoisted(() => {
   return data;
 });
 
-import {
-  migratePortraitPositionState,
-  usePortraitPositionStore,
-} from './portraitPositionStore';
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+import { usePortraitPositionStore, type PortraitPosition } from './portraitPositionStore';
 
 const KEY = 'portrait-position';
 
@@ -43,34 +43,8 @@ beforeEach(() => {
   usePortraitPositionStore.setState({ positionsByAvatar: {}, desktopPositionsByAvatar: {} });
 });
 
-describe('migratePortraitPositionState', () => {
-  it('keeps a version-1 mobile map exactly and adds an empty desktop map', () => {
-    const v1 = { positionsByAvatar: { 'a.png': { x: 10, y: 20 }, 'b.png': { x: 0, y: 100 } } };
-    expect(migratePortraitPositionState(v1, 1)).toEqual({
-      positionsByAvatar: { 'a.png': { x: 10, y: 20 }, 'b.png': { x: 0, y: 100 } },
-      desktopPositionsByAvatar: {},
-    });
-  });
-
-  it('degrades anything that is not an object to empty maps instead of throwing', () => {
-    for (const bad of [null, undefined, 'x', 42, [], { positionsByAvatar: 'nope' }, { positionsByAvatar: [1] }]) {
-      expect(migratePortraitPositionState(bad, 1)).toEqual({
-        positionsByAvatar: {},
-        desktopPositionsByAvatar: {},
-      });
-    }
-  });
-
-  it('tolerates a version-0 blob the same way', () => {
-    expect(migratePortraitPositionState({ positionsByAvatar: { 'a.png': { x: 1, y: 2 } } }, 0)).toEqual({
-      positionsByAvatar: { 'a.png': { x: 1, y: 2 } },
-      desktopPositionsByAvatar: {},
-    });
-  });
-});
-
-describe('rehydrating a stored version-1 blob', () => {
-  it('loads the mobile map, adds the desktop map, and rewrites the key as version 2', async () => {
+describe('persist version 1 (D-E6S4-1)', () => {
+  it('a stored blob without desktopPositionsByAvatar hydrates with the mobile map intact and an empty desktop map', async () => {
     data.set(KEY, JSON.stringify({ state: { positionsByAvatar: { 'a.png': { x: 10, y: 20 } } }, version: 1 }));
 
     await usePortraitPositionStore.persist.rehydrate();
@@ -80,11 +54,20 @@ describe('rehydrating a stored version-1 blob', () => {
     expect(state.desktopPositionsByAvatar).toEqual({});
     // The actions survive the merge.
     expect(typeof state.setDesktopPosition).toBe('function');
+  });
 
-    const stored = JSON.parse(data.get(KEY) as string);
-    expect(stored.version).toBe(2);
-    expect(stored.state.positionsByAvatar).toEqual({ 'a.png': { x: 10, y: 20 } });
-    expect(stored.state.desktopPositionsByAvatar).toEqual({});
+  it('a blob this store writes, desktop map included, is readable by a store configured as on main', async () => {
+    usePortraitPositionStore.getState().setPosition('a.png', { x: 10, y: 20 });
+    usePortraitPositionStore.getState().setDesktopPosition('a.png', { x: 5, y: 6 });
+    expect(JSON.parse(data.get(KEY) as string).state.desktopPositionsByAvatar).toEqual({ 'a.png': { x: 5, y: 6 } });
+
+    // main's store: same name, version 1, no migrate — what a rollback runs.
+    const mainStore = create<{ positionsByAvatar: Record<string, PortraitPosition> }>()(
+      persist(() => ({ positionsByAvatar: {} }), { name: KEY, version: 1 }),
+    );
+    await mainStore.persist.rehydrate();
+
+    expect(mainStore.getState().positionsByAvatar).toEqual({ 'a.png': { x: 10, y: 20 } });
   });
 });
 

@@ -18,46 +18,14 @@ export interface PortraitPosition {
 
 export const DEFAULT_POSITION: PortraitPosition = { x: 50, y: 0 };
 
-/** The persisted shape. Version 1 held only `positionsByAvatar`. */
-export interface PersistedPortraitPositions {
+interface PortraitPositionState {
   positionsByAvatar: Record<string, PortraitPosition>;
   desktopPositionsByAvatar: Record<string, PortraitPosition>;
-}
-
-export const PORTRAIT_POSITION_VERSION = 2;
-
-interface PortraitPositionState extends PersistedPortraitPositions {
   getPosition: (avatar: string) => PortraitPosition;
   setPosition: (avatar: string, pos: PortraitPosition) => void;
   resetPosition: (avatar: string) => void;
   setDesktopPosition: (avatar: string, pos: PortraitPosition) => void;
   resetDesktopPosition: (avatar: string) => void;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * Upgrades a stored blob from any earlier version to version 2. The mobile
- * map is kept exactly as stored — users' mobile framing must survive the
- * bump — and the desktop map starts empty. The blob is user-writable
- * localStorage, so anything that is not an object degrades to defaults
- * rather than throwing during hydration.
- */
-export function migratePortraitPositionState(
-  persisted: unknown,
-  _version: number,
-): PersistedPortraitPositions {
-  const stored = isPlainObject(persisted) ? persisted : {};
-  return {
-    positionsByAvatar: isPlainObject(stored.positionsByAvatar)
-      ? (stored.positionsByAvatar as Record<string, PortraitPosition>)
-      : {},
-    desktopPositionsByAvatar: isPlainObject(stored.desktopPositionsByAvatar)
-      ? (stored.desktopPositionsByAvatar as Record<string, PortraitPosition>)
-      : {},
-  };
 }
 
 export const usePortraitPositionStore = create<PortraitPositionState>()(
@@ -98,13 +66,6 @@ export const usePortraitPositionStore = create<PortraitPositionState>()(
         });
       },
     }),
-    {
-      name: 'portrait-position',
-      version: PORTRAIT_POSITION_VERSION,
-      // persist merges the migrated data over the live state, so the actions
-      // survive; the cast is only because migrate is typed as the full state.
-      migrate: (persisted, version) =>
-        migratePortraitPositionState(persisted, version) as PortraitPositionState,
-    },
+    { name: 'portrait-position', version: 1 },
   ),
 );

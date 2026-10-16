@@ -1,7 +1,7 @@
 import { useCharacterSprites } from '../../../hooks/useCharacterSprites';
-import { useLivePortraitDiscovery } from '../../../hooks/useLivePortraitDiscovery';
 import { usePrefersReducedMotion } from '../../../hooks/usePrefersReducedMotion';
 import { useExpressionsStore } from '../../../stores/expressionsStore';
+import { useLivePortraitStore } from '../../../stores/livePortraitStore';
 import { useMotionModeStore } from '../../../stores/motionModeStore';
 import { resolvePanelMotionMode } from './portraitSource';
 
@@ -12,7 +12,10 @@ import { resolvePanelMotionMode } from './portraitSource';
  */
 export function usePanelSource(avatar: string | null, costume: string | null | undefined) {
   const { getSpritePath, availableEmotions } = useCharacterSprites(avatar ?? undefined, costume);
-  const { clips, hasClips } = useLivePortraitDiscovery(avatar);
+  // Cached clips only: the panel runs no /blobs discovery of its own (D-E6S4-5).
+  const enabled = useLivePortraitStore((s) => s.enabled);
+  const clips = useLivePortraitStore((s) => (avatar ? s.getClips(avatar) : null));
+  const hasClips = enabled && !!clips && 'idle' in clips;
   const mode = useMotionModeStore((s) => (avatar ? s.modesByAvatar[avatar] ?? 'auto' : 'auto'));
   const reducedMotion = usePrefersReducedMotion();
   const noFallback = useExpressionsStore((s) => s.noFallback);

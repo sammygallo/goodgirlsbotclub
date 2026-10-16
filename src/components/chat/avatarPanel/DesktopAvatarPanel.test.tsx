@@ -2,14 +2,17 @@
  * @vitest-environment jsdom
  *
  * The desktop avatar panel (§5) mounted against the real chat, motion-mode,
- * expressions and portrait-position stores. Only the two asset-discovery hooks
- * are replaced, so each case states which clips and sprites exist:
+ * expressions, Live Portrait and portrait-position stores. The sprite hook is
+ * replaced and each case caches its own clips, so each case states which clips
+ * and sprites exist:
  *
  *  - source resolution (D-C5), reduced motion and Pause/Play (D-C6);
  *  - image fit (D-C4) and the 404 → default avatar → placeholder fallbacks;
  *  - toolbar order and labels, the motion-mode popover (§5.3);
  *  - framing mode (D-C8): keys, Reset, Enter/Escape, separate desktop map;
- *  - a11y labels (D-C11–D-C14) and group focus without writes (D-C7, #458).
+ *  - a11y labels (D-C11–D-C14) and group focus without writes (D-C7, #458);
+ *  - no Live Portrait discovery of its own (D-E6S4-5): `fetchExistingClips` is
+ *    a recorder that no case may trigger.
  *
  * `localStorage` is an in-memory stub (under Node 25 the global is Node's
  * experimental one, which has no methods), `fetch` is refused, jsdom gets a
@@ -22,7 +25,9 @@ import type { CharacterInfo } from '../../../api/client';
 // characterStore before chatStore: the reverse order trips a module cycle.
 import { useCharacterStore } from '../../../stores/characterStore';
 import { useChatStore, type ChatMessage } from '../../../stores/chatStore';
+import { fetchExistingClips } from '../../../api/livePortraitGen';
 import { useExpressionsStore } from '../../../stores/expressionsStore';
+import { useLivePortraitStore } from '../../../stores/livePortraitStore';
 import { useMotionModeStore } from '../../../stores/motionModeStore';
 import { usePortraitPositionStore } from '../../../stores/portraitPositionStore';
 import { DesktopAvatarPanel } from './DesktopAvatarPanel';
@@ -46,18 +51,14 @@ const env = vi.hoisted(() => {
   vi.stubGlobal('fetch', () => Promise.reject(new Error('fetch refused')));
   return {
     reducedMotion: false,
-    /** avatar → clip map; absent means no clips. */
-    clips: {} as Record<string, Record<string, string>>,
     /** avatar → emotion → sprite path. */
     sprites: {} as Record<string, Record<string, string>>,
   };
 });
 
-vi.mock('../../../hooks/useLivePortraitDiscovery', () => ({
-  useLivePortraitDiscovery: (avatar: string | null) => {
-    const clips = avatar ? env.clips[avatar] ?? null : null;
-    return { clips, hasClips: !!clips?.idle, loading: false };
-  },
+vi.mock('../../../api/livePortraitGen', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../api/livePortraitGen')>()),
+  fetchExistingClips: vi.fn(async () => ({})),
 }));
 vi.mock('../../../hooks/useCharacterSprites', () => ({
   useCharacterSprites: (avatar: string | undefined) => {
@@ -115,11 +116,16 @@ function renderGroup(over: Partial<React.ComponentProps<typeof DesktopAvatarPane
   );
 }
 
+/** Clips already in the Live Portrait cache — the only clips the panel sees. */
+const cacheClips = (avatar: string, clips: Record<string, string>) =>
+  useLivePortraitStore.getState().setClips(avatar, clips);
+
 const toolbar = () => screen.getByRole('group', { name: 'Portrait controls' });
 
 beforeEach(() => {
   env.reducedMotion = false;
-  env.clips = {};
+  vi.mocked(fetchExistingClips).mockClear();
+  useLivePortraitStore.setState({ clipsByAvatar: {}, enabled: true });
   env.sprites = {};
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve());
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
@@ -153,7 +159,7 @@ describe('source resolution (D-C5)', () => {
   });
 
   it('auto with clips plays Live Portrait, aria-hidden, filling the panel with cover', () => {
-    env.clips['a.png'] = { idle: '/clips/a/idle.mp4' };
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
     const { container } = renderSolo();
     const video = container.querySelector('video') as HTMLVideoElement;
     expect(video).not.toBeNull();
@@ -191,9 +197,37 @@ describe('source resolution (D-C5)', () => {
   });
 });
 
+describe('Live Portrait clips come from the cache only (D-E6S4-5)', () => {
+  it('solo: mounting with nothing cached fetches no clips', () => {
+    const { container } = renderSolo();
+    expect(fetchExistingClips).not.toHaveBeenCalled();
+    expect(container.querySelector('video')).toBeNull();
+  });
+
+  it('group: moving focus across members fetches no clips', () => {
+    useChatStore.setState({ messages: [ai('1', 'joy', 'b.png')] });
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    act(() => useChatStore.setState({ messages: [ai('1', 'joy', 'b.png'), ai('2', null, 'a.png')] }));
+    expect(screen.getByRole('complementary', { name: 'Group portrait: Ava' })).toBeTruthy();
+    expect(fetchExistingClips).not.toHaveBeenCalled();
+  });
+
+  it('group: clips cached for the focused member play Live Portrait', () => {
+    useChatStore.setState({ messages: [ai('1', 'joy', 'b.png')] });
+    cacheClips('c.png', { idle: '/clips/c/idle.mp4' });
+    const { container } = renderGroup();
+    expect(container.querySelector('video')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
+    expect(container.querySelector('video')?.getAttribute('src')).toBe('/clips/c/idle.mp4');
+    expect(fetchExistingClips).not.toHaveBeenCalled();
+  });
+});
+
 describe('reduced motion and Pause/Play (D-C6)', () => {
   it('Pause shows only while Live Portrait plays, flips its label, and pauses the video', () => {
-    env.clips['a.png'] = { idle: '/clips/a/idle.mp4' };
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
     const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause');
     renderSolo();
     const button = screen.getByRole('button', { name: 'Pause animation' });
@@ -212,7 +246,7 @@ describe('reduced motion and Pause/Play (D-C6)', () => {
 
   it('under reduced motion, auto skips Live Portrait for the sprite', () => {
     env.reducedMotion = true;
-    env.clips['a.png'] = { idle: '/clips/a/idle.mp4' };
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
     env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
     const { container } = renderSolo();
     expect(container.querySelector('video')).toBeNull();
@@ -221,7 +255,7 @@ describe('reduced motion and Pause/Play (D-C6)', () => {
 
   it('under reduced motion, an explicit Live Portrait still plays with its Pause button', () => {
     env.reducedMotion = true;
-    env.clips['a.png'] = { idle: '/clips/a/idle.mp4' };
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
     useMotionModeStore.setState({ modesByAvatar: { 'a.png': 'liveportrait' } });
     const { container } = renderSolo();
     expect(container.querySelector('video')).not.toBeNull();
@@ -231,7 +265,7 @@ describe('reduced motion and Pause/Play (D-C6)', () => {
 
 describe('toolbar (§5.3)', () => {
   it('has the four controls in order, 32×32, with explicit labels', () => {
-    env.clips['a.png'] = { idle: '/clips/a/idle.mp4' };
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
     renderSolo();
     const buttons = within(toolbar()).getAllByRole('button').filter((b) => !b.closest('[hidden]'));
     expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
@@ -464,8 +498,8 @@ describe('group mode (D-C7)', () => {
   });
 
   it('uses the focused member\'s own motion mode', () => {
-    env.clips['b.png'] = { idle: '/clips/b/idle.mp4' };
-    env.clips['c.png'] = { idle: '/clips/c/idle.mp4' };
+    cacheClips('b.png', { idle: '/clips/b/idle.mp4' });
+    cacheClips('c.png', { idle: '/clips/c/idle.mp4' });
     useMotionModeStore.setState({ modesByAvatar: { 'b.png': 'none' } });
     const { container } = renderGroup();
     expect(container.querySelector('video')).toBeNull();
