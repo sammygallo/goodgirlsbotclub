@@ -398,6 +398,28 @@ describe('framing mode (D-C8)', () => {
     expect(usePortraitPositionStore.getState().positionsByAvatar).toBe(mobileBefore);
   });
 
+  it('opening Motion mode exits framing, so nothing paints over the picker', () => {
+    renderSolo();
+    const { toggle } = enterFraming();
+    fireEvent.click(screen.getByRole('button', { name: 'Motion mode' }));
+    expect(screen.getByRole('button', { name: 'Motion mode' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.queryByText('Drag or use arrow keys to reposition')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reset framing' })).toBeNull();
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('entering framing closes the Motion mode popover', () => {
+    renderSolo();
+    const picker = screen.getByRole('button', { name: 'Motion mode' });
+    fireEvent.click(picker);
+    const popover = document.getElementById(picker.getAttribute('aria-controls') as string) as HTMLElement;
+    expect(popover.hidden).toBe(false);
+    const { toggle } = enterFraming();
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(picker.getAttribute('aria-expanded')).toBe('false');
+    expect(popover.hidden).toBe(true);
+  });
+
   it('Escape exits framing without reaching document listeners', () => {
     renderSolo();
     const { toggle, surface } = enterFraming();
@@ -459,26 +481,43 @@ describe('group mode (D-C7)', () => {
     expect(screen.getByRole('complementary', { name: 'Group portrait: Cat' })).toBeTruthy();
   });
 
-  it('cross-fades speaker changes over 200ms, and 0ms under reduced motion', async () => {
+  it('the first speaker appears at once, with no fade', () => {
+    renderGroup();
+    const layers = screen.getAllByTestId('portrait-layer');
+    expect(layers).toHaveLength(1);
+    expect(layers[0].style.opacity).toBe('1');
+  });
+
+  it('a speaker change fades the incoming layer 0 → 1 over 200ms above the outgoing one, then drops the outgoing', async () => {
     renderGroup();
     fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
-    const incoming = screen.getByTestId('portrait-layer');
+    const [outgoing, incoming] = screen.getAllByTestId('portrait-layer');
+    expect(screen.getAllByTestId('portrait-layer')).toHaveLength(2);
+    expect(within(outgoing).getByRole('img', { hidden: true }).getAttribute('alt')).toBe('Bea');
+    expect(outgoing.style.opacity).toBe('');
+    expect(within(incoming).getByRole('img', { name: 'Cat' })).toBeTruthy();
     expect(incoming.style.transition).toBe('opacity 200ms ease-out');
     // The incoming layer commits at 0, then fades to 1 — a snap would start at 1.
     expect(incoming.style.opacity).toBe('0');
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
     });
-    expect(screen.getByTestId('portrait-layer')).toBe(incoming);
     expect(incoming.style.opacity).toBe('1');
-    cleanup();
+    expect(screen.getAllByTestId('portrait-layer')).toHaveLength(2);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(screen.getAllByTestId('portrait-layer')).toEqual([incoming]);
+  });
 
+  it('under reduced motion a speaker change swaps instantly: one layer, no transition', () => {
     env.reducedMotion = true;
     renderGroup();
     fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
-    const layer = screen.getByTestId('portrait-layer');
-    expect(layer.style.transition).toBe('opacity 0ms ease-out');
-    expect(layer.style.opacity).toBe('1');
+    const layers = screen.getAllByTestId('portrait-layer');
+    expect(layers).toHaveLength(1);
+    expect(layers[0].style.transition).toBe('opacity 0ms ease-out');
+    expect(layers[0].style.opacity).toBe('1');
   });
 
   it('a drag that spans a speaker change saves to the member it started on, not the new one', () => {

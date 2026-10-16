@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { EmotionClips } from '../../../stores/livePortraitStore';
 import type { ResolvedMotionMode } from '../../../stores/motionModeStore';
 import { LivePortraitVideo } from '../LivePortraitVideo';
@@ -36,10 +36,30 @@ export function PortraitMedia(props: PortraitMediaProps) {
   const [speakerChanged, setSpeakerChanged] = useState(false);
   if (!speakerChanged && avatar !== mountAvatar) setSpeakerChanged(true);
 
+  const [outgoing, setOutgoing] = useState<PortraitMediaProps | null>(null);
+  const painted = useRef(props);
+  useLayoutEffect(() => {
+    const previous = painted.current;
+    painted.current = props;
+    if (previous.avatar !== avatar) setOutgoing(reducedMotion ? null : previous);
+  });
+  useEffect(() => {
+    if (!outgoing) return;
+    const timer = setTimeout(() => setOutgoing(null), SPEAKER_FADE_MS);
+    return () => clearTimeout(timer);
+  }, [outgoing]);
+
   return (
-    <FadeLayer key={avatar} fadeIn={speakerChanged} durationMs={reducedMotion ? 0 : SPEAKER_FADE_MS}>
-      <MediaContent {...props} />
-    </FadeLayer>
+    <>
+      {outgoing && outgoing.avatar !== avatar && (
+        <div key={`out-${outgoing.avatar}`} data-testid="portrait-layer" aria-hidden="true" className="absolute inset-0">
+          <MediaContent {...outgoing} />
+        </div>
+      )}
+      <FadeLayer key={`in-${avatar}`} fadeIn={speakerChanged} durationMs={reducedMotion ? 0 : SPEAKER_FADE_MS}>
+        <MediaContent {...props} />
+      </FadeLayer>
+    </>
   );
 }
 

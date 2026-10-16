@@ -76,7 +76,10 @@ export function PanelToolbar({
         <button
           ref={toggleRef}
           type="button"
-          onClick={() => setPickerOpen((o) => !o)}
+          onClick={() => {
+            if (!pickerOpen && framing) onToggleFraming();
+            setPickerOpen(!pickerOpen);
+          }}
           aria-label="Motion mode"
           title="Motion mode"
           aria-expanded={pickerOpen}
@@ -102,7 +105,10 @@ export function PanelToolbar({
       <button
         ref={framingButtonRef}
         type="button"
-        onClick={onToggleFraming}
+        onClick={() => {
+          if (!framing) setPickerOpen(false);
+          onToggleFraming();
+        }}
         aria-label="Adjust framing"
         title="Adjust framing"
         aria-pressed={framing}
