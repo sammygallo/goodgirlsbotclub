@@ -121,9 +121,8 @@ function MediaContent({
       className="absolute inset-0 w-full h-full object-cover select-none"
       style={{ objectPosition }}
       onError={() => {
-        // A sprite that 404s is remembered as failed, so the next render falls
-        // back to the default avatar — the same path the message avatars and the
-        // mobile portrait use. A default avatar that fails shows the placeholder.
+        // A sprite that 404s is remembered as failed. A default avatar that fails
+        // shows the placeholder.
         if (failedExpressionKey) onExpressionFailed(failedExpressionKey);
         else setBrokenSrc(imageUrl);
       }}

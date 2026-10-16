@@ -222,8 +222,7 @@ export function ChatView() {
   const isMobileLandscape = isMobile && isLandscape;
 
   const [failedExpressions, setFailedExpressions] = useState<Set<string>>(new Set());
-  // E6-S4: the desktop avatar panel shares ChatView's failed-sprite set, so a
-  // 404 falls back to the default avatar in the panel and the messages alike.
+  // E6-S4: the desktop avatar panel shares ChatView's failed-sprite set.
   const handleExpressionFailed = useCallback((key: string) => {
     setFailedExpressions((prev) => new Set(prev).add(key));
   }, []);
