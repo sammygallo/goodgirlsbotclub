@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useMemo, useState, useCallback, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, ChevronDown, X, Check, Clapperboard, PanelTopClose, PanelTopOpen, Wallpaper } from 'lucide-react';
+import { MessageSquare, Users, Settings2, Pencil, Square, Search, ChevronUp, ChevronDown, X, Check, Clapperboard, PanelTopClose, PanelTopOpen, PanelLeftOpen, Wallpaper } from 'lucide-react';
 import { showToastGlobal } from '../ui/Toast';
 import { useCharacterStore } from '../../stores/characterStore';
 import { useChatStore } from '../../stores/chatStore';
@@ -52,6 +52,8 @@ import { useSummarizeStore } from '../../stores/summarizeStore';
 import { useAutoMemoryStore } from '../../stores/autoMemoryStore';
 import { useCharacterSprites } from '../../hooks/useCharacterSprites';
 import { LivePortraitVideo } from './LivePortraitVideo';
+import { DesktopAvatarPanel, AVATAR_PANEL_ID } from './avatarPanel/DesktopAvatarPanel';
+import { useAvatarPanelExpanded } from '../../hooks/avatarPanelExpanded';
 import { useLivePortraitDiscovery } from '../../hooks/useLivePortraitDiscovery';
 import { useMotionModeStore, resolveMotionMode } from '../../stores/motionModeStore';
 import { MotionModePicker } from '../character/MotionModePicker';
@@ -220,6 +222,27 @@ export function ChatView() {
   const isMobileLandscape = isMobile && isLandscape;
 
   const [failedExpressions, setFailedExpressions] = useState<Set<string>>(new Set());
+  // E6-S4: the desktop avatar panel shares ChatView's failed-sprite set, so a
+  // 404 falls back to the default avatar in the panel and the messages alike.
+  const handleExpressionFailed = useCallback((key: string) => {
+    setFailedExpressions((prev) => new Set(prev).add(key));
+  }, []);
+  // E6-S4: desktop avatar panel expanded/collapsed (stm:chat-avatar-panel-expanded).
+  // Focus follows the toggle: Hide → "Show portrait", Show → the panel's Hide.
+  const [panelExpanded, setPanelExpanded] = useAvatarPanelExpanded();
+  const [panelFocusTarget, setPanelFocusTarget] = useState<'show' | 'hide' | null>(null);
+  const showPortraitButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (panelFocusTarget === 'show' && !panelExpanded) showPortraitButtonRef.current?.focus();
+  }, [panelFocusTarget, panelExpanded]);
+  const handleHideAvatarPanel = useCallback(() => {
+    setPanelExpanded(false);
+    setPanelFocusTarget('show');
+  }, [setPanelExpanded]);
+  const handleShowAvatarPanel = useCallback(() => {
+    setPanelExpanded(true);
+    setPanelFocusTarget('hide');
+  }, [setPanelExpanded]);
   const [prefillText, setPrefillText] = useState<string | undefined>(undefined);
   const [portraitHeight, setPortraitHeight] = useState<number>(getMobilePortraitHeight);
   // Mobile: user-collapsed the character portrait to maximize chat reading space.
@@ -1246,6 +1269,26 @@ export function ChatView() {
   };
   const cancelTitleEdit = () => setIsEditingTitle(false);
 
+  // E6-S4 (D-C2, D-C9): the desktop avatar panel needs a desktop viewport, VN
+  // mode off and an open chat; the container rule (D-C3) is CSS on the aside.
+  const canShowDesktopPanel =
+    !isMobile && !isVnMode && (isGroupChatMode ? groupChatCharacters.length > 0 : !!selectedCharacter);
+  const showDesktopPanel = canShowDesktopPanel && panelExpanded;
+  const showPortraitButton = canShowDesktopPanel && !panelExpanded ? (
+    <button
+      ref={showPortraitButtonRef}
+      type="button"
+      onClick={handleShowAvatarPanel}
+      aria-expanded="false"
+      aria-controls={AVATAR_PANEL_ID}
+      aria-label="Show portrait"
+      title="Show portrait"
+      className={`hidden lg:inline-flex items-center justify-center p-1.5 transition-colors ${isGroupChatMode ? 'rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]' : 'rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'}`}
+    >
+      <PanelLeftOpen size={18} />
+    </button>
+  ) : null;
+
   return (
     <div className="h-full flex flex-col overflow-hidden relative">
       {/* Phase 6.4: VN background image (z-0, behind sprite and content) */}
@@ -1328,10 +1371,28 @@ export function ChatView() {
         );
       })}
 
+      {/* E6-S4: desktop split row — avatar panel (1/3) beside the chat (2/3).
+          Always rendered, whatever the panel state, so hiding or showing the
+          panel never remounts the chat (input draft, scroll position).
+          Unpositioned, so the VN z-index stacking below is unchanged. */}
+      <div className="flex flex-1 min-h-0">
+      {showDesktopPanel && (
+        <DesktopAvatarPanel
+          kind={isGroupChatMode ? 'group' : 'solo'}
+          character={isGroupChatMode ? null : selectedCharacter}
+          members={groupChatCharacters}
+          costume={activeCostume}
+          failedExpressions={failedExpressions}
+          onExpressionFailed={handleExpressionFailed}
+          onHide={handleHideAvatarPanel}
+          focusHideOnMount={panelFocusTarget === 'hide'}
+        />
+      )}
+
       {/* All chat content — raised above VN sprite layers.
           Single-char sprite = z-1; group sprites = z-(2..4) for up to 3 speakers,
           so content needs to sit at z-10 to always be on top regardless of group size. */}
-      <div className={`flex flex-col flex-1 min-h-0 ${isVnMode ? 'relative' : ''}`} style={isVnMode ? { zIndex: 10 } : undefined}>
+      <div className={`flex flex-col flex-1 min-h-0 min-w-0 ${isVnMode ? 'relative' : ''}`} style={isVnMode ? { zIndex: 10 } : undefined}>
       {/* Group Chat Header (always visible when in group mode) */}
       {isGroupChatMode ? (
         <>
@@ -1384,6 +1445,7 @@ export function ChatView() {
                   {membersLabel}
                 </p>
               </div>
+              {showPortraitButton}
               <button
                 onClick={openSearch}
                 className={`p-1.5 rounded-full transition-colors ${isVnMode ? 'text-white/80 hover:bg-white/10' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'}`}
@@ -1714,6 +1776,7 @@ export function ChatView() {
                 )}
               </>
             )}
+            {showPortraitButton}
             <button
               onClick={openSearch}
               className={`p-1.5 rounded-md transition-colors ${isVnMode ? 'text-white/80 hover:bg-black/30' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'}`}
@@ -2384,6 +2447,7 @@ export function ChatView() {
       )}
 
       </div>{/* end VN content wrapper */}
+      </div>{/* end desktop split row */}
     </div>
   );
 }
