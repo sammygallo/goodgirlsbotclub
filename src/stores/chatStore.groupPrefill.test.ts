@@ -14,10 +14,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 //
 // The mocked provider below applies the same rule the real one did: a payload
 // whose last non-system entry is an assistant turn gets the prefill error.
-//
-// The `it.fails` cases assert the behaviour #421 asks for. They pass while the
-// bug is present; when a fix lands, the matching case turns red and should be
-// converted to a plain `it`.
 
 // chatStore pulls serverSettings (and through it the api layer) at module
 // load — neutralize before importing, per chatStore.groupMacros.test.ts.
@@ -39,13 +35,19 @@ vi.mock('./lovenseStore', () => ({
 
 const { useChatStore } = await import('./chatStore');
 const { useSettingsStore } = await import('./settingsStore');
+const { useGenerationStore } = await import('./generationStore');
+const { useWorldInfoStore } = await import('./worldInfoStore');
+const { useChatHistoryRagStore } = await import('./chatHistoryRagStore');
 const { api } = await import('../api/client');
 const { resolveGroupFocusAvatar } = await import(
   '../components/chat/avatarPanel/groupFocus'
 );
+const { estimateConversationTokens } = await import('../utils/tokenizer');
+const { mkBook, mkEntry } = await import('./promptGoldens.fixtures');
 
 import type { CharacterInfo } from '../api/client';
-import type { ChatMessage } from './chatStore';
+import type { ChatMessage, GroupChatInfo } from './chatStore';
+import type { PromptBreakdown } from '../utils/promptBreakdown';
 
 function mkChar(name: string, avatar: string): CharacterInfo {
   return { name, avatar, description: `${name} description` } as CharacterInfo;
@@ -72,10 +74,26 @@ function sse(frames: unknown[]): ReadableStream<Uint8Array> {
   });
 }
 
-const textStream = (text: string) => sse([{ choices: [{ delta: { content: text } }] }]);
+const textFrame = (text: string) => ({ choices: [{ delta: { content: text } }] });
+const textStream = (text: string) => sse([textFrame(text)]);
 // The shape the generation proxy forwards an upstream error in: a 200 SSE
 // stream carrying one error frame (ggbc-backend app/routers/generation.py).
-const errorStream = (message: string) => sse([{ error: { message, code: 400 } }]);
+const errorFrame = (message: string) => ({ error: { message, code: 400 } });
+const errorStream = (message: string) => sse([errorFrame(message)]);
+
+/** An error frame as the stream's last bytes, with no newline after it, so
+ *  only the parser's trailing-buffer branch ever sees it. */
+function errorStreamNoTrailingNewline(message: string): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorFrame(message))}`));
+      controller.close();
+    },
+  });
+}
+
+const instruction = (name: string) => `[Write the next reply only as ${name}.]`;
 
 type Payload = { role: string; content: string }[];
 
@@ -170,7 +188,56 @@ async function runRound() {
   await sendRound();
 }
 
-describe('group round on a prefill-rejecting provider (#421, #578)', () => {
+/** `who`'s messages in the transcript, greetings excluded. */
+const repliesFrom = (who: CharacterInfo) =>
+  useChatStore
+    .getState()
+    .messages.filter(
+      (m) => !m.isUser && m.characterAvatar === who.avatar && m.id !== 'g1' && m.id !== 'g2'
+    );
+
+const GROUP_FILE = 'group-prefill.jsonl';
+
+/** A persisted group record, so sendGroupMessage reads its strategy and
+ *  auto-mode settings from it. */
+function groupRecord(over: Partial<GroupChatInfo>): GroupChatInfo {
+  return {
+    fileName: GROUP_FILE,
+    characterNames: roster.map((c) => c.name),
+    characterAvatars: rosterAvatars,
+    lastMessage: '',
+    createdAt: 0,
+    activationStrategy: 'list',
+    mutedAvatars: [],
+    pooledExcludeRecent: 0,
+    autoModeEnabled: false,
+    autoModeDelayMs: 0,
+    scenarioOverride: '',
+    talkativenessOverrides: {},
+    cardMode: 'swap',
+    ...over,
+  };
+}
+
+/** An auto-mode group in natural order with no delay between ticks. A chat
+ *  file is set so sendGroupMessage resolves the record; saving and recall are
+ *  stubbed/disabled so neither reaches the network. */
+function seedAutoModeGroup() {
+  vi.spyOn(api, 'saveChat').mockResolvedValue({ server_ts: 1 });
+  useChatHistoryRagStore.setState({ enabled: false });
+  useChatStore.setState({
+    currentChatFile: GROUP_FILE,
+    isSending: false,
+    isStreaming: false,
+    error: null,
+    messages: greetings(),
+    groupChats: [
+      groupRecord({ activationStrategy: 'natural', autoModeEnabled: true, autoModeDelayMs: 0 }),
+    ],
+  });
+}
+
+function installHarness() {
   beforeEach(() => {
     globalThis.localStorage = new MemoryStorage() as unknown as Storage;
     useSettingsStore.setState({ activeProvider: 'anthropic', activeModel: 'claude-sonnet-5-5' });
@@ -180,10 +247,13 @@ describe('group round on a prefill-rejecting provider (#421, #578)', () => {
     globalThis.localStorage = realLocalStorage;
     vi.restoreAllMocks();
   });
+}
 
-  // Plain test: the conditions the it.fails cases below rely on. These hold
-  // before and after a fix, so a broken harness cannot pass for a reproduced
-  // bug.
+describe('group round on a prefill-rejecting provider (#421, #578)', () => {
+  installHarness();
+
+  // The conditions the cases below rely on. These held before and after the
+  // fix, so a broken harness cannot pass for a reproduced bug.
   it('runs both speakers in roster order, and speaker two gets a placeholder', async () => {
     const spy = prefillRejectingProvider();
     const appeared = recordAppearedAvatars();
@@ -203,7 +273,7 @@ describe('group round on a prefill-rejecting provider (#421, #578)', () => {
   });
 
   // #421 primary: speaker two's payload must end on a user-role entry.
-  it.fails("speaker two's payload does not end on an assistant turn", async () => {
+  it("speaker two's payload does not end on an assistant turn", async () => {
     const spy = prefillRejectingProvider();
     await runRound();
     expect(spy).toHaveBeenCalledTimes(2);
@@ -213,21 +283,25 @@ describe('group round on a prefill-rejecting provider (#421, #578)', () => {
   // #421 secondary: an upstream error inside the 200 SSE stream must not
   // read as a blank completion. Unconditional error, so this case tracks the
   // swallow independently of the payload fix.
-  it.fails("an upstream error in speaker two's stream is surfaced, not dropped as blank", async () => {
+  it("an upstream error in speaker two's stream is surfaced, not dropped as blank", async () => {
     let call = 0;
     vi.spyOn(api, 'generateMessage').mockImplementation(async () =>
       ++call === 1 ? textStream('[emotion:joy] Hi.') : errorStream('upstream exploded')
     );
     await runRound();
     expect(call).toBe(2);
-    expect(useChatStore.getState().error).not.toBeNull();
+    expect(useChatStore.getState().error).toBe('upstream exploded');
+    // Speaker two's placeholder is gone; speaker one's reply stays.
+    expect(repliesFrom(seraphina)).toEqual([]);
+    expect(repliesFrom(ivy)).toHaveLength(1);
+    expect(repliesFrom(ivy)[0].content).toBe('Hi.');
   });
 
-  // #578: the panel's focus input after the round. Today it reads
+  // #578: the panel's focus input after the round. Before the fix it read
   // [seraphina, ivy, seraphina, ivy] — the last two values are speaker two's
   // placeholder appearing and being removed. Once speaker two can reply, the
   // round ends with focus on her, on a message with content.
-  it.fails('after the round the panel focus rests on speaker two, with no fall-back', async () => {
+  it('after the round the panel focus rests on speaker two, with no fall-back', async () => {
     prefillRejectingProvider();
     seedGroup();
     const focus = recordFocus();
@@ -240,5 +314,238 @@ describe('group round on a prefill-rejecting provider (#421, #578)', () => {
       .getState()
       .messages.find((m) => !m.isUser && m.characterAvatar === seraphina.avatar && m.id !== 'g2');
     expect(reply?.content.trim()).toBeTruthy();
+  });
+});
+
+describe('#421 AC1: every group payload ends on a user-role entry', () => {
+  installHarness();
+
+  it("speaker two's payload ends on the speaker instruction naming speaker two; speaker one's is untouched", async () => {
+    const spy = prefillRejectingProvider();
+    await runRound();
+    expect(spy).toHaveBeenCalledTimes(2);
+    const first = spy.mock.calls[0][0] as Payload;
+    const second = spy.mock.calls[1][0] as Payload;
+    expect(first[first.length - 1]).toEqual({ role: 'user', content: 'Each of you, say hi.' });
+    expect(first.some((m) => m.content === instruction('Ivy'))).toBe(false);
+    expect(second[second.length - 1]).toEqual({ role: 'user', content: instruction('Seraphina') });
+    // The entry before it is speaker one's reply, sent as history.
+    expect(second[second.length - 2]).toEqual({ role: 'assistant', content: '[Ivy]: Hi, I\'m Ivy.' });
+  });
+
+  it('a trailing system entry after the last assistant turn still gets the instruction', async () => {
+    // A constant after_an world-info entry is emitted as a system message
+    // after the whole history, so it is every payload's literal last entry
+    // until the instruction is appended.
+    const LORE = 'Lore: the back room has no clock.';
+    const prev = useWorldInfoStore.getState();
+    useWorldInfoStore.setState({
+      books: [mkBook('b-prefill', [mkEntry('e-prefill', { content: LORE, position: 'after_an' })])],
+      activeBookIds: ['b-prefill'],
+    });
+    try {
+      const spy = prefillRejectingProvider();
+      await runRound();
+      expect(spy).toHaveBeenCalledTimes(2);
+      const first = spy.mock.calls[0][0] as Payload;
+      const second = spy.mock.calls[1][0] as Payload;
+      // Speaker one: the user's turn, then the system entry — no instruction.
+      expect(first.slice(-2)).toEqual([
+        { role: 'user', content: 'Each of you, say hi.' },
+        { role: 'system', content: LORE },
+      ]);
+      expect(first.some((m) => m.content === instruction('Ivy'))).toBe(false);
+      // Speaker two: speaker one's reply, the system entry, the instruction.
+      expect(second.slice(-3)).toEqual([
+        { role: 'assistant', content: '[Ivy]: Hi, I\'m Ivy.' },
+        { role: 'system', content: LORE },
+        { role: 'user', content: instruction('Seraphina') },
+      ]);
+      expect(useChatStore.getState().error).toBeNull();
+    } finally {
+      useWorldInfoStore.setState({ books: prev.books, activeBookIds: prev.activeBookIds });
+    }
+  });
+
+  it('force-talk on a history ending in an assistant turn ends on the instruction', async () => {
+    const spy = prefillRejectingProvider();
+    seedGroup();
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const sent = spy.mock.calls[0][0] as Payload;
+    expect(sent[sent.length - 1]).toEqual({ role: 'user', content: instruction('Ivy') });
+    expect(useChatStore.getState().error).toBeNull();
+    expect(repliesFrom(ivy)).toHaveLength(1);
+  });
+
+  it("force-talk on a history ending in the user's turn sends no instruction", async () => {
+    const spy = prefillRejectingProvider();
+    seedGroup();
+    useChatStore.setState({
+      messages: [
+        ...greetings(),
+        { id: 'u1', name: 'User', isUser: true, isSystem: false, content: 'Ivy, you first.', timestamp: 3, swipes: ['Ivy, you first.'], swipeId: 0 } as ChatMessage,
+      ],
+    });
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const sent = spy.mock.calls[0][0] as Payload;
+    expect(sent[sent.length - 1]).toEqual({ role: 'user', content: 'Ivy, you first.' });
+    expect(sent.some((m) => m.content === instruction('Ivy'))).toBe(false);
+  });
+
+  it('force-talk after an image-only user turn and a reply: no empty user turn ships, and the attachment is still sent', async () => {
+    // gpt-4o can see images, so imagesFromLastUserMessage resolves the
+    // attachment on the blank user turn and the request carries it. The
+    // newest turn is Ivy's reply, so the instruction is appended and the
+    // attachment is folded into that, the last user-role entry — the blank
+    // carrier turn must not ship as an empty content block.
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () => textStream('[emotion:joy] Lovely.'));
+    useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4o' });
+    seedGroup();
+    useChatStore.setState({
+      messages: [
+        { id: 'u1', name: 'User', isUser: true, isSystem: false, content: '', timestamp: 1, swipes: [''], swipeId: 0, images: ['data:image/png;base64,AAAA'] } as ChatMessage,
+        { id: 'a1', name: 'Ivy', isUser: false, isSystem: false, content: 'What a photo.', timestamp: 2, characterAvatar: ivy.avatar, swipes: ['What a photo.'], swipeId: 0 } as ChatMessage,
+      ],
+    });
+    await useChatStore.getState().forceGroupMemberTalk(seraphina, roster);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const sent = spy.mock.calls[0][0] as Payload;
+    expect(sent.every((m) => m.content.trim() !== '')).toBe(true);
+    expect(sent.filter((m) => m.role === 'user').map((m) => m.content)).toEqual([instruction('Seraphina')]);
+    expect(sent[sent.length - 1].role).toBe('user');
+    expect(spy.mock.calls[0][6]).toHaveLength(1);
+  });
+
+  it("auto-mode (natural): every tick's payload ends on a user-role entry", async () => {
+    let call = 0;
+    const spy = vi.spyOn(api, 'generateMessage').mockImplementation(async (payload) => {
+      // Stop after the third tick has dispatched.
+      if (++call === 3) useChatStore.getState().stopGeneration();
+      return endsOnAssistant(payload as Payload)
+        ? errorStream(PREFILL_ERROR)
+        : textStream('[emotion:joy] Hello again.');
+    });
+    seedAutoModeGroup();
+    await sendRound();
+    expect(spy).toHaveBeenCalledTimes(3);
+    for (const [payload] of spy.mock.calls) {
+      const p = payload as Payload;
+      expect(p[p.length - 1].role).toBe('user');
+      expect(endsOnAssistant(p)).toBe(false);
+    }
+    // Ticks two and three follow a member's reply, so they end on the
+    // instruction for whoever was picked.
+    for (const [payload, name] of spy.mock.calls.slice(1)) {
+      const p = payload as Payload;
+      expect(p[p.length - 1].content).toBe(instruction(name as string));
+    }
+    expect(useChatStore.getState().error).toBeNull();
+  });
+});
+
+describe('#421 AC2: an upstream error frame is surfaced, never a silent blank turn', () => {
+  installHarness();
+
+  it('force-talk: an upstream error frame sets error and removes the placeholder', async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () => errorStream('upstream exploded'));
+    seedGroup();
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBe('upstream exploded');
+    expect(repliesFrom(ivy)).toEqual([]);
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['g1', 'g2']);
+  });
+
+  it('an error frame with no trailing newline is still surfaced', async () => {
+    vi.spyOn(api, 'generateMessage').mockImplementation(async () =>
+      errorStreamNoTrailingNewline('upstream exploded at the end')
+    );
+    seedGroup();
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(useChatStore.getState().error).toBe('upstream exploded at the end');
+    expect(repliesFrom(ivy)).toEqual([]);
+  });
+
+  it('an upstream error after partial text keeps the partial reply, surfaces the error and ends the round', async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () =>
+        sse([textFrame('[emotion:joy] Hi, I was say'), errorFrame('upstream cut off')])
+      );
+    await runRound();
+    // The round stopped at speaker one: speaker two was never asked.
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBe('upstream cut off');
+    expect(repliesFrom(ivy).map((m) => m.content)).toEqual(['Hi, I was say']);
+    expect(repliesFrom(seraphina)).toEqual([]);
+  });
+
+  it('an upstream error ends an auto-mode loop instead of retrying every tick', async () => {
+    let call = 0;
+    const spy = vi.spyOn(api, 'generateMessage').mockImplementation(async () => {
+      // Safety valve: a loop that keeps going is stopped on its next tick.
+      if (++call === 2) useChatStore.getState().stopGeneration();
+      return errorStream('quota exceeded');
+    });
+    seedAutoModeGroup();
+    await sendRound();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBe('quota exceeded');
+  });
+
+  it('a genuinely blank completion (no error frame) is still dropped silently and the round continues', async () => {
+    let call = 0;
+    const spy = vi.spyOn(api, 'generateMessage').mockImplementation(async () =>
+      // Speaker one's stream carries only an emotion tag, which strips to
+      // nothing; speaker two's is a normal reply.
+      ++call === 1 ? textStream('[emotion:joy]') : textStream('[emotion:joy] Hello.')
+    );
+    await runRound();
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(useChatStore.getState().error).toBeNull();
+    expect(repliesFrom(ivy)).toEqual([]);
+    expect(repliesFrom(seraphina).map((m) => m.content)).toEqual(['Hello.']);
+  });
+});
+
+describe('#421 AC3: the published breakdown describes the dispatched payload', () => {
+  installHarness();
+
+  it("speaker two's published breakdown records the instruction as a call-site turn, and assembledTotal + callSite equals the dispatched estimate", async () => {
+    const spy = prefillRejectingProvider();
+    await runRound();
+    expect(spy).toHaveBeenCalledTimes(2);
+    const sent = spy.mock.calls[1][0] as Payload;
+    const breakdown = useGenerationStore.getState().lastPromptBreakdown!;
+    const callSite = breakdown.slices.filter((s) => s.kind.stage === 'callSite');
+    expect(callSite.map((s) => s.kind)).toEqual([{ stage: 'callSite', turn: 'group_nudge' }]);
+    expect(callSite[0].chars).toBe(instruction('Seraphina').length);
+    const dispatched = estimateConversationTokens(sent, breakdown.profile);
+    expect(breakdown.totals.assembledTotal + breakdown.totals.callSite).toBe(dispatched);
+    const reply = repliesFrom(seraphina);
+    expect(reply).toHaveLength(1);
+    expect(reply[0].usage!.inputTokens).toBe(dispatched);
+  });
+
+  it("speaker one's breakdown has no call-site turn", async () => {
+    let firstBreakdown: PromptBreakdown | null = null;
+    let call = 0;
+    vi.spyOn(api, 'generateMessage').mockImplementation(async (payload, name) => {
+      // Published before dispatch, so on call 1 it is speaker one's.
+      if (++call === 1) firstBreakdown = useGenerationStore.getState().lastPromptBreakdown;
+      return endsOnAssistant(payload as Payload)
+        ? errorStream(PREFILL_ERROR)
+        : textStream(`[emotion:joy] Hi, I'm ${name}.`);
+    });
+    await runRound();
+    expect(firstBreakdown).not.toBeNull();
+    expect(firstBreakdown!.slices.some((s) => s.kind.stage === 'callSite')).toBe(false);
+    expect(firstBreakdown!.totals.callSite).toBe(0);
   });
 });

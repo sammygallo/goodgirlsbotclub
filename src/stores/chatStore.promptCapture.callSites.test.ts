@@ -509,6 +509,76 @@ describe('exact-prompt capture is wired at the group generation call site', () =
       estimateConversationTokens(sent, profileForProvider(useSettingsStore.getState().activeProvider)),
     );
   });
+
+  // #421: the swap fixture's history ends on Seraphina's turn, so the group
+  // seam appends a speaker instruction after the builder returns. It has to be
+  // in the array the capture publishes, not added after it.
+  it('generateGroupTurn (forceGroupMemberTalk): the capture and the dispatched array both end on the speaker instruction, attributed as call_site_group_nudge', async () => {
+    resetStores();
+    const fx = GROUP_FIXTURES.find((f) => f.name === 'swap')!;
+    const input = fx.setup();
+    useChatHistoryRagStore.setState({ enabled: false });
+    useChatStore.setState({
+      messages: input.messages,
+      currentChatFile: 'prompt-capture-group.jsonl',
+      groupChats: [mkGroupChat(input.characters)],
+      isSending: false,
+      isStreaming: false,
+      error: null,
+      abortController: null,
+    });
+    const edges = stubEdges();
+    // Seraphina, not Marcus: Marcus's instruction is exactly as long as the
+    // fixture's Seraphina history entry, and the attribution refuses an
+    // equal-length match by design (see computeCaptureAttribution).
+    const speaker = input.characters[0];
+
+    await useChatStore.getState().forceGroupMemberTalk(speaker, input.characters);
+
+    const sent = edges.generate.mock.calls[0][0];
+    const c = capture()!;
+    expect(c.messages).toEqual(sent);
+    expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
+    expect(sent[sent.length - 1]).toEqual({
+      role: 'user',
+      content: `[Write the next reply only as ${speaker.name}.]`,
+    });
+    const attribution = computeCaptureAttribution(c, c.breakdown);
+    expect(attribution).not.toBeNull();
+    expect(attribution!.length).toBe(sent.length);
+    expect(attribution![attribution!.length - 1].labels).toEqual(['call_site_group_nudge']);
+  });
+
+  it('generateGroupTurn under instruct collapse: the speaker instruction is folded into the single dispatched message', async () => {
+    resetStores();
+    const fx = GROUP_FIXTURES.find((f) => f.name === 'swap')!;
+    const input = fx.setup();
+    useChatHistoryRagStore.setState({ enabled: false });
+    useChatStore.setState({
+      messages: input.messages,
+      currentChatFile: 'prompt-capture-group.jsonl',
+      groupChats: [mkGroupChat(input.characters)],
+      isSending: false,
+      isStreaming: false,
+      error: null,
+      abortController: null,
+    });
+    useGenerationStore.setState({
+      instruct: { ...DEFAULT_INSTRUCT_CONFIG, enabled: true, templateId: 'chatml' },
+    });
+    const edges = stubEdges();
+    const speaker = input.characters[1];
+
+    await useChatStore.getState().forceGroupMemberTalk(speaker, input.characters);
+
+    const sent = edges.generate.mock.calls[0][0];
+    const c = capture()!;
+    expect(c.collapsedByInstruct).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].content).toContain(`[Write the next reply only as ${speaker.name}.]`);
+    expect(c.messages).toEqual(sent);
+    expect(JSON.stringify(c.messages)).toBe(JSON.stringify(sent));
+  });
 });
 
 describe('showExactPrompt off: no capture is published', () => {

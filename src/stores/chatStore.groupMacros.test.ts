@@ -1275,9 +1275,13 @@ describe('review-fix C: the PRODUCTION call site passes the real attachmentsFold
     expect(spy.mock.calls[0][6]).toHaveLength(1);
     expect(first.filter((c) => c.role === 'user').map((c) => c.content)).toEqual(['']);
 
-    // Speaker two carries nothing, so the same blank turn must be dropped.
+    // Speaker two carries nothing, so the same blank turn must be dropped. Its
+    // only user-role entry is the speaker instruction appended after speaker
+    // one's reply (#421).
     expect(spy.mock.calls[1][6]).toBeUndefined();
-    expect(second.some((c) => c.role === 'user')).toBe(false);
+    expect(second.filter((c) => c.role === 'user').map((c) => c.content)).toEqual([
+      '[Write the next reply only as Marcus.]',
+    ]);
     expect(second.every((c) => c.content.trim() !== '')).toBe(true);
   });
 });
