@@ -12,8 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // placeholder appeared, its stream yielded no text, and the blank-turn guard in
 // generateGroupTurn removed it, so focus fell back to speaker one.
 //
-// The mocked provider below applies the same rule the real one did: a payload
-// whose last non-system entry is an assistant turn gets the prefill error.
+// In the mocked provider below, a payload whose last non-system entry is an
+// assistant turn gets the prefill error.
 
 // chatStore pulls serverSettings (and through it the api layer) at module
 // load — neutralize before importing, per chatStore.groupMacros.test.ts.
@@ -131,7 +131,7 @@ function endsOnAssistant(payload: Payload): boolean {
   return last?.role === 'assistant';
 }
 
-/** A provider that refuses assistant prefill, like claude-sonnet-5-5 did. */
+/** A provider that refuses assistant prefill. */
 function prefillRejectingProvider() {
   return vi.spyOn(api, 'generateMessage').mockImplementation(async (payload, name) =>
     endsOnAssistant(payload as Payload)
