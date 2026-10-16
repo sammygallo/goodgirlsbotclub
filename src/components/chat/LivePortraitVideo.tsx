@@ -18,14 +18,22 @@ export interface LivePortraitVideoProps {
   emotion?: string | null;
   /** Diameter of the avatar in CSS pixels (square). Ignored when `fill` is true. */
   size?: number;
-  /** "circle" | "square" — matches the existing Avatar shape prop. */
-  shape?: 'circle' | 'square';
+  /**
+   * "circle" | "square" — matches the existing Avatar shape prop. "rect" is
+   * square corners with no radius, for full-bleed panels (D-C1).
+   */
+  shape?: 'circle' | 'square' | 'rect';
   /** Optional className on the outer wrapper. */
   className?: string;
   /** Fill the parent container (100% × 100%) instead of using a fixed `size`. */
   fill?: boolean;
   /** CSS object-position string (e.g. "50% 25%"). Defaults to center. */
   objectPosition?: string;
+  /**
+   * Pause both clips and keep the current frame visible (D-C6: a looping
+   * autoplay video needs a pause control). Defaults to playing.
+   */
+  paused?: boolean;
 }
 
 const FADE_MS = 250;
@@ -38,6 +46,7 @@ export function LivePortraitVideo({
   className,
   fill = false,
   objectPosition,
+  paused = false,
 }: LivePortraitVideoProps) {
   const idleRef = useRef<HTMLVideoElement>(null);
   const emotionRef = useRef<HTMLVideoElement>(null);
@@ -56,24 +65,33 @@ export function LivePortraitVideo({
   }, [emotion, clips]);
 
   // Autoplay both videos. Some mobile browsers require an explicit play()
-  // call after metadata loads.
+  // call after metadata loads. While paused, nothing is played and the
+  // current frame stays on screen.
   useEffect(() => {
     const v = idleRef.current;
     if (!v) return;
+    if (paused) {
+      v.pause();
+      return;
+    }
     const tryPlay = () => v.play().catch(() => {});
     v.addEventListener('loadedmetadata', tryPlay);
     tryPlay();
     return () => v.removeEventListener('loadedmetadata', tryPlay);
-  }, []);
+  }, [paused]);
 
   useEffect(() => {
     const v = emotionRef.current;
     if (!v) return;
     if (!overlayUrl) return;
+    if (paused) {
+      v.pause();
+      return;
+    }
     v.play().catch(() => {});
-  }, [overlayUrl]);
+  }, [overlayUrl, paused]);
 
-  const radius = shape === 'circle' ? '50%' : '8px';
+  const radius = shape === 'circle' ? '50%' : shape === 'rect' ? 0 : '8px';
   const idleUrl = clips.idle;
 
   return (
@@ -95,7 +113,7 @@ export function LivePortraitVideo({
           muted
           loop
           playsInline
-          autoPlay
+          autoPlay={!paused}
           style={{
             position: 'absolute',
             inset: 0,
@@ -115,7 +133,7 @@ export function LivePortraitVideo({
           muted
           loop
           playsInline
-          autoPlay
+          autoPlay={!paused}
           style={{
             position: 'absolute',
             inset: 0,
