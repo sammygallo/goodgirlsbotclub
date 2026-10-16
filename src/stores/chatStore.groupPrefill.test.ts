@@ -36,7 +36,7 @@ vi.mock('./lovenseStore', () => ({
 const { useChatStore } = await import('./chatStore');
 const { useSettingsStore } = await import('./settingsStore');
 const { useGenerationStore } = await import('./generationStore');
-const { useWorldInfoStore } = await import('./worldInfoStore');
+const { useWorldInfoStore, loadWiTimers } = await import('./worldInfoStore');
 const { useChatHistoryRagStore } = await import('./chatHistoryRagStore');
 const { api } = await import('../api/client');
 const { resolveGroupFocusAvatar } = await import(
@@ -551,6 +551,27 @@ describe('#421 AC2: an upstream error frame is surfaced, never a silent blank tu
     expect(useChatStore.getState().error).toBe('upstream cut off');
     expect(repliesFrom(ivy).map((m) => m.content)).toEqual(['Hi, I was say']);
     expect(repliesFrom(seraphina)).toEqual([]);
+  });
+
+  it('an upstream error after partial text still advances the WI timed-effect clock for the kept reply', async () => {
+    const prev = useWorldInfoStore.getState();
+    useWorldInfoStore.setState({
+      books: [mkBook('b-timer', [mkEntry('e-timer', { content: 'Lore: the clock runs slow.', cooldown: 3 })])],
+      activeBookIds: ['b-timer'],
+    });
+    try {
+      vi.spyOn(api, 'generateMessage').mockImplementation(async () =>
+        sse([textFrame('[emotion:joy] Hi, I was say'), errorFrame('upstream cut off')])
+      );
+      await runRound();
+      expect(useChatStore.getState().error).toBe('upstream cut off');
+      expect(repliesFrom(ivy).map((m) => m.content)).toEqual(['Hi, I was say']);
+      // currentChatFile is null, so the timers are keyed under ''. Speaker
+      // one's turn number is the two greetings before it.
+      expect(loadWiTimers('')).toEqual({ 'e-timer': 2 });
+    } finally {
+      useWorldInfoStore.setState({ books: prev.books, activeBookIds: prev.activeBookIds });
+    }
   });
 
   it('an upstream error ends an auto-mode loop instead of retrying every tick', async () => {
