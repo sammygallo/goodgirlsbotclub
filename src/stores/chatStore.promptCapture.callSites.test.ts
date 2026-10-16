@@ -868,7 +868,11 @@ describe('capture metadata under non-default inputs at every non-send seam (R12-
       if (input.messages[i].isUser) { lastUserIdx = i; break; }
     }
     expect(lastUserIdx, 'sanity: the group fixture has a user turn').toBeGreaterThanOrEqual(0);
-    const messages = input.messages.map((m, i) => (i === lastUserIdx ? { ...m, images: DATA_URLS } : m));
+    // Cut after that user turn: a group turn sends images only when the newest
+    // history turn is the user's (#421, D-E9S11-5).
+    const messages = input.messages
+      .slice(0, lastUserIdx + 1)
+      .map((m, i) => (i === lastUserIdx ? { ...m, images: DATA_URLS } : m));
     useChatHistoryRagStore.setState({ enabled: false });
     useChatStore.setState({
       messages,

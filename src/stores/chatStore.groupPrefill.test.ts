@@ -394,12 +394,11 @@ describe('#421 AC1: every group payload ends on a user-role entry', () => {
     expect(sent.some((m) => m.content === instruction('Ivy'))).toBe(false);
   });
 
-  it('force-talk after an image-only user turn and a reply: no empty user turn ships, and the attachment is still sent', async () => {
+  it('force-talk after an image-only user turn and a reply: no empty user turn ships, and no images are sent', async () => {
     // gpt-4o can see images, so imagesFromLastUserMessage resolves the
-    // attachment on the blank user turn and the request carries it. The
-    // newest turn is Ivy's reply, so the instruction is appended and the
-    // attachment is folded into that, the last user-role entry — the blank
-    // carrier turn must not ship as an empty content block.
+    // attachment on the blank user turn. The newest turn is Ivy's reply, so
+    // the turn withholds it (D-E9S11-5) and the blank carrier turn must not
+    // ship as an empty content block.
     const spy = vi
       .spyOn(api, 'generateMessage')
       .mockImplementation(async () => textStream('[emotion:joy] Lovely.'));
@@ -417,7 +416,46 @@ describe('#421 AC1: every group payload ends on a user-role entry', () => {
     expect(sent.every((m) => m.content.trim() !== '')).toBe(true);
     expect(sent.filter((m) => m.role === 'user').map((m) => m.content)).toEqual([instruction('Seraphina')]);
     expect(sent[sent.length - 1].role).toBe('user');
+    expect(spy.mock.calls[0][6]).toBeUndefined();
+  });
+
+  it('force-talk after a TEXT+image user message and a reply sends no images, so none land on the instruction', async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () => textStream('[emotion:joy] A spaniel.'));
+    useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4o' });
+    seedGroup();
+    useChatStore.setState({
+      messages: [
+        { id: 'u1', name: 'User', isUser: true, isSystem: false, content: 'What breed is this dog?', timestamp: 1, swipes: ['What breed is this dog?'], swipeId: 0, images: ['data:image/png;base64,AAAA'] } as ChatMessage,
+        { id: 'a1', name: 'Ivy', isUser: false, isSystem: false, content: 'Cute dog!', timestamp: 2, characterAvatar: ivy.avatar, swipes: ['Cute dog!'], swipeId: 0 } as ChatMessage,
+      ],
+    });
+    await useChatStore.getState().forceGroupMemberTalk(seraphina, roster);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][6]).toBeUndefined();
+    const sent = spy.mock.calls[0][0] as Payload;
+    expect(sent[sent.length - 1]).toEqual({ role: 'user', content: instruction('Seraphina') });
+  });
+
+  it("force-talk right after the user's image message (newest turn is the user's) still sends the images and appends no instruction", async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () => textStream('[emotion:joy] A spaniel.'));
+    useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4o' });
+    seedGroup();
+    useChatStore.setState({
+      messages: [
+        ...greetings(),
+        { id: 'u1', name: 'User', isUser: true, isSystem: false, content: 'What breed is this dog?', timestamp: 3, swipes: ['What breed is this dog?'], swipeId: 0, images: ['data:image/png;base64,AAAA'] } as ChatMessage,
+      ],
+    });
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][6]).toHaveLength(1);
+    const sent = spy.mock.calls[0][0] as Payload;
+    expect(sent[sent.length - 1]).toEqual({ role: 'user', content: 'What breed is this dog?' });
+    expect(sent.some((m) => m.content === instruction('Ivy'))).toBe(false);
   });
 
   it("auto-mode (natural): every tick's payload ends on a user-role entry", async () => {

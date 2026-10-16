@@ -2402,9 +2402,8 @@ export function buildGroupConversationContext(
   /**
    * E9-S6 review-fix: whether THIS build's caller will fold image attachments
    * into the build's history — `generateGroupTurn` passes true only when it
-   * hands images to `api.generateMessage` AND the newest history turn is the
-   * user's (#421: otherwise it appends a user-role speaker instruction, and the
-   * fold lands on that). It is one half of the test for whether
+   * hands images to `api.generateMessage`, which it does only when the newest
+   * history turn is the user's (#421). It is one half of the test for whether
    * a blank user turn that exists ONLY to carry an attachment is worth keeping —
    * the turn also has to be the one the fold lands on, see the history loop
    * below. Defaults to `true`, the historical group behavior and what
@@ -3378,6 +3377,10 @@ async function generateGroupTurn(
     activated: wiTimerActivated,
   };
   const breakdown = createPromptBreakdown('group');
+  // #421 (D-E9S11-5): a group turn sends images only when the newest history
+  // turn is the user's.
+  const newestTurnIsUser = groupHistoryWindow(updatedMessages).at(-1)?.isUser === true;
+  const turnImages = newestTurnIsUser ? images : undefined;
   const context = buildGroupConversationContext(
     updatedMessages,
     characters,
@@ -3386,15 +3389,11 @@ async function generateGroupTurn(
     ragCtx ?? undefined,
     groupCardMode,
     wiOut,
-    // E9-S6 review-fix: only this turn's own `images` argument reaches
+    // E9-S6 review-fix: only this turn's own `turnImages` reach
     // api.generateMessage below, so only this turn can have an attachment
     // folded into it. Callers that withhold images for a later speaker in the
     // round must not leave a blank user turn behind to carry nothing.
-    // #421: and only when the newest history turn is the user's. After an
-    // assistant turn the speaker instruction below is appended, and the fold
-    // lands on that (the last user-role entry), not on a blank history turn.
-    Boolean(images && images.length > 0) &&
-      groupHistoryWindow(updatedMessages).at(-1)?.isUser === true,
+    Boolean(turnImages && turnImages.length > 0),
     breakdown
   );
   // #421: a payload whose last conversational turn is an assistant one is an
@@ -3407,7 +3406,7 @@ async function generateGroupTurn(
     context.push({ role: 'user', content: groupSpeakerInstruction(character.name) });
     recordCallSiteTurn(breakdown, 'group_nudge', context[context.length - 1].content);
   }
-  recordAttachments(breakdown, images);
+  recordAttachments(breakdown, turnImages);
   useGenerationStore.getState().setLastPromptBreakdown(breakdown);
 
   const { result: stream, capture, finalContext } = await dispatchWithCapture(
@@ -3417,7 +3416,7 @@ async function generateGroupTurn(
       seam: 'group',
       provider,
       model,
-      images,
+      images: turnImages,
       textCompletionMode: isTextCompletionMode(),
       breakdown,
     },
@@ -3429,7 +3428,7 @@ async function generateGroupTurn(
         model,
         abortController.signal,
         getGenerationOptions(),
-        images,
+        turnImages,
         isTextCompletionMode()
       ),
   );

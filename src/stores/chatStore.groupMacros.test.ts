@@ -1120,7 +1120,7 @@ describe('review-fix C: the PRODUCTION call site passes the real attachmentsFold
   // forceGroupMemberTalk -> generateGroupTurn -> api.generateMessage path and
   // differ in ONE input, the active model, whose only effect on this fixture is
   // whether `imagesFromLastUserMessage` returns images for the call site's
-  // `Boolean(images && images.length > 0)` to read.
+  // `Boolean(turnImages && turnImages.length > 0)` to read.
   //
   // Round 3: that pair alone is NOT enough. `activeModel` is also what drives
   // supportsVision, so on those two fixtures "carries images" and "can see
