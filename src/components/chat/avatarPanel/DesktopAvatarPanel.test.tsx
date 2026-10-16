@@ -415,7 +415,11 @@ describe('toolbar (§5.3)', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const popover = document.getElementById(toggle.getAttribute('aria-controls') as string) as HTMLElement;
     expect(popover.hidden).toBe(false);
-    expect(within(popover).getByRole('radiogroup', { name: 'Avatar motion mode' })).toBeTruthy();
+    // D-E6S4-4: the popover sits on a fixed dark surface, so the picker uses
+    // its overlay variant, not the panel variant's themed surface.
+    const pickerClasses = within(popover).getByRole('radiogroup', { name: 'Avatar motion mode' }).className.split(/\s+/);
+    expect(pickerClasses).toContain('bg-black/40');
+    expect(pickerClasses).not.toContain('bg-[var(--color-bg-tertiary)]');
 
     const documentEscape = vi.fn();
     document.addEventListener('keydown', documentEscape);
@@ -594,12 +598,19 @@ describe('framing mode (D-C8)', () => {
   });
 
   it('Reset framing is in the toolbar, and the dashed outline is drawn, only while framing (frame C5)', () => {
+    // Clips cached so Pause shows too, pinning Reset's place in the full order.
+    cacheClips('a.png', { idle: '/clips/a/idle.mp4' });
     const { container } = renderSolo();
     const outline = () => container.querySelector('[data-testid="framing-outline"]');
     expect(screen.queryByRole('button', { name: 'Reset framing' })).toBeNull();
     expect(outline()).toBeNull();
     enterFraming();
     expect(within(toolbar()).getByRole('button', { name: 'Reset framing' })).toBeTruthy();
+    const names = within(toolbar())
+      .getAllByRole('button')
+      .filter((b) => !b.closest('[hidden]'))
+      .map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim());
+    expect(names).toEqual(['Motion mode', 'Adjust framing', 'Reset framing', 'Pause animation', 'Hide portrait']);
     expect(outline()?.className).toContain('border-dashed');
     expect(outline()?.className).toContain('pointer-events-none');
     fireEvent.click(within(toolbar()).getByRole('button', { name: 'Adjust framing' }));

@@ -45,6 +45,10 @@ beforeEach(() => {
 
 describe('persist version 1 (D-E6S4-1)', () => {
   it('a stored blob without desktopPositionsByAvatar hydrates with the mobile map intact and an empty desktop map', async () => {
+    // Start from the store's declared initial state, not beforeEach's seed: the
+    // empty desktop map must come from the initial state the old blob merges
+    // over, not from a value the suite wrote.
+    usePortraitPositionStore.setState(usePortraitPositionStore.getInitialState(), true);
     data.set(KEY, JSON.stringify({ state: { positionsByAvatar: { 'a.png': { x: 10, y: 20 } } }, version: 1 }));
 
     await usePortraitPositionStore.persist.rehydrate();
