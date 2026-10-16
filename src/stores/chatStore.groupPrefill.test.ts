@@ -460,11 +460,25 @@ describe('#421 AC1: every group payload ends on a user-role entry', () => {
         { id: 'a1', name: 'Ivy', isUser: false, isSystem: false, content: 'Cute dog!', timestamp: 2, characterAvatar: ivy.avatar, swipes: ['Cute dog!'], swipeId: 0 } as ChatMessage,
       ],
     });
-    await useChatStore.getState().forceGroupMemberTalk(seraphina, roster);
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy.mock.calls[0][6]).toBeUndefined();
-    const sent = spy.mock.calls[0][0] as Payload;
-    expect(sent[sent.length - 1]).toEqual({ role: 'user', content: instruction('Seraphina') });
+    const prevShowExactPrompt = useGenerationStore.getState().showExactPrompt;
+    useGenerationStore.setState({ showExactPrompt: true, lastPromptCapture: null, lastPromptBreakdown: null });
+    try {
+      await useChatStore.getState().forceGroupMemberTalk(seraphina, roster);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][6]).toBeUndefined();
+      const sent = spy.mock.calls[0][0] as Payload;
+      expect(sent[sent.length - 1]).toEqual({ role: 'user', content: instruction('Seraphina') });
+      // The exact-prompt capture and the breakdown describe the same
+      // image-free dispatch.
+      const capture = useGenerationStore.getState().lastPromptCapture;
+      expect(capture).not.toBeNull();
+      expect(capture!.imagesFolded).toBe(0);
+      const breakdown = useGenerationStore.getState().lastPromptBreakdown!;
+      expect(breakdown.attachments).toEqual({ count: 0, bytes: 0 });
+      expect(breakdown.slices.some((s) => s.kind.stage === 'attachments')).toBe(false);
+    } finally {
+      useGenerationStore.setState({ showExactPrompt: prevShowExactPrompt, lastPromptCapture: null });
+    }
   });
 
   it("force-talk right after the user's image message (newest turn is the user's) still sends the images and appends no instruction", async () => {
