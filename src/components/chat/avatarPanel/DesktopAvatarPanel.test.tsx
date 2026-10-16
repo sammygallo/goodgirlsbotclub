@@ -168,9 +168,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  cleanup();
-  vi.restoreAllMocks();
-  useChatStore.setState(initialChat, true);
+  // D-E6S4-5, for every case: the panel never runs a clip discovery of its own.
+  try {
+    expect(fetchExistingClips).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    vi.restoreAllMocks();
+    useChatStore.setState(initialChat, true);
+  }
 });
 
 describe('source resolution (D-C5)', () => {
@@ -254,6 +259,51 @@ describe('source resolution (D-C5)', () => {
     fireEvent.error(img());
     expect(img().tagName).toBe('DIV');
     expect(img().textContent).toBe('A');
+  });
+
+  it('with "no fallback" on, after the latest sprite 404s, a 404 on the walk-back sprite fails the walk-back\'s emotion, then shows the default avatar', () => {
+    useExpressionsStore.setState({ noFallback: true });
+    env.sprites['a.png'] = { sad: '/sprites/a/sad.png', joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'sad'), ai('2', 'joy')] });
+    const reported: string[] = [];
+    renderWithFailedSet({ kind: 'solo', character: ava }, reported);
+    const img = () => screen.getByRole('img', { name: 'Ava' });
+    expect(img().getAttribute('src')).toBe('/sprites/a/joy.png');
+
+    fireEvent.error(img());
+    expect(img().getAttribute('src')).toBe('/sprites/a/sad.png');
+    // joy has a sprite but it failed: the sprite on screen is sad's.
+    fireEvent.error(img());
+    expect(reported).toEqual(['a.png-joy', 'a.png-sad']);
+    expect(img().tagName).toBe('IMG');
+    expect(img().getAttribute('src')).toBe('/blobs/character/a.png');
+  });
+
+  it('a placeholder gives way to the next image: a new emotion\'s sprite shows again', () => {
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'anger')] });
+    renderSolo();
+    fireEvent.error(screen.getByRole('img', { name: 'Ava' }));
+    expect(screen.getByRole('img', { name: 'Ava' }).tagName).toBe('DIV');
+
+    act(() => useChatStore.setState({ messages: [ai('1', 'anger'), ai('2', 'joy')] }));
+    const img = screen.getByRole('img', { name: 'Ava' });
+    expect(img.tagName).toBe('IMG');
+    expect(img.getAttribute('src')).toBe('/sprites/a/joy.png');
+  });
+
+  it('the placeholder initial is upper-cased', () => {
+    renderSolo({ character: { name: 'zed', avatar: 'z.png' } as CharacterInfo });
+    fireEvent.error(screen.getByRole('img', { name: 'zed' }));
+    expect(screen.getByRole('img', { name: 'zed' }).textContent).toBe('Z');
+  });
+
+  it('expressions mode with no emotion on the latest message shows no chip', () => {
+    env.sprites['a.png'] = { joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', null)] });
+    const { container } = renderSolo();
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/blobs/character/a.png');
+    expect(container.querySelector('span.capitalize')).toBeNull();
   });
 });
 
@@ -376,6 +426,15 @@ describe('toolbar (§5.3)', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
+  it('with the popover closed, Escape on Motion mode still reaches document listeners', () => {
+    renderSolo();
+    const documentEscape = vi.fn();
+    document.addEventListener('keydown', documentEscape);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Motion mode' }), { key: 'Escape' });
+    document.removeEventListener('keydown', documentEscape);
+    expect(documentEscape).toHaveBeenCalledTimes(1);
+  });
+
   it('the popover\'s options follow the focused member\'s clips and sprites', () => {
     const openPicker = () => {
       const toggle = screen.getByRole('button', { name: 'Motion mode' });
@@ -482,6 +541,8 @@ describe('framing mode (D-C8)', () => {
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByText('Drag or use arrow keys to reposition')).toBeTruthy();
     expect(document.activeElement).toBe(surface);
+    const describedBy = surface.getAttribute('aria-describedby') as string;
+    expect(document.getElementById(describedBy)?.textContent).toBe('Drag or use arrow keys to reposition');
   });
 
   it('arrows move 5%, Shift+arrow 1%, clamped to 0–100, into the desktop map only', () => {
@@ -589,6 +650,78 @@ describe('framing mode (D-C8)', () => {
     expect(position()).toBe('30% 0%');
   });
 
+  it('outside framing mode a drag does nothing', () => {
+    renderSolo();
+    const surface = screen.getByTestId('portrait-layer').parentElement as HTMLElement;
+    stubSurface(surface);
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(position()).toBe('50% 0%');
+    expect(stored()).toBeUndefined();
+  });
+
+  it('a drag captures its pointer and releases it on pointerup; later moves do nothing', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+    const captured = new Set<number>();
+    const setCapture = vi.fn((id: number) => void captured.add(id));
+    const releaseCapture = vi.fn((id: number) => void captured.delete(id));
+    surface.setPointerCapture = setCapture;
+    surface.hasPointerCapture = (id: number) => captured.has(id);
+    surface.releasePointerCapture = releaseCapture;
+
+    fireEvent.pointerDown(surface, { pointerId: 7, clientX: 100, clientY: 100 });
+    expect(setCapture).toHaveBeenCalledWith(7);
+    fireEvent.pointerMove(surface, { pointerId: 7, clientX: 80, clientY: 60 });
+    fireEvent.pointerUp(surface, { pointerId: 7, clientX: 80, clientY: 60 });
+    expect(releaseCapture).toHaveBeenCalledWith(7);
+    expect(captured.size).toBe(0);
+    expect(stored()).toEqual({ x: 60, y: 10 });
+
+    fireEvent.pointerMove(surface, { pointerId: 7, clientX: 40, clientY: 20 });
+    expect(position()).toBe('60% 10%');
+  });
+
+  it('a second pointer neither moves nor ends the drag', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 2, clientX: 80, clientY: 60 });
+    expect(position()).toBe('50% 0%');
+    fireEvent.pointerUp(surface, { pointerId: 2, clientX: 80, clientY: 60 });
+    expect(stored()).toBeUndefined();
+
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(position()).toBe('60% 10%');
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(stored()).toEqual({ x: 60, y: 10 });
+  });
+
+  it('a move over a zero-size surface (the panel CSS-hidden mid-drag) leaves the framing alone', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    stubSurface(surface);
+    surface.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) });
+    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 80, clientY: 60 });
+    expect(position()).toBe('50% 0%');
+  });
+
+  it('arrow keys are consumed; Tab is not, and writes nothing', () => {
+    renderSolo();
+    const { surface } = enterFraming();
+    // fireEvent returns false when the handler called preventDefault.
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+      expect(fireEvent.keyDown(surface, { key })).toBe(false);
+    }
+    usePortraitPositionStore.setState({ desktopPositionsByAvatar: {} });
+    expect(fireEvent.keyDown(surface, { key: 'Tab' })).toBe(true);
+    expect(stored()).toBeUndefined();
+  });
+
   it('opening Motion mode exits framing, so nothing paints over the picker', () => {
     renderSolo();
     const { toggle } = enterFraming();
@@ -662,6 +795,14 @@ describe('group mode (D-C7)', () => {
     expect(container.querySelector('video')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show Cat' }));
     expect(container.querySelector('video')).not.toBeNull();
+  });
+
+  it('a pinned member shows its own newest emotion, not the newest speaker\'s', () => {
+    env.sprites['a.png'] = { sad: '/sprites/a/sad.png', joy: '/sprites/a/joy.png' };
+    useChatStore.setState({ messages: [ai('1', 'sad', 'a.png'), ai('2', 'joy', 'b.png')] });
+    renderGroup();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Ava' }));
+    expect(screen.getByRole('img', { name: 'Ava' }).getAttribute('src')).toBe('/sprites/a/sad.png');
   });
 
   it('pins a member on click and follows the next AI message after', () => {

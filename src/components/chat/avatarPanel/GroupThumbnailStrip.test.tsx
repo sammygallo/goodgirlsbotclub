@@ -55,6 +55,16 @@ describe('GroupThumbnailStrip', () => {
     expect(document.activeElement).toBe(a);
   });
 
+  it('consumes the keys it handles, so the strip and page do not also scroll', () => {
+    render(<GroupThumbnailStrip members={members} focusedAvatar="a.png" onPin={() => {}} />);
+    const [a] = buttons();
+    // fireEvent returns false when the handler called preventDefault.
+    for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End']) {
+      expect(fireEvent.keyDown(a, { key })).toBe(false);
+    }
+    expect(fireEvent.keyDown(a, { key: 'Tab' })).toBe(true);
+  });
+
   it('arrow keys move focus without pinning; activating a button pins it', () => {
     const onPin = vi.fn();
     render(<GroupThumbnailStrip members={members} focusedAvatar="a.png" onPin={onPin} />);

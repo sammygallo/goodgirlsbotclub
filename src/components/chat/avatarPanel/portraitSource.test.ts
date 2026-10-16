@@ -114,6 +114,21 @@ describe('findPreviousValidSpritePath', () => {
     });
   });
 
+  it('skips user and system turns even when they carry an emotion, as ChatView does', () => {
+    const messages = [ai('1', 'sadness'), { ...ai('2', 'joy'), isUser: true }, { ...ai('3', 'joy'), isSystem: true }];
+    expect(findPreviousValidSpritePath(messages, 'a.png', false, 'a.png', lookup())).toEqual({
+      path: '/sprites/a/sadness.png',
+      emotion: 'sadness',
+    });
+  });
+
+  it('solo: a message\'s characterAvatar is ignored — every AI turn is the character\'s, as ChatView reads it', () => {
+    expect(findPreviousValidSpritePath([ai('1', 'joy', 'other.png')], 'a.png', false, 'a.png', lookup())).toEqual({
+      path: '/sprites/a/joy.png',
+      emotion: 'joy',
+    });
+  });
+
   it('alias-maps the walked-back emotion', () => {
     expect(findPreviousValidSpritePath([ai('1', 'happy')], 'a.png', false, 'a.png', lookup())).toEqual({
       path: '/sprites/a/joy.png',

@@ -103,6 +103,16 @@ describe('useGroupFocus', () => {
     expect(result.current.focusedAvatar).toBe('b.png');
   });
 
+  it('a pin holds in a chat with no AI message yet', () => {
+    setMessages([user('1')]);
+    const { result } = renderHook(() => useGroupFocus(roster));
+    expect(result.current.focusedAvatar).toBe('a.png');
+    act(() => result.current.pinMember('c.png'));
+    expect(result.current.focusedAvatar).toBe('c.png');
+    setMessages([user('1'), user('2')]);
+    expect(result.current.focusedAvatar).toBe('c.png');
+  });
+
   it('a chat-file change drops the pin', () => {
     const { result } = renderHook(() => useGroupFocus(roster));
     act(() => result.current.pinMember('a.png'));

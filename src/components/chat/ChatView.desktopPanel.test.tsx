@@ -212,6 +212,16 @@ describe('render conditions (D-C2, D-C9)', () => {
     expect(panel()).toBeNull();
   });
 
+  it('a group chat with an empty roster gets no panel and no Show button', async () => {
+    useCharacterStore.setState({ selectedCharacter: null, isGroupChatMode: true, groupChatCharacters: [] });
+    const first = await mount();
+    expect(panel()).toBeNull();
+    first.unmount();
+    localStorage.setItem(AVATAR_PANEL_EXPANDED_KEY, 'false');
+    await mount();
+    expect(screen.queryByRole('button', { name: 'Show portrait' })).toBeNull();
+  });
+
   it('collapsed: no panel; "Show portrait" with aria-expanded and aria-controls', async () => {
     localStorage.setItem(AVATAR_PANEL_EXPANDED_KEY, 'false');
     seedSolo();
@@ -363,6 +373,17 @@ describe('sprites in the panel (ChatView wiring)', () => {
   const withEmotion = () =>
     useChatStore.setState({ messages: transcript.map((m) => (m.id === 'a1' ? { ...m, emotion: 'joy' } : m)) });
   const panelImage = () => within(panel() as HTMLElement).getByRole('img', { name: 'Ava' });
+  /**
+   * The last AI message's avatar: the one 'Ava' image in neither the panel nor
+   * the mobile portrait (lg:hidden, still in the DOM at 1440).
+   */
+  const messageAvatar = () => {
+    const outside = screen
+      .getAllByRole('img', { name: 'Ava' })
+      .filter((img) => !panel()?.contains(img) && !img.closest('.lg\\:hidden'));
+    expect(outside).toHaveLength(1);
+    return outside[0];
+  };
 
   it('a 404 on the panel\'s sprite falls back to the default avatar through ChatView\'s failed set', async () => {
     env.spriteFolders['a'] = { joy: '/sprites/a/joy.png' };
@@ -370,7 +391,20 @@ describe('sprites in the panel (ChatView wiring)', () => {
     seedSolo();
     await mount();
     expect(panelImage().getAttribute('src')).toBe('/sprites/a/joy.png');
+    expect(messageAvatar().getAttribute('src')).toBe('/sprites/a/joy.png');
     fireEvent.error(panelImage());
+    expect(panelImage().getAttribute('src')).toBe('/blobs/character/a.png');
+    // The set is ChatView's own: the message avatar stops asking for the sprite too.
+    expect(messageAvatar().getAttribute('src')).not.toBe('/sprites/a/joy.png');
+  });
+
+  it('a 404 on the message avatar\'s sprite falls the panel back too: one shared failed set', async () => {
+    env.spriteFolders['a'] = { joy: '/sprites/a/joy.png' };
+    withEmotion();
+    seedSolo();
+    await mount();
+    expect(panelImage().getAttribute('src')).toBe('/sprites/a/joy.png');
+    fireEvent.error(messageAvatar());
     expect(panelImage().getAttribute('src')).toBe('/blobs/character/a.png');
   });
 
