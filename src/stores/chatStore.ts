@@ -3324,8 +3324,8 @@ function groupSpeakerInstruction(name: string): string {
 // call API, stream, finalize). Both `sendGroupMessage` and `forceGroupMemberTalk`
 // delegate to this to avoid drift in the streaming + parsing path. Returns
 // `false` if the turn was aborted or never produced a stream, `true` otherwise.
-// Throws when the stream carried an upstream error frame (#421), after
-// removing the speaker's placeholder if it stayed blank.
+// Throws when the stream carried an upstream error frame or itself threw
+// (#421), after removing the speaker's placeholder if it stayed blank.
 async function generateGroupTurn(
   character: CharacterInfo,
   characters: CharacterInfo[],
@@ -3467,17 +3467,24 @@ async function generateGroupTurn(
 
   let responseText = '';
   const sseMeta: SSEStreamMeta = { finishReason: null };
-  for await (const token of parseSSEStream(stream, sseMeta)) {
-    if (!get().isSending) break;
-    responseText += token;
-    if (!get().isStreaming) set({ isStreaming: true });
-    set((state) => ({
-      messages: state.messages.map((msg) =>
-        msg.id === aiMessageId
-          ? { ...msg, content: responseText, swipes: [responseText] }
-          : msg
-      ),
-    }));
+  // #421 (D-E9S11-6): a stream that throws mid-body (an AbortError included)
+  // goes through the same cleanup below as one that ended, then is rethrown.
+  let streamError: unknown;
+  try {
+    for await (const token of parseSSEStream(stream, sseMeta)) {
+      if (!get().isSending) break;
+      responseText += token;
+      if (!get().isStreaming) set({ isStreaming: true });
+      set((state) => ({
+        messages: state.messages.map((msg) =>
+          msg.id === aiMessageId
+            ? { ...msg, content: responseText, swipes: [responseText] }
+            : msg
+        ),
+      }));
+    }
+  } catch (err) {
+    streamError = err;
   }
 
   const emotion = parseEmotion(responseText);
@@ -3493,6 +3500,7 @@ async function generateGroupTurn(
     set((state) => ({
       messages: state.messages.filter((msg) => msg.id !== aiMessageId),
     }));
+    if (streamError !== undefined) throw streamError;
     // #421: an upstream error frame is not a blank completion. Throwing ends
     // the round; the caller's catch sets `error`.
     if (sseMeta.upstreamError) throw new Error(sseMeta.upstreamError);
@@ -3521,6 +3529,7 @@ async function generateGroupTurn(
 
   // #421: an error after partial text keeps the partial reply above and still
   // surfaces the error, ending the round.
+  if (streamError !== undefined) throw streamError;
   if (sseMeta.upstreamError) throw new Error(sseMeta.upstreamError);
 
   return get().isSending;

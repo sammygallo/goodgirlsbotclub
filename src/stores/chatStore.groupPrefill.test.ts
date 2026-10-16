@@ -93,6 +93,35 @@ function errorStreamNoTrailingNewline(message: string): ReadableStream<Uint8Arra
   });
 }
 
+/** A stream whose first read rejects with `err`. */
+function failingStream(err: unknown): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.error(err);
+    },
+  });
+}
+
+/** A stream that delivers `frames` as SSE, then rejects the next read with
+ *  `err`. Pull-driven: erroring a stream discards the chunks still queued in
+ *  it, so the error is raised only once the frames have been read. */
+function sseThenFail(frames: unknown[], err: unknown): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let i = 0;
+  return new ReadableStream(
+    {
+      pull(controller) {
+        if (i < frames.length) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(frames[i++])}\n\n`));
+        } else {
+          controller.error(err);
+        }
+      },
+    },
+    { highWaterMark: 0 }
+  );
+}
+
 const instruction = (name: string) => `[Write the next reply only as ${name}.]`;
 
 type Payload = { role: string; content: string }[];
@@ -535,6 +564,45 @@ describe('#421 AC2: an upstream error frame is surfaced, never a silent blank tu
     await sendRound();
     expect(spy).toHaveBeenCalledTimes(1);
     expect(useChatStore.getState().error).toBe('quota exceeded');
+  });
+
+  it('a stream that errors before any token removes the placeholder and surfaces the error', async () => {
+    let call = 0;
+    const spy = vi.spyOn(api, 'generateMessage').mockImplementation(async () =>
+      ++call === 1 ? textStream('[emotion:joy] Hi.') : failingStream(new TypeError('network error'))
+    );
+    await runRound();
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(useChatStore.getState().error).toBe('network error');
+    expect(repliesFrom(seraphina)).toEqual([]);
+    expect(repliesFrom(ivy).map((m) => m.content)).toEqual(['Hi.']);
+  });
+
+  it('a stream that errors after partial text keeps the finalized partial reply and surfaces the error', async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () =>
+        sseThenFail([textFrame('[emotion:joy] Hi, I was say')], new TypeError('network error'))
+      );
+    await runRound();
+    // The round stopped at speaker one: speaker two was never asked.
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBe('network error');
+    const kept = repliesFrom(ivy);
+    expect(kept.map((m) => m.content)).toEqual(['Hi, I was say']);
+    expect(kept[0].emotion).toBe('joy');
+    expect(repliesFrom(seraphina)).toEqual([]);
+  });
+
+  it('an aborted stream (AbortError) removes a blank placeholder and sets no error', async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () => failingStream(new DOMException('aborted', 'AbortError')));
+    await runRound();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBeNull();
+    expect(repliesFrom(ivy)).toEqual([]);
+    expect(repliesFrom(seraphina)).toEqual([]);
   });
 
   it('a genuinely blank completion (no error frame) is still dropped silently and the round continues', async () => {
