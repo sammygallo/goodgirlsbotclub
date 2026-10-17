@@ -615,6 +615,22 @@ describe('#421 AC2: an upstream error frame is surfaced, never a silent blank tu
     expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['g1', 'g2']);
   });
 
+  it("an error frame with no message surfaces 'Generation failed' and removes the placeholder", async () => {
+    vi.spyOn(api, 'generateMessage').mockImplementation(async () => sse([{ error: { code: 400 } }]));
+    seedGroup();
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(useChatStore.getState().error).toBe('Generation failed');
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['g1', 'g2']);
+  });
+
+  it('an error frame whose error is a string surfaces that string', async () => {
+    vi.spyOn(api, 'generateMessage').mockImplementation(async () => sse([{ error: 'boom' }]));
+    seedGroup();
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(useChatStore.getState().error).toBe('boom');
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(['g1', 'g2']);
+  });
+
   it('an error frame with no trailing newline is still surfaced', async () => {
     vi.spyOn(api, 'generateMessage').mockImplementation(async () =>
       errorStreamNoTrailingNewline('upstream exploded at the end')
