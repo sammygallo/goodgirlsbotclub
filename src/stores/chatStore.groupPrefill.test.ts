@@ -396,6 +396,20 @@ describe('#421 AC1: every group payload ends on a user-role entry', () => {
     }
   });
 
+  it("a newest user turn the builder drops as blank still gets the instruction: the payload decides, not the history", async () => {
+    // A macro-only message renders to '', so the builder skips it as a blank
+    // user turn and speaker one's payload ends on the greeting, although the
+    // newest history turn is the user's.
+    const spy = prefillRejectingProvider();
+    seedGroup();
+    await useChatStore.getState().sendGroupMessage('{{setvar::mood::happy}}', roster);
+    expect(spy).toHaveBeenCalledTimes(2);
+    const first = spy.mock.calls[0][0] as Payload;
+    expect(first[first.length - 1]).toEqual({ role: 'user', content: instruction('Ivy') });
+    expect(first[first.length - 2]).toEqual({ role: 'assistant', content: '[Seraphina]: Seraphina greeting' });
+    expect(useChatStore.getState().error).toBeNull();
+  });
+
   it('force-talk on a history ending in an assistant turn ends on the instruction', async () => {
     const spy = prefillRejectingProvider();
     seedGroup();
@@ -501,6 +515,64 @@ describe('#421 AC1: every group payload ends on a user-role entry', () => {
     expect(sent.some((m) => m.content === instruction('Ivy'))).toBe(false);
   });
 
+  /** Force-talk Ivy on gpt-4o after the user's image message and then
+   *  `trailing`, a message the group history window leaves out. */
+  async function forceTalkAfterImageThen(trailing: ChatMessage) {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () => textStream('[emotion:joy] A spaniel.'));
+    useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4o' });
+    seedGroup();
+    useChatStore.setState({
+      messages: [
+        ...greetings(),
+        { id: 'u1', name: 'User', isUser: true, isSystem: false, content: 'What breed?', timestamp: 3, swipes: ['What breed?'], swipeId: 0, images: ['data:image/png;base64,AAAA'] } as ChatMessage,
+        trailing,
+      ],
+    });
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(spy).toHaveBeenCalledTimes(1);
+    return spy;
+  }
+
+  it("a system message after the user's image message does not withhold the images: the rule reads the history window", async () => {
+    const spy = await forceTalkAfterImageThen(
+      { id: 's1', name: 'System', isUser: false, isSystem: true, content: 'note', timestamp: 4, swipes: ['note'], swipeId: 0 } as ChatMessage
+    );
+    expect(spy.mock.calls[0][6]).toHaveLength(1);
+    const sent = spy.mock.calls[0][0] as Payload;
+    expect(sent[sent.length - 1]).toEqual({ role: 'user', content: 'What breed?' });
+    expect(sent.some((m) => m.content === instruction('Ivy'))).toBe(false);
+  });
+
+  it("a hidden reply after the user's image message does not withhold the images: the rule reads the history window", async () => {
+    const spy = await forceTalkAfterImageThen(
+      { id: 'a1', name: 'Seraphina', isUser: false, isSystem: false, content: 'A beagle?', timestamp: 4, characterAvatar: seraphina.avatar, swipes: ['A beagle?'], swipeId: 0, hidden: true } as ChatMessage
+    );
+    expect(spy.mock.calls[0][6]).toHaveLength(1);
+    const sent = spy.mock.calls[0][0] as Payload;
+    expect(sent[sent.length - 1]).toEqual({ role: 'user', content: 'What breed?' });
+    expect(sent.some((m) => m.content === instruction('Ivy'))).toBe(false);
+  });
+
+  it('force-talk on a history the window leaves empty sends no images: there is no newest user turn', async () => {
+    // The only message is hidden, so the window is empty, but
+    // imagesFromLastUserMessage still finds its image.
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () => textStream('[emotion:joy] Hm?'));
+    useSettingsStore.setState({ activeProvider: 'openai', activeModel: 'gpt-4o' });
+    seedGroup();
+    useChatStore.setState({
+      messages: [
+        { id: 'u1', name: 'User', isUser: true, isSystem: false, content: 'What breed?', timestamp: 1, swipes: ['What breed?'], swipeId: 0, images: ['data:image/png;base64,AAAA'], hidden: true } as ChatMessage,
+      ],
+    });
+    await useChatStore.getState().forceGroupMemberTalk(ivy, roster);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][6]).toBeUndefined();
+  });
+
   it("auto-mode (natural): every tick's payload ends on a user-role entry", async () => {
     let call = 0;
     const spy = vi.spyOn(api, 'generateMessage').mockImplementation(async (payload) => {
@@ -588,17 +660,45 @@ describe('#421 AC2: an upstream error frame is surfaced, never a silent blank tu
     }
   });
 
-  it('an upstream error ends an auto-mode loop instead of retrying every tick', async () => {
+  /** An auto-mode round in which every tick's stream is `stream()`. */
+  async function autoModeRoundWith(stream: () => ReadableStream<Uint8Array>) {
     let call = 0;
     const spy = vi.spyOn(api, 'generateMessage').mockImplementation(async () => {
       // Safety valve: a loop that keeps going is stopped on its next tick.
       if (++call === 2) useChatStore.getState().stopGeneration();
-      return errorStream('quota exceeded');
+      return stream();
     });
     seedAutoModeGroup();
     await sendRound();
+    return spy;
+  }
+
+  it('an upstream error ends an auto-mode loop instead of retrying every tick', async () => {
+    const spy = await autoModeRoundWith(() => errorStream('quota exceeded'));
     expect(spy).toHaveBeenCalledTimes(1);
     expect(useChatStore.getState().error).toBe('quota exceeded');
+  });
+
+  it('an upstream error after partial text also ends an auto-mode loop', async () => {
+    const spy = await autoModeRoundWith(() =>
+      sse([textFrame('[emotion:joy] Hi, I was say'), errorFrame('quota exceeded')])
+    );
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBe('quota exceeded');
+  });
+
+  it('a stream that errors before any token ends an auto-mode loop', async () => {
+    const spy = await autoModeRoundWith(() => failingStream(new TypeError('network error')));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBe('network error');
+  });
+
+  it('a stream that errors after partial text ends an auto-mode loop', async () => {
+    const spy = await autoModeRoundWith(() =>
+      sseThenFail([textFrame('[emotion:joy] Hi, I was say')], new TypeError('network error'))
+    );
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBe('network error');
   });
 
   it('a stream that errors before any token removes the placeholder and surfaces the error', async () => {
@@ -638,6 +738,51 @@ describe('#421 AC2: an upstream error frame is surfaced, never a silent blank tu
     expect(useChatStore.getState().error).toBeNull();
     expect(repliesFrom(ivy)).toEqual([]);
     expect(repliesFrom(seraphina)).toEqual([]);
+  });
+
+  it('an AbortError after partial text (Stop mid-stream) keeps the finalized partial reply and sets no error', async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () =>
+        sseThenFail([textFrame('[emotion:joy] Hi, I was say')], new DOMException('aborted', 'AbortError'))
+      );
+    await runRound();
+    // The round stopped at speaker one: speaker two was never asked.
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBeNull();
+    const kept = repliesFrom(ivy);
+    expect(kept.map((m) => m.content)).toEqual(['Hi, I was say']);
+    expect(kept[0].emotion).toBe('joy');
+    expect(repliesFrom(seraphina)).toEqual([]);
+  });
+
+  // When a stream carries an error frame and then itself throws, the thrown
+  // error is the one rethrown (D-E9S11-6).
+  it('an AbortError after an error frame takes precedence over it: the placeholder is removed and no error is set', async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () =>
+        sseThenFail([errorFrame('upstream exploded')], new DOMException('aborted', 'AbortError'))
+      );
+    await runRound();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBeNull();
+    expect(repliesFrom(ivy)).toEqual([]);
+  });
+
+  it('an AbortError after partial text and an error frame takes precedence over it: the partial reply is kept and no error is set', async () => {
+    const spy = vi
+      .spyOn(api, 'generateMessage')
+      .mockImplementation(async () =>
+        sseThenFail(
+          [textFrame('[emotion:joy] Hi, I was say'), errorFrame('upstream cut off')],
+          new DOMException('aborted', 'AbortError')
+        )
+      );
+    await runRound();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().error).toBeNull();
+    expect(repliesFrom(ivy).map((m) => m.content)).toEqual(['Hi, I was say']);
   });
 
   it('a genuinely blank completion (no error frame) is still dropped silently and the round continues', async () => {
