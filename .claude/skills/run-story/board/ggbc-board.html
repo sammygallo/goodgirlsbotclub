@@ -266,13 +266,13 @@
     <div class="stamp">
       <b>16 Oct 2026</b><br>
       main <b>87b23ace</b><br>
-      active <b>E9-S11 — review</b>
+      active <b>E9-S11 — &sect;8 gate (#582, backend #92)</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
-    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
@@ -313,15 +313,15 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E9"><div class="id">E9-S11</div><div class="t">Group speakers after the first fail silently on prefill-rejecting models</div><div class="m">Carded and started 16 Oct (<a href="https://github.com/sammygallo/goodgirlsbotclub/issues/421">#421</a>; found via #578). Branch <code>claude/e9-s11-group-prefill</code>. Plan: N = 1; Opus planner and builder. A speaker instruction is appended at the group call site when the payload would end on an assistant turn, and an upstream error frame is surfaced instead of dropped. Group goldens unchanged by design. Trigger-tier review, prompt-assembly class.</div><div class="gates"><span class="gate free">no gate</span></div></article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E9"><div class="id">E9-S11</div><div class="t">Group speakers after the first fail silently on prefill-rejecting models</div><div class="m">17 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/582">#582</a> @ <code>77154064</code> + backend <a href="https://github.com/sammygallo/ggbc-backend/pull/92">ggbc-backend#92</a> @ <code>f119486</code>, at the &sect;8 gate for Sammy. A speaker instruction ends every later speaker's payload on a user turn; upstream error frames and mid-body stream failures are surfaced. Sammy widened scope three times (image rule, stream-drop cleanup, backend error frames). <b>Review 5 full rounds + 1 confirmation, ~4.5M</b>; final round zero. Deploy backend first or together. Filed #580 #581, backend #90 #91 (security).</div><div class="gates"><span class="gate free">no gate</span><span class="gate">&sect;8 gate</span><span class="gate">backend first</span></div></article>
       </div>
     </section>
 
