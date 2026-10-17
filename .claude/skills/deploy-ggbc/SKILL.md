@@ -288,7 +288,13 @@ helper now asks the question that actually matters: *does anything in
 ```bash
 # usage: wait_for_image <repo> <local-checkout-path>
 wait_for_image() {
-  local REPO="$1" DIR="$2"
+  # Read through "$@", never a dollar-digit token: when the skill is invoked
+  # with arguments, the Skill loader replaces dollar-digit tokens in the
+  # loaded text with those arguments (E9-S12, 2026-10-17: this line arrived
+  # as REPO="+" DIR="E9-S11"). The file on disk is unaffected.
+  local REPO DIR
+  REPO=$(printf '%s\n' "$@" | sed -n 1p)
+  DIR=$(printf '%s\n' "$@" | sed -n 2p)
   local SHA; SHA=$(git -C "$DIR" rev-parse HEAD)
   echo "waiting on image build for ${REPO}@${SHA:0:7}"
 
@@ -608,12 +614,17 @@ fi
 if [ -z "$MERGED_PRS" ]; then
   echo "no merged PRs in this deploy window"
 else
-  for PR in $MERGED_PRS; do
+  # Split through $(...), never a bare $VAR: the Bash tool's shell is zsh,
+  # which does not word-split an unquoted parameter, so a bare-$VAR loop runs
+  # once over the whole newline-joined list. It silently attempted no
+  # notification on 2026-10-17 (E9-S12). An unquoted $(...) splits in
+  # both zsh and bash.
+  for PR in $(printf '%s\n' "$MERGED_PRS"); do
     PR_URL="https://github.com/sammygallo/goodgirlsbotclub/pull/$PR"
     ISSUES=$(gh pr view "$PR" --repo sammygallo/goodgirlsbotclub \
       --json closingIssuesReferences \
       --jq '.closingIssuesReferences[].number' 2>/dev/null)
-    for ISSUE in $ISSUES; do
+    for ISSUE in $(printf '%s\n' "$ISSUES"); do
       echo "notifying subscribers of issue #$ISSUE (PR $PR)"
       ssh root@159.89.180.146 "cd /opt/ggbc-intake-bot && npm run notify:request-deployed -- $ISSUE $PR_URL" \
         || echo "  notify failed for #$ISSUE — non-fatal"
