@@ -290,9 +290,8 @@ helper now asks the question that actually matters: *does anything in
 wait_for_image() {
   # Read through "$@", never a dollar-digit token: when the skill is invoked
   # with arguments, the Skill loader replaces dollar-digit tokens in the
-  # loaded text with those arguments, so the branch-argument forms under
-  # Arguments would rewrite REPO with a branch name (E9-S12, 2026-10-17:
-  # this line arrived as REPO="+" DIR="E9-S11"). The file on disk is unaffected.
+  # loaded text with those arguments (E9-S12, 2026-10-17: this line arrived
+  # as REPO="+" DIR="E9-S11"). The file on disk is unaffected.
   local REPO DIR
   REPO=$(printf '%s\n' "$@" | sed -n 1p)
   DIR=$(printf '%s\n' "$@" | sed -n 2p)
@@ -618,8 +617,7 @@ else
   # Split through $(...), never a bare $VAR: the Bash tool's shell is zsh,
   # which does not word-split an unquoted parameter, so a bare-$VAR loop runs
   # once over the whole newline-joined list. It silently attempted no
-  # notification on 2026-10-17 (E9-S12), and its inner twin passed two issue
-  # numbers in one call on 2026-10-15 (E6-S3). An unquoted $(...) splits in
+  # notification on 2026-10-17 (E9-S12). An unquoted $(...) splits in
   # both zsh and bash.
   for PR in $(printf '%s\n' "$MERGED_PRS"); do
     PR_URL="https://github.com/sammygallo/goodgirlsbotclub/pull/$PR"
