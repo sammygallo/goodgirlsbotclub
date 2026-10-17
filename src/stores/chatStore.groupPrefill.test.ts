@@ -686,6 +686,30 @@ describe('#421 AC2: an upstream error frame is surfaced, never a silent blank tu
     }
   });
 
+  it.each([
+    ['a network error', () => new TypeError('network error'), 'network error'],
+    ['Stop (AbortError)', () => new DOMException('aborted', 'AbortError'), null],
+  ])('a reply kept after %s mid-stream still records usage and advances the WI timed-effect clock', async (_label, makeError, expectedError) => {
+    const prev = useWorldInfoStore.getState();
+    useWorldInfoStore.setState({
+      books: [mkBook('b-timer', [mkEntry('e-timer', { content: 'Lore: the clock runs slow.', cooldown: 3 })])],
+      activeBookIds: ['b-timer'],
+    });
+    try {
+      vi.spyOn(api, 'generateMessage').mockImplementation(async () =>
+        sseThenFail([textFrame('[emotion:joy] Hi, I was say')], makeError())
+      );
+      await runRound();
+      expect(useChatStore.getState().error).toBe(expectedError);
+      const kept = repliesFrom(ivy);
+      expect(kept.map((m) => m.content)).toEqual(['Hi, I was say']);
+      expect(kept[0].usage?.inputTokens).toBeGreaterThan(0);
+      expect(loadWiTimers('')).toEqual({ 'e-timer': 2 });
+    } finally {
+      useWorldInfoStore.setState({ books: prev.books, activeBookIds: prev.activeBookIds });
+    }
+  });
+
   /** An auto-mode round in which every tick's stream is `stream()`. */
   async function autoModeRoundWith(stream: () => ReadableStream<Uint8Array>) {
     let call = 0;
