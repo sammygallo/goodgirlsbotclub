@@ -266,13 +266,13 @@
     <div class="stamp">
       <b>17 Oct 2026</b><br>
       main <b>1b6d5c0b</b><br>
-      active <b>E9-S12 in progress &middot; E9-S11 merged 17 Oct, awaiting deploy</b>
+      active <b>E9-S12 in review &middot; E9-S11 merged 17 Oct, awaiting deploy</b>
     </div>
   </header>
 
   <div class="rail">
-    <div class="tile is-live"><div class="n">1</div><div class="k">In progress</div></div>
-    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
+    <div class="tile"><div class="n">1</div><div class="k">In review</div></div>
     <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
@@ -313,15 +313,15 @@
   <div class="board" id="board">
 
     <section class="col">
-      <div class="colhead"><h2>In progress</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In progress</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E9"><div class="id">E9-S12</div><div class="t">Security fix &mdash; <a href="https://github.com/sammygallo/ggbc-backend/issues/91">sammygallo/ggbc-backend#91</a> (private)</div><div class="m">17 Oct &middot; backend only, S, trigger-tier review. Details live in the private issue (charter &sect;4 item 9, PR #583). Sammy approved the fix before it was written and chose merge and deploy back to back on his go.</div><div class="gates"><span class="gate">merge + deploy together</span></div></article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-live" data-epic="E9"><div class="id">E9-S12</div><div class="t">Security fix &mdash; <a href="https://github.com/sammygallo/ggbc-backend/issues/91">sammygallo/ggbc-backend#91</a> (private)</div><div class="m">17 Oct &middot; backend only, draft PR in the private repo. 1 security findings: sammygallo/ggbc-backend#91. Review 2 full rounds + confirmation; QA AC1&ndash;5 pass. No migration. Ships with merge and deploy back to back on Sammy&rsquo;s go, together with E9-S11.</div><div class="gates"><span class="gate">merge + deploy together</span><span class="gate hot">&sect;8: auth/secrets</span></div></article>
       </div>
     </section>
 
