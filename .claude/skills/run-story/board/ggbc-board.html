@@ -265,20 +265,20 @@
     </div>
     <div class="stamp">
       <b>17 Oct 2026</b><br>
-      main <b>1b6d5c0b</b><br>
-      active <b>E9-S12 in review &middot; E9-S11 merged 17 Oct, awaiting deploy</b>
+      main <b>a65830da</b><br>
+      active <b>none — E9-S11 + E9-S12 deployed 17 Oct</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">14</div><div class="k">Gated</div></div>
     <div class="tile"><div class="n">7</div><div class="k">Unscheduled</div></div>
-    <div class="tile is-ok"><div class="n">18</div><div class="k">Deployed</div></div>
+    <div class="tile is-ok"><div class="n">20</div><div class="k">Deployed</div></div>
     <div class="tile is-warn"><div class="n">24</div><div class="k">Open issues</div></div>
   </div>
 
@@ -319,16 +319,14 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E9"><div class="id">E9-S12</div><div class="t">Security fix &mdash; <a href="https://github.com/sammygallo/ggbc-backend/issues/91">sammygallo/ggbc-backend#91</a> (private)</div><div class="m">17 Oct &middot; backend only, draft PR in the private repo. 1 security findings: sammygallo/ggbc-backend#91. Review 2 full rounds + confirmation; QA AC1&ndash;5 pass. No migration. Ships with merge and deploy back to back on Sammy&rsquo;s go, together with E9-S11.</div><div class="gates"><span class="gate">merge + deploy together</span><span class="gate hot">&sect;8: auth/secrets</span></div></article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-ok" data-epic="E9"><div class="id">E9-S11</div><div class="t">Group speakers after the first fail silently on prefill-rejecting models</div><div class="m">17 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/582">#582</a> &rarr; <code>853fa8be</code> + backend <a href="https://github.com/sammygallo/ggbc-backend/pull/92">ggbc-backend#92</a> &rarr; <code>792f3333</code>, merged by Sammy at the &sect;8 gate (cross-repo contract, vision divergence, prod-verify deferrals), undeployed. Closes #421 and #578. Every later group speaker's payload now ends on a user-role instruction; upstream error frames and mid-body stream failures are surfaced; the backend no longer raises on a safetyRatings-only Gemini frame or crashes on a string error body. <b>Review 5 full rounds + 1 confirmation, ~4.5M</b>; final round zero. QA: AC1&ndash;5 pass; real-provider checks owed at prod-verify. Filed #580 #581, backend #90 #91 (security). Gates 155 / 3220, backend 992, build 0.</div><div class="gates"><span class="gate">deploy backend first</span><span class="gate">prod-verify owed</span></div></article>
       </div>
     </section>
 
@@ -391,8 +389,10 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Deployed</h2><span class="ct">18</span></div>
+      <div class="colhead"><h2>Deployed</h2><span class="ct">20</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S12</div><div class="t">Security fix &mdash; <a href="https://github.com/sammygallo/ggbc-backend/issues/91">sammygallo/ggbc-backend#91</a> (private)</div><div class="m">17 Oct &middot; 1 security findings: sammygallo/ggbc-backend#91. Backend only, ggbc-backend#95 &rarr; <code>bb24d67a</code>, merged by Sammy at the &sect;8 gate and <b>deployed 17 Oct</b> back to back (backend image <code>bc577c83</code>; no migration). <b>Review 2 full + 4 confirmation rounds, ~2.45M</b>; final round zero. QA AC1&ndash;5 pass. Gates 1010 passed.</div><div class="gates"><span class="gate free">deployed 17 Oct</span></div></article>
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S11</div><div class="t">Group speakers after the first fail silently on prefill-rejecting models</div><div class="m">17 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/582">#582</a> &rarr; <code>853fa8be</code> + backend <a href="https://github.com/sammygallo/ggbc-backend/pull/92">ggbc-backend#92</a> &rarr; <code>792f3333</code>, merged by Sammy at the &sect;8 gate, <b>deployed 17 Oct</b> with E9-S12 (frontend image <code>bc7e13f8</code>; no migration; release note posted). Closes #421 and #578. <b>Review 5 full rounds + 1 confirmation, ~4.5M</b>. Prod-verified in-app: every speaker replies on <code>claude-sonnet-5-5</code>, force-talk and &ldquo;Prompt a character&rdquo; reply, the breakdown shows the next-speaker instruction; the error-banner check was not run. Filed #580 #581, backend #90.</div><div class="gates"><span class="gate free">deployed 17 Oct</span><span class="gate free">prod-verified 3/4</span></div></article>
         <article class="card s-ok" data-epic="E6"><div class="id">E6-S4</div><div class="t">Desktop chat layout</div><div class="m">16 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/577">#577</a> &rarr; <code>c43649bb</code>, merged by Sammy at the &sect;8 gate (hard to reverse, vision divergence, waived standard, did-not-converge), <b>deployed 16 Oct</b> (frontend image <code>2af2aa52</code>; backend window empty, no migration; release note posted). Frontend-only, no migration. 1/3 portrait panel at &ge;1024; mobile unchanged. Sammy: <code>portrait-position</code> stays persist v1 (additive desktop map); the panel reads the Live Portrait cache only (#575). <b>Review 6 full-roster + 2 confirmation rounds</b>; final round zero. QA: AC2/AC3 pass; AC1 generation paths and Live Portrait/sprite items deferred to prod-verify. Filed #567&ndash;#576. Gates 154 / 3178, build 0, eslint 0/18.</div><div class="gates"><span class="gate free">E6-S1 ✓</span><span class="gate free">E6-S3 ✓</span><span class="gate free">deployed 16 Oct</span><span class="gate free">prod-verified 16 Oct</span><span class="gate">#578 filed</span></div></article>
         <article class="card s-ok" data-epic="E6">
           <div class="id">E6-S3</div>
