@@ -212,6 +212,22 @@ describe('computeCaptureAttribution', () => {
     ]);
   });
 
+  it('(i2) a group_nudge call-site slice: the last entry is labelled', () => {
+    const breakdown = createPromptBreakdown('group');
+    addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
+    addSlice(breakdown, { stage: 'B', cls: 'history', messageId: 'a1', role: 'assistant' }, 4, 14);
+    addSlice(breakdown, { stage: 'callSite', turn: 'group_nudge' }, 6, 25);
+    const capture = mkCapture([entry('system', 40), entry('assistant', 14), entry('user', 25)]);
+
+    const attribution = computeCaptureAttribution(capture, breakdown);
+
+    expect(attribution).toEqual([
+      { index: 0, labels: ['main_prompt'] },
+      { index: 1, labels: ['history (assistant)'] },
+      { index: 2, labels: ['call_site_group_nudge'] },
+    ]);
+  });
+
   it('(j) an attachments slice is present alongside an otherwise clean shape → labelled, not null (kills R2-C2)', () => {
     const breakdown = createPromptBreakdown('solo');
     addSlice(breakdown, { stage: 'A', id: 'main_prompt' }, 10, 40);
