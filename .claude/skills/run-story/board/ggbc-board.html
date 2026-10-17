@@ -264,16 +264,16 @@
       <p>Nine epics across phases 10.2–12. Gates are the real structure here — most cards are waiting on another card, not on capacity. Blockers are printed on the cards.</p>
     </div>
     <div class="stamp">
-      <b>16 Oct 2026</b><br>
-      main <b>87b23ace</b><br>
-      active <b>E9-S11 — &sect;8 gate (#582, backend #92)</b>
+      <b>17 Oct 2026</b><br>
+      main <b>853fa8be</b><br>
+      active <b>none — E9-S11 merged 17 Oct, awaiting deploy</b>
     </div>
   </header>
 
   <div class="rail">
     <div class="tile is-live"><div class="n">0</div><div class="k">In progress</div></div>
-    <div class="tile"><div class="n">1</div><div class="k">In review</div></div>
-    <div class="tile is-ok"><div class="n">0</div><div class="k">Merged, undeployed</div></div>
+    <div class="tile"><div class="n">0</div><div class="k">In review</div></div>
+    <div class="tile is-ok"><div class="n">1</div><div class="k">Merged, undeployed</div></div>
     <div class="tile"><div class="n">0</div><div class="k">Ready for dev</div></div>
     <div class="tile"><div class="n">2</div><div class="k">In design</div></div>
     <div class="tile is-warn"><div class="n">14</div><div class="k">Gated</div></div>
@@ -319,15 +319,15 @@
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>In review</h2><span class="ct">1</span></div>
+      <div class="colhead"><h2>In review</h2><span class="ct">0</span></div>
       <div class="stack">
-        <article class="card s-live" data-epic="E9"><div class="id">E9-S11</div><div class="t">Group speakers after the first fail silently on prefill-rejecting models</div><div class="m">17 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/582">#582</a> @ <code>77154064</code> + backend <a href="https://github.com/sammygallo/ggbc-backend/pull/92">ggbc-backend#92</a> @ <code>f119486</code>, at the &sect;8 gate for Sammy. A speaker instruction ends every later speaker's payload on a user turn; upstream error frames and mid-body stream failures are surfaced. Sammy widened scope three times (image rule, stream-drop cleanup, backend error frames). <b>Review 5 full rounds + 1 confirmation, ~4.5M</b>; final round zero. Deploy backend first or together. Filed #580 #581, backend #90 #91 (security).</div><div class="gates"><span class="gate free">no gate</span><span class="gate">&sect;8 gate</span><span class="gate">backend first</span></div></article>
       </div>
     </section>
 
     <section class="col">
-      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">0</span></div>
+      <div class="colhead"><h2>Merged — awaiting deploy</h2><span class="ct">1</span></div>
       <div class="stack">
+        <article class="card s-ok" data-epic="E9"><div class="id">E9-S11</div><div class="t">Group speakers after the first fail silently on prefill-rejecting models</div><div class="m">17 Oct &middot; <a href="https://github.com/sammygallo/goodgirlsbotclub/pull/582">#582</a> &rarr; <code>853fa8be</code> + backend <a href="https://github.com/sammygallo/ggbc-backend/pull/92">ggbc-backend#92</a> &rarr; <code>792f3333</code>, merged by Sammy at the &sect;8 gate (cross-repo contract, vision divergence, prod-verify deferrals), undeployed. Closes #421 and #578. Every later group speaker's payload now ends on a user-role instruction; upstream error frames and mid-body stream failures are surfaced; the backend no longer raises on a safetyRatings-only Gemini frame or crashes on a string error body. <b>Review 5 full rounds + 1 confirmation, ~4.5M</b>; final round zero. QA: AC1&ndash;5 pass; real-provider checks owed at prod-verify. Filed #580 #581, backend #90 #91 (security). Gates 155 / 3220, backend 992, build 0.</div><div class="gates"><span class="gate">deploy backend first</span><span class="gate">prod-verify owed</span></div></article>
       </div>
     </section>
 
